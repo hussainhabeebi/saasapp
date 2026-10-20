@@ -36,6 +36,9 @@ test('Travel Portal listings: only what can still be bought, with details', () =
   assert.equal(pk.length, 1);
   assert.deepEqual([pk[0].id, pk[0].title, pk[0].description], ['1', 'Baku 4N/5D', 'Baku · 4N · from AED 1,999']);
   assert.match(pk[0].detail, /✅ \*Includes\*\n• Flights\n• Hotel 4\*/);
+  // Only a Base Price entered (Sell Price saved as 0): quote it, as the dashboard card does.
+  const basePk = ltPortalRows('packages', [{ Id: 3, name: 'Hyderabad Train', destination: 'Hyderabad', nights: 3, currency: 'INR', sell_price: 0, base_price: 11499 }], { today });
+  assert.equal(basePk[0].description, 'Hyderabad · 3N · from INR 11,499');
   const umrah = ltPortalRows('umrah', [
     { Id: 1, name: 'Nov Umrah', departure_date: '2026-11-10', seats: 2, pilgrims: '["a","b"]' },
     { Id: 2, name: 'Old', departure_date: '2026-09-01', seats: 40 },

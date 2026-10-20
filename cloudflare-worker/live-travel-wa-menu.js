@@ -299,7 +299,7 @@ export function ltPortalRows(source,records,{today=new Date().toISOString().slic
     if(!id)continue;
     let row=null;
     if(source==='packages'&&r.name){
-      const price=money(r.sell_price,r.currency);
+      const price=money(Number(r.sell_price)>0?r.sell_price:r.base_price,r.currency);
       const inc=list(r.inclusions).slice(0,8),exc=list(r.exclusions).slice(0,5);
       row={title:r.name,description:join(r.destination,r.nights?`${r.nights}N`:'',price&&`from ${price}`),
         detail:[`🏝️ *${r.name}*`,join(r.type,r.destination),r.nights?`🌙 ${r.nights} nights`:'',(r.pax_min||r.pax_max)?`👥 ${r.pax_min||1}–${r.pax_max||r.pax_min} travellers`:'',price?`💰 *${price}* per person`:'',

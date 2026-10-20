@@ -17676,7 +17676,7 @@ async function engineBuildTravelContext(env, c, clientId){
   const today=new Date().toISOString().slice(0,10);
   const packagesTable=taResolveTable(c, 'packages');
   if(packagesTable){
-    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,inclusions,exclusions`);
+    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,base_price,inclusions,exclusions`);
     const pd=await pr.json().catch(()=>({}));
     const pkgs=pd?.list||[];
     if(pkgs.length){
@@ -17684,7 +17684,10 @@ async function engineBuildTravelContext(env, c, clientId){
       pkgs.forEach(p=>{
         const incText=taFormatList(p.inclusions);
         const excText=taFormatList(p.exclusions);
-        let line=`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}`;
+        // Same price the dashboard's package card shows: sell_price, else base_price when no sell
+        // price was entered (the form saves a blank Sell Price as 0, which read as "no price").
+        const price=Number(p.sell_price)>0?Number(p.sell_price):Number(p.base_price)>0?Number(p.base_price):0;
+        let line=`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${price?`${p.currency||''} ${price} per person`:'price on request'}`;
         if(incText) line+=' — includes: '+incText.slice(0,150);
         if(excText) line+=' — excludes: '+excText.slice(0,100);
         lines.push(line);
