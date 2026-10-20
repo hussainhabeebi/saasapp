@@ -336,7 +336,12 @@ export async function accLedgerHandleRoute(request, env, deps, url){
   wireDeps(deps);
   // Public client portal — the token in the path is the credential.
   if(url.pathname.startsWith('/accounting/portal/') && request.method==='GET'){
-    try{ await accLedgerEnsureSchema(env); return corsJson(deps, await ops.portalView(env, url.pathname.slice('/accounting/portal/'.length), deps)); }
+    try{
+      await accLedgerEnsureSchema(env);
+      const tok=await firstRow(env, `SELECT client_id FROM acc_portal_tokens WHERE token=?`, str(url.pathname.slice('/accounting/portal/'.length),64));
+      if(tok && deps.isAccountingEnabled && !await deps.isAccountingEnabled(env, tok.client_id)) return corsJson(deps, {error:'This link is no longer valid.'}, 404);
+      return corsJson(deps, await ops.portalView(env, url.pathname.slice('/accounting/portal/'.length), deps));
+    }
     catch(e){ return corsJson(deps, {error:e.status?e.message:'Something went wrong'}, e.status||500); }
   }
   const path=url.pathname.slice('/accounting/ledger/'.length).replace(/\/+$/,'');
@@ -345,6 +350,9 @@ export async function accLedgerHandleRoute(request, env, deps, url){
   const payload=await deps.requireSession(request, env);
   if(!payload) return corsJson(deps, {error:'Invalid or expired session'}, 401);
   const clientId=Number(payload.cid);
+  // The whole module is switched on per client by the Leadvyne admin (clients.accounting_enabled).
+  if(deps.isAccountingEnabled && !await deps.isAccountingEnabled(env, clientId))
+    return corsJson(deps, {error:'The Accounting module is not enabled for this account. Contact Leadvyne to turn it on.', module_disabled:true}, 403);
   try{
     await accLedgerEnsureSchema(env);
     const settings=await getSettings(env, clientId);
@@ -362,13 +370,14 @@ export async function accLedgerHandleRoute(request, env, deps, url){
 }
 
 // Daily: subscription billing, recurring journals, dunning / invoice reminders — only for clients
-// who have opened the ledger (an acc_settings row exists).
+// who have opened the ledger (an acc_settings row exists) and whose module is enabled in admin.
 export async function accLedgerRunDaily(env, deps){
   if(!env?.DB) return;
   wireDeps(deps);
   try{ await accLedgerEnsureSchema(env); }catch(e){ return; }
   const clients=await allRows(env, `SELECT client_id FROM acc_settings`);
   for(const {client_id} of clients){
+    if(deps.isAccountingEnabled && !await deps.isAccountingEnabled(env, client_id)) continue;
     try{
       const settings=await getSettings(env, client_id);
       await saas.runBillingForClient(env, client_id, settings);

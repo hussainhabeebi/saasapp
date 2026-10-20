@@ -1420,6 +1420,12 @@ async function init(){
   document.getElementById('app').style.display='flex';
   try{
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    // Switched on per client by the Leadvyne admin (clients.accounting_enabled, admin-only) — nothing
+    // below loads otherwise, and the Worker's ledger routes and accounting daily jobs check the same flag.
+    if(clientRecord.accounting_enabled!=='Yes'){
+      document.getElementById('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>The Accounting module isn\'t enabled for your account.<br>Contact Leadvyne to turn it on.</div>';
+      return;
+    }
     await loadAcctLogoDims(clientRecord.quote_logo_url||'');
     await loadLeads();
     // Documents/Expenses/Vendor Bills live in Cloudflare D1 (see migrations/0002, 0028, 0029) —

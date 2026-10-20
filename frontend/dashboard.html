@@ -6911,8 +6911,17 @@ function renderB2b(){
 
 // Same pattern as renderB2b above — accounting.html needs the session token too, for the same
 // reason (reads/writes Leads through the bearer-token-gated /nocodb/* passthrough).
+// Accounting is switched on per client by the Leadvyne admin (clients.accounting_enabled) — the
+// page never loads otherwise, even if reached by URL/hash instead of the (hidden) tab.
 function renderAccounting(){
   const frame=$id('accountingFrame');
+  if(clientRecord?.accounting_enabled!=='Yes'){
+    if(frame){ frame.removeAttribute('src'); frame.style.display='none'; }
+    let note=$id('accountingDisabledNote');
+    if(!note){ note=document.createElement('div'); note.id='accountingDisabledNote'; note.style.cssText='padding:60px 20px;text-align:center;color:var(--muted,#64748B)'; note.innerHTML='<div style="font-size:36px;margin-bottom:10px">🔒</div>The Accounting module isn\'t enabled for your account.<br>Contact Leadvyne to turn it on.'; $id('pageAccounting')?.appendChild(note); }
+    return;
+  }
+  $id('accountingDisabledNote')?.remove(); if(frame) frame.style.display='block';
   if(frame && !frame.getAttribute('src')) frame.src=`accounting.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
@@ -20737,14 +20746,19 @@ async function ensureClientColumn(name){
 // instead of pretending they're four independent features. Returns a populate() function the
 // caller runs on page load (and again right after a successful save) to sync select/badge/tab
 // visibility from clientRecord.
-function setupFeatureTabToggle({field, selectId, saveBtnId, msgId, badgeId, tabIds}){
+// adminField (optional): a flag only the Leadvyne admin can set (PLAN_MANAGED_FIELDS). When it isn't
+// 'Yes' the tab stays hidden whatever the client's own toggle says, and that toggle is locked.
+function setupFeatureTabToggle({field, selectId, saveBtnId, msgId, badgeId, tabIds, adminField}){
+  const adminOk=()=>!adminField || clientRecord[adminField]==='Yes';
   const updateVisibility=()=>{
-    const enabled=(clientRecord[field]!=='No');
+    const enabled=adminOk() && (clientRecord[field]!=='No');
     tabIds.forEach(id=>{const el=$id(id); if(el) el.style.display=enabled?'':'none';});
   };
   const populate=()=>{
-    const sel=$id(selectId); if(sel) sel.value=(clientRecord[field]==='No')?'No':'Yes';
-    _renderModuleBadge(badgeId, clientRecord[field]!=='No');
+    const sel=$id(selectId); if(sel){ sel.value=(clientRecord[field]==='No')?'No':'Yes'; sel.disabled=!adminOk(); }
+    const saveBtn=$id(saveBtnId); if(saveBtn) saveBtn.disabled=!adminOk();
+    _renderModuleBadge(badgeId, adminOk() && clientRecord[field]!=='No');
+    if(!adminOk()){ const b=$id(badgeId); if(b) b.textContent='Not enabled — contact Leadvyne'; }
     updateVisibility();
   };
   $id(saveBtnId).addEventListener('click', async()=>{
@@ -20771,7 +20785,7 @@ const _populateCampaignsTab=setupFeatureTabToggle({field:'feat_campaigns_enabled
 const _populateTeamTab=setupFeatureTabToggle({field:'feat_team_enabled', selectId:'cfgFeatTeamEnabled', saveBtnId:'saveFeatTeamEnabled', msgId:'saveFeatTeamEnabledMsg', badgeId:'teamTabStatusBadge', tabIds:['dnTeamTab','moreTeamTab']});
 const _populateReportsTab=setupFeatureTabToggle({field:'feat_reports_enabled', selectId:'cfgFeatReportsEnabled', saveBtnId:'saveFeatReportsEnabled', msgId:'saveFeatReportsEnabledMsg', badgeId:'reportsTabStatusBadge', tabIds:['dnReportsTab','moreReportsTab']});
 const _populateKbTab=setupFeatureTabToggle({field:'feat_kb_enabled', selectId:'cfgFeatKbEnabled', saveBtnId:'saveFeatKbEnabled', msgId:'saveFeatKbEnabledMsg', badgeId:'kbTabStatusBadge', tabIds:['dnKbTab','moreKbTab']});
-const _populateAccountingTab=setupFeatureTabToggle({field:'feat_accounting_enabled', selectId:'cfgFeatAccountingEnabled', saveBtnId:'saveFeatAccountingEnabled', msgId:'saveFeatAccountingEnabledMsg', badgeId:'accountingTabStatusBadge', tabIds:['dnAccountingTab','moreAccountingTab']});
+const _populateAccountingTab=setupFeatureTabToggle({field:'feat_accounting_enabled', selectId:'cfgFeatAccountingEnabled', saveBtnId:'saveFeatAccountingEnabled', msgId:'saveFeatAccountingEnabledMsg', badgeId:'accountingTabStatusBadge', tabIds:['dnAccountingTab','moreAccountingTab'], adminField:'accounting_enabled'});
 
 // Called once at boot (showApp) so tab visibility is correct immediately, not only after a client
 // happens to visit the Modules page — mirrors how updateAgencyTabVisibility()/etc. are also

@@ -95,7 +95,8 @@ const PLAN_GATED_MODULES = {
 // The subscription fields below are written only by the Stripe/Razorpay sync and Admin → Billing —
 // a client session setting stripe_customer_id could otherwise open someone else's Stripe Portal,
 // and razorpay_trial_used guards the one free trial (razorpay-billing.js).
-const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled',
+// accounting_enabled — Accounting module (accounting.html + accounting-ledger.js); super-admin only.
+const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled','accounting_enabled',
   'plan_status','plan_name','plan_renews_at','plan_cancel_at_period_end','plan_message_limit','stripe_customer_id','stripe_subscription_id',
   'billing_provider','razorpay_subscription_id','razorpay_customer_id','razorpay_plan_id','razorpay_status','razorpay_short_url',
   'razorpay_trial_used','billing_admin_note'];
@@ -8547,7 +8548,7 @@ const BILLING_PORTAL_DEPS={
 };
 // Accounting ledger (accounting-ledger.js and friends) — everything it needs from this file.
 const ACC_LEDGER_DEPS={
-  json, requireSession, getClientById, reportOpsError,
+  json, requireSession, getClientById, reportOpsError, isAccountingEnabled,
   sendEmail:async (env, clientId, msg)=>sendClientResendEmail(await getClientById(env, clientId), msg),
   sendWhatsApp:(env, clientId, leadId, text)=>accLedgerSendWhatsApp(env, clientId, leadId, text),
   recordInvoicePaid:(env, clientId, invoice, opts)=>fpRecordInvoicePaidSideEffects(env, clientId, invoice, opts),
@@ -30990,6 +30991,7 @@ async function runFinancialPlanningMonthlyForAllClients(env){
   const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1`).all();
   const periodKey=new Date().toISOString().slice(0,7);
   for(const cfg of (configs||[])){
+    if(!await isAccountingEnabled(env, cfg.client_id)) continue; // module switched off in Leadvyne admin
     try{ await fpGenerateForClient(env, cfg.client_id, periodKey); }
     catch(e){ console.error('[financial-planning] monthly generation failed for client', cfg.client_id, e.message); }
   }
@@ -31381,6 +31383,7 @@ async function fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType,
 async function runFinancialPlanningRemindersForAllClients(env){
   const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1 AND reminders_enabled=1`).all();
   for(const cfg of (configs||[])){
+    if(!await isAccountingEnabled(env, cfg.client_id)) continue; // module switched off in Leadvyne admin
     try{ await fpSendRemindersForClient(env, cfg.client_id); }
     catch(e){ console.error('[financial-planning] reminder sweep failed for client', cfg.client_id, e.message); }
   }
@@ -33156,6 +33159,24 @@ const CEO_DEPS={
 };
 // POST /admin/ceo-bot {client_id, enabled:'Yes'|'No'} — super-admin only. ceo_bot_enabled is in
 // PLAN_MANAGED_FIELDS, so this is the only way it can be switched on.
+// Accounting module on/off per client — Leadvyne admin only (Admin → Edit client). Same shape as the
+// CEO Bot toggle below. Off by default: the dashboard tab, accounting.html, the /accounting/ledger/*
+// API and the accounting daily jobs (ledger billing/reminders, Financial Planning dues/reminders)
+// all require accounting_enabled === 'Yes'.
+function isAccountingEnabledRecord(c){ return String(c?.accounting_enabled||'')==='Yes'; }
+async function isAccountingEnabled(env, clientId){
+  try{ return isAccountingEnabledRecord(await getClientById(env, clientId)); }catch(e){ return false; }
+}
+async function handleAdminAccountingToggle(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id, enabled}=await request.json().catch(()=>({}));
+  const cid=Number(client_id);
+  if(!cid) return json({error:'client_id required'}, 400);
+  const val=enabled==='Yes'?'Yes':'No';
+  await ensureClientColumns(env, ['accounting_enabled']);
+  await patchClientFields(env, cid, {accounting_enabled:val});
+  return json({ok:true, accounting_enabled:val});
+}
 async function handleAdminCeoBotToggle(request, env){
   if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
   const {client_id, enabled}=await request.json().catch(()=>({}));
@@ -37126,6 +37147,7 @@ export default {
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/ceo-bot' && request.method==='POST'){ res=await handleAdminCeoBotToggle(request, env); }
+      else if(url.pathname==='/admin/accounting-module' && request.method==='POST'){ res=await handleAdminAccountingToggle(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
       else if(url.pathname==='/b2b/stock' && request.method==='GET'){ res=await handleB2bStockGet(request, env); }

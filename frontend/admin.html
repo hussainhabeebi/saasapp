@@ -669,6 +669,14 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
       </div>
 
       <div class="modal-form-group">
+        <label>💰 Accounting module</label>
+        <select id="e-accounting-enabled">
+          <option value="No">Disabled (default)</option>
+          <option value="Yes">Enabled</option>
+        </select>
+        <small style="color:var(--muted);display:block;margin-top:4px">Only admin can enable this. Shows the Accounting tab (documents, books, subscriptions, GST/TDS, payroll…) and runs its daily billing and reminder jobs for this client.</small>
+      </div>
+      <div class="modal-form-group">
         <label>🤖 CEO Bot (Projects add-on)</label>
         <select id="e-ceo-bot-enabled">
           <option value="No">Disabled (default)</option>
@@ -1014,6 +1022,7 @@ function renderCard(c) {
     ? `<span class="chip plan-chip">${escHtml(PLAN_TIER_LABELS[c.plan_tier])}</span>`
     : `<span class="chip plan-chip legacy">Legacy — unlimited</span>`;
   const ceoChip = c.ceo_bot_enabled === 'Yes' ? '<span class="chip">🤖 CEO Bot</span>' : '';
+  const accChip = c.accounting_enabled === 'Yes' ? '<span class="chip">💰 Accounting</span>' : '';
   const gateway = c.billing_provider || (c.razorpay_subscription_id ? 'razorpay' : (c.stripe_subscription_id ? 'stripe' : ''));
   const billChip = gateway ? `${providerBadge(gateway)} ${statusBadge(c.plan_status)}` : '';
   const toggleBtn = active
@@ -1034,7 +1043,7 @@ function renderCard(c) {
         ${activeBadge}
         ${planChip}
         ${billChip}
-        ${ceoChip}
+        ${ceoChip}${accChip}
         ${industryChip}
         ${langChip}
       </div>
@@ -1275,6 +1284,7 @@ function openEditModal(clientId) {
   document.getElementById('e-followup-messages').value = c.followup_messages || '';
   document.getElementById('e-ai-assistant-enabled').value = c.ai_assistant_enabled === 'Yes' ? 'Yes' : 'No';
   document.getElementById('e-ceo-bot-enabled').value = c.ceo_bot_enabled === 'Yes' ? 'Yes' : 'No';
+  document.getElementById('e-accounting-enabled').value = c.accounting_enabled === 'Yes' ? 'Yes' : 'No';
 
   const status = document.getElementById('save-status');
   status.style.display = 'none';
@@ -1328,6 +1338,19 @@ document.getElementById('btn-save-modal').addEventListener('click', async () => 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error('CEO Bot: ' + (data.error || `HTTP ${res.status}`));
       patch.ceo_bot_enabled = ceoVal;
+    }
+    // Accounting module flag — same pattern as CEO Bot: its own admin route, only when changed.
+    const accVal = document.getElementById('e-accounting-enabled').value;
+    const accPrev = (allClients.find(c => c.Id == editingId) || {}).accounting_enabled === 'Yes' ? 'Yes' : 'No';
+    if (accVal !== accPrev) {
+      const res = await fetch(`${CONFIG.WORKER_BASE}/admin/accounting-module`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + adminSessionToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: editingId, enabled: accVal }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error('Accounting: ' + (data.error || `HTTP ${res.status}`));
+      patch.accounting_enabled = accVal;
     }
     // Update local state
     const idx = allClients.findIndex(c => c.Id == editingId);

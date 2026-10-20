@@ -7260,6 +7260,15 @@ updating preview.
 A double-entry General Ledger under the existing Documents / Expense Entry / Vendor Bills / Bank &
 Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and operations tooling.
 
+- **Enabling it.** Off by default per client. Turn it on in **Leadvyne admin → Edit client → 💰
+  Accounting module** (`POST /admin/accounting-module`, admin session only; `accounting_enabled` is
+  in `PLAN_MANAGED_FIELDS` so a client can't set it). Until then: the dashboard's Accounting tab is
+  hidden and the page shows a lock message, `accounting.html` refuses to load, every
+  `/accounting/ledger/*` route returns 403, portal links return 404, and the daily accounting jobs
+  (ledger billing / recurring journals / reminders, Financial Planning monthly dues and WhatsApp
+  reminders) skip the client. The older `/accounting/documents` etc. routes stay open because
+  Real Estate creates its invoices through them. The client's own Modules → Accounting toggle still
+  works, but only as an extra "hide it" switch once admin has enabled the module.
 - **How posting works.** Nothing in the existing handlers posts anything. `ledgerSync()`
   (`accounting-core.js`) rebuilds the journal entry each source document *should* have (invoice →
   AR / revenue / GST output; receipt → bank or Undeposited Funds / AR; expense and bill → expense /

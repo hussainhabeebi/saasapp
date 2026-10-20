@@ -27,11 +27,12 @@ function d1(db){
 const MIGRATIONS=['0002_accounting_b2b_documents','0004_accounting_erpnext_customer','0005_accounting_company_debtors','0006_accounting_erpnext_submit','0015_financial_planning',
   '0028_accounting_expenses','0029_accounting_vendor_bills','0034_fp_ai_snapshot','0035_accounting_standalone','0036_accounting_interconnect','0037_accounting_doc_dates_and_paid','0041_fp_reminder_tracking','0075_accounting_gst','0098_accounting_bank_cash','0117_accounting_ledger'];
 
-let db, env, emails, session;
+let db, env, emails, session, disabled;
 const deps={
   json:(data, status)=>new Response(JSON.stringify(data), {status:status||200}),
   requireSession:async req=>{ const a=req.headers.get('Authorization'); return a==='Bearer owner'?{cid:'7', email:'owner@x.in'}:a==='Bearer viewer'?{cid:'7', email:'ca@x.in'}:a==='Bearer other'?{cid:'8', email:'o@y.in'}:null; },
   getClientById:async()=>({client_name:'Acme Digital'}),
+  isAccountingEnabled:async(env, clientId)=>!disabled.has(Number(clientId)),
   sendEmail:async (env, clientId, msg)=>{ emails.push(msg); return {ok:true}; },
 };
 async function call(method, path, body, token='owner'){
@@ -58,7 +59,7 @@ beforeEach(()=>{
   db=new DatabaseSync(':memory:');
   for(const m of MIGRATIONS) db.exec(readFileSync(new URL(`./migrations/${m}.sql`, import.meta.url), 'utf8'));
   db.exec(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, updated_at, business_state_code) VALUES (7,1,1,'x','32')`);
-  env={DB:d1(db)}; emails=[];
+  env={DB:d1(db)}; emails=[]; disabled=new Set();
 });
 
 describe('posting rules', ()=>{
@@ -311,5 +312,22 @@ describe('sync robustness', ()=>{
     db.prepare(`UPDATE acc_journals SET source_hash=NULL WHERE id=?`).run(j);
     const tb=await tbMap(); assert.equal(tb['1200'], 1180);
     assert.equal(one(`SELECT COUNT(*) n FROM acc_journal_lines WHERE journal_id=?`, j).n, 4);
+  });
+});
+
+describe('admin module switch', ()=>{
+  test('a client without Accounting enabled gets 403, a dead portal link and no daily billing', async ()=>{
+    invoice();
+    const t=await post('portal-tokens', {customer_name:'Beta Co'});
+    await post('subscriptions', {customer_name:'Zeta', plan_name:'M', amount:100, interval:'month', start_date:T});
+    disabled.add(7);
+    const r=await get('trial-balance');
+    assert.equal(r.status, 403); assert.equal(r.data.module_disabled, true);
+    const url=new URL(`https://w.example/accounting/portal/${t.data.token}`);
+    assert.equal((await accLedgerHandleRoute(new Request(url), env, deps, url)).status, 404);
+    await accLedgerRunDaily(env, deps);
+    assert.equal(one(`SELECT COUNT(*) n FROM accounting_documents WHERE type='invoice'`).n, 1, 'no subscription invoice billed');
+    disabled.delete(7);
+    assert.equal((await get('trial-balance')).status, 200);
   });
 });

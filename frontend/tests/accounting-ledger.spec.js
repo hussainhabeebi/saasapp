@@ -31,9 +31,10 @@ const deps = {
   json: (data, status) => new Response(JSON.stringify(data), { status: status || 200 }),
   requireSession: async (req) => req.headers.get('Authorization') === 'Bearer owner' ? { cid: '7', email: 'owner@acme.in' } : null,
   getClientById: async () => ({ client_name: 'Acme Digital' }),
+  isAccountingEnabled: async () => true,
 };
 
-async function setup(page) {
+async function setup(page, { enabled = true } = {}) {
   const db = new DatabaseSync(':memory:');
   for (const m of MIGRATIONS) db.exec(readFileSync(path.resolve(__dirname, `../../cloudflare-worker/migrations/${m}.sql`), 'utf8'));
   const env = { DB: d1(db) };
@@ -56,7 +57,7 @@ async function setup(page) {
       const res = await accLedgerHandleRoute(r, env, deps, u);
       return route.fulfill({ status: res.status, contentType: 'application/json', body: await res.text() });
     }
-    if (p.includes('/records/7')) return route.fulfill({ json: { Id: 7, client_name: 'Acme Digital', deal_currency: 'INR' } });
+    if (p.includes('/records/7')) return route.fulfill({ json: { Id: 7, client_name: 'Acme Digital', deal_currency: 'INR', accounting_enabled: enabled ? 'Yes' : 'No' } });
     if (p.includes('/records')) return route.fulfill({ json: { list: [] } });
     if (p === '/accounting/documents') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_documents`).all().map((r) => ({ ...r, Id: r.id })) } });
     if (p === '/accounting/expenses') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_expenses`).all().map((r) => ({ ...r, Id: r.id })) } });
@@ -66,7 +67,7 @@ async function setup(page) {
     return route.fulfill({ json: { list: [] } });
   });
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('.tab[data-tab="books"]')).toBeVisible();
+  if (enabled) await expect(page.locator('.tab[data-tab="books"]')).toBeVisible();
   return { db, errors };
 }
 const subs = async (page, tab) => {
@@ -158,4 +159,11 @@ test('client portal shows the customer their open invoice', async ({ page }) => 
   await page.goto(`${portalUrl}?t=${token}`);
   await expect(page.locator('#app')).toContainText('Invoice #1');
   await expect(page.locator('#app')).toContainText('59,000.00');
+});
+
+test('accounting does not load for a client the Leadvyne admin has not enabled', async ({ page }) => {
+  const { errors } = await setup(page, { enabled: false });
+  await expect(page.locator('#app')).toContainText("isn't enabled for your account");
+  await expect(page.locator('.tab[data-tab="books"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
 });
