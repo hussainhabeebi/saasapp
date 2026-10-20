@@ -5,6 +5,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
+import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -17679,6 +17680,7 @@ async function engineBuildTravelContext(env, c, clientId){
     const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,base_price,inclusions,exclusions`);
     const pd=await pr.json().catch(()=>({}));
     const pkgs=pd?.list||[];
+    const itins=pkgs.length?await taReadRecords(env,c,clientId,'itineraries'):[];
     if(pkgs.length){
       lines.push('## Travel Packages');
       pkgs.forEach(p=>{
@@ -17690,6 +17692,9 @@ async function engineBuildTravelContext(env, c, clientId){
         let line=`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${price?`${p.currency||''} ${price} per person`:'price on request'}`;
         if(incText) line+=' — includes: '+incText.slice(0,150);
         if(excText) line+=' — excludes: '+excText.slice(0,100);
+        const itin=taMatchItinerary(p, itins);
+        const plan=itin?engineParseJsonField(itin.days, []):[];
+        if(Array.isArray(plan)&&plan.length) line+=' — day-wise plan: '+plan.map((d,i)=>`Day ${d?.day_no||i+1}${d?.title?' '+d.title:''}: ${(Array.isArray(d?.items)?d.items:[]).map(it=>it?.description).filter(Boolean).join(', ')}`).join(' | ').slice(0,500);
         lines.push(line);
       });
     }
@@ -18547,6 +18552,98 @@ async function ltMenuRoutesFor(env,clientId,phone,menu){
   return ltMenuRouteRows([...mine,...(menu?.popular_routes||[]),...await ltMenuAgencyRoutes(env,clientId)]);
 }
 
+// Every record of one Travel Agency table for this client (packages / itineraries ...).
+async function taReadRecords(env,c,clientId,kind){
+  const table=taResolveTable(c,kind);
+  if(!table||!env.NOCODB_BASE)return [];
+  try{
+    const r=await ncFetch(env,`api/v2/tables/${table}/records?where=(client_id,eq,${clientId})&limit=100`);
+    if(!r.ok)return [];
+    return (await r.json().catch(()=>({})))?.list||[];
+  }catch(e){return [];}
+}
+const taPkgId=p=>String(p?.Id??p?.id??'').trim();
+
+// A package's itinerary-style details with its buttons. WhatsApp caps a button message's text at
+// 1024 characters, so a longer itinerary goes as its own message and the buttons follow it.
+async function taDeliverWithButtons(env,c,clientId,convId,text,buttons,prompt){
+  if(text.length<=900)return engineSendChatwootQuickReply(env,c,clientId,convId,text,buttons);
+  await engineSendChatwootReply(env,c,clientId,convId,text);
+  return engineSendChatwootQuickReply(env,c,clientId,convId,prompt,buttons);
+}
+
+// The package's itinerary as a PDF attachment, sent through Chatwoot like every other bot PDF.
+async function taSendItineraryPdf(env,c,clientId,convId,pkg,itin){
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!convId)return false;
+  try{
+    const bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.client_name||'',agencyPhone:c.support_phone||c.phone||''});
+    const fd=new FormData();
+    fd.append('content',`📄 Here is the itinerary for *${pkg.name}*.`);
+    fd.append('message_type','outgoing');
+    fd.append('private','false');
+    fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),taItineraryPdfName(pkg));
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+    if(!r.ok)await reportOpsError(env,'Travel itinerary PDF — Chatwoot rejected the send',new Error(`HTTP ${r.status} — ${(await r.text().catch(()=>'')).slice(0,300)}`),{clientId,convId});
+    return r.ok;
+  }catch(e){await reportOpsError(env,'Travel itinerary PDF — send failed',e,{clientId,convId});return false;}
+}
+
+// Travel agencies: a message naming one of the agency's packages ("hyderabad train package"), a
+// "details" / "itinerary" / "pdf" follow-up about the package just described, or a tap on one of
+// these buttons is answered here with the package laid out like an agent's hand-typed itinerary,
+// plus 📄 PDF Itinerary / ✅ Book Now buttons. Returns null for anything else.
+export async function engineHandleTravelPackage(env,c,clientId,state,userText,mediaType){
+  if(mediaType!=='text'||!ltLiveAgencyEnabled(c)||!taResolveTable(c,'packages'))return null;
+  const text=String(userText||'').trim();
+  if(!text||text.length>200)return null;
+  const tap=/^(TPKG|TPKGPDF|TPKGENQ):(.+)$/i.exec(text);
+  const follow=tap?null:taPackageFollowUp(text);
+  if(!tap&&!follow&&text.split(/\s+/).length>12)return null;
+  const lastBot=[...(state.activeHistory||state.history||[])].reverse().find(h=>h?.role==='assistant');
+  const lastBotText=String(lastBot?.content||lastBot?.text||'');
+  // The customer is answering the booking questions (date, travellers, name) — leave that to the
+  // normal path even when the answer repeats the package name.
+  if(!tap&&lastBotText.includes('• your travel date'))return null;
+  const packages=(await taReadRecords(env,c,clientId,'packages')).filter(p=>p?.name&&taPkgId(p));
+  if(!packages.length)return null;
+  let pkg=null,mode=null;
+  if(tap){
+    pkg=packages.find(p=>taPkgId(p)===tap[2].trim());
+    mode={TPKG:'details',TPKGPDF:'pdf',TPKGENQ:'enquire'}[tap[1].toUpperCase()];
+  }else{
+    pkg=taFindPackageInText(packages,text);
+    if(!pkg&&follow)pkg=taFindPackageInText(packages,lastBotText);
+    if(pkg)mode=follow==='pdf'?'pdf':'details';
+  }
+  const lang=c.language||'en',convId=state.convId;
+  const human=c.handover_enabled!=='No'?[{title:'👤 Talk to Agent',value:'INTRO_HUMAN'}]:[];
+  const base={route:'travel_package',next:state.stage||'new',preserveCrmStage:true,lang,serviceCategory:'Package'};
+  if(!pkg){
+    if(!tap)return null;
+    return {turn:{...base,historyUserText:'Package',text:'Sorry, that package is no longer available. Tell us where you would like to go and our team will suggest the best options.',buttons:human}};
+  }
+  const id=taPkgId(pkg),name=String(pkg.name).trim();
+  const bookBtn={title:'✅ Book Now',value:TA_PKG_ENQUIRE_PREFIX+id};
+  if(mode==='enquire'){
+    return {turn:{...base,intent:'BOOKING',historyUserText:`Book: ${name}`,
+      text:`👍 Great choice — *${name}*.\n\nPlease send:\n• your travel date\n• number of travellers (adults / children)\n• your full name\n\nOur team will confirm availability and the final price here on WhatsApp.`,buttons:human}};
+  }
+  const itin=taMatchItinerary(pkg,await taReadRecords(env,c,clientId,'itineraries'));
+  if(mode==='pdf'){
+    const prompt=`Would you like to book *${name}*?`;
+    return {turn:{...base,historyUserText:tap?`PDF itinerary: ${name}`:text,text:`📄 Itinerary PDF — ${name}\n\n${prompt}`,
+      deliver:async()=>{
+        const sent=await taSendItineraryPdf(env,c,clientId,convId,pkg,itin);
+        if(!sent)await engineSendChatwootReply(env,c,clientId,convId,`Sorry, we couldn't create the PDF right now. Here are the details:\n\n${taPackageItineraryText(pkg,itin)}`);
+        return engineSendChatwootQuickReply(env,c,clientId,convId,prompt,[bookBtn,...human]);
+      }}};
+  }
+  const details=taPackageItineraryText(pkg,itin);
+  const buttons=[{title:'📄 PDF Itinerary',value:TA_PKG_PDF_PREFIX+id},bookBtn,...human].slice(0,3);
+  return {turn:{...base,historyUserText:tap?name:text,text:details,
+    deliver:()=>taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like this itinerary as a PDF, or shall we book it for you?')}};
+}
+
 // "hi" / "menu" / a menu tap. Returns null for anything else so the message continues down the
 // normal path; {turn} for a reply to send and save; {introAction} to hand over to a person.
 export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,userText,mediaType,isNewLead){
@@ -18572,6 +18669,14 @@ export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,
     if(portalTap[1].toUpperCase()==='TENQUIRE')
       return {turn:{...base,intent:'BOOKING',historyUserText:`Enquire: ${row.title}`,
         text:`👍 Great choice — *${row.title}*.\n\nPlease send:\n• your travel date\n• number of travellers (adults / children)\n• your full name\n\nOur team will confirm availability and the final price here on WhatsApp.`,buttons:help}};
+    if(source==='packages'){
+      const pkg=(await taReadRecords(env,c,clientId,'packages')).find(p=>taPkgId(p)===row.id);
+      if(pkg){
+        const details=`${taPackageItineraryText(pkg,taMatchItinerary(pkg,await taReadRecords(env,c,clientId,'itineraries')))}\n\nWould you like to book this package?`;
+        const buttons=[{title:'✅ Enquire Now',value:`${LT_ENQUIRE_PREFIX}${source}:${row.id}`},{title:'📄 PDF Itinerary',value:TA_PKG_PDF_PREFIX+row.id},help[0]];
+        return {turn:{...base,historyUserText:row.title,text:details,deliver:()=>taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like to book this package?')}};
+      }
+    }
     return {turn:{...base,historyUserText:row.title,text:`${row.detail}\n\nWould you like to book this ${meta.noun}?`,
       buttons:[{title:'✅ Enquire Now',value:`${LT_ENQUIRE_PREFIX}${source}:${row.id}`},...help].slice(0,3)}};
   }
@@ -23145,6 +23250,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         return json({ok:true,route:'travel_menu',sent:c.bot_reply_disabled!=='Yes'});
       }
       if(travelMenu?.introAction){introAction=travelMenu.introAction;userText=introAction.text;}
+    }
+    // Travel agencies: a package named in the message (or a details / PDF follow-up, or a package
+    // button tap) gets the package as a day-wise itinerary with a 📄 PDF Itinerary button.
+    if(!introAction){
+      const pkgTurn=await engineHandleTravelPackage(env,c,clientId,state,userText,mediaType).catch(e=>{reportOpsError(env,'Travel package details failed',e,{clientId}).catch(()=>{});return null;});
+      if(pkgTurn?.turn){
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,pkgTurn.turn.historyUserText||userText,messageId,isNewLead,pkgTurn.turn,startMs,mediaType,ctx);
+        return json({ok:true,route:'travel_package',sent:c.bot_reply_disabled!=='Yes'});
+      }
     }
     // Leadvyne v2: a keyword in the customer's message (or voice note) sends its PDF brochure.
     if(engineV2On(c) && userText && !introAction)
