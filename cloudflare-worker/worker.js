@@ -5,7 +5,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
-import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taItineraryPdfName} from './travel-itinerary.js';
+import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -18576,7 +18576,8 @@ async function taDeliverWithButtons(env,c,clientId,convId,text,buttons,prompt){
 async function taSendItineraryPdf(env,c,clientId,convId,pkg,itin){
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!convId)return false;
   try{
-    const bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.client_name||'',agencyPhone:c.support_phone||c.phone||''});
+    const assets=await taFetchItineraryAssets(pkg,itin,{logoUrl:String(itin?.logo_url||c.quote_logo_url||'').trim()});
+    const bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',accent:c.quote_accent_color||'',assets});
     const fd=new FormData();
     fd.append('content',`📄 Here is the itinerary for *${pkg.name}*.`);
     fd.append('message_type','outgoing');
