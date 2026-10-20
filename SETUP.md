@@ -7280,8 +7280,8 @@ Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and ope
   on that client's existing Razorpay webhook (`/financial/razorpay-webhook/<clientId>`).
 - **Reminders.** Email goes through the client's Resend connection; WhatsApp uses the same approved
   template as the Financial Planning reminder sweep.
-- **AI.** "Ask your books" and expense categorisation use the same Workers AI / Gemini helpers as
-  Financial Planning; without them the rest works and categorisation falls back to keyword rules.
+- **Expense categorisation** (Operations → Categorise Expenses) is rule-based: saved category
+  mappings first, then keywords (rent, software, ads…), else General Expenses. No AI or OCR.
 - **Roles.** `acc_user_roles` (Operations → Roles), keyed by session email: admin, accountant,
   approver, viewer, ca. Anyone unlisted gets `acc_settings.default_role` (default `admin`, so turning
   roles on never locks the owner out). Roles apply to the `/accounting/ledger/*` routes.

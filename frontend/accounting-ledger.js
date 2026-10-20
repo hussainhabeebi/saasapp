@@ -132,8 +132,7 @@ async function renderOverview(root){
         ${card('Revenue vs expenses — last 6 months', '', '<div style="height:240px"><canvas id="accTrendChart"></canvas></div>')}
         ${card('Top overdue customers', '<button class="save-btn sec" onclick="showTab(\'documents\')">Open invoices</button>', d.top_overdue.length?`<table><tbody>${d.top_overdue.map(o=>`<tr><td>${esc(o.customer)}</td>${numCell(o.amount)}</tr>`).join('')}</tbody></table>`:empty('Nothing overdue 🎉'))}
       </div>
-      ${card('Things to check', '<button class="save-btn sec" onclick="AccLedger.openOps(\'ai\')">Categorise with AI</button>', d.anomalies.length?`<div class="acc-alerts">${d.anomalies.map(a=>`<div class="acc-alert ${a.severity}"><span class="badge ${a.severity==='high'?'void':a.severity==='medium'?'sent':'draft'}">${a.severity}</span> ${esc(a.message)}</div>`).join('')}</div>`:empty('No issues found.'))}
-      ${card('🤖 Ask your books', '', `<div class="acc-ask"><input class="s-input" id="accAskQ" placeholder="e.g. What was my profit last month? Which client is most profitable? How long is my runway?" onkeydown="if(event.key==='Enter')AccLedger.ask()"><button class="save-btn" onclick="AccLedger.ask()">Ask</button></div><div id="accAskA" class="acc-answer"></div>`)}
+      ${card('Things to check', '<button class="save-btn sec" onclick="AccLedger.openOps(\'categorise\')">Categorise expenses</button>', d.anomalies.length?`<div class="acc-alerts">${d.anomalies.map(a=>`<div class="acc-alert ${a.severity}"><span class="badge ${a.severity==='high'?'void':a.severity==='medium'?'sent':'draft'}">${a.severity}</span> ${esc(a.message)}</div>`).join('')}</div>`:empty('No issues found.'))}
       <div id="accForecastCard">${card('13-week cash forecast', '', spinner)}</div>
       <div id="accUnitEcoCard">${card('Profitability by client (FY to date)', '', spinner)}</div>`;
     if(window.Chart){
@@ -156,11 +155,6 @@ async function renderOverview(root){
     }).catch(e=>{ document.getElementById('accUnitEcoCard').innerHTML=card('Profitability by client','',errBox(e)); });
   }catch(e){ root.innerHTML=errBox(e); }
 }
-L.ask=async()=>{
-  const q=val('accAskQ').trim(); if(!q) return;
-  const box=document.getElementById('accAskA'); box.innerHTML='<span class="spinner"></span> Thinking…';
-  try{ const r=await post('ai/ask', {question:q}); box.innerHTML=esc(r.answer).replace(/\n/g,'<br>'); }catch(e){ box.innerHTML=`⚠️ ${esc(e.message)}`; }
-};
 
 /* ══════════ 📒 BOOKS ══════════ */
 async function renderBooks(root){
@@ -645,8 +639,8 @@ L.delFx=async id=>{ await act(()=>post('fx/delete', {id}), 'Deleted'); taxFx(bod
 /* ── ⚙️ Operations ── */
 async function renderOps(root){
   await loadMeta();
-  L.opsShow=subnav(root, 'ops', [['settings','⚙️ Settings'],['recurring','🔁 Recurring Journals'],['bank','🏦 Bank Feed Rules'],['approvals','✅ Approvals'],['assets','🖥️ Fixed Assets'],['payroll','👩‍💼 Payroll'],['budget','🎯 Budgets'],['links','🔗 Payment Links & Portal'],['allocations','🎯 Cost Allocation'],['ai','🤖 AI Categorise'],['exports','⬇ Exports'],['roles','👥 Roles']],
-    (k,b)=>({settings:opsSettings, recurring:opsRecurring, bank:opsBank, approvals:opsApprovals, assets:opsAssets, payroll:opsPayroll, budget:opsBudget, links:opsLinks, allocations:opsAlloc, ai:opsAi, exports:opsExports, roles:opsRoles})[k](b));
+  L.opsShow=subnav(root, 'ops', [['settings','⚙️ Settings'],['recurring','🔁 Recurring Journals'],['bank','🏦 Bank Feed Rules'],['approvals','✅ Approvals'],['assets','🖥️ Fixed Assets'],['payroll','👩‍💼 Payroll'],['budget','🎯 Budgets'],['links','🔗 Payment Links & Portal'],['allocations','🎯 Cost Allocation'],['categorise','🏷️ Categorise Expenses'],['exports','⬇ Exports'],['roles','👥 Roles']],
+    (k,b)=>({settings:opsSettings, recurring:opsRecurring, bank:opsBank, approvals:opsApprovals, assets:opsAssets, payroll:opsPayroll, budget:opsBudget, links:opsLinks, allocations:opsAlloc, categorise:opsCategorise, exports:opsExports, roles:opsRoles})[k](b));
 }
 L.openOps=k=>{ showTab('ops'); setTimeout(()=>{ const b=document.querySelector(`#tabOps .fp-pill[data-k="${k}"]`); if(b) b.click(); }, 50); };
 async function opsSettings(b){
@@ -774,15 +768,15 @@ L.newAlloc=()=>{ const custs=[...new Set([...docs().map(d=>d.customer_name), ...
   form({title:'Allocate a cost to a client', fields:[{k:'src', label:'Cost', type:'select', options:L.allocSrc.map(s=>[`${s[0]}:${s[1]}`, s[2]])},{k:'customer_name', label:'Client', type:'select', options:custs},{k:'pct', label:'Share %', type:'number', value:100}],
     onSave:async f=>{ const [source_type, source_id]=f.src.split(':'); await post('allocations', {source_type, source_id, customer_name:f.customer_name, pct:f.pct}); toast('Allocated'); opsAlloc(body('tabOps')); }}); };
 L.delAlloc=async id=>{ await act(()=>post('allocations/delete', {id}), 'Removed'); opsAlloc(body('tabOps')); };
-async function opsAi(b){
-  try{ const d=await api('ai/categorize'); L.cat=d.list;
-    b.innerHTML=card('Categorise expenses', can('accountant')&&d.list.length?'<button class="save-btn" onclick="AccLedger.applyCat()">Apply selected</button>':'', `<div class="s-hint" style="margin-bottom:8px">Expenses and bills that would otherwise land in General / Uncategorized Expense. ${d.ai_available?'Suggestions marked AI come from the assistant — check before applying.':'AI is not configured on this deployment; pick accounts by hand.'}</div>
+async function opsCategorise(b){
+  try{ const d=await api('categorize'); L.cat=d.list;
+    b.innerHTML=card('Categorise expenses', can('accountant')&&d.list.length?'<button class="save-btn" onclick="AccLedger.applyCat()">Apply selected</button>':'', `<div class="s-hint" style="margin-bottom:8px">Expenses and bills that would otherwise land in General / Uncategorized Expense. Suggestions come from keyword rules (rent, software, ads…); tick “Remember” to map that category permanently.</div>
       <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" onclick="document.querySelectorAll('.acc-cat-sel').forEach(c=>c.checked=this.checked)"></th><th>Date</th><th>What</th><th class="num">Amount</th><th>Account</th><th>Remember category</th></tr></thead><tbody>
-      ${d.list.length?d.list.map((x,i)=>`<tr><td><input type="checkbox" class="acc-cat-sel" data-i="${i}" ${x.suggested_account_id?'checked':''}></td><td>${x.date}</td><td>${esc(x.text)}${x.suggested_by?` <span class="badge sent">${x.suggested_by}</span>`:''}</td>${numCell(x.amount)}<td><select class="s-input acc-cat-acct" data-i="${i}">${accountOptions(x.suggested_account_id, a=>a.type==='expense')}</select></td><td>${x.source_type==='expense'?`<input type="checkbox" class="acc-cat-rem" data-i="${i}">`:''}</td></tr>`).join(''):empty('Everything is categorised. 🎉',6)}</tbody></table></div>`);
+      ${d.list.length?d.list.map((x,i)=>`<tr><td><input type="checkbox" class="acc-cat-sel" data-i="${i}" ${x.suggested_account_id?'checked':''}></td><td>${x.date}</td><td>${esc(x.text)}</td>${numCell(x.amount)}<td><select class="s-input acc-cat-acct" data-i="${i}">${accountOptions(x.suggested_account_id, a=>a.type==='expense')}</select></td><td>${x.source_type==='expense'?`<input type="checkbox" class="acc-cat-rem" data-i="${i}">`:''}</td></tr>`).join(''):empty('Everything is categorised. 🎉',6)}</tbody></table></div>`);
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.applyCat=async()=>{ const items=[...document.querySelectorAll('.acc-cat-sel:checked')].map(c=>{ const i=c.dataset.i, x=L.cat[i]; return {source_type:x.source_type, source_id:x.source_id, account_id:document.querySelector(`.acc-cat-acct[data-i="${i}"]`).value, remember:!!document.querySelector(`.acc-cat-rem[data-i="${i}"]`)?.checked}; }).filter(x=>x.account_id);
-  const r=await act(()=>post('ai/categorize/apply', {items})); if(r) toast(`Applied ${r.applied}`); opsAi(body('tabOps')); };
+  const r=await act(()=>post('categorize/apply', {items})); if(r) toast(`Applied ${r.applied}`); opsCategorise(body('tabOps')); };
 async function opsExports(b){
   b.innerHTML=card('Export your books', '', `<div class="acc-inline">${dateRangeInputs('accEx', fyStart(), today())}</div>
     <div class="acc-export-grid">

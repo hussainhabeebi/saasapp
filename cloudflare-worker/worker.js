@@ -8550,7 +8550,6 @@ const ACC_LEDGER_DEPS={
   json, requireSession, getClientById, reportOpsError,
   sendEmail:async (env, clientId, msg)=>sendClientResendEmail(await getClientById(env, clientId), msg),
   sendWhatsApp:(env, clientId, leadId, text)=>accLedgerSendWhatsApp(env, clientId, leadId, text),
-  aiGenerate:async (env, system, prompt, opts)=>(await engineCfAiGenerate(env, system, prompt, opts))||(await engineGeminiGenerate(env, system, prompt, opts)),
   recordInvoicePaid:(env, clientId, invoice, opts)=>fpRecordInvoicePaidSideEffects(env, clientId, invoice, opts),
 };
 const RZP_DEPS={

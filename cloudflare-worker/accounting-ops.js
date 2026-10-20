@@ -1,10 +1,10 @@
 // Accounting operations: recurring journals, bank-feed categorisation rules, expense approvals,
 // fixed assets, payroll, budgets, cost allocation, payment links (Razorpay) + UPI, the public
-// client portal, Tally/CSV exports, and the AI / anomaly / unit-economics features.
+// client portal, Tally/CSV exports, and the anomaly / unit-economics reports.
 import {r2, num, str, todayStr, addDays, addMonths, daysBetween, monthEnd, monthsRange, fiscalYear, INTERVAL_MONTHS, allRows, firstRow, dbBatch, audit, randomToken,
   getSettings, loadAccountContext, loadSources, invoiceBalances, insertJournal, isLocked, depreciationSchedule, makeFx, docDate, accountTotals, naturalBalance,
   expenseAccountFor, suggestAccountKey, SOURCE_LABELS, POSTABLE_INVOICE} from './accounting-core.js';
-import {profitAndLoss, arAging, ownerDashboard, partyBalances} from './accounting-reports.js';
+import {partyBalances} from './accounting-reports.js';
 
 class HttpError extends Error{ constructor(status, message){ super(message); this.status=status; } }
 const need=(c, m, s=400)=>{ if(!c) throw new HttpError(s, m); };
@@ -358,7 +358,7 @@ export async function unitEconomics(env, clientId, settings, {from, to}){
   return {from, to, rows, totals:{revenue:r2(rows.reduce((s,r)=>s+r.net_revenue,0)), direct_costs:r2(rows.reduce((s,r)=>s+r.direct_costs,0)), margin:r2(rows.reduce((s,r)=>s+r.margin,0))}};
 }
 
-/* ── Anomaly checks (rule-based, no AI needed) ── */
+/* ── Anomaly checks (rule-based) ── */
 export async function anomalies(env, clientId, sync){
   const {src, ctx, settings}=sync; const t=todayStr(); const out=[];
   const add=(severity, kind, message, ref)=>out.push({severity, kind, message, ref:ref||null});
@@ -400,52 +400,18 @@ export async function anomalies(env, clientId, sync){
   return out.sort((a,b)=>order[a.severity]-order[b.severity]);
 }
 
-/* ── AI ── */
-async function aiContext(env, clientId, sync){
-  const t=todayStr(); const fy=fiscalYear(t, sync.settings.fy_start_month);
-  const dash=await ownerDashboard(env, clientId, sync);
-  const pl=await profitAndLoss(env, clientId, sync.ctx.accounts, {from:fy.from, to:t});
-  const lastMonth=addMonths(t.slice(0,7)+'-01',-1).slice(0,7);
-  const plLast=await profitAndLoss(env, clientId, sync.ctx.accounts, {from:lastMonth+'-01', to:monthEnd(lastMonth)});
-  const ue=await unitEconomics(env, clientId, sync.settings, {from:fy.from, to:t});
-  const ar=arAging(sync.src, sync.settings.base_currency);
-  const flat=s=>s.map(r=>({account:r.name, amount:r.amount}));
-  return {today:t, currency:sync.settings.base_currency, fiscal_year:`${fy.from} to ${fy.to}`,
-    cash:dash.cash, cash_accounts:dash.cash_accounts, receivables:dash.receivables, overdue_receivables:dash.overdue_receivables, payables:dash.payables,
-    mrr:dash.mrr, arr:dash.arr, burn_rate_monthly:dash.burn_rate, runway_months:dash.runway_months,
-    profit_and_loss_fy_to_date:{revenue:pl.revenue, cost_of_revenue:pl.cogs, gross_profit:pl.gross_profit, operating_expenses:pl.opex, other_income:pl.other_income, net_profit:pl.net_profit, revenue_accounts:flat(pl.sections.revenue), expense_accounts:flat([...pl.sections.cogs,...pl.sections.opex])},
-    last_month:{month:lastMonth, revenue:plLast.revenue, expenses:r2(plLast.cogs+plLast.opex), net_profit:plLast.net_profit},
-    monthly_trend:dash.trend, top_customers_fy:ue.rows.slice(0,15).map(r=>({customer:r.customer, net_revenue:r.net_revenue, direct_costs:r.direct_costs, margin:r.margin})),
-    open_invoices:ar.items.slice(0,25).map(i=>({customer:i.customer, invoice:i.invoice_id, balance:i.balance, overdue_days:i.overdue_days})), aging:ar.buckets};
-}
-export async function aiAsk(c, sync){
-  const q=str(c.body.question,400); need(q, 'question required');
-  need(_deps.aiGenerate, 'AI features are not configured for this deployment yet.', 503);
-  const data=await aiContext(c.env, c.clientId, sync);
-  const system=`You are a sharp, friendly finance assistant for the owner of a marketing agency / SaaS business. Answer using ONLY the JSON data below (from their double-entry books) — never invent a number. If the data can't answer, say what's missing and which report to open (Books → P&L / Balance Sheet / General Ledger, Subscriptions → Metrics, Tax → GSTR). Be concise: 2-6 sentences or a short list, amounts in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const answer=await _deps.aiGenerate(c.env, system, q, {temperature:0.2, maxOutputTokens:500, caller:'acc-ledger-ask'});
-  need(answer, "Couldn't reach the AI assistant just now — try again in a moment.", 502);
-  return {answer};
-}
-// Expenses / bills that fell through to General or Uncategorized get an account suggestion —
-// keyword rules first, then the AI (when configured) for whatever is left.
-export async function aiCategorize(c, sync){
+/* ── Expense categorisation (keyword rules + saved category mappings) ── */
+// Expenses / bills that fell through to General or Uncategorized get a keyword-based suggestion.
+export async function categorizeSuggestions(c, sync){
   const {src, ctx}=sync; const generic=new Set([ctx.byKey.GENERAL_EXP, ctx.byKey.UNCATEGORIZED_EXP]);
   const cands=[];
   for(const x of src.expenses){ const m=src.purchaseMeta[`expense:${x.id}`]; if(m?.expense_account_id) continue; const a=expenseAccountFor(ctx, x.category, x.expense_account_name, x.expense_account, x.description, x.vendor); if(generic.has(a)) cands.push({source_type:'expense', source_id:x.id, text:[x.category,x.vendor,x.description,x.expense_account_name].filter(Boolean).join(' · '), amount:x.amount, date:x.expense_date}); }
   for(const b of src.bills){ const m=src.purchaseMeta[`vendor_bill:${b.id}`]; if(m?.expense_account_id) continue; let lines=[]; try{ lines=JSON.parse(b.line_items_json||'[]'); }catch(_){}
     const a=expenseAccountFor(ctx, lines[0]?.name, b.supplier); if(generic.has(a)) cands.push({source_type:'vendor_bill', source_id:b.id, text:[b.supplier, ...lines.map(l=>l.name)].filter(Boolean).join(' · '), amount:b.total, date:b.bill_date}); }
   const expenseAccounts=ctx.accounts.filter(a=>a.type==='expense' && a.is_active && !generic.has(a.id));
-  let ai={};
-  if(_deps.aiGenerate && cands.length){
-    const list=cands.slice(0,60).map((x,i)=>({i, text:x.text, amount:x.amount}));
-    const system=`Classify each business expense into exactly one account code from this chart: ${JSON.stringify(expenseAccounts.map(a=>({code:a.code, name:a.name})))}. Reply with ONLY a JSON array like [{"i":0,"code":"6220"}]. Use null for code when genuinely unsure.`;
-    const txt=await _deps.aiGenerate(c.env, system, JSON.stringify(list), {temperature:0, maxOutputTokens:1200, caller:'acc-ledger-categorize'}).catch(()=>null);
-    try{ const arr=JSON.parse(String(txt||'').replace(/^[^\[]*/,'').replace(/[^\]]*$/,'')); for(const r of arr){ const a=expenseAccounts.find(a=>a.code===String(r.code)); if(a) ai[r.i]=a.id; } }catch(_){}
-  }
-  return {list:cands.map((x,i)=>({...x, suggested_account_id:ai[i]||null, suggested_by:ai[i]?'AI':null})), accounts:expenseAccounts.map(a=>({id:a.id, code:a.code, name:a.name})), ai_available:!!_deps.aiGenerate};
+  return {list:cands, accounts:expenseAccounts.map(a=>({id:a.id, code:a.code, name:a.name}))};
 }
-export async function aiCategorizeApply(c){
+export async function categorizeApply(c){
   const items=Array.isArray(c.body.items)?c.body.items:[]; need(items.length, 'items required');
   let n=0; const errors=[];
   for(const it of items){

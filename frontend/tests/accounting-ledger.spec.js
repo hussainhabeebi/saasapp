@@ -31,7 +31,6 @@ const deps = {
   json: (data, status) => new Response(JSON.stringify(data), { status: status || 200 }),
   requireSession: async (req) => req.headers.get('Authorization') === 'Bearer owner' ? { cid: '7', email: 'owner@acme.in' } : null,
   getClientById: async () => ({ client_name: 'Acme Digital' }),
-  aiGenerate: async () => 'Your net profit this year is shown in the P&L.',
 };
 
 async function setup(page) {

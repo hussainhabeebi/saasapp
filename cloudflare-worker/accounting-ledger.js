@@ -321,12 +321,12 @@ const ROUTES=[
   ['POST','payment-link','accountant',ops.paymentLinkCreate],
   ['GET','portal-tokens','viewer',ops.portalTokens], ['POST','portal-tokens','accountant',ops.portalTokenCreate], ['POST','portal-tokens/revoke','accountant',ops.portalTokenRevoke],
   ['GET','export/tally','viewer',ops.exportTally], ['GET','export/journals','viewer',ops.exportJournals],
-  ['POST','ai/ask','viewer',withSync(ops.aiAsk)], ['GET','ai/categorize','accountant',withSync(ops.aiCategorize)], ['POST','ai/categorize/apply','accountant',ops.aiCategorizeApply],
+  ['GET','categorize','accountant',withSync(ops.categorizeSuggestions)], ['POST','categorize/apply','accountant',ops.categorizeApply],
 ];
 const ROUTE_MAP=new Map(ROUTES.map(([m,p,role,h])=>[`${m} ${p}`, {role, h}]));
 
 function wireDeps(deps){
-  const d={sendEmail:deps.sendEmail, sendWhatsApp:deps.sendWhatsApp, aiGenerate:deps.aiGenerate, recordInvoicePaid:deps.recordInvoicePaid, getClientById:deps.getClientById};
+  const d={sendEmail:deps.sendEmail, sendWhatsApp:deps.sendWhatsApp, recordInvoicePaid:deps.recordInvoicePaid, getClientById:deps.getClientById};
   saas.setSaasDeps(d); ops.setOpsDeps(d);
   return d;
 }
