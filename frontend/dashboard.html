@@ -2565,6 +2565,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="sales">💰 Sales</button>
         <button class="hosp-tab" data-reports="team">📊 Team</button>
         <button class="hosp-tab" data-reports="calls">📞 Calls &amp; Conversions</button>
+        <button class="hosp-tab" data-reports="ads">💸 Ads ROI</button>
         <button class="hosp-tab" data-reports="marketing">📣 Marketing</button>
         <button class="hosp-tab" data-reports="source">🎯 Lead Source</button>
         <button class="hosp-tab" data-reports="adsauto">🤖 Ads Automation</button>
@@ -14139,6 +14140,13 @@ function reportLeadQualityChange(leadId, before, after){
   if(after.Stage && TERMINAL.has(after.Stage) && !TERMINAL.has(before?.Stage)){
     sendLeadCapiEvent(leadId,'booked',{value:after.DealValue??before?.DealValue, currency:after.DealCurrency??before?.DealCurrency});
   }
+  // Won → Purchase with the deal value, so Meta can optimise ads for buyers, not just enquiries
+  // (Reports → 💸 Ads ROI → Results sent to Meta). Sent once per lead (worker dedupes).
+  const wonStage=s=>s==='won'||s==='converted';
+  if(wonStage(after.Stage) && !wonStage(before?.Stage)){
+    const l=allLeads.find(x=>x.Id===leadId);
+    sendLeadCapiEvent(leadId,'purchase',{value:after.DealValue??before?.DealValue??l?.DealValue, currency:after.DealCurrency??before?.DealCurrency??l?.DealCurrency});
+  }
   // Revenue Forecast (Team page) needs to know *when* a deal actually closed, not just that it
   // did — stamped once, here, since every Stage-changing call site (kbDrop, saveLead, Human
   // Deals' removeHumanDeal) already routes through this one function. Only fires on the
@@ -19104,7 +19112,7 @@ function renderReportsSubPage(page){
   document.querySelectorAll('#reportsSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.reports===page));
   const fns={
     overview:renderReportsOverview, leadscalls:renderReportsLeadsCalls, sales:renderReportsSales, team:renderReportsTeamReport, calls:()=>renderReportsCalls(),
-    marketing:renderReportsMarketing, source:renderReportsSource, adsauto:renderReportsAdsAutomation, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
+    ads:()=>renderReportsAds(), marketing:renderReportsMarketing, source:renderReportsSource, adsauto:renderReportsAdsAutomation, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
     product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
     scheduled:renderReportsScheduled,
     tvstatus:()=>typeof renderReportsTravelStatus==='function'?renderReportsTravelStatus():renderReportsOverview(),
@@ -23363,6 +23371,7 @@ async function deleteHospBooking(id){
 <script src="travel-status.js?v=5"></script>
 <script src="travel-view.js?v=7"></script>
 <script src="staff-performance.js?v=1"></script>
+<script src="ads-report.js?v=1"></script>
 <script>
 
 /* ── PWA install prompt ──

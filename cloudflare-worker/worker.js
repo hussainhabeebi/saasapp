@@ -5,6 +5,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
+import {marHandleRoute,marRunDue} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -2409,6 +2410,7 @@ const META_CAPI_EVENTS={
   qualified:    {name:'QualifiedLead'},// custom event — lead scored Hot / marked good
   disqualified: {name:'DisqualifiedLead'}, // custom event — negative signal matters too
   booked:       {name:'Schedule'},     // standard event — reached a terminal/booked pipeline stage
+  purchase:     {name:'Purchase'},     // standard event — the lead was won, with its deal value
 };
 async function sha256Hex(str){
   return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)));
@@ -2421,40 +2423,89 @@ async function capiHashPhone(phone){
   const digits=String(phone||'').replace(/[^0-9]/g,'');
   return digits?await sha256Hex(digits):undefined;
 }
-async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
+// Which key ties an event to the ad click, strongest first (Reports → 💸 Ads ROI shows the mix):
+// an Instant Form lead's own lead id (Meta's "conversion leads" CRM integration), a click-to-WhatsApp
+// lead's ctwa_clid, else hashed phone/email only.
+export function metaCapiBuildEvent(c, eventKey, lead, extra={}, hashed={}){
   const def=META_CAPI_EVENTS[eventKey];
-  if(!def) return {ok:false, error:'Unknown event type'};
-  if(!c?.meta_pixel_id||!c?.meta_capi_token) return {ok:false, skipped:true};
   const user_data={};
-  const em=await capiHashEmail(lead.Email); if(em) user_data.em=[em];
-  const ph=await capiHashPhone(lead.Phone); if(ph) user_data.ph=[ph];
-  if(!em && !ph) return {ok:false, error:'Lead has no email or phone to match on'};
+  if(hashed.em) user_data.em=[hashed.em];
+  if(hashed.ph) user_data.ph=[hashed.ph];
+  const leadgenId=String(lead?.MetaLeadgenId||'').trim();
+  const clid=String(lead?.CtwaClid||'').trim();
   const event={
     event_name:def.name,
     event_time:Math.floor(Date.now()/1000),
     // Stable per lead+stage — dedupes retries and lines up with a future client-side Pixel event_id.
-    event_id:`lead_${lead.Id}_${eventKey}`,
-    action_source:'business_messaging',
-    messaging_channel:'whatsapp',
+    event_id:`lead_${lead?.Id}_${eventKey}`,
     user_data,
   };
-  if(extra.value) event.custom_data={value:Number(extra.value), currency:extra.currency||'INR'};
+  let matchKey='hashed';
+  if(/^\d{5,25}$/.test(leadgenId)){
+    event.action_source='system_generated';
+    user_data.lead_id=leadgenId; // a string: these ids can pass 2^53
+    event.custom_data={event_source:'crm', lead_event_source:'LeadVyne'};
+    matchKey='lead_id';
+  }else{
+    event.action_source='business_messaging';
+    event.messaging_channel='whatsapp';
+    if(clid){
+      user_data.ctwa_clid=clid;
+      if(c?.waba_id) user_data.whatsapp_business_account_id=String(c.waba_id);
+      matchKey='ctwa_clid';
+    }
+  }
+  if(matchKey==='hashed' && !hashed.em && !hashed.ph) return {error:'Lead has no email or phone to match on'};
+  if(extra.value || eventKey==='purchase'){
+    event.custom_data={...(event.custom_data||{}), value:Number(extra.value)||0, currency:String(extra.currency||c?.deal_currency||'INR').toUpperCase()};
+  }
+  return {event, matchKey};
+}
+async function metaCapiLog(env, c, eventKey, leadId, matchKey){
+  const now=new Date().toISOString();
+  try{
+    await env.DB.prepare(`INSERT INTO meta_capi_events (client_id, event, lead_id, sent_at, match_key) VALUES (?,?,?,?,?)`)
+      .bind(Number(c.Id), eventKey, leadId||null, now, matchKey).run();
+  }catch(e){
+    // Database without migrations/0118's match_key yet.
+    try{ await env.DB.prepare(`INSERT INTO meta_capi_events (client_id, event, lead_id, sent_at) VALUES (?,?,?,?)`).bind(Number(c.Id), eventKey, leadId||null, now).run(); }catch(e2){}
+  }
+}
+async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
+  const def=META_CAPI_EVENTS[eventKey];
+  if(!def) return {ok:false, error:'Unknown event type'};
+  if(!c?.meta_pixel_id||!c?.meta_capi_token) return {ok:false, skipped:true};
+  // Each stage reaches Meta once per lead — the dashboard and the bot can both report it.
+  if(lead?.Id && env.DB){
+    const dup=await env.DB.prepare(`SELECT 1 x FROM meta_capi_events WHERE client_id=? AND lead_id=? AND event=? LIMIT 1`).bind(Number(c.Id), Number(lead.Id), eventKey).first().catch(()=>null);
+    if(dup) return {ok:true, duplicate:true};
+  }
+  const built=metaCapiBuildEvent(c, eventKey, lead, extra, {em:await capiHashEmail(lead.Email), ph:await capiHashPhone(lead.Phone)});
+  if(built.error) return {ok:false, error:built.error};
   const r=await fetch(`https://graph.facebook.com/v18.0/${c.meta_pixel_id}/events?access_token=${encodeURIComponent(c.meta_capi_token)}`, {
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({data:[event]})
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({data:[built.event]}), signal:AbortSignal.timeout?.(8000),
   });
   const data=await r.json().catch(()=>({}));
   // Logged to D1 (meta_capi_events — see migrations/0003_meta_capi_log.sql) only on a real
   // successful send, never on skip/failure — this is what the Reports page's "events actually
-  // sent to Meta" audit trail reads from. Previously this call was fire-and-forget with no record
-  // anywhere, so there was no way to sanity-check CAPI was really firing vs. silently no-op'ing.
-  // Best-effort: a logging failure must never surface as if the CAPI send itself failed.
-  if(r.ok){
-    try{
-      await env.DB.prepare(`INSERT INTO meta_capi_events (client_id, event, lead_id, sent_at) VALUES (?,?,?,?)`)
-        .bind(Number(c.Id), eventKey, lead?.Id||null, new Date().toISOString()).run();
-    }catch(e){}
-  }
-  return {ok:r.ok, status:r.status, data};
+  // sent to Meta" audit trail reads from. Best-effort: a logging failure must never surface as if
+  // the CAPI send itself failed.
+  if(r.ok) await metaCapiLog(env, c, eventKey, lead?.Id, built.matchKey);
+  return {ok:r.ok, status:r.status, data, matchKey:built.matchKey};
+}
+// Server-side quality signals from a bot turn (the dashboard reports its own edits): the first
+// message from a click-to-WhatsApp ad → Lead, the bot scoring the lead Hot → QualifiedLead.
+// Never throws, and a no-op unless a Pixel/Dataset is connected.
+export async function engineReportCapiFromTurn(env, c, leadId, state, body){
+  try{
+    if(!leadId || !c?.meta_pixel_id || !c?.meta_capi_token) return [];
+    const lead={Id:leadId, Phone:body?.Phone||state?.phone||state?.lead?.Phone||'', Email:state?.lead?.Email||'',
+      CtwaClid:state?.adSource?.CtwaClid||state?.lead?.CtwaClid||'', MetaLeadgenId:state?.lead?.MetaLeadgenId||''};
+    const out=[];
+    if(state?.adSource?.CtwaClid||state?.adSource?.AdId) out.push(['lead', await sendMetaCapiEvent(env, c, 'lead', lead)]);
+    if(body?.Score==='Hot' && state?.lead?.Score!=='Hot') out.push(['qualified', await sendMetaCapiEvent(env, c, 'qualified', lead)]);
+    return out;
+  }catch(e){ console.error('[engineReportCapiFromTurn]', e.message); return []; }
 }
 async function handleMetaCapiLeadEvent(request, env){
   const payload=await requireSession(request, env);
@@ -16195,7 +16246,7 @@ async function metaLeadgenFindClients(env, pageId){
 async function metaLeadgenFetchLead(leadgenId, token){
   const base=`https://graph.facebook.com/v18.0/${encodeURIComponent(leadgenId)}`;
   // ad/campaign names need ads_read on top of leads_retrieval — ask, and drop them on refusal.
-  for(const fields of ['created_time,field_data,ad_id,ad_name,campaign_name,form_id,platform', 'created_time,field_data,ad_id,form_id,platform']){
+  for(const fields of ['created_time,field_data,ad_id,ad_name,adset_id,campaign_id,campaign_name,form_id,platform', 'created_time,field_data,ad_id,form_id,platform']){
     const r=await fetch(`${base}?fields=${fields}&access_token=${encodeURIComponent(token)}`);
     const data=await r.json().catch(()=>({}));
     if(r.ok) return {ok:true, data};
@@ -16243,11 +16294,13 @@ export async function processMetaLeadgenChange(env, value){
       ClientId:String(clientId), Phone:parsed.phone, LastMsgAt:now, Channel:state.lead?.Channel||'whatsapp',
       QualAnswers:JSON.stringify({...state.qualAnswers, ...parsed.answers}),
       LeadSource:source, AdCampaign:lg.campaign_name||'', AdName:lg.ad_name||'', LeadFormName:formName, MetaLeadgenId:leadgenId,
+      // Ids join this lead to Reports → 💸 Ads ROI's synced spend (names can be renamed in Ads Manager).
+      ...Object.fromEntries([['AdId',lg.ad_id],['AdsetId',lg.adset_id],['CampaignId',lg.campaign_id]].filter(([,v])=>v).map(([k,v])=>[k,String(v)])),
     };
     if(parsed.name && (!state.lead?.Name || isNewLead)) leadBody.Name=parsed.name;
     if(parsed.email && !state.lead?.Email) leadBody.Email=parsed.email;
     if(isNewLead){ leadBody.Stage='new'; leadBody.Date=now; leadBody.Score='Warm'; }
-    await ensureLeadsColumns(env, ['LeadSource','AdCampaign','AdName','LeadFormName','MetaLeadgenId']).catch(()=>{});
+    await ensureLeadsColumns(env, ['LeadSource','AdCampaign','AdName','LeadFormName','MetaLeadgenId','AdId','AdsetId','CampaignId']).catch(()=>{});
     await engineResolveLeadOwner(env, c, clientId, leadBody, {phone:parsed.phone, lead:state.lead, qualAnswers:{...state.qualAnswers, ...parsed.answers}}, isNewLead);
 
     // Instant WhatsApp welcome — a template, since this customer has never messaged us.
@@ -16281,6 +16334,8 @@ export async function processMetaLeadgenChange(env, value){
 
     await engineMaybeSendHotLeadAlert(env, c, clientId, leadId, state.lead, {...leadBody, Name:leadBody.Name||state.lead?.Name},
       {reason:'lead_ad', detail:formName||lg.campaign_name||source});
+    // Conversions API: the form's own lead id ties this Lead to the ad (no-op without a Pixel/Dataset).
+    if(isNewLead) await sendMetaCapiEvent(env, c, 'lead', {Id:leadId, Phone:parsed.phone, Email:parsed.email, MetaLeadgenId:leadgenId}).catch(()=>{});
     await engineBroadcastUpdate(env, clientId, isNewLead
       ? {type:'new_lead', lead_id:leadId, lead_name:leadBody.Name||parsed.phone, at:now}
       : {type:'message', lead_id:leadId, channel:'whatsapp', at:now});
@@ -21925,7 +21980,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     Channel:state.channel||'whatsapp'
   };
   if(state.inboxId) body.InboxId=String(state.inboxId);
-  if(state.adSource && !String(state.lead?.Source||'').trim()) body._adSource=state.adSource;
+  if(state.adSource) body._adSource=state.adSource;
   // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
   // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
@@ -22034,14 +22089,29 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
    channel. Written as a separate best-effort PATCH after the lead is saved, so a Source column of
    a stricter type can never cost the lead itself. */
 export const ENGINE_CTWA_PREFILL_RE=/^(?:hi+|hello|hey)?[!,. ]*(?:can|could) i get more (?:info|information)(?: (?:on|about))? (?:this|this product|this offer)[?!. ]*$/i;
-export function engineLeadAdSource(body, firstText, channel='whatsapp'){
+function engineReferral(body){
   const ref=body?.content_attributes?.referral||body?.additional_attributes?.referral||body?.message?.content_attributes?.referral||null;
-  if(ref && typeof ref==='object' && (ref.source_id||ref.source_url||ref.headline||ref.ctwa_clid)){
+  return ref && typeof ref==='object' ? ref : null;
+}
+// The ad behind a click-to-WhatsApp chat: Meta's ad id (joins the lead to Reports → 💸 Ads ROI's
+// synced spend) and the click id (ctwa_clid — the Conversions API's strongest match key for a
+// WhatsApp lead). Null for a boosted post or a chat that didn't come from an ad.
+export function engineLeadAdClick(body){
+  const ref=engineReferral(body);
+  if(!ref || String(ref.source_type||'').toLowerCase()==='post') return null;
+  const out={};
+  if(/^\d{5,25}$/.test(String(ref.source_id||'').trim())) out.AdId=String(ref.source_id).trim();
+  if(String(ref.ctwa_clid||'').trim()) out.CtwaClid=String(ref.ctwa_clid).trim().slice(0,500);
+  return Object.keys(out).length?out:null;
+}
+export function engineLeadAdSource(body, firstText, channel='whatsapp'){
+  const ref=engineReferral(body);
+  if(ref && (ref.source_id||ref.source_url||ref.headline||ref.ctwa_clid)){
     const post=String(ref.source_type||'').toLowerCase()==='post';
     const ig=/instagram/i.test(String(ref.source_url||''))||channel==='instagram';
     return {Source:post?(ig?'Instagram post':'Facebook post'):'Click-to-WhatsApp ad', LeadSource:post?(ig?'Instagram post':'Facebook post'):'Click-to-WhatsApp ad',
       AdName:String(ref.headline||ref.body||'').trim().slice(0,200), AdCampaign:ref.source_id?`Ad ID ${String(ref.source_id).slice(0,60)}`:'',
-      AdSourceUrl:String(ref.source_url||'').trim().slice(0,500)};
+      AdSourceUrl:String(ref.source_url||'').trim().slice(0,500), ...(engineLeadAdClick(body)||{})};
   }
   const t=String(firstText||'').trim();
   if(ENGINE_CTWA_PREFILL_RE.test(t)) return {Source:'Click-to-WhatsApp ad', LeadSource:'Click-to-WhatsApp ad (prefilled message)'};
@@ -23210,6 +23280,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
     // Where this chat lead came from — saved once, on a lead that has no Source yet.
     if(!String(state.lead?.Source||'').trim()) state.adSource=engineLeadAdSource(body, text, state.channel||'whatsapp');
+    // A lead we already had (no ad then) that now clicks an ad: keep its Source, record the ad.
+    else if(!String(state.lead?.AdId||'').trim()) state.adSource=engineLeadAdClick(body);
     // Leadvyne v2: a fresh lead gets the business's 360° video first (picked by ad/source); the chat
     // starts after it.
     if(engineV2On(c) && engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId}))
@@ -25687,6 +25759,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Page the owner on WhatsApp the moment this turn made the lead hot (Settings → 👥 User
     // Management → 🔥 Hot Lead Alerts). Never throws; a no-op unless enabled.
     if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env, c, clientId, resolvedLeadId, state.lead, leadBody, {inboxId:state.inboxId});
+    // Conversions API: an ad click's Lead and the bot's Hot score go back to Meta (Reports → 💸 Ads ROI).
+    if(resolvedLeadId) await engineReportCapiFromTurn(env, c, resolvedLeadId, state, leadBody);
     // Dual-write new messages to D1 lead_messages for chats.html display
     if(resolvedLeadId){
       const userTs=new Date(startMs).toISOString();
@@ -33145,6 +33219,18 @@ const FOLLOWUP_V3_DEPS={
   leadColumns:async env=>(await ncTableMeta(env, DEFAULT_LEADS_TABLE)).names,
   objectionPlaybook:c=>{ try{ const p=JSON.parse(c?.objection_playbook||'[]'); return Array.isArray(p)?p:[]; }catch(e){ return []; } },
 };
+// Reports → 💸 Ads ROI (meta-ads-report.js): Meta spend synced per ad per day, joined with the CRM's
+// own leads, sales and calls in the dashboard; daily summary/alerts on staff WhatsApp + email;
+// monthly spend booked in Accounting.
+const META_ADS_REPORT_DEPS={
+  json, requireSession, getClientById, isClientOwner, ncFetch, ensureLeadsColumns, reportOpsError, parseTeamWhatsapp,
+  leadsTable:DEFAULT_LEADS_TABLE,
+  metaCreds:c=>resolveMetaCredentials(c, {})||(c?.wa_token&&c?.wa_phone_id?{waba_id:c.waba_id, wa_phone_id:c.wa_phone_id, wa_token:c.wa_token}:null),
+  sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
+  isAccountingEnabled:c=>isAccountingEnabledRecord(c),
+  onExpenseCreated:(env, cid, expenseId)=>accLedgerOnExpenseCreated(env, cid, expenseId, 'ads-roi'),
+  logTemplateSend:(env, cid, info)=>logWaTemplateSend(env, cid, 'ads_summary', info),
+};
 const CEO_DEPS={
   json, requireSession, getClientById, reportOpsError, parseTeamWhatsapp,
   normalizePhone:(raw, c)=>normalizeStaffWhatsapp(raw, hotLeadAlertDefaultCc(c)),
@@ -37280,6 +37366,7 @@ export default {
       else if(url.pathname.startsWith('/ceo/')){ res=await ceoHandleRoute(request, env, CEO_DEPS, url, ctx); }
       else if(url.pathname.startsWith('/chats/v2/')){ res=await chatsV2HandleRoute(request, env, CHATS_V2_DEPS, url, ctx); }
       else if(url.pathname.startsWith('/followups/v3/')){ res=await fv3HandleRoute(request, env, FOLLOWUP_V3_DEPS, url); }
+      else if(url.pathname.startsWith('/meta/ads-report/')){ res=await marHandleRoute(request, env, META_ADS_REPORT_DEPS, url); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
       else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
       else if(url.pathname==='/re/leads' && request.method==='POST'){ res=await handleReLeadCreate(request, env); }
@@ -37552,6 +37639,9 @@ export default {
       // CEO Bot — briefs, staff reminders, standups, escalations, wrap, weekly report; only clients
       // with a connected CEO number, and nothing unless ceo_bot_enabled + active. See ceo-bot.js.
       ctx.waitUntil(ceoRunForAllClients(env, CEO_DEPS));
+      // Reports → 💸 Ads ROI — each account's morning spend sync, monthly expense post and daily
+      // summary/alerts, a few accounts per tick from 01:00 UTC. See marRunDue.
+      ctx.waitUntil(marRunDue(env, META_ADS_REPORT_DEPS).catch(e=>reportOpsError(env, 'ads report daily run', e)));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
