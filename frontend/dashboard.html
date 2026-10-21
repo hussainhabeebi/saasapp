@@ -6000,6 +6000,17 @@ function renderSettingsSubnav(active){
   });
 }
 
+// Follow-up V3: opening Leads sends any follow-up that's already due right away instead of on the
+// next 15-minute tick (POST /followups/v3/run — the worker also limits it to once per 2 minutes per
+// account and never runs it alongside the scheduled sweep). Fire-and-forget; accounts without V3
+// get {enabled:false}.
+let _fv3RunNowAt=0;
+function followupsRunNow(){
+  if(!sessionToken || Date.now()-_fv3RunNowAt<120000) return;
+  _fv3RunNowAt=Date.now();
+  fetch(`${CONFIG.WORKER_BASE}/followups/v3/run`, {method:'POST', headers:{Authorization:'Bearer '+sessionToken}}).catch(()=>{});
+}
+
 // Menu items that open a page shared with another item: 🔁 Follow-ups is the Follow-ups workspace
 // of the same embedded Campaigns page (#pageBroadcast).
 const PAGE_HOST={followups:'broadcast'};
@@ -6033,6 +6044,7 @@ function navigate(page){
     const mineLbl=$id('leadMineOnly')?.closest('label'); if(mineLbl) mineLbl.style.display='none';
     renderLeadsOwnerScopeBtn();
     setLeadsViewMode(_leadsViewMode);
+    followupsRunNow();
   }
   if(page==='team') renderTeamPerformance();
   if(page==='reports') renderReports();

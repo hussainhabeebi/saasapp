@@ -400,6 +400,8 @@ const SEND_COLUMNS=[
   `ALTER TABLE followup_sends ADD COLUMN converted_at TEXT`,
   `ALTER TABLE followup_sends ADD COLUMN revenue REAL`,
   `ALTER TABLE followup_sends ADD COLUMN opted_out_at TEXT`,
+  `ALTER TABLE followup_v3_settings ADD COLUMN sweep_lock_until TEXT`,
+  `ALTER TABLE followup_v3_settings ADD COLUMN last_run_at TEXT`,
 ];
 const schemaReady=new WeakMap();
 export async function fv3EnsureSchema(env){
@@ -770,6 +772,21 @@ async function markConversion(env, cid, lead, sends, now, order){
   await env.DB.prepare(`UPDATE followup_sends SET converted_at=?, revenue=? WHERE id=? AND converted_at IS NULL`).bind(new Date(now).toISOString(), revenue, credit.id).run().catch(()=>null);
 }
 
+// One sweep per account at a time: the 15-minute cron and "run now" (someone opened Leads) would
+// otherwise read the same due list and send a lead the same follow-up twice. The lock frees itself
+// after SWEEP_LOCK_MS if a run dies; `minGapMs` keeps repeated Leads opens from re-running it.
+const SWEEP_LOCK_MS=10*60000;
+export const FV3_RUN_NOW_GAP_MS=2*60000;
+export async function fv3RunClient(env, deps, c, settings, {now=Date.now(), minGapMs=0}={}){
+  const cid=Number(c.Id), iso=(t)=>new Date(t).toISOString();
+  const got=await env.DB.prepare(`UPDATE followup_v3_settings SET sweep_lock_until=?, last_run_at=? WHERE client_id=? AND enabled=1
+    AND (sweep_lock_until IS NULL OR sweep_lock_until<?) AND (last_run_at IS NULL OR last_run_at<?)`)
+    .bind(iso(now+SWEEP_LOCK_MS), iso(now), cid, iso(now), iso(now-minGapMs)).run();
+  if(!(got?.meta?.changes>0)) return {sent:0, skipped:'recent'};
+  try{ return await fv3ProcessClient(env, deps, c, settings, {now}); }
+  finally{ await env.DB.prepare(`UPDATE followup_v3_settings SET sweep_lock_until=NULL WHERE client_id=?`).bind(cid).run().catch(()=>null); }
+}
+
 export async function fv3RunForAllClients(env, deps){
   if(!await fv3EnsureSchema(env)) return;
   const {results}=await env.DB.prepare(`SELECT client_id FROM followup_v3_settings WHERE enabled=1`).all().catch(()=>({results:[]}));
@@ -779,7 +796,7 @@ export async function fv3RunForAllClients(env, deps){
       if(!c || c.active==='No') continue;
       const settings=await fv3GetSettings(env, row.client_id);
       if(!settings?.enabled) continue;
-      await fv3ProcessClient(env, deps, c, settings);
+      await fv3RunClient(env, deps, c, settings);
     }catch(e){ await deps.reportOpsError?.(env, 'followup v3 sweep', e, {clientId:row.client_id}); }
   }
 }
@@ -861,6 +878,15 @@ export async function fv3HandleRoute(request, env, deps, url){
     const body=await request.json().catch(()=>({}));
     const setup=await fv3Setup(env, deps, c, s, {resubmit:!!body.resubmit});
     return json({ok:true, setup, checklist:await checklist(env, deps, c, s)});
+  }
+  // Leads page opened → send whatever is already due now instead of waiting for the next
+  // 15-minute tick. At most once every FV3_RUN_NOW_GAP_MS per account, never alongside the cron.
+  if(path==='/run' && method==='POST'){
+    const s=await fv3GetSettings(env, cid);
+    if(!s.enabled) return json({ok:true, enabled:false});
+    const r=await fv3RunClient(env, deps, c, s, {minGapMs:FV3_RUN_NOW_GAP_MS})
+      .catch(e=>{ deps.reportOpsError?.(env, 'followup v3 run now', e, {clientId:cid}); return {sent:0, error:true}; });
+    return json({ok:true, enabled:true, sent:r.sent||0, due:r.due||0, skipped:r.skipped||null, error:!!r.error});
   }
   if(path==='/lead' && method==='GET'){
     const leadId=Number(url.searchParams.get('lead_id'));
