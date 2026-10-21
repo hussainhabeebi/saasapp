@@ -532,14 +532,52 @@ tr:hover td{background:#FAFCFB}
   .leads-toolbar{flex-direction:column;gap:6px}
   .leads-toolbar-row{gap:6px}
   .leads-toolbar .search-input{flex:1 1 100%;min-width:0}
-  .leads-toolbar select.form-input{flex:1 1 calc(50% - 3px);min-width:0;padding:9px 6px;font-size:12px}
+  .leads-toolbar select.form-input{flex:1 1 calc(50% - 3px)!important;min-width:0!important;padding:9px 6px;font-size:12px}
   .leads-toolbar .btn-sm{font-size:12px;padding:8px 10px}
+  /* Secondary filters fold behind ⚙ Filters; actions scroll sideways instead of wrapping to 3 lines */
+  .leads-toolbar-row:nth-child(2){display:none}
+  .leads-toolbar.filters-open .leads-toolbar-row:nth-child(2){display:flex}
+  .leads-toolbar-row:nth-child(3){flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:2px}
+  .leads-toolbar-row:nth-child(3)::-webkit-scrollbar{display:none}
+  .leads-toolbar-row:nth-child(3) .btn{flex-shrink:0;white-space:nowrap}
+  .leads-toolbar .leads-filters-btn{display:inline-flex}
+  .leads-toolbar .search-input{flex:1 1 calc(100% - 120px)}
 }
+.leads-filters-btn{display:none;align-items:center;gap:5px;flex-shrink:0;white-space:nowrap}
+.leads-toolbar.filters-open .leads-filters-btn{border-color:var(--accent);color:var(--accent-ink)}
+.lf-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700}
+.leads-active-filters{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 12px}
+.leads-active-filters:empty{display:none}
+.lf-pill{display:inline-flex;align-items:center;gap:4px;padding:4px 4px 4px 10px;border-radius:99px;background:var(--accent-soft);color:var(--accent-ink);font-size:12px;font-weight:600;max-width:100%}
+.lf-pill button{border:none;background:none;color:inherit;cursor:pointer;font-size:11px;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center}
+.lf-pill button:hover{background:rgba(0,0,0,.08)}
+.lf-clear{border:none;background:none;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;text-decoration:underline;padding:4px 6px}
 /* leads table view */
 .leads-tbl{width:100%;border-collapse:collapse;font-size:13px}
 .leads-tbl th{background:var(--bg);padding:10px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;border-bottom:2px solid var(--line);white-space:nowrap}
 .leads-tbl td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}
 .leads-tbl tr:hover td{background:var(--accent-soft);cursor:pointer}
+/* Phones: each table row becomes a card — name on top, the other columns as a labelled 2-up grid
+   (data-label set in renderLeadsTable), empty fields dropped, actions full width at the bottom. */
+@media(max-width:767px){
+  #leadsTable{overflow-x:visible!important}
+  .leads-tbl,.leads-tbl tbody{display:block}
+  .leads-tbl thead{display:none}
+  .leads-tbl tr{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;padding:14px 14px 12px 44px;border-bottom:1px solid var(--line);position:relative}
+  .leads-tbl tr.has-origin{box-shadow:inset 3px 0 0 var(--o)}
+  .leads-tbl tr.has-origin td:first-child{box-shadow:none}
+  .leads-tbl tr:hover td{background:none}
+  .leads-tbl td{display:block;padding:0;border:none;max-width:none;min-width:0!important;white-space:normal;overflow-wrap:anywhere;font-size:13px}
+  .leads-tbl td::before{content:attr(data-label);display:block;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+  .leads-tbl td:empty,.leads-tbl td.td-chk::before,.leads-tbl td.td-name::before,.leads-tbl td.td-actions::before{display:none}
+  .leads-tbl td:empty,.leads-tbl td.td-blank,.leads-tbl td.lead-ref-list{display:none}
+  .leads-tbl td.td-chk{position:absolute;left:14px;top:15px}
+  .leads-tbl td.td-chk input{width:18px;height:18px}
+  .leads-tbl td.td-name{grid-column:1/-1;font-size:15px;font-weight:700}
+  .leads-tbl td.td-wide,.leads-tbl td.td-actions{grid-column:1/-1}
+  .leads-tbl td.td-actions .li-actions{margin-top:2px}
+  .leads-tbl td.td-wide select{width:100%}
+}
 .hosp-units-tbl td{max-width:none;overflow:visible;white-space:normal;padding:6px 8px}
 .hosp-units-tbl tr:hover td{background:transparent;cursor:default}
 .hosp-units-tbl input.hosp-cell{padding:7px 9px;font-size:13px}
@@ -2039,10 +2077,12 @@ const ROLES = {
           <div id="leadsOriginChips" class="leads-view-tabs" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
           <div id="leadsOriginBanner"></div>
 
-          <div class="leads-toolbar">
-            <!-- Row 1: Search + owner + mine -->
+          <div class="leads-toolbar" id="leadsToolbar">
+            <!-- Row 1: Search + owner + mine. On phones the secondary filters (row 2) fold behind
+                 the Filters button, with the active ones shown as removable pills below. -->
             <div class="leads-toolbar-row">
               <input class="search-input" id="leadSearch" type="text" placeholder="Search name, phone or Lead Ref…" oninput="onLeadsFilterChange()" style="flex:1;min-width:160px" />
+              <button class="btn btn-secondary btn-sm leads-filters-btn" id="leadsFiltersBtn" onclick="toggleLeadsMobileFilters()" title="Show filters">⚙ Filters</button>
               <select class="form-input" id="leadOwnerFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px">
                 <option value="">All owners</option>
               </select>
@@ -2062,6 +2102,21 @@ const ROLES = {
                    travel industry (toggled in applyTheme()); see LEAD_CATEGORIES. -->
               <select class="form-input" id="leadSourceFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:110px;padding:9px 10px" title="Filter by source / channel">
                 <option value="">All sources</option>
+              </select>
+              <!-- Call outcome of the latest logged call (see leadCallStatus) — "No answer" is the
+                   redial list reps work through between other leads. -->
+              <select class="form-input" id="leadCallFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:120px;padding:9px 10px" title="Filter by last call outcome">
+                <option value="">All call status</option>
+                <option value="no_answer">📵 No answer</option>
+                <option value="no_answer_3">📵 No answer 3+ times</option>
+                <option value="callback">🔁 Callback requested</option>
+                <option value="answered">✅ Answered</option>
+                <option value="never">📞 Never called</option>
+              </select>
+              <!-- Country — the lead's Country field, else a qualifying answer, else the phone's
+                   calling code (leadCountry). -->
+              <select class="form-input" id="leadCountryFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:120px;padding:9px 10px" title="Filter by country">
+                <option value="">All countries</option>
               </select>
               <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:1;min-width:110px;padding:9px 10px">
                 <option value="">All categories</option>
@@ -2084,6 +2139,8 @@ const ROLES = {
               <button class="btn btn-secondary btn-sm" onclick="openImport()" style="flex-shrink:0">📤 Import</button>
             </div>
           </div>
+
+          <div id="leadsActiveFilters" class="leads-active-filters"></div>
 
           <div id="leadsAdvFilters" class="card" style="display:none;margin-bottom:12px;padding:12px 14px">
             <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--muted)">Stages <span style="font-weight:400">(select any that apply)</span></div>
@@ -7400,6 +7457,40 @@ function leadNeedsCallback(l){
   return false;
 }
 function callHrefFor(l){ return `tel:+${(l.Phone||'').replace(/[^0-9]/g,'')}`; }
+// Last-call outcome bucket for the Leads "call status" filter: 'no_answer' (No Answer/Voicemail,
+// or tagged No Answer with no answered call since), 'callback', 'answered' or 'never'.
+function leadCallStatus(l){
+  let calls=[]; try{calls=parseCallLog(l.CallLog);}catch(e){}
+  const last=calls[0]; // newest first
+  if(last){
+    const o=last.outcome||'';
+    if(/no answer|voicemail/i.test(o)) return 'no_answer';
+    if(/callback/i.test(o)) return 'callback';
+    if(/answered/i.test(o)) return 'answered';
+  }
+  const tags=parseTags(l.Tags);
+  if(tags.some(t=>/no answer/i.test(t))) return 'no_answer';
+  if(tags.some(t=>/callback/i.test(t))) return 'callback';
+  return last?'answered':'never';
+}
+function leadNoAnswerCount(l){
+  let calls=[]; try{calls=parseCallLog(l.CallLog);}catch(e){}
+  return calls.filter(c=>/no answer|voicemail/i.test(c.outcome||'')).length;
+}
+function leadMatchesCallFilter(l,f){
+  if(f==='no_answer_3') return leadCallStatus(l)==='no_answer' && leadNoAnswerCount(l)>=3;
+  return leadCallStatus(l)===f;
+}
+// Country for filtering: the Country field, else a qualifying answer, else the phone's calling code.
+function leadCountry(l){
+  if(String(l.Country||'').trim()) return String(l.Country).trim();
+  try{
+    const qa=JSON.parse(l.QualAnswers||'{}');
+    const hit=Object.entries(qa).find(([k])=>k.toLowerCase()==='country');
+    if(hit && String(hit[1]||'').trim()) return String(hit[1]).trim();
+  }catch(e){}
+  return phoneToCountryClient(l.Phone)||'';
+}
 // "1st call done"/"2nd call done" — derived straight from CallLog's length, no extra column.
 // saveCall() unshifts (newest first), so the array's own length is already the count-so-far.
 function leadCallDoneBadge(l){
@@ -7488,6 +7579,10 @@ function applyLeadsViewFilter(leads){
   if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
   const srcf=$id('leadSourceFilter')?.value||'';
   if(srcf) out=out.filter(l=>(l.Source||'')===srcf);
+  const callf=$id('leadCallFilter')?.value||'';
+  if(callf) out=out.filter(l=>leadMatchesCallFilter(l,callf));
+  const ctyf=$id('leadCountryFilter')?.value||'';
+  if(ctyf) out=out.filter(l=>ctyf==='__none'?!leadCountry(l):leadCountry(l).toLowerCase()===ctyf.toLowerCase());
   if(_leadsOriginFilter) out=out.filter(l=>leadOrigin(l)===_leadsOriginFilter);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   // Spam is hidden unless the stage filter explicitly asks for Lost (where Spam lands)
@@ -7685,6 +7780,8 @@ function selectLeadsView(id){
   if($id('leadScoreFilter')) $id('leadScoreFilter').value=saved?.score||'';
   if($id('leadProductFilter')) $id('leadProductFilter').value=saved?.product||'';
   if($id('leadSourceFilter')) $id('leadSourceFilter').value=saved?.source||'';
+  if($id('leadCallFilter')) $id('leadCallFilter').value=saved?.call||'';
+  if($id('leadCountryFilter')) $id('leadCountryFilter').value=saved?.country||'';
   _leadsPage=1;
   renderLeadsCurrentView();
 }
@@ -7695,6 +7792,7 @@ async function promptSaveLeadsView(){
     stages:_leadsFilter.stages.slice(), tag:_leadsFilter.tag||'',
     owner:$id('leadOwnerFilter')?.value||'', mineOnly:_leadsOwnerScope==='mine', score:$id('leadScoreFilter')?.value||'',
     product:$id('leadProductFilter')?.value||'', source:$id('leadSourceFilter')?.value||'',
+    call:$id('leadCallFilter')?.value||'', country:$id('leadCountryFilter')?.value||'',
   };
   const list=[...getLeadSavedViews(), view];
   try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
@@ -7903,10 +8001,7 @@ async function reactivateLead(leadId,ev){
   }catch(e){ showToast('Failed: '+e.message,'err'); }
 }
 
-function renderLeadsList(){
-  renderLeadsViewTabs();
-  renderLeadsMomentumStrip();
-  const filtered=sortLeadsForView(applyLeadsViewFilter(allLeads));
+function renderLeadsFilterOptions(){
   const ownerSet=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
   const of=$id('leadOwnerFilter')?.value||'';
   $id('leadOwnerFilter').innerHTML='<option value="">All owners</option>'+ownerSet.map(o=>`<option value="${o}"${of===o?' selected':''}>${o}</option>`).join('');
@@ -7916,6 +8011,46 @@ function renderLeadsList(){
   const sourceSet=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
   const srcf=$id('leadSourceFilter')?.value||'';
   $id('leadSourceFilter').innerHTML='<option value="">All sources</option>'+sourceSet.map(s=>`<option value="${esc(s)}"${srcf===s?' selected':''}>${esc(s)}</option>`).join('');
+  // Countries, most leads first, with counts — "Unknown" last for leads nothing could place.
+  const ctyCounts={}; let ctyNone=0;
+  for(const l of allLeads){ const c=leadCountry(l); if(c) ctyCounts[c]=(ctyCounts[c]||0)+1; else ctyNone++; }
+  const ctyf=$id('leadCountryFilter')?.value||'';
+  const ctys=Object.keys(ctyCounts).sort((a,b)=>ctyCounts[b]-ctyCounts[a]||a.localeCompare(b));
+  if(ctyf && ctyf!=='__none' && !ctyCounts[ctyf]) ctys.push(ctyf);
+  $id('leadCountryFilter').innerHTML='<option value="">All countries</option>'+ctys.map(c=>`<option value="${esc(c)}"${ctyf===c?' selected':''}>${esc(c)} (${ctyCounts[c]||0})</option>`).join('')
+    +(ctyNone?`<option value="__none"${ctyf==='__none'?' selected':''}>Unknown (${ctyNone})</option>`:'');
+  renderLeadsActiveFilters();
+}
+// Active-filter pills (HubSpot/Pipedrive style): each set dropdown shows as a removable pill, so on
+// a phone — where the dropdowns are folded away — it's still obvious why the list is narrowed.
+const LEADS_PILL_FILTERS=[['leadOwnerFilter','👤'],['leadScoreFilter',''],['leadSourceFilter','Source: '],['leadCallFilter',''],
+  ['leadCountryFilter','🌍 '],['leadCategoryFilter',''],['leadProductFilter','']];
+function renderLeadsActiveFilters(){
+  const box=$id('leadsActiveFilters'); if(!box) return;
+  const pills=[];
+  for(const [id,prefix] of LEADS_PILL_FILTERS){
+    const sel=$id(id); if(!sel||!sel.value) continue;
+    const label=(sel.options[sel.selectedIndex]?.text||sel.value).replace(/\s*\(\d+\)$/,'');
+    pills.push(`<span class="lf-pill">${esc(prefix+label)}<button type="button" aria-label="Remove filter" onclick="clearLeadsFilter('${id}')">✕</button></span>`);
+  }
+  box.innerHTML=pills.length?pills.join('')+(pills.length>1?`<button type="button" class="lf-clear" onclick="clearLeadsFilter()">Clear all</button>`:''):'';
+  const btn=$id('leadsFiltersBtn');
+  if(btn) btn.innerHTML=`⚙ Filters${pills.length?` <span class="lf-count">${pills.length}</span>`:''}`;
+}
+function clearLeadsFilter(id){
+  (id?[id]:LEADS_PILL_FILTERS.map(f=>f[0])).forEach(x=>{ const sel=$id(x); if(sel) sel.value=''; });
+  onLeadsFilterChange();
+}
+function toggleLeadsMobileFilters(){
+  const tb=$id('leadsToolbar'); if(!tb) return;
+  tb.classList.toggle('filters-open');
+}
+
+function renderLeadsList(){
+  renderLeadsViewTabs();
+  renderLeadsMomentumStrip();
+  const filtered=sortLeadsForView(applyLeadsViewFilter(allLeads));
+  renderLeadsFilterOptions();
 
   const el=$id('leadsList');
   if(!filtered.length){
@@ -8294,6 +8429,7 @@ function toggleLeadsView(){
 function renderLeadsTable(){
   renderLeadsViewTabs();
   renderLeadsMomentumStrip();
+  renderLeadsFilterOptions();
   const filtered=sortLeadsForView(applyLeadsViewFilter(allLeads));
   const el=$id('leadsTable');
   if(!filtered.length){
@@ -8322,12 +8458,12 @@ function renderLeadsTable(){
     const attemptBadge=leadAttemptBadge(l);
     const callDoneBadge=leadCallDoneBadge(l);
     return `<tr class="${leadOriginClass(l)}" onclick="openDetail(${l.Id})">
-      <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
+      <td class="td-chk" onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
       <td class="lead-ref lead-ref-list" style="white-space:nowrap">${leadRef(l)}</td>
-      <td>${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}</td>
+      <td class="td-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
-      ${tsCol?`<td onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
+      ${tsCol?`<td class="td-wide" onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td class="td-wide" onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
       <td>${scoreBadge(l.Score)}</td>
       <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
@@ -8335,17 +8471,23 @@ function renderLeadsTable(){
       <td>${esc(qGet('profession'))}</td>
       <td>${esc(qGet('email'))}</td>
       <td>${esc(qGet('city'))}</td>
-      <td>${esc(qGet('country'))}</td>
+      <td>${esc(qGet('country')||leadCountry(l))}</td>
       <td>${esc(qGet('budget')||l.Budget||'')}</td>
       <td>${esc(l.Language||qGet('language'))}</td>
       <td>${esc(l.Source||qGet('source'))}</td>
       <td>${esc(fmtDateShort(l.Date))}</td>
-      <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
+      <td class="td-actions">${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
         ${callBtnHTML(l,leadCallCount(l))}
         ${leadMoreMenuHTML(l)}
       </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
     </tr>`;
   }).join('')}</tbody></table>`;
+  // Column names onto each cell, so the phone layout (rows as cards) can label every value.
+  const heads=[...el.querySelectorAll('thead th')].map(th=>th.textContent.trim());
+  el.querySelectorAll('tbody tr').forEach(tr=>[...tr.children].forEach((td,i)=>{
+    if(heads[i]) td.dataset.label=heads[i];
+    if(td.textContent.trim()==='—' && !td.querySelector('select,button,input')) td.classList.add('td-blank');
+  }));
   if(remaining>0){
     el.innerHTML+=`<div style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="_leadsPage++;renderLeadsTable()">Load more (${remaining} remaining)</button></div>`;
   }
