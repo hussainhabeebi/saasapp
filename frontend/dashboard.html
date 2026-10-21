@@ -3593,7 +3593,7 @@ const ROLES = {
             <input class="form-input" id="cfgMetaPixelId" type="text" placeholder="123456789012345" style="margin-bottom:8px">
             <label class="form-label">Conversions API Access Token</label>
             <input class="form-input" id="cfgMetaCapiToken" type="password" placeholder="Leave blank to keep the current token" style="margin-bottom:8px">
-            <label class="form-label">Ad Account ID <span style="font-weight:400;color:var(--muted)">(for the ROI report's ad spend — Team → Reports)</span></label>
+            <label class="form-label">Ad Account ID <span style="font-weight:400;color:var(--muted)">(ad spend for Reports → 💸 Ads ROI — the number in Ads Manager's account menu)</span></label>
             <input class="form-input" id="cfgMetaAdAccountId" type="text" placeholder="123456789012345 (with or without the act_ prefix)" style="margin-bottom:8px">
             <div class="s-note">Conversions API only ever sends events to Meta — it can't report spend back. Ad spend needs Meta's separate Marketing API, which uses this Ad Account ID plus the same token above (it needs the <b>ads_read</b> permission too — check this under the token's System User in Business Settings if the ROI report shows "not connected"). The <a href="#" onclick="navigate('reports');return false">🤖 Ads Automation</a> tab (Reports page) also reuses this same token, but needs <b>ads_management</b> as well — required to create/sync audiences and change campaign budgets.</div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
@@ -15430,7 +15430,7 @@ async function loadMetaCapiStatus(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     let html=data.connected?'✅ Connected — lead events are being reported':'Not connected yet — add your Pixel ID and access token below.';
-    if(data.connected) html+=data.ads_read_configured?' · Ad spend: Ad Account ID set (see Team → Reports for the ROI report).':' · Ad spend not set up — add an Ad Account ID above for the ROI report (Team → Reports).';
+    if(data.connected) html+=data.ads_read_configured?` · Ad spend: Ad Account ID ${esc(data.ad_account_id)} set — see Reports → 💸 Ads ROI.`:' · Ad spend not set up — add your Ad Account ID below for Reports → 💸 Ads ROI.';
     el.innerHTML=html;
   }catch(e){ el.textContent='Could not check status: '+e.message; }
 }
@@ -15444,8 +15444,8 @@ async function saveMetaCapiConfig(){
     const r=await fetch(`${CONFIG.WORKER_BASE}/meta/capi/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(fields)});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    clientRecord.meta_pixel_id=fields.meta_pixel_id;
-    clientRecord.meta_ad_account_id=fields.meta_ad_account_id;
+    clientRecord.meta_pixel_id=data.meta_pixel_id??fields.meta_pixel_id;
+    clientRecord.meta_ad_account_id=data.meta_ad_account_id??fields.meta_ad_account_id;
     $id('cfgMetaCapiToken').value='';
     msg.textContent='✓ Saved'; msg.className='save-msg ok';
     loadMetaCapiStatus();
