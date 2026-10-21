@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   fv3Config, fv3Decide, fv3AttributeReply, fv3ErrorAction, fv3TemplatePreset, fv3TemplateParams,
   fv3BuildReport, fv3PreferredHour, fv3NextAllowedMs, fv3OrderCounts, fv3OnInbound, fv3ProcessClient,
-  fv3Setup, fv3SaveSettings, fv3GetSettings, fv3IsEnabled, fv3EnsureSchema, fv3LeadFields,
+  fv3Setup, fv3SaveSettings, fv3GetSettings, fv3IsEnabled, fv3EnsureSchema, fv3LeadFields, fv3RunClient,
 } from './followup-v3.js';
 
 const H=3600000, D=24*H;
@@ -309,5 +309,26 @@ describe('with D1', ()=>{
     deps.leadColumns=async()=>null;
     await assert.rejects(fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now}), /NocoDB 404/);
     assert.deepEqual(fv3LeadFields(['Name']), ['Id', 'Name']);
+  });
+  test('run now (Leads opened): sends what is due, at most once per 2 minutes, never alongside another sweep', async ()=>{
+    await fv3EnsureSchema(env);
+    const now=Date.now();
+    await fv3SaveSettings(env, 42, {enabled:true, config:{quiet_start:0, quiet_end:0, objection_branching:false}});
+    db.prepare(`UPDATE followup_v3_settings SET maint_at=?, enabled_at=? WHERE client_id=42`).run(iso(now), iso(now-5*D));
+    db.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, message, updated_at) VALUES (42,1,'session',1,'Hi {name}',?)`).run(iso(now));
+    const leads=[{Id:8, Name:'Zed', Stage:'new', CreatedAt:iso(now-D), LastCustomerMsgAt:iso(now-2*H)}];
+    let sends=0;
+    const deps={leadsTable:'L', ensureLeadsColumns:async()=>{}, ncFetch:async()=>new Response(JSON.stringify({list:leads})),
+      sendStep:async(e, c, lead, step)=>{ sends++; db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at, v3) VALUES (42,?,?,'A',?,1)`).run(lead.Id, step, iso(now)); }};
+    const s=await fv3GetSettings(env, 42);
+    assert.equal((await fv3RunClient(env, deps, client, s, {now, minGapMs:120000})).sent, 1);
+    assert.equal((await fv3RunClient(env, deps, client, s, {now:now+60000, minGapMs:120000})).skipped, 'recent');
+    // A sweep still holding the lock blocks a second one, even past the gap.
+    db.prepare(`UPDATE followup_v3_settings SET sweep_lock_until=? WHERE client_id=42`).run(iso(now+10*60000));
+    assert.equal((await fv3RunClient(env, deps, client, s, {now:now+3*60000})).skipped, 'recent');
+    db.prepare(`UPDATE followup_v3_settings SET sweep_lock_until=NULL WHERE client_id=42`).run();
+    await fv3RunClient(env, deps, client, s, {now:now+3*60000});
+    assert.equal(sends, 1, 'nothing new was due');
+    assert.equal(db.prepare(`SELECT sweep_lock_until FROM followup_v3_settings WHERE client_id=42`).get().sweep_lock_until, null, 'lock released');
   });
 });
