@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { engineCustomerLinesFromPrompt, engineReplyEchoesCustomer, engineMainPromptDefinesFirstReply,
   ecomIsExplicitBrowseRequest, ecomIsPriceQuestion, ecomOrderIsConversion, ECOM_INTENT_ORDER_NOTE,
-  engineLeadAdSource, engineLeadSourceGuess } from './worker.js';
+  engineLeadAdSource, engineLeadAdClick, engineLeadSourceGuess } from './worker.js';
 import { fv3CoverageRows } from './followup-v3.js';
 
 test('1. a reply that is the customer\'s own message is caught', () => {
@@ -49,10 +49,19 @@ test('9. a link-sent intent row is not a conversion until someone confirms it', 
 test('8. chat leads get a source: the ad from Meta\'s referral, the ad opener, else the channel', () => {
   const body = { content_attributes: { referral: { source_type: 'ad', source_id: '1202', headline: 'Name printed baby set', source_url: 'https://fb.me/abc', ctwa_clid: 'x' } } };
   assert.deepEqual(engineLeadAdSource(body, 'Hello! Can I get more info on this?'), {
-    Source: 'Click-to-WhatsApp ad', LeadSource: 'Click-to-WhatsApp ad', AdName: 'Name printed baby set', AdCampaign: 'Ad ID 1202', AdSourceUrl: 'https://fb.me/abc' });
+    Source: 'Click-to-WhatsApp ad', LeadSource: 'Click-to-WhatsApp ad', AdName: 'Name printed baby set', AdCampaign: 'Ad ID 1202', AdSourceUrl: 'https://fb.me/abc', CtwaClid: 'x' });
   assert.deepEqual(engineLeadAdSource({}, 'Hello! Can I get more info on this?'), { Source: 'Click-to-WhatsApp ad', LeadSource: 'Click-to-WhatsApp ad (prefilled message)' });
   assert.deepEqual(engineLeadAdSource({}, 'Baby set price?'), { Source: 'WhatsApp' });
   assert.deepEqual(engineLeadAdSource({}, 'hi', 'instagram'), { Source: 'Instagram' });
+});
+
+test('8. the ad click keeps Meta\'s ad id and click id; posts and non-ad chats have none', () => {
+  const ad = { content_attributes: { referral: { source_type: 'ad', source_id: '120208877665544', ctwa_clid: 'ARAk-clid' } } };
+  assert.deepEqual(engineLeadAdClick(ad), { AdId: '120208877665544', CtwaClid: 'ARAk-clid' });
+  assert.equal(engineLeadAdSource(ad, 'hi').AdId, '120208877665544');
+  assert.equal(engineLeadAdClick({ content_attributes: { referral: { source_type: 'post', source_id: '120208877665544' } } }), null);
+  assert.equal(engineLeadAdClick({}), null);
+  assert.equal(engineLeadAdClick({ content_attributes: { referral: { source_id: 'not-an-id' } } }), null);
 });
 
 test('8. backfill guess for older leads', () => {

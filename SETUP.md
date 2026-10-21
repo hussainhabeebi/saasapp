@@ -4274,6 +4274,59 @@ counts (which come from `allLeads`, not this log).
   Lead, Cost/Booking) and the monthly table show spend-dependent figures as `—` rather than hiding
   the whole report when `ads_read` isn't connected.
 
+## Ads ROI (Reports → 💸 Ads ROI — `cloudflare-worker/meta-ads-report.js`, `frontend/ads-report.js`)
+Per-campaign attribution, which the blended report above couldn't do. Ads are still created and
+edited in Meta Ads Manager. This tab covers what Ads Manager can't see: what happened after the click.
+
+**What it needs** (same credentials as above, nothing new to paste):
+- Settings → Integrations → Meta Ads: **Ad Account ID** + token with **ads_read** (spend), and the
+  **Pixel/Dataset ID** for results sent back to Meta. Link the Dataset to the WhatsApp Business
+  Account in Events Manager so click-to-WhatsApp events can match on `ctwa_clid`.
+- Click-to-WhatsApp leads: Chatwoot passes Meta's referral on the first message; the engine now
+  stores `AdId` and `CtwaClid` on the lead (`engineLeadAdClick`). Lead-form leads store `AdId`,
+  `AdsetId`, `CampaignId` (`processMetaLeadgenChange`). Older leads still match by campaign name or
+  the old `AdCampaign` = "Ad ID …" value.
+- Run `migrations/0118_meta_ads_report.sql` (the Worker also creates the tables lazily, except the
+  `meta_capi_events.match_key` column, which it falls back without).
+
+**How it works**
+1. **Spend sync** (`marSync`): Ads Insights `level=ad, time_increment=1` → D1 `meta_ads_daily`
+   (one row per ad per day, account timezone). 90 days on first open, the last 3 days every morning
+   (Meta restates recent days), 30 days on "Sync now"; the window is replaced in one batch.
+2. **Report** (`GET /meta/ads-report/data?from&to`): per-ad totals for the range; the dashboard joins
+   them with leads (`adsMatchLead` mirrors `marMatchLead`) at campaign / ad set / ad level: spend,
+   Meta's lead count, CRM leads, qualified (Hot or won), sales, revenue, cost per lead / qualified /
+   sale, ROAS (hidden when ad and deal currencies differ). Sales = leads that arrived in the period
+   and are won now. A lead's arrival is NocoDB `CreatedAt` (the bot rewrites `Date` every turn).
+3. **Lead quality**: Hot / Warm / Cold, junk (`HandoverOutcome` Spam), not reachable (called, never
+   answered), lost — per campaign/ad set/ad.
+4. **Results sent to Meta**: Conversions API events now carry the strongest match key — an Instant
+   Form lead's `lead_id` (`action_source: system_generated`, CRM integration), a WhatsApp ad lead's
+   `ctwa_clid` (+ WABA id), else hashed phone/email — logged in `meta_capi_events.match_key`. New:
+   `Purchase` with the deal value when a lead is won (dashboard), `Lead` for a new ad lead and
+   `QualifiedLead` when the bot scores it Hot (server side, `engineReportCapiFromTurn`). Each event
+   goes once per lead.
+5. **Speed to lead**: first call after arrival — within 5 min / 1 h / 24 h, never called, median;
+   a list of open ad leads not called yet.
+6. **Staff on ad leads**: per owner — called, answered, median first call, qualified, sales, revenue,
+   conversion (junk excluded).
+7. **Daily summary + alerts** (`marRunDue`, 15-minute cron, 3 accounts per tick from 01:00 UTC, once
+   per account per day): after the morning sync, yesterday's spend, ad leads, qualified, junk, sales,
+   ROAS and top campaign to chosen staff on WhatsApp (numbers from User Management) and to email.
+   Alerts: campaign spend ≥ X with no leads, cost per lead > X, junk ≥ X% of the last 7 days (min 5
+   leads), Meta sync failing. Plain-text WhatsApp only reaches staff who messaged the business in the
+   last 24 h — set an approved Utility template with 3 body variables ({{1}} business, {{2}} date,
+   {{3}} summary) for reliable delivery. Log: `meta_ads_report_sends`.
+8. **Accounting** (`marPostExpenses`, needs the Accounting module): one `accounting_expenses` row per
+   month (vendor "Meta Platforms", category "Advertising — Meta Ads" → Advertising & Marketing),
+   updated daily until the month closes (the previous month is finalised on days 1–5). A row the user
+   deletes is never recreated (`meta_ads_expense_posts.status='deleted'`). GST on Meta's invoice
+   isn't split out.
+
+Routes (session-gated, `/meta/ads-report/*`): `GET data`, `POST sync`, `GET|POST settings` (POST is
+owner only), `POST test-summary`, `POST accounting/post`, `GET capi`. Settings live in D1
+`meta_ads_report_state.config_json`, not on the CLIENTS row.
+
 ## Meta Ads Automation module (`frontend/dashboard.html` — Reports page's 🤖 Ads Automation tab)
 A **standalone module**, separate from the read-only Marketing/ROI tab above — genuinely
 write-capable against Meta's **Marketing API**: it creates/syncs Custom Audiences and moves real

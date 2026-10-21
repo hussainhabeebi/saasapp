@@ -202,7 +202,7 @@ describe('engineMaybeSendHotLeadAlert', ()=>{
 describe('processMetaLeadgenChange', ()=>{
   let db, env, origFetch, sent, leads, nextId, clients;
   const leadgen={
-    id:'LG1', created_time:'2026-09-28T10:00:00+0000', form_id:'F1', ad_id:'AD1', ad_name:'Goa ad', campaign_name:'Goa Sept', platform:'ig',
+    id:'LG1', created_time:'2026-09-28T10:00:00+0000', form_id:'F1', ad_id:'120200001', ad_name:'Goa ad', adset_id:'120200002', campaign_id:'120200003', campaign_name:'Goa Sept', platform:'ig',
     field_data:[{name:'full_name', values:['Priya Kumar']}, {name:'phone_number', values:['+919876543210']}, {name:'budget', values:['50k']}],
   };
   beforeEach(()=>{
@@ -250,6 +250,8 @@ describe('processMetaLeadgenChange', ()=>{
     assert.equal(lead.LeadSource, 'Instagram Lead Ad');
     assert.equal(lead.AdCampaign, 'Goa Sept');
     assert.equal(lead.LeadFormName, 'Goa enquiry form');
+    // Ids join the lead to the synced ad spend (Reports → 💸 Ads ROI).
+    assert.deepEqual([lead.AdId, lead.AdsetId, lead.CampaignId], ['120200001', '120200002', '120200003']);
     assert.deepEqual(JSON.parse(lead.QualAnswers), {Budget:'50k'});
     assert.match(JSON.parse(lead.ConvHistory)[0].content, /^Hi Priya, thank you for your enquiry with Acme Tours/);
 
