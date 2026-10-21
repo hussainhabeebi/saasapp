@@ -2531,8 +2531,29 @@ async function handleMetaCapiConfigSet(request, env){
   const fields={};
   META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=String(body[k]||'').trim(); });
   if(!Object.keys(fields).length) return json({error:'Nothing to save'}, 400);
-  await patchClientFields(env, payload.cid, fields);
-  return json({ok:true});
+  if('meta_ad_account_id' in fields){
+    const acct=metaNormalizeAdAccountId(fields.meta_ad_account_id);
+    if(acct===null) return json({error:'Ad Account ID should be the number from Ads Manager, e.g. 123456789012345 or act_123456789012345.'}, 400);
+    fields.meta_ad_account_id=acct;
+  }
+  if('meta_pixel_id' in fields && fields.meta_pixel_id && !/^\d{5,25}$/.test(fields.meta_pixel_id))
+    return json({error:'Pixel ID should be the number from Events Manager, e.g. 744598038086701.'}, 400);
+  // These columns aren't on every CLIENTS table (meta_ad_account_id came later than the Pixel
+  // fields): NocoDB drops or refuses a field it doesn't have, so the value never stuck.
+  await ensureClientColumns(env, Object.keys(fields));
+  try{ await patchClientFields(env, payload.cid, fields); }
+  catch(e){ return json({error:'Could not save: '+e.message}, 502); }
+  // Read back, so a value that didn't stick is reported instead of shown as saved.
+  const c=await getClientById(env, payload.cid);
+  const lost=c?Object.keys(fields).filter(k=>String(c[k]??'')!==fields[k]):[];
+  if(lost.length) return json({error:`Not saved: ${lost.join(', ')} — the clients table couldn't take this field. Ask LeadVyne support to add the column.`}, 502);
+  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||''});
+}
+// "act_123…", "123…" or " 123 456 " → "123…"; '' stays '' (clearing it); anything else → null.
+export function metaNormalizeAdAccountId(v){
+  const s=String(v||'').trim().replace(/^act_/i,'').replace(/[\s-]/g,'');
+  if(!s) return '';
+  return /^\d{5,25}$/.test(s)?s:null;
 }
 async function handleMetaCapiStatus(request, env){
   const payload=await requireSession(request, env);
