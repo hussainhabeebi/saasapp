@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   fv3Config, fv3Decide, fv3AttributeReply, fv3ErrorAction, fv3TemplatePreset, fv3TemplateParams,
   fv3BuildReport, fv3PreferredHour, fv3NextAllowedMs, fv3OrderCounts, fv3OnInbound, fv3ProcessClient,
-  fv3Setup, fv3SaveSettings, fv3GetSettings, fv3IsEnabled, fv3EnsureSchema,
+  fv3Setup, fv3SaveSettings, fv3GetSettings, fv3IsEnabled, fv3EnsureSchema, fv3LeadFields,
 } from './followup-v3.js';
 
 const H=3600000, D=24*H;
@@ -284,5 +284,30 @@ describe('with D1', ()=>{
     fail=null;
     r=await fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now});
     assert.equal(sent.length, 1, 'deferred lead not retried before its time');
+  });
+  test('sweep asks NocoDB only for columns the leads table has (an unknown field fails the whole read)', async ()=>{
+    await fv3EnsureSchema(env);
+    const now=Date.now();
+    await fv3SaveSettings(env, 42, {enabled:true, config:{quiet_start:0, quiet_end:0, objection_branching:false}});
+    db.prepare(`UPDATE followup_v3_settings SET maint_at=?, enabled_at=? WHERE client_id=42`).run(iso(now), iso(now-5*D));
+    db.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, message, updated_at) VALUES (42,1,'session',1,'Hi {name}',?)`).run(iso(now));
+    const columns=['Id', 'Name', 'Phone', 'Stage', 'OptOut', 'ClientId', 'CreatedAt', 'LastCustomerMsgAt', 'ConversationID'];
+    const leads=[{Id:7, Name:'Mia', Stage:'new', CreatedAt:iso(now-D), LastCustomerMsgAt:iso(now-2*H)}];
+    const deps={
+      leadsTable:'L', ensureLeadsColumns:async()=>{}, leadColumns:async()=>columns,
+      ncFetch:async(env2, path)=>{
+        const fields=decodeURIComponent(new URL('http://x/'+path).searchParams.get('fields')||'').split(',');
+        if(fields.some(f=>!columns.includes(f))) return new Response('{"msg":"Field not found"}', {status:404});
+        return new Response(JSON.stringify({list:leads}));
+      },
+      sendStep:async()=>{},
+    };
+    const r=await fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now});
+    assert.equal(r.sent, 1);
+    assert.equal(db.prepare(`SELECT status FROM followup_v3_leads WHERE lead_id=7`).get().status, 'due');
+    // A read that still fails is reported, not silently treated as "no leads".
+    deps.leadColumns=async()=>null;
+    await assert.rejects(fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now}), /NocoDB 404/);
+    assert.deepEqual(fv3LeadFields(['Name']), ['Id', 'Name']);
   });
 });

@@ -33142,6 +33142,7 @@ const FOLLOWUP_V3_DEPS={
   sendStep:sendFollowupLadderStep,
   sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
   orderPhones:fv3OrderPhones,
+  leadColumns:async env=>(await ncTableMeta(env, DEFAULT_LEADS_TABLE)).names,
   objectionPlaybook:c=>{ try{ const p=JSON.parse(c?.objection_playbook||'[]'); return Array.isArray(p)?p:[]; }catch(e){ return []; } },
 };
 const CEO_DEPS={
