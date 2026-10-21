@@ -30,7 +30,8 @@
 // { json, requireSession, getClientById, ncFetch, ensureLeadsColumns, leadsTable, reportOpsError,
 //   ai(env,c,sys,user,opts)→text|null, metaCreds(c, lead?)→{waba_id,wa_phone_id,wa_token}|null,
 //   sendStep(env,c,lead,step,stepCfg,opts)→{text,variant,sendId}, sendEmail(env,to,subject,html),
-//   orderPhones(env,c)→{digits10:{date,total}}|null, objectionPlaybook(c)→[{category,approved_response}] }
+//   orderPhones(env,c)→{digits10:{date,total}}|null, objectionPlaybook(c)→[{category,approved_response}],
+//   leadColumns(env)→[column titles of the leads table] }
 
 const H=3600000, D=24*H;
 
@@ -263,6 +264,7 @@ export const FV3_REASON_INFO={
   lead_cap:{label:'Already got the maximum follow-ups for 30 days', fix:'Raise "Max follow-ups per lead in 30 days" in Settings if you want more.'},
   no_message:{label:'Never messaged you', fix:'Follow-ups start after the customer\'s first message.'},
   account_paused:{label:'Follow-ups are paused', fix:'Press ▶ Resume.'},
+  unknown:{label:'Not checked yet', fix:'The 15-minute sweep hasn\'t evaluated these leads yet. If this stays for more than an hour, check Settings → Logs for "followup v3 sweep".'},
 };
 export function fv3CoverageRows(reasonRows, cfg={}){
   return (reasonRows||[]).map(r=>{
@@ -346,7 +348,7 @@ export const FV3_SESSION_PRESETS={
 
 // ── Report (pure) ───────────────────────────────────────────────────────────────────────────────
 const pct=(a, b)=>b?Math.round(a/b*1000)/10:0;
-export function fv3BuildReport(rows, {tz='Asia/Kolkata', now=Date.now(), weeks=8}={}){
+export function fv3BuildReport(rows, {tz='Asia/Kolkata', now=Date.now(), weeks=8, ladder={}}={}){
   const totals={sent:0, replied:0, converted:0, revenue:0, opted_out:0, leads:new Set(), reengaged:new Set()};
   const steps={};
   const heat=Array.from({length:7}, ()=>Array(24).fill(0));
@@ -356,7 +358,7 @@ export function fv3BuildReport(rows, {tz='Asia/Kolkata', now=Date.now(), weeks=8
   for(const r of rows||[]){
     const sentMs=ms(r.sent_at); if(!sentMs) continue;
     const st=Number(r.step), key=(r.kind==='reengage'||st===REENGAGE_STEP)?REENGAGE_STEP:st;
-    const s=steps[key]||(steps[key]={step:key, label:fv3StepLabel(key), sent:0, replied:0, converted:0, revenue:0, opted_out:0, variants:{}});
+    const s=steps[key]||(steps[key]={step:key, label:fv3StepLabel(key, ladder[key]), sent:0, replied:0, converted:0, revenue:0, opted_out:0, variants:{}});
     const v=s.variants[r.variant||'A']||(s.variants[r.variant||'A']={variant:r.variant||'A', sent:0, replied:0});
     s.sent++; v.sent++; totals.sent++; totals.leads.add(r.lead_id);
     if(r.replied_at){ s.replied++; v.replied++; totals.replied++; totals.reengaged.add(r.lead_id);
@@ -626,6 +628,15 @@ const LEAD_FIELDS=['Id', 'Name', 'Phone', 'Stage', 'Handover', 'OptOut', 'LastMs
   'ConversationID', 'conv_id', 'ConversationId', 'chatwoot_conv_id', 'InboxId', 'InterestedProduct', 'LastObjectionCategory', 'DealValue',
   'Follow up 1', 'Follow up 2', 'Follow up 3', 'Follow up 4', 'Follow up 5'];
 const digits10=(p)=>String(p||'').replace(/\D/g, '').slice(-10);
+// NocoDB refuses a whole read when `fields` names a column the table doesn't have, and most of
+// LEAD_FIELDS are optional (conv_id, DealValue, LastObjectionCategory… exist only on some bases).
+// Couplo, Oct 2026: one missing column made every sweep read fail, so no lead was ever evaluated
+// (351 leads "unknown", 0 in a sequence). Ask only for the columns this table has.
+export function fv3LeadFields(existing){
+  if(!Array.isArray(existing) || !existing.length) return LEAD_FIELDS;
+  const have=new Set(existing);
+  return LEAD_FIELDS.filter(f=>f==='Id' || have.has(f));
+}
 // An order ends the sequence only if it was placed around or after this conversation (latest order
 // on or after the day before the customer's last message) — an order from months ago doesn't.
 export function fv3OrderCounts(order, lead){
@@ -673,11 +684,15 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
   const getOrders=async()=>{ if(!ordersLoaded){ ordersLoaded=true; orders=cfg.exit_on_order&&deps.orderPhones?await deps.orderPhones(env, c).catch(()=>null):null; } return orders; };
   await deps.ensureLeadsColumns?.(env, ['LastCustomerMsgAt', 'LastAgentMsgAt', 'InterestedProduct', 'Follow up 4', 'Follow up 5']).catch(()=>null);
   const where=`(ClientId,eq,${cid})~and(OptOut,neq,Yes)`;
+  const fields=fv3LeadFields(await deps.leadColumns?.(env).catch(()=>null));
   const due=[];
   const stateWrites=[];
   for(let page=1; page<=30; page++){
-    const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent(LEAD_FIELDS.join(','))}`);
-    if(!r.ok) break;
+    const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent(fields.join(','))}`);
+    if(!r.ok){
+      const detail=await r.text().catch(()=>'');
+      throw new Error(`leads read failed (NocoDB ${r.status}) ${detail.slice(0, 300)}`);
+    }
     const list=(await r.json().catch(()=>({})))?.list||[];
     for(const lead of list){
       const sends=sendsByLead[lead.Id]||[];
@@ -884,7 +899,7 @@ export async function fv3HandleRoute(request, env, deps, url){
     const since=new Date(Date.now()-days*D).toISOString();
     const s=await fv3GetSettings(env, cid);
     const {results:rows}=await env.DB.prepare(`SELECT step, kind, variant, sent_at, replied_at, converted_at, revenue, opted_out_at, lead_id FROM followup_sends WHERE client_id=? AND sent_at>=?`).bind(cid, since).all();
-    const rep=fv3BuildReport(rows||[], {tz:clientTz(c), weeks:Math.min(12, Math.ceil(days/7))});
+    const rep=fv3BuildReport(rows||[], {tz:clientTz(c), weeks:Math.min(12, Math.ceil(days/7)), ladder:await ladderRows(env, cid)});
     const {results:statusRows}=await env.DB.prepare(`SELECT status, COUNT(*) n FROM followup_v3_leads WHERE client_id=? GROUP BY status`).bind(cid).all();
     const statusCounts={}; (statusRows||[]).forEach(r=>{ statusCounts[r.status||'unknown']=r.n; });
     // Why leads are / aren't in a sequence right now (Couplo, Oct 2026: 97 sends in 30 days for
