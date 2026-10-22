@@ -1850,6 +1850,12 @@ const ROLES = {
 
           <!-- RIGHT: sidebar -->
           <div class="home-col-side">
+            <!-- Today's meetings (lead ⋯ → 📅 Mark meeting scheduled, or Cal.com) — hidden when empty -->
+            <div class="section-card" id="homeMeetingsCard" style="display:none">
+              <div class="section-title">📅 Today's Meetings</div>
+              <div id="homeMeetings"></div>
+            </div>
+
             <!-- Follow-ups Due -->
             <div class="section-card" id="homeFollowUpsCard">
               <div class="section-title">⏰ Follow-ups Due
@@ -2112,6 +2118,15 @@ const ROLES = {
                 <option value="callback">🔁 Callback requested</option>
                 <option value="answered">✅ Answered</option>
                 <option value="never">📞 Never called</option>
+              </select>
+              <!-- Meeting state (lead ⋯ → 📅 meeting items / Cal.com) — see mtgLeadState in worker.js. -->
+              <select class="form-input" id="leadMeetingFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:120px;padding:9px 10px" title="Filter by meeting status">
+                <option value="">All meetings</option>
+                <option value="scheduled">📅 Meeting scheduled</option>
+                <option value="pending">🕓 Meeting pending</option>
+                <option value="awaiting_outcome">✅ Outcome to log</option>
+                <option value="rebook">⚠️ No-show / cancelled</option>
+                <option value="none">No meeting</option>
               </select>
               <!-- Country — the lead's Country field, else a qualifying answer, else the phone's
                    calling code (leadCountry). -->
@@ -2506,6 +2521,12 @@ const ROLES = {
         <div class="s-note" style="margin-bottom:14px">Every user in Settings → User Management is an agent here automatically — leads/tasks assigned to their email all roll up into this report, no separate agent list to keep in sync. Looking for ad spend, WhatsApp volume, Shopify or SEO numbers? That's all in the <a href="#" onclick="navigate('reports');return false">📊 Reports</a> tab now.</div>
         <div id="teamPerfStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
         <div class="card"><div id="teamPerfContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+
+        <div style="margin:24px 0 10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div class="card-title" style="margin-bottom:0">📅 Meetings by Rep</div>
+          <div style="display:flex;gap:6px"><span class="seg-chip mtg-pts-tab on" data-days="7" onclick="mtgRenderPointsBoard(7)">This week</span><span class="seg-chip mtg-pts-tab" data-days="30" onclick="mtgRenderPointsBoard(30)">30 days</span></div>
+        </div>
+        <div class="card"><div id="teamPointsContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div><div class="s-note" id="teamPointsRules" style="margin-top:8px"></div></div>
 
         <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📞 Call Tracking</div><div class="s-note">Per-agent call activity — logged from the 📞 Call button on the Leads page (outcome/duration/notes), no separate log to keep in sync.</div></div>
         <div id="callTrackStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
@@ -3492,6 +3513,14 @@ const ROLES = {
                   <input class="form-input" id="mtgTplLang" type="text" placeholder="en" style="flex:1">
                 </div>
               </div>
+
+              <!-- Works without Cal.com: meetings reps mark from a lead's ⋯ menu use these too. -->
+              <label class="form-label">Sales team</label>
+              <div style="display:grid;gap:6px;margin-bottom:8px;font-size:13px">
+                <label><input type="checkbox" id="mtgOptRepBrief"> Send the rep a WhatsApp brief 30 min before each meeting (lead details, answers, last messages)</label>
+              </div>
+              <div class="s-note" style="margin-bottom:6px">Meeting points in the 🏆 Weekly Arena:</div>
+              <div id="mtgPointsInputs" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px 10px;margin-bottom:14px;font-size:12px"></div>
 
               <div style="display:flex;align-items:center;gap:10px">
                 <button class="save-btn" id="mtgSaveBtn" type="button" onclick="mtgSaveConfig()">Save</button>
@@ -4904,6 +4933,7 @@ const ROLES = {
     </div>
     <!-- reminder badge -->
     <div id="detailReminderBadge" style="margin-bottom:12px"></div>
+    <div id="detailMeetingLine" style="margin:-6px 0 12px"></div>
     <!-- score -->
     <div style="margin-bottom:14px"><label class="form-label">Score</label>
       <select class="form-input" id="detailScore" onchange="patchDetailField('Score',this.value)" style="max-width:140px">
@@ -5006,6 +5036,13 @@ const ROLES = {
     </div>
     <div class="form-group"><label class="form-label">Duration (minutes)</label><input class="form-input" id="callDuration" type="number" min="0" placeholder="5" /></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea class="form-input" id="callNotes" rows="3" placeholder="What was discussed…"></textarea></div>
+    <div class="form-group"><label class="form-label">Next step</label>
+      <select class="form-input" id="callNextStep">
+        <option value="">—</option>
+        <option value="meeting">📅 Meeting scheduled</option>
+        <option value="pending">🕓 Meeting pending (time not fixed)</option>
+      </select>
+    </div>
   </div>
   <div class="modal-footer">
     <button class="btn btn-primary" style="flex:1" onclick="saveCall()">Save Call</button>
@@ -5020,6 +5057,40 @@ const ROLES = {
     </div>
   </div>
 
+</div>
+
+<!-- MODAL: Lead meeting (lead ⋯ → 📅 Mark meeting scheduled / Reschedule / outcome / history) — see openMeetingModal -->
+<div class="modal" id="modalMeeting" style="max-width:440px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><span class="modal-title" id="mtgModalTitle">📅 Mark meeting scheduled</span><button class="icon-btn" onclick="closeModal('modalMeeting')">✕</button></div>
+  <div class="modal-body">
+    <div id="mtgModalLead" style="font-size:13px;margin-bottom:12px"></div>
+    <div id="mtgModalForm">
+      <div class="form-group"><label class="form-label">Meeting</label>
+        <input class="form-input" id="mtgFTitle" list="mtgFTitleList" placeholder="e.g. Demo, Site visit, Consultation">
+        <datalist id="mtgFTitleList"><option value="Intro call"><option value="Demo"><option value="Site visit"><option value="Consultation"><option value="Follow-up meeting"></datalist>
+      </div>
+      <div style="display:flex;gap:8px">
+        <div class="form-group" style="flex:2"><label class="form-label">Date</label><input class="form-input" id="mtgFDate" type="date"></div>
+        <div class="form-group" style="flex:1.4"><label class="form-label">Time</label><input class="form-input" id="mtgFTime" type="time"></div>
+        <div class="form-group" style="flex:1.2"><label class="form-label">Length</label>
+          <select class="form-input" id="mtgFDuration"><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">1 hour</option><option value="90">1.5 hours</option></select></div>
+      </div>
+      <div class="form-group"><label class="form-label">How</label>
+        <select class="form-input" id="mtgFMode" onchange="mtgModeChanged()"><option value="video">🎥 Video call</option><option value="phone">📞 Phone call</option><option value="in_person">🤝 In person</option></select>
+        <input class="form-input" id="mtgFWhere" type="text" style="margin-top:6px">
+      </div>
+      <div class="form-group"><label class="form-label">Owner</label><select class="form-input" id="mtgFOwner"></select></div>
+      <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" id="mtgFNote" type="text" placeholder="What to prepare"></div>
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="mtgFNotify"> Send the lead a WhatsApp confirmation and reminders</label>
+    </div>
+    <div id="mtgModalOutcome" style="display:none"></div>
+    <div id="mtgModalHistory"></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="mtgModalSave" style="flex:1" onclick="mtgModalSave()">Save meeting</button>
+    <button class="btn btn-secondary" onclick="closeModal('modalMeeting')">Close</button>
+  </div>
 </div>
 
 <!-- MODAL: Import CSV -->
@@ -6280,6 +6351,7 @@ async function loadAll(silent=false, force=false){
       if(list&&list.length){
         allLeads=_carryConvHistory(list);
         loadEcomOrderPhones();
+        mtgLoadLeadStates();
         renderHome();
         pdTryRestore(); // restore power dialer if Android killed the tab during a call
         if(!hadLeads) _rerenderVisibleLeads();
@@ -6319,6 +6391,7 @@ async function loadAll(silent=false, force=false){
     allLeads=_carryConvHistory(list);
     _cacheLeads(allLeads);
     loadEcomOrderPhones();
+    mtgLoadLeadStates();
     renderHome();
     pdTryRestore(); // restore power dialer if Android killed the tab during a call
     if(!hadLeads) _rerenderVisibleLeads();
@@ -6563,6 +6636,7 @@ function withHomeScope(fn){
 }
 function renderHome(){
   withHomeScope(renderHomeScoped);
+  try{ mtgRenderHomeToday(); }catch(e){}
   // Weekly Arena — team-wide on purpose (everyone's points), so outside the scope above.
   try{window.csRenderHomeArena?.();}catch(e){}
   // Human Deals is a live queue — refresh it on every data arrival while it's open, or a page
@@ -6904,7 +6978,7 @@ function kbCard(l){
     onclick="openDetail(${l.Id})">
     <div class="kb-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
     <div class="kb-phone">${maskPhone(l.Phone)}</div>
-    <div class="kb-meta">${scoreBadge(l.Score)}${dealHealthChip(l)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
+    <div class="kb-meta">${scoreBadge(l.Score)}${leadMeetingBadge(l)}${dealHealthChip(l)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
   </div>`;
 }
 
@@ -7594,6 +7668,8 @@ function applyLeadsViewFilter(leads){
   if(srcf) out=out.filter(l=>(l.Source||'')===srcf);
   const callf=$id('leadCallFilter')?.value||'';
   if(callf) out=out.filter(l=>leadMatchesCallFilter(l,callf));
+  const mtgf=$id('leadMeetingFilter')?.value||'';
+  if(mtgf) out=out.filter(l=>mtgf==='none'?!_mtgStates[l.Id]:_mtgStates[l.Id]?.state===mtgf);
   const ctyf=$id('leadCountryFilter')?.value||'';
   if(ctyf) out=out.filter(l=>ctyf==='__none'?!leadCountry(l):leadCountry(l).toLowerCase()===ctyf.toLowerCase());
   if(_leadsOriginFilter) out=out.filter(l=>leadOrigin(l)===_leadsOriginFilter);
@@ -7794,6 +7870,7 @@ function selectLeadsView(id){
   if($id('leadProductFilter')) $id('leadProductFilter').value=saved?.product||'';
   if($id('leadSourceFilter')) $id('leadSourceFilter').value=saved?.source||'';
   if($id('leadCallFilter')) $id('leadCallFilter').value=saved?.call||'';
+  if($id('leadMeetingFilter')) $id('leadMeetingFilter').value=saved?.meeting||'';
   if($id('leadCountryFilter')) $id('leadCountryFilter').value=saved?.country||'';
   _leadsPage=1;
   renderLeadsCurrentView();
@@ -7805,7 +7882,7 @@ async function promptSaveLeadsView(){
     stages:_leadsFilter.stages.slice(), tag:_leadsFilter.tag||'',
     owner:$id('leadOwnerFilter')?.value||'', mineOnly:_leadsOwnerScope==='mine', score:$id('leadScoreFilter')?.value||'',
     product:$id('leadProductFilter')?.value||'', source:$id('leadSourceFilter')?.value||'',
-    call:$id('leadCallFilter')?.value||'', country:$id('leadCountryFilter')?.value||'',
+    call:$id('leadCallFilter')?.value||'', meeting:$id('leadMeetingFilter')?.value||'', country:$id('leadCountryFilter')?.value||'',
   };
   const list=[...getLeadSavedViews(), view];
   try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
@@ -8036,7 +8113,7 @@ function renderLeadsFilterOptions(){
 }
 // Active-filter pills (HubSpot/Pipedrive style): each set dropdown shows as a removable pill, so on
 // a phone — where the dropdowns are folded away — it's still obvious why the list is narrowed.
-const LEADS_PILL_FILTERS=[['leadOwnerFilter','👤'],['leadScoreFilter',''],['leadSourceFilter','Source: '],['leadCallFilter',''],
+const LEADS_PILL_FILTERS=[['leadOwnerFilter','👤'],['leadScoreFilter',''],['leadSourceFilter','Source: '],['leadCallFilter',''],['leadMeetingFilter',''],
   ['leadCountryFilter','🌍 '],['leadCategoryFilter',''],['leadProductFilter','']];
 function renderLeadsActiveFilters(){
   const box=$id('leadsActiveFilters'); if(!box) return;
@@ -8084,13 +8161,14 @@ function renderLeadsList(){
     const needsCallback=leadNeedsCallback(l);
     const attemptBadge=leadAttemptBadge(l);
     const callDoneBadge=leadCallDoneBadge(l);
+    const mtgBadge=leadMeetingBadge(l);
     return `<div class="lead-item ${leadOriginClass(l)}" onclick="openDetail(${l.Id})">
       <input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)" style="margin-right:2px;align-self:flex-start;margin-top:14px">
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
-        ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
+        ${(tags.length||attemptBadge||callDoneBadge||mtgBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${mtgBadge}${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
         ${typeof tsInlineCategoryHTML==='function'&&clientRecord?.industry==='travel'?`<div class="ts-inline" onclick="event.stopPropagation()">${tsInlineCategoryHTML(l)}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
@@ -8475,7 +8553,7 @@ function renderLeadsTable(){
       <td class="lead-ref lead-ref-list" style="white-space:nowrap">${leadRef(l)}</td>
       <td class="td-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
-      <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
+      <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}${leadMeetingBadge(l)?`<br>${leadMeetingBadge(l)}`:''}</td>
       ${tsCol?`<td class="td-wide" onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td class="td-wide" onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
       <td>${scoreBadge(l.Score)}</td>
       <td>${leadBrandCell(l)}</td>
@@ -9728,7 +9806,9 @@ function openDetail(id){
     ${(lead.Stage==='won'||lead.Stage==='converted')?`<button class="action-btn" onclick="reverseLead()"><span class="ab-icon">↩️</span>Reverse Lead</button>`:''}
     ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
     ${lead.OptOut==='Yes'?`<span style="background:#FEE2E2;color:#991B1B;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600">🚫 Opted out</span>`:''}
+    <span class="detail-more" style="display:inline-flex;align-items:center">${leadMoreMenuHTML(lead, lead.Id+'d')}</span>
   `;
+  mtgRenderDetailLine(lead);
 
   // tags
   renderDetailTags(lead);
@@ -10139,7 +10219,11 @@ async function _saveCall(){
   }catch(e){ showToast('Call not saved — check your connection and try again','err'); return; }
   renderDetailCalls(lead);
   closeModal('modalCall');
-  $id('callDuration').value=''; $id('callNotes').value='';
+  const nextStep=$id('callNextStep')?.value||'';
+  $id('callDuration').value=''; $id('callNotes').value=''; if($id('callNextStep')) $id('callNextStep').value='';
+  // Next step after the call — a meeting is the goal of most sales calls (counts on the points board).
+  if(nextStep==='meeting') setTimeout(()=>openMeetingModal(leadId,'schedule'),300);
+  else if(nextStep==='pending') mtgMarkPending(leadId);
   // post-call automation
   if(outcome==='No Answer') { autoWaFollowUp(leadId); }
   if(outcome==='Callback Requested') { scheduleCallback(leadId); }
@@ -10193,13 +10277,16 @@ function callBtnHTML(l, label){
 // itself is just the primary Call (or IG Chat) button — one obvious target on phone and desktop alike.
 // Reuses the call dropdown's styling/close-all behaviour; positioned fixed because .li-actions scrolls
 // sideways and would clip an absolutely positioned menu. Spam stays one tap, no confirm, with an Undo toast.
-function leadMoreMenuHTML(l){
-  const go=fn=>`event.stopPropagation();toggleLeadMoreMenu(${l.Id},null,false);${fn}`;
-  return `<button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" aria-label="More actions" aria-haspopup="menu" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
-    <div class="call-channel-drop lead-more-drop" id="lmd-${l.Id}" role="menu" style="position:fixed">
+// `key` keeps the menu id unique when the same lead's menu is on screen twice (row + lead detail).
+function leadMoreMenuHTML(l, key=String(l.Id)){
+  const go=fn=>`event.stopPropagation();toggleLeadMoreMenu('${key}',null,false);${fn}`;
+  return `<button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" aria-label="More actions" aria-haspopup="menu" onclick="event.stopPropagation();toggleLeadMoreMenu('${key}',this)">⋯</button>
+    <div class="call-channel-drop lead-more-drop" id="lmd-${key}" role="menu" style="position:fixed;z-index:10050">
       <button role="menuitem" onclick="${go(`snoozeReminderLead(${l.Id})`)}">⏰ Snooze reminder</button>
       <button role="menuitem" onclick="${go(`openFollowupForLead(${l.Id})`)}">📅 Follow-up task</button>
       <button role="menuitem" onclick="${go(`openSendTemplateModal([${l.Id}])`)}">📣 WhatsApp template</button>
+      <div class="lmd-sep"></div>
+      ${mtgMenuItems(l, go)}
       <div class="lmd-sep"></div>
       <button role="menuitem" onclick="${go(`markLeadWon(${l.Id},event)`)}">✅ Mark Won</button>
       <button role="menuitem" class="lead-spam-btn lmd-danger" onclick="${go(`markLeadSpam(${l.Id},event)`)}">🚫 Mark as spam</button>
@@ -14675,6 +14762,9 @@ function mtgRenderConfig(){
   $id('mtgOptCancel').checked=s.cancel_followup!==false;
   $id('mtgOptNudge').checked=s.nudge!==false;
   $id('mtgOptBotShare').checked=!!s.bot_share;
+  $id('mtgOptRepBrief').checked=!!s.rep_brief;
+  const pts=s.points||{};
+  $id('mtgPointsInputs').innerHTML=MTG_POINT_FIELDS.map(([k,label])=>`<label style="display:flex;align-items:center;justify-content:space-between;gap:6px">${label}<input class="form-input mtg-pt" data-k="${k}" type="number" min="-100" max="100" step="1" value="${esc(pts[k]??'')}" style="width:64px;padding:5px 6px"></label>`).join('');
   $id('mtgTplName').value=s.template_name||'';
   $id('mtgTplLang').value=s.template_lang||'en';
   const conn=$id('mtgConnStatus');
@@ -14685,6 +14775,7 @@ function mtgRenderConfig(){
   }
   $id('mtgSendLink').innerHTML=cfg.links.map((l,i)=>`<option value="${i}">${esc(l.name)}</option>`).join('');
 }
+const MTG_POINT_FIELDS=[['scheduled','Meeting booked'],['held','Meeting held'],['outcome_fast','Outcome in 24h'],['interested','Interested'],['rebook','No-show rebooked'],['late_outcome','Outcome late (48h+)']];
 function mtgAddLinkRow(l={name:'',url:''}){
   const list=$id('mtgLinksList');
   if(list.children.length>=6){ showToast('Up to 6 meeting types','err'); return; }
@@ -14706,6 +14797,8 @@ async function mtgSaveConfig(){
   const settings={
     confirm:$id('mtgOptConfirm').checked, remind24:$id('mtgOptRemind24').checked, remind1:$id('mtgOptRemind1').checked,
     cancel_followup:$id('mtgOptCancel').checked, nudge:$id('mtgOptNudge').checked, bot_share:$id('mtgOptBotShare').checked,
+    rep_brief:$id('mtgOptRepBrief').checked,
+    points:Object.fromEntries([...document.querySelectorAll('#mtgPointsInputs .mtg-pt')].map(i=>[i.dataset.k, i.value])),
     template_name:$id('mtgTplName').value.trim(), template_lang:$id('mtgTplLang').value.trim()||'en',
   };
   btn.disabled=true; msg.textContent='Saving…'; msg.className='save-msg';
@@ -14800,6 +14893,7 @@ async function mtgLoadMeetings(){
     const section=(title, items, withOutcome, empty)=>`<div style="margin-bottom:16px"><div class="form-label" style="margin-bottom:2px">${title} <span style="color:var(--muted);font-weight:500">(${items.length})</span></div>${items.length?items.map(m=>row(m, withOutcome)).join(''):`<div class="s-note" style="margin:4px 0 0">${empty}</div>`}</div>`;
     lists.innerHTML=
       section('🗓️ Upcoming meetings', d.upcoming||[], false, 'No upcoming meetings.')+
+      ((d.agreed||[]).length?section('🕓 Agreed — time not fixed', d.agreed, false, ''):'')+
       section('📝 How did it go?', d.needs_outcome||[], true, 'Nothing waiting for an outcome.')+
       section('🕘 Recent activity', d.recent||[], false, 'No activity yet — send your first meeting link above.')+
       mtgRepsTable(d.stats?.reps||{});
@@ -14816,8 +14910,8 @@ function mtgRepsTable(reps){
   if(!rows.length) return '';
   const name=email=>(getTeamMembers?.()||[]).find(m=>sameEmail(m.email,email))?.name||email;
   return `<div class="form-label" style="margin-bottom:4px">👥 By rep</div><div style="overflow-x:auto"><table style="width:100%;font-size:12px;border-collapse:collapse">
-    <tr style="color:var(--muted);text-align:left"><th style="padding:4px">Rep</th><th>Sent</th><th>Booked</th><th>Attended</th><th>No-show</th></tr>
-    ${rows.map(([e,r])=>`<tr style="border-top:1px solid var(--line)"><td style="padding:4px">${esc(name(e))}</td><td>${r.sent}</td><td>${r.booked}</td><td>${r.attended}</td><td>${r.no_show}</td></tr>`).join('')}</table></div>`;
+    <tr style="color:var(--muted);text-align:left"><th style="padding:4px">Rep</th><th>Sent</th><th>Clicked</th><th>Booked</th><th>Attended</th><th>No-show</th><th>Show rate</th><th>Interested</th></tr>
+    ${rows.map(([e,r])=>`<tr style="border-top:1px solid var(--line)"><td style="padding:4px">${esc(name(e))}</td><td>${r.sent}</td><td>${r.clicked??'—'}</td><td>${r.booked}</td><td>${r.attended}</td><td>${r.no_show}</td><td>${r.attended+r.no_show?Math.round(r.attended/(r.attended+r.no_show)*100)+'%':'—'}</td><td>${r.interested??'—'}</td></tr>`).join('')}</table></div>`;
 }
 async function mtgSetOutcome(id, outcome){
   try{
@@ -14841,6 +14935,259 @@ document.addEventListener('click',e=>{
   const box=$id('mtgLeadResults');
   if(box && box.style.display==='block' && !e.target.closest('#mtgLeadResults') && e.target.id!=='mtgLeadSearch') box.style.display='none';
 });
+
+/* ── LEAD MEETINGS (lead ⋯ menu → 📅 Mark meeting scheduled / 🕓 Meeting pending / …) ──
+   Every meeting action lives in the lead's ⋯ menu (Leads list/table rows, the lead detail ⋯, and
+   Chats ⋮ → 📅 Meeting); the lead itself only shows a small badge. State per lead comes from
+   /meetings/lead-states (worker.js mtgLeadState) and drives the badge, the menu items and the
+   Leads "Meeting" filter. Works without Cal.com — manual meetings get reminders too. */
+let _mtgStates={}, _mtgStatesAt=0, _mtgStatesSig='', _mtgModal=null;
+const MTG_BADGE_STYLE={scheduled:'background:#D1FAE5;color:#065F46', pending:'background:#FEF3C7;color:#92400E', awaiting_outcome:'background:#E5E7EB;color:#374151', rebook:'background:#FEE2E2;color:#991B1B'};
+const MTG_MODE_LABELS={video:'🎥 Video call', phone:'📞 Phone call', in_person:'🤝 In person'};
+function mtgShortWhen(iso){
+  const d=new Date(iso||'');
+  if(!Number.isFinite(d.getTime())) return '';
+  const day=d.toDateString()===new Date().toDateString()?'Today':d.toDateString()===new Date(Date.now()+86400e3).toDateString()?'Tomorrow':d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'});
+  return day+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+}
+function mtgBadgeText(st){
+  if(!st) return '';
+  if(st.state==='scheduled') return '📅 '+mtgShortWhen(st.start_at);
+  if(st.state==='pending') return st.link?'🕓 Link sent':'🕓 Meeting pending';
+  if(st.state==='awaiting_outcome') return '✅ Log meeting outcome';
+  if(st.state==='rebook') return st.outcome==='no_show'?'⚠️ No-show — rebook':'⚠️ Meeting cancelled';
+  return '';
+}
+function leadMeetingBadge(l){
+  const st=_mtgStates[l?.Id]; const txt=mtgBadgeText(st);
+  if(!txt) return '';
+  const title=`${st.title||'Meeting'}${st.start_at?' · '+mtgWhen(st.start_at):''}${st.mode?' · '+(MTG_MODE_LABELS[st.mode]||''):''}`;
+  return `<span class="tag mtg-badge" data-mtg="${st.state}" title="${esc(title)}" style="${MTG_BADGE_STYLE[st.state]||''};border:none">${esc(txt)}</span>`;
+}
+async function mtgLoadLeadStates(force=false){
+  if(!sessionToken || (!force && Date.now()-_mtgStatesAt<60000)) return;
+  _mtgStatesAt=Date.now();
+  try{
+    const d=await mtgApi('/meetings/lead-states');
+    const sig=JSON.stringify(d.states||{});
+    if(sig===_mtgStatesSig) return;
+    _mtgStatesSig=sig; _mtgStates=d.states||{};
+    if(allLeads.length){ _rerenderVisibleLeads(); mtgRenderHomeToday(); }
+    if(currentLead) mtgRenderDetailLine(currentLead);
+  }catch(e){ /* meetings storage not set up — no badges */ }
+  mtgLoadArenaEvents();
+  if(!_mtgConfig) mtgApi('/meetings/config').then(d=>{ _mtgConfig=d.config; }).catch(()=>{});
+}
+function mtgRenderDetailLine(lead){
+  const el=$id('detailMeetingLine'); if(!el) return;
+  const st=_mtgStates[lead?.Id];
+  el.innerHTML=st?`<span style="cursor:pointer" onclick="openMeetingForLead(${lead.Id})">${leadMeetingBadge(lead)}</span>`:'';
+}
+// The meeting items in a lead's ⋯ menu — only what fits the lead's current meeting state.
+function mtgMenuItems(l, go){
+  const st=_mtgStates[l.Id], items=[];
+  const it=(fn,label,cls='')=>items.push(`<button role="menuitem"${cls?` class="${cls}"`:''} onclick="${go(fn)}">${label}</button>`);
+  if(st?.state==='scheduled'){ it(`openMeetingModal(${l.Id},'reschedule')`,'✏️ Reschedule meeting'); it(`mtgCancelMeeting(${l.Id})`,'❌ Cancel meeting'); }
+  else if(st?.state==='awaiting_outcome') it(`openMeetingModal(${l.Id},'outcome')`,'📝 Log meeting outcome');
+  else if(st?.state==='pending' && !st.link){ it(`openMeetingModal(${l.Id},'schedule')`,'📅 Fix meeting time'); it(`mtgCancelMeeting(${l.Id})`,'❌ Cancel meeting'); }
+  else{ it(`openMeetingModal(${l.Id},'schedule')`,'📅 Mark meeting scheduled'); it(`mtgMarkPending(${l.Id})`,'🕓 Meeting pending'); }
+  if(_mtgConfig?.enabled && st?.state!=='scheduled') it(`mtgSendLinkForLead(${l.Id})`,'🔗 Send booking link');
+  if(st) it(`openMeetingModal(${l.Id},'history')`,'🗂 Meeting history');
+  return items.join('');
+}
+function openMeetingForLead(leadId){
+  const st=_mtgStates[leadId];
+  openMeetingModal(leadId, st?.state==='scheduled'?'reschedule':st?.state==='awaiting_outcome'?'outcome':'schedule');
+}
+
+function _mtgDefaultStart(){
+  const d=new Date(Date.now()+86400e3); d.setMinutes(0,0,0);
+  if(d.getHours()<10||d.getHours()>18) d.setHours(11);
+  return d;
+}
+function _mtgLocalDate(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function _mtgLocalTime(d){ return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+async function openMeetingModal(leadId, mode='schedule'){
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const st=_mtgStates[leadId];
+  _mtgModal={leadId, mode, id:(mode==='reschedule'||mode==='outcome'||(mode==='schedule'&&st?.state==='pending'&&!st.link))?st?.id:null};
+  $id('mtgModalTitle').textContent={schedule:'📅 Mark meeting scheduled', reschedule:'✏️ Reschedule meeting', outcome:'📝 How did the meeting go?', history:'🗂 Meeting history'}[mode];
+  $id('mtgModalLead').innerHTML=`<b>${esc(leadDisplayName(lead)||'Lead')}</b> · ${esc(maskPhone(lead.Phone))}${st?' · '+leadMeetingBadge(lead):''}`;
+  const form=mode==='schedule'||mode==='reschedule';
+  $id('mtgModalForm').style.display=form?'block':'none';
+  $id('mtgModalSave').style.display=form?'':'none';
+  $id('mtgModalOutcome').style.display=mode==='outcome'?'block':'none';
+  $id('mtgModalHistory').innerHTML='';
+  if(form){
+    const start=st?.start_at&&mode==='reschedule'?new Date(st.start_at):_mtgDefaultStart();
+    $id('mtgFTitle').value=st?.title&&st.title!=='Meeting'?st.title:'';
+    $id('mtgFDate').value=_mtgLocalDate(start);
+    $id('mtgFTime').value=_mtgLocalTime(start);
+    const dur=st?.end_at&&st?.start_at?Math.round((Date.parse(st.end_at)-Date.parse(st.start_at))/60000):30;
+    $id('mtgFDuration').value=[15,30,45,60,90].includes(dur)?String(dur):'30';
+    $id('mtgFMode').value=st?.mode||'video';
+    $id('mtgFWhere').value=st?.mode==='in_person'?(st.location||''):(st?.join_url||'');
+    $id('mtgFOwner').innerHTML=teamMemberOptions(st?.owner||lead.Owner||myEmail||'');
+    $id('mtgFNote').value='';
+    $id('mtgFNotify').checked=!!lead.Phone && !isIgLead(lead);
+    mtgModeChanged();
+  }
+  if(mode==='outcome') $id('mtgModalOutcome').innerHTML=`<div class="s-note" style="margin-bottom:8px">${esc(st?.title||'Meeting')}${st?.start_at?' · '+esc(mtgWhen(st.start_at)):''}</div><div style="display:flex;gap:8px;flex-wrap:wrap">${Object.entries(MTG_OUTCOME_LABELS).map(([k,v])=>`<button class="btn btn-secondary btn-sm" type="button" onclick="mtgModalOutcome('${k}')">${v}</button>`).join('')}</div>`;
+  openModal('modalMeeting');
+  if(mode==='history'||mode==='outcome') mtgRenderLeadHistory(leadId);
+}
+function mtgModeChanged(){
+  const m=$id('mtgFMode').value, w=$id('mtgFWhere');
+  w.style.display=m==='phone'?'none':'';
+  w.placeholder=m==='in_person'?'Address / location':'Meeting link (Zoom, Google Meet…) — optional';
+}
+async function mtgRenderLeadHistory(leadId){
+  const box=$id('mtgModalHistory');
+  box.innerHTML='<div class="s-note">Loading…</div>';
+  try{
+    const d=await mtgApi(`/meetings/lead?lead_id=${leadId}`);
+    const rows=d.meetings||[];
+    box.innerHTML=`<div class="form-label" style="margin:12px 0 4px">History</div>`+(rows.length?rows.map(m=>{
+      const status=m.outcome?MTG_OUTCOME_LABELS[m.outcome]:(m.status==='agreed'?'Pending — time not fixed':(MTG_STATUS_LABELS[m.status]||m.status));
+      const when=m.start_at?mtgWhen(m.start_at):(m.sent_at?'Link sent '+mtgAgo(m.sent_at):mtgAgo(m.created_at));
+      const by=m.scheduled_by||m.sent_by;
+      return `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:13px"><div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(m.title||m.link_name||'Meeting')}</b><span style="color:var(--muted);font-size:12px">${esc(status||'')}</span></div>
+        <div style="color:var(--muted);font-size:12px">${esc(when)}${m.mode?' · '+esc(MTG_MODE_LABELS[m.mode]||m.mode):''}${m.location?' · '+esc(m.location):''}${m.join_url?` · <a href="${esc(m.join_url)}" target="_blank" rel="noopener">Join</a>`:''}${by?' · by '+esc(by):''}</div>${m.outcome_note?`<div style="font-size:12px">${esc(m.outcome_note)}</div>`:''}</div>`;
+    }).join(''):'<div class="s-note">No meetings yet.</div>');
+  }catch(e){ box.innerHTML=`<div class="s-note">Could not load: ${esc(e.message)}</div>`; }
+}
+async function mtgModalSave(force=false){
+  const m=_mtgModal; if(!m) return;
+  const date=$id('mtgFDate').value, time=$id('mtgFTime').value;
+  if(!date||!time){ showToast('Pick the date and time','err'); return; }
+  const start=new Date(`${date}T${time}`);
+  const mode=$id('mtgFMode').value, where=$id('mtgFWhere').value.trim();
+  const body={id:m.id||undefined, lead_id:m.leadId, status:'scheduled', start_at:start.toISOString(), duration_min:Number($id('mtgFDuration').value)||30,
+    title:$id('mtgFTitle').value.trim()||'Meeting', mode, location:mode==='in_person'?where:'', join_url:mode==='video'?where:'',
+    owner:$id('mtgFOwner').value||myEmail||'', note:$id('mtgFNote').value.trim(), notify:$id('mtgFNotify').checked, force};
+  if(mode==='video' && where && !/^https?:\/\//i.test(where)){ showToast('The meeting link must start with https://','err'); return; }
+  const btn=$id('mtgModalSave'); btn.disabled=true;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meetings/manual`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(r.status===409 && d.code==='MEETING_EXISTS'){
+      if(confirm(`${d.error}\n\nSchedule another meeting anyway?`)) return mtgModalSave(true);
+      return;
+    }
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    closeModal('modalMeeting');
+    const pts=!m.id&&window._mtgPoints?.scheduled?` · +${window._mtgPoints.scheduled} pts once it's held`:'';
+    showToast((d.notified?'📅 Meeting saved — confirmation sent on WhatsApp':d.notified===false?`📅 Meeting saved (WhatsApp not sent: ${d.notify_error||'error'})`:'📅 Meeting saved')+pts, d.notified===false?'err':'ok');
+    mtgAfterChange(m.leadId, d.state);
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+  finally{ btn.disabled=false; }
+}
+async function mtgMarkPending(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  try{
+    const d=await mtgApi('/meetings/manual',{method:'POST',body:JSON.stringify({lead_id:leadId, status:'agreed', owner:lead.Owner||myEmail||''})});
+    // A follow-up task in 2 days to fix the time — same task shape the Tasks page writes.
+    const state=getTasksState();
+    state.items.push({id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title:`Fix meeting time — ${lead.Name||'lead'}`,
+      notes:'Client agreed to a meeting; time not fixed yet.', due_date:new Date(Date.now()+2*86400e3).toISOString().slice(0,10), due_time:'',
+      lead_id:leadId, lead_name:lead.Name||'', assignee_email:lead.Owner||myEmail||'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()});
+    await saveTasksState(state).catch(()=>{});
+    showToast('🕓 Meeting pending — follow-up task added','ok');
+    mtgAfterChange(leadId, d.state);
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+}
+async function mtgCancelMeeting(leadId){
+  const st=_mtgStates[leadId]; if(!st) return;
+  if(!confirm(`Cancel this meeting${st.start_at?' on '+mtgWhen(st.start_at):''}?`)) return;
+  try{ await mtgApi('/meetings/cancel',{method:'POST',body:JSON.stringify({id:st.id})}); showToast('Meeting cancelled','ok'); mtgAfterChange(leadId); }
+  catch(e){ showToast('Error: '+e.message,'err'); }
+}
+async function mtgModalOutcome(outcome){
+  const m=_mtgModal; if(!m?.id) return;
+  closeModal('modalMeeting');
+  await mtgSetOutcome(m.id, outcome);
+  if(outcome==='no_show') showToast('🚫 No-show saved — use ⋯ → 📅 Mark meeting scheduled to rebook','ok');
+  mtgAfterChange(m.leadId);
+}
+async function mtgSendLinkForLead(leadId, force=false){
+  const links=_mtgConfig?.links||[];
+  let idx=0;
+  if(links.length>1){
+    const pick=prompt('Which meeting link?\n'+links.map((l,i)=>`${i+1}. ${l.name}`).join('\n'),'1');
+    if(pick===null) return;
+    idx=Math.max(0,Math.min(links.length-1,(parseInt(pick)||1)-1));
+  }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meetings/send`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:leadId, link_index:idx, send:true, sent_by:myEmail||'', force})});
+    const d=await r.json().catch(()=>({}));
+    if(r.status===409 && d.code==='MEETING_EXISTS'){ if(confirm(`${d.error}\n\nSend a new booking link anyway?`)) return mtgSendLinkForLead(leadId, true); return; }
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    if(d.whatsapp_sent) showToast('🔗 Booking link sent on WhatsApp','ok');
+    else{ navigator.clipboard?.writeText(d.url).catch(()=>{}); showToast(`WhatsApp not sent (${d.whatsapp_error||'error'}) — link copied`,'err'); }
+    mtgAfterChange(leadId);
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+}
+function mtgAfterChange(leadId, state){
+  if(state!==undefined){ if(state&&state.state!=='done') _mtgStates[leadId]=state; else delete _mtgStates[leadId]; _mtgStatesSig=''; _rerenderVisibleLeads(); }
+  if(currentLead?.Id===leadId) mtgRenderDetailLine(currentLead);
+  mtgLoadLeadStates(true);
+  if($id('mtgLive')?.style.display==='block') mtgLoadMeetings();
+}
+
+// Home → 📅 Today's meetings (hidden when there are none).
+async function mtgRenderHomeToday(){
+  const card=$id('homeMeetingsCard'), el=$id('homeMeetings'); if(!card||!el) return;
+  const today=new Date().toDateString();
+  const todays=Object.entries(_mtgStates).filter(([,st])=>st.state==='scheduled'&&new Date(st.start_at).toDateString()===today)
+    .sort((a,b)=>Date.parse(a[1].start_at)-Date.parse(b[1].start_at));
+  const awaiting=Object.entries(_mtgStates).filter(([,st])=>st.state==='awaiting_outcome');
+  if(!todays.length&&!awaiting.length){ card.style.display='none'; return; }
+  card.style.display='';
+  const name=id=>esc(leadDisplayName(allLeads.find(l=>String(l.Id)===String(id))||{})||'Lead');
+  el.innerHTML=todays.map(([id,st])=>`<div class="follow-item" onclick="openDetail(${Number(id)})">
+      <div class="fi-avatar">📅</div>
+      <div class="fi-body"><div class="fi-name">${name(id)}</div><div class="fi-meta">${esc(new Date(st.start_at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}))} · ${esc(st.title||'Meeting')}</div></div>
+      ${st.join_url?`<a class="fi-badge" href="${esc(st.join_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Join</a>`:''}
+    </div>`).join('')
+    +(awaiting.length?`<div class="follow-item" onclick="event.stopPropagation();openMeetingModal(${Number(awaiting[0][0])},'outcome')"><div class="fi-avatar">✅</div><div class="fi-body"><div class="fi-name">${awaiting.length} meeting${awaiting.length>1?'s':''} waiting for an outcome</div><div class="fi-meta">Next: ${name(awaiting[0][0])} — tap to log</div></div></div>`:'');
+}
+
+// Team Performance → 📅 Meetings by rep. The points themselves also go into the Home 🏆 Weekly
+// Arena (call-score.js csEvents reads window._mtgArenaEvents, loaded by mtgLoadArenaEvents).
+let _mtgPointsDays=7;
+async function mtgRenderPointsBoard(days){
+  if(days) _mtgPointsDays=days;
+  const el=$id('teamPointsContent'); if(!el) return;
+  document.querySelectorAll('.mtg-pts-tab').forEach(b=>b.classList.toggle('on',Number(b.dataset.days)===_mtgPointsDays));
+  let d;
+  try{ d=await mtgApi(`/meetings/points?days=${_mtgPointsDays}`); }
+  catch(e){ el.innerHTML=`<div class="s-note">Could not load meetings: ${esc(e.message)}</div>`; return; }
+  const w=d.weights||{};
+  const rows=Object.entries(d.reps||{}).map(([e,r])=>{
+    const held=r.held||0, noShow=r.no_show||0;
+    return {name:getTeamMembers().find(m=>sameEmail(m.email,e))?.name||e, points:r.points||0, provisional:r.provisional||0,
+      booked:r.scheduled||0, held, interested:r.interested||0, show:held+noShow?Math.round(held/(held+noShow)*100)+'%':'—'};
+  }).sort((a,b)=>b.points-a.points||b.booked-a.booked);
+  el.innerHTML=rows.length?`<div style="overflow-x:auto"><table style="width:100%;font-size:13px;border-collapse:collapse">
+    <tr style="color:var(--muted);text-align:left;font-size:12px"><th style="padding:6px 4px">Rep</th><th>Booked</th><th>Held</th><th>Show rate</th><th>Interested</th><th>Meeting points</th></tr>
+    ${rows.map(r=>`<tr style="border-top:1px solid var(--line)"><td style="padding:6px 4px">${esc(r.name)}</td><td>${r.booked}</td><td>${r.held}</td><td>${r.show}</td><td>${r.interested}</td><td><b>${r.points}</b>${r.provisional?` <span style="color:var(--muted);font-size:11px" title="Points for booked meetings, confirmed once the meeting is held">+${r.provisional} pending</span>`:''}</td></tr>`).join('')}
+  </table></div>`:'<div class="s-note">No meetings in this period yet — mark one from a lead\'s ⋯ menu.</div>';
+  $id('teamPointsRules').textContent=`Added to the 🏆 Weekly Arena: meeting booked +${w.scheduled} (counts once it's held, one per lead) · held +${w.held} · outcome logged within 24h +${w.outcome_fast} · interested +${w.interested} · no-show rebooked within 3 days +${w.rebook} · outcome not logged after 48h ${w.late_outcome}. Change the values in Settings → Integrations → 📞 Cal.com Meetings.`;
+}
+let _mtgArenaAt=0;
+async function mtgLoadArenaEvents(){
+  if(Date.now()-_mtgArenaAt<120000) return;
+  _mtgArenaAt=Date.now();
+  try{
+    const d=await mtgApi('/meetings/points?days=40');
+    const sig=JSON.stringify(d.events||[]);
+    window._mtgPoints=d.weights||null;
+    if(sig===window._mtgArenaSig) return;
+    window._mtgArenaEvents=(d.events||[]).map(e=>({by:String(e.by||'').toLowerCase(), ms:e.ms, kind:e.kind, pts:e.pts, leadId:e.lead_id}));
+    window._mtgArenaSig=sig;
+    if(typeof csRenderHomeArena==='function') csRenderHomeArena();
+  }catch(e){}
+}
 
 async function flowvyneInit(){
   const badge=$id('flowvyneStatusBadge');
@@ -18817,6 +19164,7 @@ function renderTeamPerformance(){
   try{ renderCallTrackingReport(); }catch(e){}
   try{ renderTeamFunnelAnalytics(); }catch(e){}
   try{ renderRevenueForecast(); }catch(e){}
+  try{ mtgRenderPointsBoard(); }catch(e){}
   const members=getTeamMembers();
   const state=getTasksState();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';

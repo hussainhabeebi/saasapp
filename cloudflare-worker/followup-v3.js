@@ -157,7 +157,7 @@ function parseSkip(state){ try{ const s=JSON.parse(state?.skip_json||'{}'); retu
 // in: {lead, steps:{1..5: followup_ladder_steps row}, cfg, state, sends:[{step,kind,sent_at,replied_at,variant}],
 //      enabledAt, now, tz, hasOrder, reengageReady, terminalStages?}
 export function fv3Decide(input){
-  const {lead, steps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false}=input;
+  const {lead, steps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false, hasMeeting=false}=input;
   const stage=String(lead?.Stage||'');
   const lastCust=fv3LastCustomerMs(lead);
   const out=(status, reason, text, extra={})=>({status, reason, text, next:null, steps:stepRows(null), cycle:lastCust?new Date(lastCust).toISOString():null, ...extra});
@@ -184,6 +184,7 @@ export function fv3Decide(input){
   if(FV3_BOOKED_STAGES.has(stage)) return out('goal_reached', 'booked', 'Lead booked — sequence finished.');
   if(cfg.exit_stages.includes(stage)) return out('goal_reached', 'exit_stage', `Lead reached "${stage}" — sequence finished.`);
   if(lead?.Handover==='Yes' || stage==='human_handover') return out('human', 'human_handling', 'A person from your team is handling this chat — follow-ups are on hold.');
+  if(hasMeeting) return out('meeting', 'meeting_booked', 'A meeting is booked or agreed with this lead — follow-ups are on hold until its outcome is logged (meeting reminders still go out).');
   if(FV3_CLOSED_STAGES.has(stage) || input.terminalStages?.has?.(stage)) return out('stopped', 'closed', 'Lead is closed — no more follow-ups.');
   const created=ms(lead?.CreatedAt)||ms(lead?.Date);
   if(!cfg.include_existing_leads && ms(enabledAt) && (!created || created<ms(enabledAt))) return out('not_enrolled', 'existing_lead', 'Lead came in before Follow-up V3 was switched on, so it isn\'t enrolled.');
@@ -256,6 +257,7 @@ export const FV3_REASON_INFO={
   existing_lead:{label:'Came in before Follow-up V3 was switched on', fix:'Turn on "Also follow up leads from before V3" in Settings below.', setting:'include_existing_leads'},
   template_pending:{label:'Waiting for a WhatsApp template to be approved', fix:'Day 1/3/7 follow-ups need approved templates — use "Re-check templates" below, or pick an approved template for each step.'},
   ladder_done:{label:'All follow-ups sent, or the 24-hour chat window closed before one could go', fix:'Leads silent for more than 24 hours can only get template follow-ups — make sure the Day 1/3/7 templates are approved.'},
+  meeting_booked:{label:'Meeting booked or agreed', ok:true},
   human_handling:{label:'Handed to your team (handover)', fix:'Follow-ups pause while a person handles the chat. Close the handover (or resolve the chat) when your team is done so follow-ups resume.'},
   agent_replied:{label:'Your team replied last', fix:'Follow-ups wait until the customer writes again — expected.'},
   ordered:{label:'Customer placed an order', ok:true},
@@ -687,6 +689,7 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
   await deps.ensureLeadsColumns?.(env, ['LastCustomerMsgAt', 'LastAgentMsgAt', 'InterestedProduct', 'Follow up 4', 'Follow up 5']).catch(()=>null);
   const where=`(ClientId,eq,${cid})~and(OptOut,neq,Yes)`;
   const fields=fv3LeadFields(await deps.leadColumns?.(env).catch(()=>null));
+  const meetingLeads=await deps.meetingLeadIds?.(env, cid).catch(()=>null)||new Set();
   const due=[];
   const stateWrites=[];
   for(let page=1; page<=30; page++){
@@ -702,7 +705,7 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
       // Only look up orders for leads it can matter for (ecom, and either due or recently followed up).
       const recent=sends.some(s=>(ms(s.sent_at)||0)>now-CONVERSION_WINDOW_DAYS*D);
       const hasOrder=lead.Phone?fv3OrderCounts((await getOrders())?.[digits10(lead.Phone)], lead):false;
-      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl});
+      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id))});
       if(d.status==='goal_reached' && recent) stateWrites.push(markConversion(env, cid, lead, sends, now, hasOrder?orders?.[digits10(lead.Phone)]:null));
       const nextStep=d.next?.step??null, nextDue=d.next?.due_at??null;
       if(!state || state.status!==d.status || state.reason!==d.reason || (state.next_step??null)!==nextStep || (state.next_due_at??null)!==nextDue || (state.lead_name||'')!==String(lead.Name||'')){
@@ -838,7 +841,8 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
     const o=await deps.orderPhones(env, c).catch(()=>null);
     hasOrder=fv3OrderCounts(o?.[digits10(lead.Phone)], lead);
   }
-  const d=fv3Decide({lead, steps, cfg:settings.cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates)});
+  const hasMeeting=!!(await deps.leadHasMeeting?.(env, c.Id, lead.Id).catch(()=>false));
+  const d=fv3Decide({lead, steps, cfg:settings.cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates), hasMeeting});
   const lastFail=await env.DB.prepare(`SELECT error_message, error_code, failed_at, step FROM followup_send_failures WHERE lead_id=? AND failed_at>=? ORDER BY failed_at DESC LIMIT 1`)
     .bind(Number(lead.Id), new Date(now-3*D).toISOString()).first().catch(()=>null);
   return {enabled:true, ...d,

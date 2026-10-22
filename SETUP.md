@@ -2658,6 +2658,43 @@ Cal.com URL, up to 6). Until then the card shows only the links step. After the 
   (the column is created on demand). `buildKbProcessorText()` then adds a `## MEETING LINK` section
   to the knowledge base. With the option off, the field is empty and nothing is added.
 
+### Lead meetings (lead ⋯ menu) — works with or without Cal.com
+
+**Setup:** apply `cloudflare-worker/migrations/0119_meetings_manual.sql` (the Worker also adds these
+columns itself on first use, `mtgEnsureSchema`).
+
+- **Where the buttons are:** only in the lead's **⋯** menu (Leads list/table row, and the ⋯ in the
+  lead detail) and in Chats **⋮ → 📅 Meeting…**. The menu shows only what fits the lead's state:
+  📅 Mark meeting scheduled / 🕓 Meeting pending → ✏️ Reschedule / ❌ Cancel → 📝 Log meeting outcome,
+  plus 🔗 Send booking link (when Cal.com links exist) and 🗂 Meeting history. Log Call also has a
+  **Next step** dropdown (📅 Meeting scheduled / 🕓 Meeting pending).
+- **Badge:** each lead shows its meeting state (`GET /meetings/lead-states`, `mtgLeadState`):
+  📅 date/time (scheduled), 🕓 pending (agreed without a time, Cal.com request, or link sent in the
+  last 14 days), ✅ log outcome (time has passed), ⚠️ no-show / cancelled. Shown on list/table rows,
+  kanban cards, the lead detail and the Chats header. The Leads filters have a **Meeting** filter.
+  Home shows **📅 Today's Meetings** when there are any.
+- **Mark meeting scheduled** (`POST /meetings/manual`): date, time, length, video/phone/in person,
+  link or address, owner, note, and "send the lead a WhatsApp confirmation and reminders"
+  (`meetings.notify`). These meetings get the same confirmation, 24h/1h reminders and auto-complete
+  as Cal.com bookings, even when the client has no Cal.com link. A lead with an active meeting is
+  refused (409 `MEETING_EXISTS`) unless the rep confirms. A later Cal.com booking for the same lead
+  updates the rep's meeting instead of adding a second one.
+- **Meeting pending** stores `status='agreed'` (no time) and adds a "Fix meeting time" task due in 2 days.
+- **No duplicate meeting requests:** while a lead's meeting is scheduled, pending (agreed) or
+  waiting for its outcome, the classic follow-up ladder, Smart Follow-ups and Follow-up V3 hold
+  the lead (V3 shows "On hold — meeting booked"). The AI bot's prompt says the meeting is already
+  booked, so it doesn't ask again. Sending a booking link to a lead with a fixed meeting asks the rep first.
+- **Points:** meeting points go into the Home 🏆 Weekly Arena (`GET /meetings/points` → events):
+  meeting booked +25 (counted once the meeting is held, one per lead), held +20, outcome logged
+  within 24h +5, interested +15, no-show rebooked within 3 days +10, outcome not logged after
+  48h −10. There is a new 📅 Meeting Maker badge. Team Performance → 📅 Meetings by Rep shows
+  booked / held / show rate / interested. Point values are editable in the Cal.com Meetings card
+  (`settings.points`).
+- **Rep brief** (optional, "Sales team" in the card): 30 minutes before a meeting, the rep gets a
+  WhatsApp with the lead's details, answers and last messages. It goes to their number from User
+  Management, the same one Hot Lead Alerts use.
+
+
 ## AI Models — bring your own key (Settings → Integrations → 🤖 AI Models)
 
 By default every client runs on the shared Gemini key (`GEMINI_API_KEY`). With this card a client

@@ -17,6 +17,7 @@
     completed:['✅','All follow-ups sent'], goal_reached:['🎯','Sequence finished'], human:['🙋','On hold — your team is handling it'],
     agent_replied:['💬','On hold — your team replied last'], paused:['⏸','Follow-ups paused'], stopped:['🚫','Stopped'],
     not_enrolled:['—','Not in a follow-up sequence'], capped:['⏸','Taking a break'],
+    meeting:['📅','On hold — meeting booked'],
   };
   const STEP_ICON={sent:'✅', skipped:'⏭', expired:'⌛', not_set:'–', pending_template:'⏳', next:'▶', upcoming:'○'};
   const STEP_TEXT={sent:'Sent', skipped:'Skipped', expired:'Window closed — skipped', not_set:'Not set up', pending_template:'Template waiting for approval', next:'Next', upcoming:'Upcoming'};

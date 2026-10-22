@@ -58,6 +58,12 @@ window.addEventListener('message', e=>{
   else if(d.type==='thread'){ _chatLeadId=d.leadId||null; }
   else if(d.type==='read'){ updateChatBadge(); }
   else if(d.type==='home'){ if(typeof navigate==='function') navigate('home'); }
+  else if(d.type==='meeting'){
+    // Chats ⋮ → 📅 Meeting… — the lead's meeting actions (dashboard.html openMeetingForLead).
+    const lead=(allLeads||[]).find(l=>String(l.Id)===String(d.leadId));
+    if(lead&&typeof openMeetingForLead==='function') openMeetingForLead(lead.Id);
+    else if(typeof showToast==='function') showToast('This lead isn\'t loaded in the CRM yet — try again after it refreshes.');
+  }
   else if(d.type==='openLead'){
     const lead=(allLeads||[]).find(l=>String(l.Id)===String(d.leadId));
     if(lead&&typeof openDetail==='function') openDetail(lead.Id);
