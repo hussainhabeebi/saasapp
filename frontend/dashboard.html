@@ -602,6 +602,22 @@ tr:hover td{background:#FAFCFB}
 .li-body{flex:1;min-width:0}
 .ig-chat-btn,.ig-chat-btn:hover{background:var(--ig);color:#fff;text-decoration:none;border-color:transparent}
 .tv-cat-tbl .n{text-align:right;font-variant-numeric:tabular-nums}
+/* Home → Leads by source: one row per origin (badge + count, open/won/lost bar, figures) — a list
+   rather than a table so it reads the same on a phone as on desktop. */
+.src-rpt-sum{display:flex;gap:6px 16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin:2px 0 6px}
+.src-rpt-sum b{color:var(--ink);font-size:15px;font-variant-numeric:tabular-nums}
+.src-rpt-row{display:block;width:100%;text-align:left;font:inherit;color:inherit;background:none;border:none;border-top:1px solid var(--line);padding:11px 2px;cursor:pointer}
+.src-rpt-row:hover{background:var(--accent-soft)}
+.src-rpt-top{display:flex;align-items:center;gap:8px}
+.src-rpt-top .src-rpt-n{margin-left:auto;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+.src-rpt-top .src-rpt-n small{font-size:11px;font-weight:600;color:var(--muted);margin-left:3px}
+.src-rpt-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--line);margin:8px 0 6px}
+.src-rpt-bar i{display:block;height:100%}
+.src-rpt-meta{display:flex;gap:4px 12px;flex-wrap:wrap;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.src-rpt-meta b{font-weight:700}
+.src-rpt-open{--c:var(--ls)}.src-rpt-won{--c:#059669}.src-rpt-lost{--c:#DC2626}
+.src-rpt-bar i{background:var(--c)}
+.src-rpt-meta span[class]::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c);margin-right:4px;vertical-align:1px}
 .origin-badge{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle;white-space:nowrap}
 /* One colour pair per lead origin (LEAD_ORIGINS) — the badge, the row's left edge and the avatar. */
 .origin-ig{--o:var(--ig);--o-soft:var(--ig-soft)}
@@ -7774,16 +7790,19 @@ function leadsSourceReportHtml(leads){
   const rows=leadsSourceReportRows(leads,_srcRptPeriod);
   const tot=rows.reduce((t,r)=>({total:t.total+r.total, open:t.open+r.open, won:t.won+r.won, lost:t.lost+r.lost}),{total:0,open:0,won:0,lost:0});
   const pct=r=>r.total?Math.round(r.won/r.total*100)+'%':'—';
-  const name=k=>LEAD_ORIGINS[k]?`<span class="origin-badge ${LEAD_ORIGINS[k].cls}" style="margin-left:0">${LEAD_ORIGINS[k].icon} ${esc(LEAD_ORIGINS[k].label)}</span>`:'<span style="color:var(--muted)">Not recorded</span>';
-  const tr=r=>`<tr style="cursor:pointer" onclick="openLeadsOrigin('${r.key}')"><td>${name(r.key)}</td><td class="n">${r.total}</td><td class="n">${r.open}</td><td class="n" style="color:#047857">${r.won}</td><td class="n" style="color:#B91C1C">${r.lost}</td><td class="n">${pct(r)}</td></tr>`;
+  const name=k=>LEAD_ORIGINS[k]?`<span class="origin-badge ${LEAD_ORIGINS[k].cls}" style="margin-left:0">${LEAD_ORIGINS[k].icon} ${esc(LEAD_ORIGINS[k].label)}</span>`:'<span style="color:var(--muted);font-size:12.5px">Not recorded</span>';
+  const seg=(cls,n,t)=>n?`<i class="${cls}" style="width:${n/t*100}%"></i>`:'';
+  const row=r=>`<button type="button" class="src-rpt-row" onclick="openLeadsOrigin('${r.key}')">
+      <div class="src-rpt-top">${name(r.key)}<span class="src-rpt-n">${r.total}<small>lead${r.total===1?'':'s'}</small></span></div>
+      <div class="src-rpt-bar">${seg('src-rpt-open',r.open,r.total)}${seg('src-rpt-won',r.won,r.total)}${seg('src-rpt-lost',r.lost,r.total)}</div>
+      <div class="src-rpt-meta"><span class="src-rpt-open"><b>${r.open}</b> open</span><span class="src-rpt-won"><b>${r.won}</b> won</span><span class="src-rpt-lost"><b>${r.lost}</b> lost</span><span style="margin-left:auto"><b style="color:var(--ink)">${pct(r)}</b> converted</span></div>
+    </button>`;
+  // The totals line only adds something when there's more than one source.
+  const sum=rows.length>1?`<div class="src-rpt-sum"><span><b>${tot.total}</b> leads</span><span><b>${tot.won}</b> won</span><span><b>${tot.lost}</b> lost</span><span><b>${pct(tot)}</b> converted</span></div>`:'';
   return `<div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">🧭 Leads by source
       <select class="form-input" aria-label="Period" style="margin-left:auto;max-width:160px;padding:6px 8px;font-size:12px" onchange="setSrcRptPeriod(this.value)">
         ${LEADS_RPT_PERIODS.map(([k,l])=>`<option value="${k}"${_srcRptPeriod===k?' selected':''}>${l}</option>`).join('')}</select></div>
-    ${rows.length?`<div style="overflow-x:auto"><table class="leads-tbl tv-cat-tbl src-rpt-tbl" style="width:100%;font-size:13px">
-      <thead><tr><th>Source</th><th class="n">Leads</th><th class="n">Open</th><th class="n">Won</th><th class="n">Lost</th><th class="n">Conversion</th></tr></thead>
-      <tbody>${rows.map(tr).join('')}</tbody>
-      <tfoot><tr style="font-weight:700"><td>Total</td><td class="n">${tot.total}</td><td class="n">${tot.open}</td><td class="n">${tot.won}</td><td class="n">${tot.lost}</td><td class="n">${pct(tot)}</td></tr></tfoot>
-    </table></div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}`;
+    ${rows.length?`${sum}<div class="src-rpt-list">${rows.map(row).join('')}</div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}`;
 }
 function renderLeadsOriginChips(){
   const wrap=$id('leadsOriginChips'); if(!wrap) return;
