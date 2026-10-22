@@ -180,6 +180,14 @@ describe('sync, routes, cron, accounting (D1)', ()=>{
     assert.match(db.prepare('SELECT last_error e FROM meta_ads_report_state').get().e, /ads_read/);
   });
 
+  test('a token Meta can\'t parse points to Settings, not to ads_read', async ()=>{
+    globalThis.fetch=async()=>json({error:{message:'Invalid OAuth access token - Cannot parse access token', type:'OAuthException', code:190}}, 400);
+    const r=await marSync(env, client);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /Meta token in Settings → Integrations → Meta Ads isn't valid/);
+    assert.match(r.error, /Paste a fresh System User token with ads_read/);
+  });
+
   test('GET /data syncs on first open and returns per-ad totals for the range', async ()=>{
     const def=await (await req('/meta/ads-report/data')).json();
     assert.equal(def.connected, true);
