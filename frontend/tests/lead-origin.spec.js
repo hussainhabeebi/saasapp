@@ -160,6 +160,10 @@ test('Add Lead: a double tap saves once, and a number that already exists is fla
   await page.locator('#fPhone').fill('9111111111');
   await page.evaluate(() => { window.saveLead(); window.saveLead(); });
   await expect.poll(() => posts).toBe(1);
+  // Let that first save finish (its POST is held 300 ms) — saveLead ignores calls while one is in
+  // flight, so starting the next one too early made this test flaky.
+  // @ts-ignore
+  await expect.poll(() => page.evaluate(() => _leadSaving)).toBe(false);
   // Same last 10 digits as Binu (919876543210) → asked first; Cancel keeps the existing lead.
   await page.evaluate(() => window.openAddLead());
   await page.locator('#fName').fill('Binu again');
