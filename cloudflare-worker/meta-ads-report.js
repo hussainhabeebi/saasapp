@@ -45,6 +45,7 @@ export const MAR_DEFAULTS={
   alert_cpl_max:0,            // cost per CRM lead above this (campaign, yesterday)
   alert_junk_pct:0,           // junk share of a campaign's last-7-day leads (min 5 leads)
   accounting_post:false,      // book monthly Meta spend as an expense in Accounting
+  purchase_labels:['Order placed'], // a lead getting one of these labels (Tags) sends Purchase to Meta; [] = off
 };
 
 const WON_STAGES=new Set(['won','converted','consultation_booked','visit_booked','appt_booked']);
@@ -67,7 +68,23 @@ export function marSettings(raw){
     alert_cpl_max:num(s.alert_cpl_max, 1e9),
     alert_junk_pct:num(s.alert_junk_pct, 100),
     accounting_post:s.accounting_post===true,
+    purchase_labels:s.purchase_labels===undefined?[...MAR_DEFAULTS.purchase_labels]
+      :(Array.isArray(s.purchase_labels)?s.purchase_labels:String(s.purchase_labels||'').split(','))
+        .map(x=>String(x).trim().slice(0,40)).filter((x,i,a)=>x && a.findIndex(y=>y.toLowerCase()===x.toLowerCase())===i).slice(0,10),
   };
+}
+// Does a lead's Tags ("Hot, Order placed") carry one of the purchase labels? Case-insensitive, whole label.
+export function marHasPurchaseLabel(tags, labels){
+  const have=new Set(String(tags||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean));
+  return (labels||[]).some(l=>have.has(String(l).trim().toLowerCase()));
+}
+// The account's purchase labels, without creating a settings row (defaults when there's none).
+export async function marPurchaseLabels(env, cid){
+  try{
+    if(!await marEnsureSchema(env)) return [...MAR_DEFAULTS.purchase_labels];
+    const st=await getState(env, cid);
+    return marSettings(st?.config_json).purchase_labels;
+  }catch(e){ return [...MAR_DEFAULTS.purchase_labels]; }
 }
 
 // Meta reports a lead under several action types; 'lead' is already the total when present.

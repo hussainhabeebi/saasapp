@@ -4306,6 +4306,10 @@ edited in Meta Ads Manager. This tab covers what Ads Manager can't see: what hap
    `Purchase` with the deal value when a lead is won (dashboard), `Lead` for a new ad lead and
    `QualifiedLead` when the bot scores it Hot (server side, `engineReportCapiFromTurn`). Each event
    goes once per lead.
+   **Purchase by label**: a lead given one of the account's purchase labels (Tags; default
+   "Order placed", editable in Ads ROI → settings, blank = off) from the dashboard (the `/nocodb`
+   passthrough) or Chats sends `Purchase` with the deal value — or, for ecommerce, the customer's
+   latest order total (`capiPurchaseFromLabels`).
 5. **Speed to lead**: first call after arrival — within 5 min / 1 h / 24 h, never called, median;
    a list of open ad leads not called yet.
 6. **Staff on ad leads**: per owner — called, answered, median first call, qualified, sales, revenue,

@@ -787,6 +787,7 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
     const used=[...new Set(nc.flatMap(p=>Object.keys(p)).filter(k=>k==='Pinned'||k==='ConvResolved'))];
     if(used.length&&deps.ensureLeadsColumns) await deps.ensureLeadsColumns(env, used);
     await ncPatchLeads(env, deps, nc);
+    if(deps.afterLeadPatches) await deps.afterLeadPatches(env, cid, nc.filter(p=>'Tags' in p));
   }
   const stmts=d1.map(([id, set])=>{ const {sql, vals}=setClause(set); return env.DB.prepare(`UPDATE conversations SET ${sql} WHERE lead_id=?`).bind(...vals, id); });
   for(let i=0;i<stmts.length;i+=50) await env.DB.batch(stmts.slice(i, i+50));

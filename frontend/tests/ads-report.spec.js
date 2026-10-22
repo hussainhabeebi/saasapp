@@ -20,7 +20,7 @@ const DATA = {
   days: [],
 };
 const SETTINGS = {
-  config: { summary_enabled: true, summary_staff: [STAFF], summary_emails: [OWNER], summary_template: '', summary_template_lang: 'en', alerts_enabled: false, alert_spend_no_leads: 0, alert_cpl_max: 0, alert_junk_pct: 0, accounting_post: false },
+  config: { summary_enabled: true, summary_staff: [STAFF], summary_emails: [OWNER], summary_template: '', summary_template_lang: 'en', alerts_enabled: false, alert_spend_no_leads: 0, alert_cpl_max: 0, alert_junk_pct: 0, accounting_post: false, purchase_labels: ['Order placed'] },
   can_edit: true, accounting_enabled: true, whatsapp_users: [STAFF], whatsapp_connected: true, currency: 'INR',
   sends: [], expense_posts: [{ month: '2026-10', amount: 4000, currency: 'INR', status: 'posted' }],
 };
@@ -161,12 +161,14 @@ test('results sent to Meta by match key, and the settings save', async ({ page }
   await expect(page.locator(`#adsSumStaff input[value="${STAFF}"]`)).toBeChecked();
   await expect(page.locator(`#adsSumStaff input[value="${OWNER}"]`)).toBeDisabled(); // no WhatsApp number on file
   await expect(page.locator('#adsExpensePosts')).toContainText('2026-10 · ₹4,000 · posted');
+  await expect(page.locator('#adsPurchaseLabels')).toHaveValue('Order placed');
+  await page.locator('#adsPurchaseLabels').fill('Order placed, Delivered');
   await page.locator('#adsAlertOn').check();
   await page.locator('#adsAlertSpend').fill('500');
   await page.locator('#adsSettingsSave').click();
   await expect(page.locator('#adsSettingsMsg')).toHaveText('✓ Saved');
   const saved = JSON.parse(posts.find((p) => p.path === '/settings').body).config;
-  expect(saved).toMatchObject({ summary_enabled: true, summary_staff: [STAFF], summary_emails: OWNER, alerts_enabled: true, alert_spend_no_leads: 500, accounting_post: false });
+  expect(saved).toMatchObject({ summary_enabled: true, summary_staff: [STAFF], summary_emails: OWNER, alerts_enabled: true, alert_spend_no_leads: 500, accounting_post: false, purchase_labels: ['Order placed', 'Delivered'] });
 });
 
 test('a teammate sees the settings read-only', async ({ page }) => {

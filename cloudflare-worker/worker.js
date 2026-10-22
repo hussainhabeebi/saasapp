@@ -5,7 +5,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
-import {marHandleRoute,marRunDue} from './meta-ads-report.js';
+import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -1516,7 +1516,7 @@ async function leadsVerifyFields(env, rows, fields){
   for(const pt of lost){ try{ await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate}); }catch(e){} }
   return lostNow();
 }
-async function handleNocodbPassthrough(request, env, upstreamPath){
+async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
 
@@ -1711,6 +1711,16 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     try{
       const patches=[].concat(JSON.parse(body)).filter(x=>x&&x.Id).slice(0,100);
       for(const pt of patches) await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate});
+    }catch(e){}
+  }
+  // A lead labelled "Order placed" (or the account's own purchase label) → Purchase to Meta.
+  // After the response when the runtime allows, so a slow Meta never holds up the save.
+  if(r.ok && (method==='PATCH'||method==='POST') && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"Tags"')){
+    try{
+      const sent=[].concat(JSON.parse(body));
+      const ids=method==='POST'?[].concat(JSON.parse(data||'null')).map(x=>x?.Id):sent.map(x=>x?.Id);
+      const job=capiPurchaseFromLabels(env, payload.cid, sent.map((x,i)=>({...x, Id:ids[i]})));
+      if(ctx?.waitUntil) ctx.waitUntil(job); else await job;
     }catch(e){}
   }
   if(r.ok && method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
@@ -2492,6 +2502,39 @@ async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
   // the CAPI send itself failed.
   if(r.ok) await metaCapiLog(env, c, eventKey, lead?.Id, built.matchKey);
   return {ok:r.ok, status:r.status, data, matchKey:built.matchKey};
+}
+// A lead given the purchase label ("Order placed" by default — Reports → 💸 Ads ROI → settings)
+// from the dashboard (tag chips, Edit Lead, bulk edit) or Chats → Purchase to Meta, with the deal
+// value (else the customer's latest order total), so ads optimise for buyers rather than enquiries.
+// patches: [{Id, Tags}]. Once per lead (sendMetaCapiEvent's guard); never throws.
+export async function capiPurchaseFromLabels(env, cid, patches){
+  const out=[];
+  try{
+    const tagged=[].concat(patches||[]).filter(p=>p&&p.Id&&'Tags' in p);
+    if(!tagged.length) return out;
+    const labels=await marPurchaseLabels(env, cid);
+    const hits=tagged.filter(p=>marHasPurchaseLabel(p.Tags, labels)).slice(0,50);
+    if(!hits.length) return out;
+    const c=await getClientById(env, cid);
+    if(!c?.meta_pixel_id || !c?.meta_capi_token) return out;
+    let orders=null;
+    for(const p of hits){
+      const dup=env.DB?await env.DB.prepare(`SELECT 1 x FROM meta_capi_events WHERE client_id=? AND lead_id=? AND event='purchase' LIMIT 1`).bind(Number(cid), Number(p.Id)).first().catch(()=>null):null;
+      if(dup){ out.push({id:Number(p.Id), duplicate:true}); continue; }
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(p.Id)}`);
+      const lead=r.ok?await r.json().catch(()=>null):null;
+      if(!lead || String(lead.ClientId)!==String(cid)) continue;
+      let value=Number(String(lead.DealValue??'').replace(/[^0-9.]/g,''))||0, currency=lead.DealCurrency||'';
+      if(!value && isEcomEnabled(c)){
+        if(!orders) orders=await fv3OrderPhones(env, c).catch(()=>({}))||{};
+        value=Number(orders[String(lead.Phone||'').replace(/\D/g,'').slice(-10)]?.total)||0;
+      }
+      const res=await sendMetaCapiEvent(env, c, 'purchase', lead, {value, currency});
+      out.push({id:Number(p.Id), ok:!!res.ok, matchKey:res.matchKey, value, error:res.ok?undefined:(res.data?.error?.message||res.error)});
+      if(!res.ok && !res.skipped) console.error('[capiPurchaseFromLabels] lead', p.Id, res.data?.error?.message||res.error);
+    }
+  }catch(e){ console.error('[capiPurchaseFromLabels]', e.message); }
+  return out;
 }
 // Server-side quality signals from a bot turn (the dashboard reports its own edits): the first
 // message from a click-to-WhatsApp ad → Lead, the bot scoring the lead Hot → QualifiedLead.
@@ -33203,6 +33246,8 @@ async function ceoBotTaskChanged(env, cid, taskId, prevStatus){
 }
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
+  // A label added in Chats that marks a purchase → Purchase to Meta (capiPurchaseFromLabels).
+  afterLeadPatches:(env, cid, patches)=>capiPurchaseFromLabels(env, cid, patches),
   leadsTable:DEFAULT_LEADS_TABLE,
   ai:(env, c, systemText, userText, opts)=>engineGeminiGenerateWithFallback(env, c, systemText, userText, opts),
   broadcast:engineBroadcastUpdate,
@@ -37022,7 +37067,7 @@ export default {
       else if(url.pathname==='/live-travel/service-requests' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtServiceRequests(request, env); }
       else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
       else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
-      else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
+      else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length), ctx); }
       else if(url.pathname==='/chat/messages' && request.method==='GET'){ res=await handleGetChatMessages(request, env); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
