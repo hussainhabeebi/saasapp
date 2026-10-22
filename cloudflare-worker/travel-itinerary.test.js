@@ -179,3 +179,19 @@ test('assets: logo + cover + place photos from Wikipedia, unrelated articles dro
   const offs = [...pdf.slice(xref).matchAll(/^(\d{10}) 00000 n $/gm)].map(m => Number(m[1]));
   offs.forEach((o, i) => assert.ok(pdf.slice(o).startsWith(`${i + 1} 0 obj`)));
 });
+
+test('child rates and per-day details from the detailed itinerary builder', () => {
+  const pkg = { ...pkgs[2], child_price: 9999, child_nobed_price: 7999, infant_price: 0 };
+  const itin = { title: 'HYDERABAD BUSS PACKAGE', days: JSON.stringify([
+    { day_no: 1, title: 'Arrival', description: 'Reach Hyderabad by morning.', meals: ['B', 'D'], overnight: 'Hotel Sitara',
+      items: [{ type: 'activity', time: '16:00', description: 'Charminar' }] }]) };
+  const text = taPackageItineraryText(pkg, itin);
+  assert.match(text, /💰 \*INR 14,999\* per person/);
+  assert.match(text, /👶 Child \(with bed\): \*INR 9,999\*/);
+  assert.match(text, /👶 Child \(no bed\): \*INR 7,999\*/);
+  assert.doesNotMatch(text, /Infant/);
+  assert.match(text, /Reach Hyderabad by morning\./);
+  assert.match(text, /📍 16:00 Charminar/);
+  assert.match(text, /🍽️ Breakfast, Dinner/);
+  assert.match(text, /🌙 Overnight: Hotel Sitara/);
+});
