@@ -602,6 +602,22 @@ tr:hover td{background:#FAFCFB}
 .li-body{flex:1;min-width:0}
 .ig-chat-btn,.ig-chat-btn:hover{background:var(--ig);color:#fff;text-decoration:none;border-color:transparent}
 .tv-cat-tbl .n{text-align:right;font-variant-numeric:tabular-nums}
+/* Home → Leads by source: one row per origin (badge + count, open/won/lost bar, figures) — a list
+   rather than a table so it reads the same on a phone as on desktop. */
+.src-rpt-sum{display:flex;gap:6px 16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin:2px 0 6px}
+.src-rpt-sum b{color:var(--ink);font-size:15px;font-variant-numeric:tabular-nums}
+.src-rpt-row{display:block;width:100%;text-align:left;font:inherit;color:inherit;background:none;border:none;border-top:1px solid var(--line);padding:11px 2px;cursor:pointer}
+.src-rpt-row:hover{background:var(--accent-soft)}
+.src-rpt-top{display:flex;align-items:center;gap:8px}
+.src-rpt-top .src-rpt-n{margin-left:auto;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+.src-rpt-top .src-rpt-n small{font-size:11px;font-weight:600;color:var(--muted);margin-left:3px}
+.src-rpt-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--line);margin:8px 0 6px}
+.src-rpt-bar i{display:block;height:100%}
+.src-rpt-meta{display:flex;gap:4px 12px;flex-wrap:wrap;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.src-rpt-meta b{font-weight:700}
+.src-rpt-open{--c:var(--ls)}.src-rpt-won{--c:#059669}.src-rpt-lost{--c:#DC2626}
+.src-rpt-bar i{background:var(--c)}
+.src-rpt-meta span[class]::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c);margin-right:4px;vertical-align:1px}
 .origin-badge{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle;white-space:nowrap}
 /* One colour pair per lead origin (LEAD_ORIGINS) — the badge, the row's left edge and the avatar. */
 .origin-ig{--o:var(--ig);--o-soft:var(--ig-soft)}
@@ -6086,7 +6102,9 @@ function followupsRunNow(){
 // Menu items that open a page shared with another item: 🔁 Follow-ups is the Follow-ups workspace
 // of the same embedded Campaigns page (#pageBroadcast).
 const PAGE_HOST={followups:'broadcast'};
+let _curPage='home'; // last page navigate() showed — a call started from a lead comes back to it
 function navigate(page){
+  _curPage=page;
   const dd=$id('notifDropdown');if(dd)dd.style.display='none';
   if(_leadsDocked && page!=='leads'){
     const modal=$id('modalDetail');
@@ -6227,7 +6245,12 @@ function showApp(){
   loadAll(false, true);
   connectLiveUpdates();
   clearInterval(refreshTimer);
-  refreshTimer=setInterval(()=>{ loadAll(); refreshHdVisibility(); },60000);
+  refreshTimer=setInterval(()=>{
+    // In the background (e.g. the rep is on a call) the poll would only pile up full lead fetches
+    // and re-renders that all land at once when they come back — refresh once on return instead.
+    if(document.hidden){ _leadsStaleWhileHidden=true; return; }
+    loadAll(); refreshHdVisibility();
+  },60000);
   setTimeout(pollNotifications,3000);
   clearInterval(_notifTimer);
   _notifTimer=setInterval(pollNotifications,60000);
@@ -6253,7 +6276,7 @@ function showApp(){
     params.delete('lead');
     history.replaceState(null, '', location.pathname+(params.toString()?'?'+params.toString():''));
     openLeadFromAlert(leadParam);
-  }
+  }else callReturnRestore();
   if(shopifyParam){
     if(shopifyParam==='connected'){
       showToast('Shopify connected ✓');
@@ -6282,6 +6305,14 @@ function showApp(){
 }
 
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
+let _leadsStaleWhileHidden=false;
+// Back in the app after skipping polls: refresh once, a moment later, so the screen the rep comes
+// back to (the lead they just called) is interactive first.
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden||!_leadsStaleWhileHidden) return;
+  _leadsStaleWhileHidden=false;
+  setTimeout(()=>{ if(!document.hidden&&$id('app')?.classList.contains('show')){ loadAll(); refreshHdVisibility(); } },1500);
+});
 const _CACHE_TTL=300000; // 5 min
 
 /* ── PROGRESSIVE LEADS LOAD ──
@@ -6470,6 +6501,18 @@ function connectLiveUpdates(){
   };
   _liveSocket.onerror=()=>{ try{ _liveSocket.close(); }catch(e){} };
 }
+// Live events can arrive in bursts (a busy inbox, or the backlog delivered when the phone brings the
+// app back after a call) and each used to start its own full leads fetch + Home re-render, which is
+// what froze the app on return. One refresh at a time, with at most one more queued behind it.
+let _liveRefreshP=null, _liveRefreshAgain=false;
+function liveRefresh(){
+  if(_liveRefreshP){ _liveRefreshAgain=true; return _liveRefreshP; }
+  _liveRefreshP=(async()=>{
+    try{ do{ _liveRefreshAgain=false; await loadAll(true, true); }while(_liveRefreshAgain); }
+    finally{ _liveRefreshP=null; }
+  })();
+  return _liveRefreshP;
+}
 function disconnectLiveUpdates(){
   clearTimeout(_liveReconnectTimer);
   clearInterval(_chatHeartbeatTimer);
@@ -6480,7 +6523,7 @@ async function onLiveMessageEvent(msg){
   // Awaited (not fire-and-forget) — renderChatContacts()/chatSelectLead() below read straight
   // from the allLeads global loadAll refreshes, so they'd otherwise run against the stale copy
   // from before this event.
-  await loadAll(true, true);
+  await liveRefresh();
   // Chats tab has no other live-refresh path at all (unlike Home, its contact list/own thread
   // are never touched by the 60s poll either) — only worth the extra render work while it's
   // actually the visible page.
@@ -6502,16 +6545,27 @@ async function onLiveMessageEvent(msg){
 // needs Notification.permission==='granted' (see requestChatNotifyPermission, offered once from the
 // Chats tab itself, never auto-prompted on page load) and is skipped silently otherwise — never
 // something the rep has to dismiss or configure to keep using the app normally.
-function notifyNewMessage(msg){
+// One AudioContext for every chime. A new one per alert was never closed, and phones cap how many a
+// page may hold — after a busy stretch (say, messages arriving during a call) that leaked memory
+// and audio resources until the OS closed the app.
+let _chimeCtx=null;
+function playChime(tones,vol){
   try{
-    const ctx=new (window.AudioContext||window.webkitAudioContext)();
-    const osc=ctx.createOscillator(), gain=ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
-    osc.frequency.value=880;
-    gain.gain.setValueAtTime(0.15, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+0.3);
-    osc.start(); osc.stop(ctx.currentTime+0.3);
+    if(!_chimeCtx||_chimeCtx.state==='closed') _chimeCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const ctx=_chimeCtx;
+    if(ctx.state==='suspended') ctx.resume().catch(()=>{});
+    tones.forEach(([freq,at,len])=>{
+      const osc=ctx.createOscillator(), gain=ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value=freq;
+      gain.gain.setValueAtTime(vol, ctx.currentTime+at);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+at+len);
+      osc.start(ctx.currentTime+at); osc.stop(ctx.currentTime+at+len);
+    });
   }catch(e){}
+}
+function notifyNewMessage(msg){
+  playChime([[880,0,0.3]], 0.15);
   if('Notification' in window && Notification.permission==='granted'){
     const lead=allLeads.find(l=>l.Id===msg.lead_id);
     try{
@@ -6524,7 +6578,7 @@ function notifyNewMessage(msg){
 // Refreshes the leads list, updates the notification bell, and surfaces an OS notification so
 // the rep knows instantly even if the Leads tab is not the active page.
 async function onLiveNewLeadEvent(msg){
-  await loadAll(true, true);
+  await liveRefresh();
   pollNotifications();
   // Alert the lead's owner (or everyone while it's still unassigned) — not every teammate for
   // every lead, which trains people to ignore the chime.
@@ -6566,7 +6620,7 @@ async function onLiveLeadUpdatedEvent(msg){
 }
 // Hot-lead auto-reassign (worker.js hotReallocProcessClient) — only the new owner is alerted.
 async function onLiveReassignEvent(msg){
-  await loadAll(true, true);
+  await liveRefresh();
   if(!myEmail || !sameEmail(msg.to,myEmail)) return;
   notifyNewLead({...msg, reassigned:true});
   window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, 'reassigned');
@@ -6574,18 +6628,7 @@ async function onLiveReassignEvent(msg){
 function notifyNewLead(msg){
   // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
   // chat reply purely by sound — no visual required when heads-down in another window.
-  try{
-    const ctx=new (window.AudioContext||window.webkitAudioContext)();
-    [660, 880].forEach((freq, i)=>{
-      const osc=ctx.createOscillator(), gain=ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value=freq;
-      gain.gain.setValueAtTime(0.18, ctx.currentTime+i*0.18);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+i*0.18+0.25);
-      osc.start(ctx.currentTime+i*0.18);
-      osc.stop(ctx.currentTime+i*0.18+0.25);
-    });
-  }catch(e){}
+  playChime([[660,0,0.25],[880,0.18,0.25]], 0.18);
   // OS browser notification — only fires when the rep has granted permission (same opt-in path
   // as requestChatNotifyPermission; never auto-prompted on load).
   if('Notification' in window && Notification.permission==='granted'){
@@ -7774,16 +7817,19 @@ function leadsSourceReportHtml(leads){
   const rows=leadsSourceReportRows(leads,_srcRptPeriod);
   const tot=rows.reduce((t,r)=>({total:t.total+r.total, open:t.open+r.open, won:t.won+r.won, lost:t.lost+r.lost}),{total:0,open:0,won:0,lost:0});
   const pct=r=>r.total?Math.round(r.won/r.total*100)+'%':'—';
-  const name=k=>LEAD_ORIGINS[k]?`<span class="origin-badge ${LEAD_ORIGINS[k].cls}" style="margin-left:0">${LEAD_ORIGINS[k].icon} ${esc(LEAD_ORIGINS[k].label)}</span>`:'<span style="color:var(--muted)">Not recorded</span>';
-  const tr=r=>`<tr style="cursor:pointer" onclick="openLeadsOrigin('${r.key}')"><td>${name(r.key)}</td><td class="n">${r.total}</td><td class="n">${r.open}</td><td class="n" style="color:#047857">${r.won}</td><td class="n" style="color:#B91C1C">${r.lost}</td><td class="n">${pct(r)}</td></tr>`;
+  const name=k=>LEAD_ORIGINS[k]?`<span class="origin-badge ${LEAD_ORIGINS[k].cls}" style="margin-left:0">${LEAD_ORIGINS[k].icon} ${esc(LEAD_ORIGINS[k].label)}</span>`:'<span style="color:var(--muted);font-size:12.5px">Not recorded</span>';
+  const seg=(cls,n,t)=>n?`<i class="${cls}" style="width:${n/t*100}%"></i>`:'';
+  const row=r=>`<button type="button" class="src-rpt-row" onclick="openLeadsOrigin('${r.key}')">
+      <div class="src-rpt-top">${name(r.key)}<span class="src-rpt-n">${r.total}<small>lead${r.total===1?'':'s'}</small></span></div>
+      <div class="src-rpt-bar">${seg('src-rpt-open',r.open,r.total)}${seg('src-rpt-won',r.won,r.total)}${seg('src-rpt-lost',r.lost,r.total)}</div>
+      <div class="src-rpt-meta"><span class="src-rpt-open"><b>${r.open}</b> open</span><span class="src-rpt-won"><b>${r.won}</b> won</span><span class="src-rpt-lost"><b>${r.lost}</b> lost</span><span style="margin-left:auto"><b style="color:var(--ink)">${pct(r)}</b> converted</span></div>
+    </button>`;
+  // The totals line only adds something when there's more than one source.
+  const sum=rows.length>1?`<div class="src-rpt-sum"><span><b>${tot.total}</b> leads</span><span><b>${tot.won}</b> won</span><span><b>${tot.lost}</b> lost</span><span><b>${pct(tot)}</b> converted</span></div>`:'';
   return `<div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">🧭 Leads by source
       <select class="form-input" aria-label="Period" style="margin-left:auto;max-width:160px;padding:6px 8px;font-size:12px" onchange="setSrcRptPeriod(this.value)">
         ${LEADS_RPT_PERIODS.map(([k,l])=>`<option value="${k}"${_srcRptPeriod===k?' selected':''}>${l}</option>`).join('')}</select></div>
-    ${rows.length?`<div style="overflow-x:auto"><table class="leads-tbl tv-cat-tbl src-rpt-tbl" style="width:100%;font-size:13px">
-      <thead><tr><th>Source</th><th class="n">Leads</th><th class="n">Open</th><th class="n">Won</th><th class="n">Lost</th><th class="n">Conversion</th></tr></thead>
-      <tbody>${rows.map(tr).join('')}</tbody>
-      <tfoot><tr style="font-weight:700"><td>Total</td><td class="n">${tot.total}</td><td class="n">${tot.open}</td><td class="n">${tot.won}</td><td class="n">${tot.lost}</td><td class="n">${pct(tot)}</td></tr></tfoot>
-    </table></div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}`;
+    ${rows.length?`${sum}<div class="src-rpt-list">${rows.map(row).join('')}</div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}`;
 }
 function renderLeadsOriginChips(){
   const wrap=$id('leadsOriginChips'); if(!wrap) return;
@@ -10343,6 +10389,7 @@ function startCallTimer(leadId){
   const now=Date.now();
   _callInProgress[leadId]={start:now};
   sessionStorage.setItem('lv_call_progress',JSON.stringify(_callInProgress));
+  _callReturnSave(leadId, now);
   // live badge update
   if(_callTimerIntervals[leadId]) clearInterval(_callTimerIntervals[leadId]);
   _callTimerIntervals[leadId]=setInterval(()=>{
@@ -10358,6 +10405,7 @@ function startCallTimer(leadId){
 function stopCallTimer(){
   // called from saveCall; clear state for current lead
   if(currentLead){
+    _callReturnClear(currentLead.Id);
     delete _callInProgress[currentLead.Id];
     if(_callTimerIntervals[currentLead.Id]) clearInterval(_callTimerIntervals[currentLead.Id]);
     delete _callTimerIntervals[currentLead.Id];
@@ -10381,6 +10429,45 @@ function _forgetPendingCall(){
   document.querySelector(`[data-id="${id}"]`)?.closest('.lead-item')?.querySelectorAll('.outcome-chips').forEach(e=>e.remove());
 }
 
+// Where a call was started from — the page, the lead, and whether its detail was open — kept in
+// localStorage (sessionStorage doesn't survive Android closing an installed app while the rep is in
+// the phone app), so reopening the app lands back on that lead with the Log Call form up instead
+// of on Home. Expires after 3 hours.
+const _CALL_RET_KEY=()=>`lv_call_return_${clientId}`;
+const _CALL_RET_TTL=3*3600*1000;
+function _callReturnSave(leadId, start){
+  try{
+    localStorage.setItem(_CALL_RET_KEY(), JSON.stringify({leadId, start, page:_curPage,
+      detail:!!($id('modalDetail')?.classList.contains('open')&&currentLead?.Id===leadId)}));
+  }catch(e){}
+}
+function _callReturnClear(leadId){
+  try{
+    const r=JSON.parse(localStorage.getItem(_CALL_RET_KEY())||'null');
+    if(r&&(leadId==null||r.leadId===leadId)) localStorage.removeItem(_CALL_RET_KEY());
+  }catch(e){}
+}
+// After a fresh page load (boot): if the app was closed mid-call, reopen that lead's screen.
+function callReturnRestore(){
+  let r=null;
+  try{ r=JSON.parse(localStorage.getItem(_CALL_RET_KEY())||'null'); }catch(e){}
+  if(!r||!r.leadId) return;
+  if(!(Date.now()-r.start<_CALL_RET_TTL)){ _callReturnClear(); return; }
+  const tryOpen=(left)=>{
+    if(typeof pdIsOpen==='function'&&pdIsOpen()) return; // the power dialer restores itself
+    if(!allLeads.some(l=>l.Id===r.leadId)){
+      if(left>0) setTimeout(()=>tryOpen(left-1),500); else _callReturnClear();
+      return;
+    }
+    _callInProgress[r.leadId]={start:r.start};
+    try{ sessionStorage.setItem('lv_call_progress',JSON.stringify(_callInProgress)); }catch(e){}
+    if(r.page&&r.page!==_curPage&&$id('page'+cap(PAGE_HOST[r.page]||r.page))) navigate(r.page);
+    if(r.detail) openDetail(r.leadId);
+    openCallLog(r.leadId);
+  };
+  tryOpen(60); // up to ~30s — big accounts load leads progressively
+}
+
 function callTimerElapsed(leadId){
   const entry=_callInProgress[leadId]; if(!entry) return 0;
   return Math.round((Date.now()-entry.start)/60000);
@@ -10392,7 +10479,8 @@ function fmtSecs(s){ return Math.floor(s/60)+':'+(s%60).toString().padStart(2,'0
 
 function showInlineOutcomeChips(leadId){
   // find the li-actions or nearest action container for this lead
-  const row=document.querySelector(`[data-id="${leadId}"]`)?.closest('.lead-item');
+  let row=document.querySelector(`[data-id="${leadId}"]`)?.closest('.lead-item');
+  if(row&&!row.offsetParent) row=null; // on a hidden page — use the Log Call form instead
   let target=row?.querySelector('.li-actions');
   if(!target && row) target=row;
   if(!target){ openCallLog(leadId); return; }
@@ -10435,6 +10523,7 @@ async function saveInlineOutcome(leadId, outcome, durationMins){
   if(outcome==='No Answer') autoWaFollowUp(leadId);
   if(outcome==='Callback Requested') scheduleCallback(leadId);
   delete _callInProgress[leadId];
+  _callReturnClear(leadId);
   if(_callTimerIntervals[leadId]){clearInterval(_callTimerIntervals[leadId]);delete _callTimerIntervals[leadId];}
   sessionStorage.setItem('lv_call_progress',JSON.stringify(_callInProgress));
   renderLeadsCurrentView();
@@ -10893,10 +10982,13 @@ document.addEventListener('visibilitychange',()=>{
   }catch(e){}
   const ids=Object.keys(_callInProgress).map(Number).filter(Boolean);
   if(!ids.length) return;
-  // navigate to leads page if not already there
-  if(typeof navigate==='function' && $id('pageLeads')?.classList.contains('hidden')) navigate('leads');
-  // show chips after a short delay to let the page render
-  setTimeout(()=>ids.forEach(id=>showInlineOutcomeChips(id)),400);
+  // Stay on the screen the call was made from (switching to Leads here used to lose the open lead).
+  // The Log Call form opened by startCallTimer is normally still up; otherwise ask on the lead's
+  // row, or reopen the form when that row isn't on screen.
+  setTimeout(()=>ids.forEach(id=>{
+    if($id('modalCall')?.classList.contains('open')&&currentLead?.Id===id) return;
+    showInlineOutcomeChips(id);
+  }),400);
 });
 
 // Auto-assign ownership on first touch (Option A — silent, never overrides an existing owner).
