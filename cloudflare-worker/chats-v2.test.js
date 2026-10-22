@@ -322,6 +322,10 @@ describe('actions', ()=>{
     await chatsV2Act(env, deps(), P, CLIENT, owner, {op:'label_remove', ids:[2], args:{label:'HOT'}});
     assert.equal(row(2).labels, 'Kerala');
     assert.deepEqual(ncPatches.at(-1), {Id:2, Tags:'Kerala'});
+    // A label change reaches the purchase-label hook (worker.js capiPurchaseFromLabels) with the new Tags.
+    const seen=[];
+    await chatsV2Act(env, {...deps(), afterLeadPatches:async(e, cid, patches)=>{ seen.push([cid, patches]); }}, P, CLIENT, owner, {op:'label_add', ids:[2], args:{label:'Order placed'}});
+    assert.deepEqual(seen, [[CID, [{Id:2, Tags:'Kerala, Order placed'}]]]);
     await chatsV2Act(env, deps(), P, CLIENT, owner, {op:'handler', ids:[3], args:{mode:'human'}});
     assert.equal(row(3).handover, 'Yes');
     assert.equal(row(3).handover_by, OWNER);

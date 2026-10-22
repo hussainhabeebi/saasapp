@@ -351,6 +351,12 @@ function adsSettingsCard(s){
     </div>
     <div class="s-note" style="margin-left:24px">Amounts are in the ad account's currency${s.currency?' ('+esc(s.currency)+')':''}. A failing Meta connection is always flagged when alerts are on.</div>
 
+    <div style="margin-top:12px" id="adsPurchaseBox">
+      <label class="form-label" style="font-weight:600">🛒 Purchase label(s) — sent to Meta as a Purchase</label>
+      <input class="form-input" id="adsPurchaseLabels" style="max-width:420px" value="${esc((cfg.purchase_labels||[]).join(', '))}" placeholder="Order placed"${dis}>
+      <div class="s-note">When a lead gets one of these labels (Leads tags, Edit Lead or a Chats label), a <b>Purchase</b> with the lead's deal value — or the customer's latest order total — goes to Meta through the Conversions API, once per lead, so your ads learn who actually buys. Comma separated; leave blank to switch it off. Needs the Pixel/Dataset ID and token in Settings → Integrations → Meta Ads.</div>
+    </div>
+
     <label style="display:flex;gap:8px;align-items:center;font-weight:600;margin-top:12px"><input type="checkbox" id="adsAcctOn"${cfg.accounting_post?' checked':''}${can&&s.accounting_enabled?'':' disabled'}> Book Meta spend in Accounting</label>
     <div class="s-note" style="margin-left:24px">${s.accounting_enabled?'One expense per month ("Meta Platforms", Advertising &amp; Marketing), updated daily until the month ends, so the P&amp;L shows profit after ads. Deleting it in Accounting stops it for that month. Add GST from the Meta invoice in Accounting if you claim it.':'The Accounting module isn\'t on for this account.'}</div>
     ${(s.expense_posts||[]).length?`<div id="adsExpensePosts" style="margin:6px 0 0 24px">${s.expense_posts.map(p=>`<div class="s-note">${esc(p.month)} · ${adsMoneyFmt(p.currency)(p.amount)} · ${p.status==='deleted'?'deleted in Accounting — not re-posted':'posted'}</div>`).join('')}</div>`:''}
@@ -384,6 +390,7 @@ function adsReadSettingsForm(){
     alerts_enabled:$id('adsAlertOn').checked,
     alert_spend_no_leads:Number($id('adsAlertSpend').value)||0, alert_cpl_max:Number($id('adsAlertCpl').value)||0, alert_junk_pct:Number($id('adsAlertJunk').value)||0,
     accounting_post:$id('adsAcctOn').checked,
+    purchase_labels:$id('adsPurchaseLabels').value.split(',').map(x=>x.trim()).filter(Boolean),
   };
 }
 async function adsSaveSettings(){
