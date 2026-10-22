@@ -4681,6 +4681,8 @@ async function classicFollowupProcessClient(env, c){
     return FOLLOWUP_LADDER_STEP_SHAPE.find(shape=>shape.step===step)?.defaultHours||((cfg.days||0)*24);
   };
   await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
+  // Leads with a meeting booked/agreed get meeting reminders, not ladder follow-ups.
+  const meetingLeads=await mtgActiveLeadIds(env, c.Id);
   const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
   let page=1;
   while(true){
@@ -4693,6 +4695,7 @@ async function classicFollowupProcessClient(env, c){
     const dueTasks=[];
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+      if(meetingLeads.has(Number(lead.Id))) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
       // Skip leads where a human agent replied more recently than the customer — the rep is
@@ -14477,7 +14480,12 @@ async function handleCalcomWebhook(request, env, clientId){
    "Cal.com Meetings". */
 const MTG_OUTCOMES=new Set(['interested','not_interested','follow_up','no_show']);
 const MTG_MAX_LINKS=6;
-const MTG_DEFAULT_SETTINGS={confirm:true, remind24:true, remind1:true, nudge:true, cancel_followup:true, bot_share:false, template_name:'', template_lang:'en'};
+const MTG_DEFAULT_SETTINGS={confirm:true, remind24:true, remind1:true, nudge:true, cancel_followup:true, bot_share:false, rep_brief:false, template_name:'', template_lang:'en'};
+// Sales-team points (Team Performance leaderboard). Editable per client in the Meetings card;
+// `call` is applied by the dashboard to its own call log, the rest by mtgRepPoints below.
+export const MTG_DEFAULT_POINTS={call:1, scheduled:5, held:5, outcome_fast:2, interested:10, rebook:3, late_outcome:-2};
+const MTG_MODES=new Set(['video','phone','in_person']);
+const MTG_BRIEF_BEFORE_MS=30*60e3;
 const MTG_MAX_SENDS_PER_TICK=150;
 const MTG_NUDGE_AFTER_MS=24*3600e3, MTG_NUDGE_UNTIL_MS=72*3600e3;
 
@@ -14495,9 +14503,19 @@ export function mtgNormalizeLinks(list){
 export function mtgNormalizeSettings(s){
   const src=s&&typeof s==='object'?s:{};
   const out={...MTG_DEFAULT_SETTINGS};
-  for(const k of ['confirm','remind24','remind1','nudge','cancel_followup','bot_share']) if(k in src) out[k]=!!src[k];
+  for(const k of ['confirm','remind24','remind1','nudge','cancel_followup','bot_share','rep_brief']) if(k in src) out[k]=!!src[k];
+  out.points=mtgNormalizePoints(src.points);
   out.template_name=String(src.template_name||'').trim().replace(/[^a-z0-9_]/gi,'').slice(0,100);
   out.template_lang=String(src.template_lang||'en').trim().replace(/[^a-z_]/gi,'').slice(0,10)||'en';
+  return out;
+}
+export function mtgNormalizePoints(p){
+  const src=p&&typeof p==='object'?p:{};
+  const out={...MTG_DEFAULT_POINTS};
+  for(const k of Object.keys(MTG_DEFAULT_POINTS)){
+    const n=Number(src[k]);
+    if(src[k]!==undefined && src[k]!=='' && Number.isFinite(n)) out[k]=Math.max(-100, Math.min(100, Math.round(n)));
+  }
   return out;
 }
 function mtgDigits(v){ return String(v||'').replace(/\D/g,''); }
@@ -14591,13 +14609,191 @@ export function mtgSummarize(rows, now=new Date()){
     const start=Date.parse(r.start_at||'');
     if(['scheduled','pending'].includes(r.status) && start>=now.getTime() && start<=weekEnd) s.this_week++;
     if(r.sent_by){
-      const rep=s.reps[r.sent_by]||(s.reps[r.sent_by]={sent:0, booked:0, attended:0, no_show:0});
+      const rep=s.reps[r.sent_by]||(s.reps[r.sent_by]={sent:0, clicked:0, booked:0, attended:0, no_show:0, interested:0});
       if(r.sent_at) rep.sent++;
+      if(r.clicked_at) rep.clicked++;
       if(r.booked_at) rep.booked++;
       if(r.outcome==='no_show') rep.no_show++; else if(r.status==='completed' && r.outcome) rep.attended++;
+      if(r.outcome==='interested') rep.interested++;
     }
   }
   return s;
+}
+
+// A lead's meeting state for the badge on lead rows / the chat header, the follow-up pause and the
+// bot prompt — worked out from all of that lead's meeting rows, newest first:
+//   scheduled        📅 a time is fixed and still ahead (Cal.com booking or marked by a rep)
+//   pending          🕓 agreed but no time yet, a Cal.com request awaiting confirmation, or a link sent in the last 14 days
+//   awaiting_outcome ✅ the meeting time has passed and nobody logged how it went
+//   rebook           ⚠️ the latest meeting was a no-show or got cancelled
+//   done             the latest meeting has an outcome — no badge
+// `active` = a meeting is booked, agreed or just happened: follow-ups and the bot must not ask for another.
+const MTG_LINK_FRESH_MS=14*86400e3, MTG_REBOOK_FRESH_MS=30*86400e3;
+export function mtgLeadState(rows, now=new Date()){
+  const t=now.getTime();
+  const list=[...(rows||[])].sort((a,b)=>Number(b.id)-Number(a.id));
+  if(!list.length) return null;
+  const startMs=r=>Date.parse(r.start_at||'');
+  const pick=(state, r, extra={})=>({state, id:r.id, status:r.status, start_at:r.start_at||null, end_at:r.end_at||null,
+    title:r.title||r.link_name||'', mode:r.mode||(r.join_url?'video':''), location:r.location||'', join_url:r.join_url||'',
+    outcome:r.outcome||null, owner:r.scheduled_by||r.sent_by||'', source:r.source||(r.calcom_uid?'calcom':(r.token?'link':'manual')),
+    active:['scheduled','pending','awaiting_outcome'].includes(state) && extra.link!==true, ...extra});
+  const sched=list.filter(r=>r.status==='scheduled' && Number.isFinite(startMs(r))).sort((a,b)=>startMs(a)-startMs(b));
+  const ahead=sched.find(r=>(Date.parse(r.end_at||'')||startMs(r)+3600e3)>=t-30*60e3);
+  if(ahead) return pick('scheduled', ahead);
+  // The newest row that is more than an unbooked link decides the rest.
+  const last=list.find(r=>!['link_sent','clicked'].includes(r.status));
+  if(last && ['agreed','pending'].includes(last.status)) return pick('pending', last);
+  if(last && !last.outcome && (last.status==='completed' || last.status==='scheduled')) return pick('awaiting_outcome', last);
+  const newest=list[0];
+  if(['link_sent','clicked'].includes(newest.status) && t-(Date.parse(newest.sent_at||newest.created_at||'')||0)<MTG_LINK_FRESH_MS) return pick('pending', newest, {link:true});
+  if(!last) return null;
+  const closedAt=Date.parse(last.outcome_at||last.updated_at||last.created_at||'')||0;
+  if((last.outcome==='no_show' || last.status==='cancelled') && t-closedAt<MTG_REBOOK_FRESH_MS) return pick('rebook', last);
+  return last.outcome?pick('done', last):null;
+}
+export function mtgLeadStatesByLead(rows, now=new Date()){
+  const byLead={};
+  for(const r of rows||[]) if(r.lead_id) (byLead[r.lead_id]||(byLead[r.lead_id]=[])).push(r);
+  const out={};
+  for(const [id, list] of Object.entries(byLead)){ const st=mtgLeadState(list, now); if(st && st.state!=='done') out[id]=st; }
+  return out;
+}
+
+// Added to the AI bot's system prompt for a lead with an active meeting, so it never asks a lead
+// who already booked (or agreed to) a meeting to schedule one again.
+export function mtgBotPromptText(st, tz){
+  if(!st?.active) return '';
+  const what=st.title||'meeting';
+  if(st.state==='scheduled'){
+    const when=mtgFormatWhen(st.start_at, tz);
+    const where=st.join_url?` (join link: ${st.join_url})`:(st.location?` at ${st.location}`:'');
+    return `\n\nMEETING STATUS: This customer already has a ${what} booked for ${when}${where}. Do NOT ask them to schedule a meeting, call or demo, and do NOT share a booking link. If they ask about the meeting, confirm this time. If they want to change or cancel it, tell them the team will help them reschedule.`;
+  }
+  if(st.state==='pending') return `\n\nMEETING STATUS: This customer has already agreed to a ${what}; our team is fixing the time with them. Do NOT send another request to schedule a meeting or a booking link. If they suggest a time, thank them and say the team will confirm it shortly.`;
+  return `\n\nMEETING STATUS: This customer just had a ${what} with our team. Do NOT propose another meeting unless they ask for one.`;
+}
+
+// Points per rep for meetings in the window [since, now]. The rep credited is whoever marked the
+// meeting (scheduled_by) or sent the Cal.com link it was booked from (sent_by). A booking only
+// becomes real points once the meeting is held — until then it shows as `provisional` — and only
+// one booking per lead counts, so marking the same lead twice earns nothing extra.
+const MTG_HELD_OUTCOMES=new Set(['interested','not_interested','follow_up']);
+export function mtgRepPoints(rows, weights, {since, now=new Date()}={}){
+  const w=mtgNormalizePoints(weights);
+  const t=now.getTime(), from=Number.isFinite(since)?since:t-7*86400e3;
+  const inWin=iso=>{ const x=Date.parse(iso||''); return Number.isFinite(x) && x>=from && x<=t; };
+  const reps={};
+  const rep=e=>reps[e]||(reps[e]={points:0, provisional:0, scheduled:0, held:0, no_show:0, interested:0, rebooked:0, late:0});
+  const byLead={};
+  for(const r of rows||[]) if(r.lead_id) (byLead[r.lead_id]||(byLead[r.lead_id]=[])).push(r);
+  const credited=new Set();
+  const sorted=[...(rows||[])].sort((a,b)=>(Date.parse(a.booked_at||a.created_at||'')||0)-(Date.parse(b.booked_at||b.created_at||'')||0));
+  for(const r of sorted){
+    const owner=String(r.scheduled_by||r.sent_by||'').trim().toLowerCase();
+    if(!owner) continue;
+    const end=Date.parse(r.end_at||'')||Date.parse(r.start_at||'');
+    const held=r.status==='completed' && MTG_HELD_OUTCOMES.has(r.outcome);
+    if(r.booked_at && inWin(r.booked_at) && r.status!=='cancelled'){
+      const key=r.lead_id?`L${r.lead_id}`:`M${r.id}`;
+      if(!credited.has(key)){
+        // A no-show doesn't use up the lead's one booking credit — rebooking them is the point.
+        if(r.outcome!=='no_show') credited.add(key);
+        const p=rep(owner); p.scheduled++;
+        if(held) p.points+=w.scheduled;
+        else if(r.outcome!=='no_show') p.provisional+=w.scheduled;
+        // Rebooked within 3 days of the same lead's no-show.
+        const prevNoShow=(byLead[r.lead_id]||[]).some(o=>o.id!==r.id && o.outcome==='no_show' && (()=>{ const ns=Date.parse(o.outcome_at||o.updated_at||''); const b=Date.parse(r.booked_at); return ns<=b && b-ns<=3*86400e3; })());
+        if(prevNoShow){ p.points+=w.rebook; p.rebooked++; }
+      }
+    }
+    if(r.outcome && inWin(r.outcome_at)){
+      const p=rep(owner);
+      if(r.outcome==='no_show') p.no_show++;
+      if(held){ p.held++; p.points+=w.held; }
+      if(r.outcome==='interested'){ p.interested++; p.points+=w.interested; }
+      const lag=Date.parse(r.outcome_at)-end;
+      if(Number.isFinite(lag) && r.outcome!=='no_show'){
+        if(lag<=24*3600e3) p.points+=w.outcome_fast;
+        else if(lag>48*3600e3){ p.points+=w.late_outcome; p.late++; }
+      }
+    } else if(!r.outcome && (r.status==='completed' || r.status==='scheduled') && Number.isFinite(end) && t-end>48*3600e3 && end+48*3600e3>=from){
+      const p=rep(owner); p.points+=w.late_outcome; p.late++;
+    }
+  }
+  return reps;
+}
+
+// Pre-meeting brief to the rep, ~30 minutes before the start.
+export function mtgBriefDue(row, settings, now=new Date()){
+  if(!settings?.rep_brief || row?.status!=='scheduled' || row.brief_at) return false;
+  const until=Date.parse(row.start_at||'')-now.getTime();
+  return Number.isFinite(until) && until>2*60e3 && until<=MTG_BRIEF_BEFORE_MS;
+}
+export function mtgBriefText(row, lead, tz, link){
+  const lines=[`📋 Meeting in ~30 min: ${row.title||row.link_name||'Meeting'} with ${row.lead_name||lead?.Name||'a lead'} at ${mtgFormatWhen(row.start_at, tz)}.`];
+  const phone=mtgDigits(row.phone||lead?.Phone);
+  if(phone) lines.push(`Phone: +${phone}`);
+  if(row.join_url) lines.push(`Join: ${row.join_url}`);
+  else if(row.location) lines.push(`Where: ${row.location}`);
+  const facts=[lead?.Stage&&`Stage: ${lead.Stage}`, lead?.Score&&`Score: ${lead.Score}`, lead?.InterestedProduct&&`Interested in: ${lead.InterestedProduct}`].filter(Boolean);
+  if(facts.length) lines.push(facts.join(' · '));
+  let qa={}; try{ qa=JSON.parse(lead?.QualAnswers||'{}')||{}; }catch(e){}
+  const qaLines=Object.entries(qa).slice(0,4).map(([k,v])=>`• ${String(k).slice(0,60)}: ${String(v).slice(0,80)}`);
+  if(qaLines.length) lines.push('Answers:\n'+qaLines.join('\n'));
+  let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  const last=(Array.isArray(hist)?hist:[]).filter(m=>m?.role==='user' && typeof m.content==='string').slice(-3).map(m=>`• "${m.content.replace(/\s+/g,' ').slice(0,120)}"`);
+  if(last.length) lines.push('Last messages:\n'+last.join('\n'));
+  if(row.note) lines.push(`Note: ${String(row.note).slice(0,200)}`);
+  if(link) lines.push(`Open lead: ${link}`);
+  return lines.join('\n');
+}
+
+// Columns added by migration 0119 (manual meetings, agreed state, rep brief) — added lazily too, so
+// a deploy that hasn't run 0119 yet still works. false = migration 0104 itself isn't applied.
+const MTG_V2_COLUMNS=[['source','TEXT'],['mode','TEXT'],['location','TEXT'],['scheduled_by','TEXT'],['notify','INTEGER'],['note','TEXT'],['brief_at','TEXT']];
+const _mtgSchemaOk=new WeakSet();
+async function mtgEnsureSchema(env){
+  if(!env?.DB) return false;
+  if(_mtgSchemaOk.has(env.DB)) return true;
+  try{
+    const cols=new Set(((await env.DB.prepare(`PRAGMA table_info(meetings)`).all())?.results||[]).map(c=>c.name));
+    if(!cols.size) return false;
+    for(const [c, type] of MTG_V2_COLUMNS) if(!cols.has(c)) await env.DB.prepare(`ALTER TABLE meetings ADD COLUMN ${c} ${type}`).run().catch(()=>null);
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meetings_lead ON meetings(client_id, lead_id, status)`).run().catch(()=>null);
+    _mtgSchemaOk.add(env.DB);
+    return true;
+  }catch(e){ return false; }
+}
+async function mtgLeadRows(env, clientId, leadId){
+  return (await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND lead_id=? ORDER BY id DESC LIMIT 50`).bind(Number(clientId), Number(leadId)).all())?.results||[];
+}
+// Lead ids whose meeting is booked, agreed or just happened — the follow-up ladders skip these
+// (meeting reminders still go out). Never throws; an empty set means "pause nobody".
+export async function mtgActiveLeadIds(env, clientId, now=new Date()){
+  try{
+    if(!(await mtgEnsureSchema(env))) return new Set();
+    const since=new Date(now.getTime()-120*86400e3).toISOString();
+    const rows=(await env.DB.prepare(`SELECT id, lead_id, status, start_at, end_at, sent_at, created_at, updated_at, outcome, outcome_at, token, calcom_uid FROM meetings WHERE client_id=? AND lead_id IS NOT NULL AND (created_at>=? OR start_at>=?)`)
+      .bind(Number(clientId), since, since).all())?.results||[];
+    const states=mtgLeadStatesByLead(rows, now);
+    return new Set(Object.entries(states).filter(([, st])=>st.active).map(([id])=>Number(id)));
+  }catch(e){ return new Set(); }
+}
+export async function mtgLeadHasActiveMeeting(env, clientId, leadId, now=new Date()){
+  if(!leadId) return false;
+  try{
+    if(!(await mtgEnsureSchema(env))) return false;
+    return !!mtgLeadState(await mtgLeadRows(env, clientId, leadId), now)?.active;
+  }catch(e){ return false; }
+}
+// System-prompt block for the AI bot (see mtgBotPromptText). '' when there's nothing to say.
+export async function mtgBotPromptBlock(env, c, clientId, leadId){
+  if(!leadId) return '';
+  try{
+    if(!(await mtgEnsureSchema(env))) return '';
+    return mtgBotPromptText(mtgLeadState(await mtgLeadRows(env, clientId, leadId)), monthlyMktClientTimezone(c));
+  }catch(e){ return ''; }
 }
 
 async function mtgGetConfig(env, clientId){
@@ -14658,7 +14854,7 @@ function mtgMessage(kind, row, cfg, tz, env){
   const name=mtgFirstName(row.lead_name);
   const title=row.title||row.link_name||'meeting';
   const when=mtgFormatWhen(row.start_at, tz);
-  const join=row.join_url?`\nJoin: ${row.join_url}`:'';
+  const join=row.join_url?`\nJoin: ${row.join_url}`:(row.location?`\nWhere: ${row.location}`:(row.mode==='phone'?'\nWe\'ll call you on this number.':''));
   const resched=mtgRescheduleUrl(row, cfg);
   const link=mtgTrackedUrl(env, row);
   switch(kind){
@@ -14711,6 +14907,12 @@ async function mtgFindRow(env, clientId, p, leadId){
     const since=new Date(Date.now()-14*86400e3).toISOString();
     const r=await q(`SELECT * FROM meetings WHERE client_id=? AND lead_id=? AND status IN ('link_sent','clicked') AND sent_at>=? ORDER BY id DESC LIMIT 1`, Number(leadId), since);
     if(r) return r;
+    // A meeting a rep already marked by hand (agreed, or scheduled without Cal.com) — the booking
+    // is the same meeting, so it updates that row instead of creating a duplicate.
+    if(await mtgEnsureSchema(env)){
+      const m=await q(`SELECT * FROM meetings WHERE client_id=? AND lead_id=? AND calcom_uid IS NULL AND (status='agreed' OR (status='scheduled' AND source='manual')) AND created_at>=? ORDER BY id DESC LIMIT 1`, Number(leadId), since);
+      if(m) return m;
+    }
   }
   return null;
 }
@@ -14768,7 +14970,7 @@ export async function handleCalcomMeetingsWebhook(request, env, clientId){
   if(row) await mtgUpdate(env, row.id, fields);
   else{
     const ins=await env.DB.prepare(`INSERT INTO meetings (client_id, status, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(clientId), status, nowIso, nowIso).run();
-    await mtgUpdate(env, ins.meta.last_row_id, fields);
+    await mtgUpdate(env, ins.meta.last_row_id, (await mtgEnsureSchema(env))?{...fields, source:'calcom'}:fields);
     row={id:ins.meta.last_row_id};
   }
   row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(Number(row.id)).first();
@@ -14836,17 +15038,19 @@ async function handleMeetingsList(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const since=new Date(Date.now()-90*86400e3).toISOString();
   let rows=[];
+  const v2=await mtgEnsureSchema(env);
   try{
-    rows=(await env.DB.prepare(`SELECT id, lead_id, lead_name, phone, email, link_name, sent_by, sent_at, clicked_at, title, status, start_at, end_at, join_url, booked_at, outcome, outcome_note, created_at, updated_at FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=?) ORDER BY id DESC LIMIT 500`)
+    rows=(await env.DB.prepare(`SELECT id, lead_id, lead_name, phone, email, link_name, sent_by, sent_at, clicked_at, title, status, start_at, end_at, join_url, booked_at, outcome, outcome_note, outcome_at, created_at, updated_at${v2?', source, mode, location, scheduled_by, note':''} FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=?) ORDER BY id DESC LIMIT 500`)
       .bind(Number(payload.cid), since, since).all())?.results||[];
   }catch(e){ return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503); }
   const now=Date.now();
   const startMs=r=>Date.parse(r.start_at||'')||0;
   const upcoming=rows.filter(r=>['scheduled','pending'].includes(r.status) && startMs(r)>=now-3600e3).sort((a,b)=>startMs(a)-startMs(b));
+  const agreed=rows.filter(r=>r.status==='agreed');
   const needs_outcome=rows.filter(r=>r.status==='completed' && !r.outcome).sort((a,b)=>startMs(b)-startMs(a));
-  const shown=new Set([...upcoming, ...needs_outcome].map(r=>r.id));
+  const shown=new Set([...upcoming, ...agreed, ...needs_outcome].map(r=>r.id));
   const recent=rows.filter(r=>!shown.has(r.id)).slice(0, 40);
-  return json({upcoming, needs_outcome, recent, stats:mtgSummarize(rows)});
+  return json({upcoming, agreed, needs_outcome, recent, stats:mtgSummarize(rows)});
 }
 // POST /meetings/send {lead_id, link_index, send, sent_by} — creates a tracked link for a lead and,
 // when `send` is set, sends it on WhatsApp. The link is returned either way so the rep can copy it.
@@ -14860,6 +15064,11 @@ async function handleMeetingsSend(request, env){
   const link=cfg.links[Number(body.link_index)||0]||cfg.links[0];
   const lead=await mtgFindLead(env, clientId, {leadId:body.lead_id});
   if(!lead) return json({error:'Lead not found.'}, 404);
+  // Don't send a booking link to a lead whose meeting is already fixed — unless the rep confirms.
+  if(!body.force && await mtgEnsureSchema(env)){
+    const st=mtgLeadState(await mtgLeadRows(env, clientId, lead.Id));
+    if(st?.state==='scheduled') return json({error:`${lead.Name||'This lead'} already has a meeting on ${mtgFormatWhen(st.start_at, monthlyMktClientTimezone(await getClientById(env, clientId)))}.`, code:'MEETING_EXISTS', existing:st}, 409);
+  }
   const nowIso=new Date().toISOString(), token=mtgRandomToken(16);
   const ins=await env.DB.prepare(`INSERT INTO meetings (client_id, token, lead_id, lead_name, phone, email, link_name, link_url, sent_by, sent_at, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'link_sent',?,?)`)
     .bind(clientId, token, Number(lead.Id), String(lead.Name||'').slice(0,120), mtgDigits(lead.Phone), String(lead.Email||'').trim().toLowerCase().slice(0,200), link.name, link.url, String(body.sent_by||'').trim().toLowerCase().slice(0,200)||null, nowIso, nowIso, nowIso).run();
@@ -14887,28 +15096,175 @@ async function handleMeetingsOutcome(request, env){
   return json({ok:true});
 }
 
+// POST /meetings/manual {id?, lead_id, status:'scheduled'|'agreed', start_at, duration_min, title, mode,
+// location, join_url, owner, notify, note, force} — a meeting fixed on a call or in WhatsApp
+// (lead ⋯ → "Mark meeting scheduled" / "Meeting pending", or the Log Call "Next step"). With `id`
+// it edits/reschedules that meeting. Scheduled rows get the same confirmation, reminders and
+// auto-complete as Cal.com bookings (when `notify` is on). A lead that already has an active
+// meeting gets 409 MEETING_EXISTS unless `force` — except an agreed meeting (or a sent link)
+// getting its time fixed, which updates that same row.
+async function handleMeetingsManual(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!(await mtgEnsureSchema(env))) return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const clientId=Number(payload.cid);
+  const status=body.status==='agreed'?'agreed':'scheduled';
+  const nowMs=Date.now(), nowIso=new Date(nowMs).toISOString();
+  let row=null;
+  if(body.id){
+    row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=? AND client_id=?`).bind(Number(body.id), clientId).first();
+    if(!row) return json({error:'Meeting not found.'}, 404);
+  }
+  const lead=await mtgFindLead(env, clientId, {leadId:body.lead_id||row?.lead_id});
+  if(!lead) return json({error:'Lead not found.'}, 404);
+  let start=null, end=null;
+  if(status==='scheduled'){
+    const ms=Date.parse(String(body.start_at||''));
+    if(!Number.isFinite(ms)) return json({error:'Pick the meeting date and time.'}, 400);
+    if(ms<nowMs-7*86400e3) return json({error:'That date is in the past.'}, 400);
+    const dur=Math.min(480, Math.max(5, Math.round(Number(body.duration_min)||30)));
+    start=new Date(ms).toISOString(); end=new Date(ms+dur*60e3).toISOString();
+  }
+  if(!row){
+    const rows=await mtgLeadRows(env, clientId, lead.Id);
+    const st=mtgLeadState(rows, new Date(nowMs));
+    const existing=st?rows.find(r=>r.id===st.id):null;
+    if(st?.link || (st?.state==='pending' && existing?.status==='agreed' && status==='scheduled')) row=existing;
+    else if(st?.active && !body.force){
+      const when=st.start_at?` on ${mtgFormatWhen(st.start_at, monthlyMktClientTimezone(await getClientById(env, clientId)))}`:'';
+      return json({error:`${lead.Name||'This lead'} already has a meeting${st.state==='pending'?' pending':''}${when}.`, code:'MEETING_EXISTS', existing:st}, 409);
+    }
+  }
+  const joinUrl=String(body.join_url||'').trim();
+  const owner=String(body.owner||'').trim().toLowerCase().slice(0,200);
+  const fields={
+    status, lead_id:Number(lead.Id), lead_name:String(lead.Name||row?.lead_name||'').slice(0,120),
+    phone:mtgDigits(lead.Phone)||row?.phone||null, email:String(lead.Email||row?.email||'').trim().toLowerCase().slice(0,200)||null,
+    title:String(body.title||'').trim().slice(0,120)||row?.title||row?.link_name||'Meeting',
+    mode:MTG_MODES.has(body.mode)?body.mode:(row?.mode||null),
+    location:String(body.location||'').trim().slice(0,200)||null,
+    join_url:/^https?:\/\/\S+$/i.test(joinUrl)?joinUrl.slice(0,500):(body.join_url===undefined?(row?.join_url||null):null),
+    note:String(body.note??row?.note??'').trim().slice(0,500)||null,
+    scheduled_by:owner||row?.scheduled_by||(row?.sent_by?null:String(payload.email||'').trim().toLowerCase()||null),
+    notify:body.notify===false?0:1,
+    source:row?.source||(row?.token?'calcom':'manual'),
+  };
+  let kind=null;
+  if(status==='scheduled'){
+    fields.start_at=start; fields.end_at=end;
+    if(row?.status==='scheduled' && row.start_at && row.start_at!==start){ fields.remind24_at=null; fields.remind1_at=null; fields.brief_at=null; kind='rescheduled'; }
+    else if(row?.status!=='scheduled'){ kind=row?.confirm_at?null:'confirm'; }
+    if(row?.status!=='scheduled') fields.booked_at=nowIso;
+    if(row?.status==='completed' || row?.status==='cancelled'){ fields.outcome=null; fields.outcome_note=null; fields.outcome_at=null; }
+  }else{ fields.start_at=null; fields.end_at=null; }
+  let id=row?.id;
+  if(!id){
+    const ins=await env.DB.prepare(`INSERT INTO meetings (client_id, status, created_at, updated_at) VALUES (?,?,?,?)`).bind(clientId, status, nowIso, nowIso).run();
+    id=Number(ins.meta.last_row_id);
+  }
+  await mtgUpdate(env, id, fields);
+  row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(id).first();
+  let notified, notify_error;
+  if(kind && fields.notify && row.phone){
+    const c=await getClientById(env, clientId);
+    const cfg=await mtgGetConfig(env, clientId);
+    const res=c?await mtgSendKind(env, c, clientId, cfg, row, kind):{ok:false, error:'Client not found'};
+    notified=res.ok; notify_error=res.ok?undefined:res.error;
+    if(res.ok && kind==='confirm') await mtgUpdate(env, id, {confirm_at:nowIso});
+  }
+  return json({ok:true, id, state:mtgLeadState(await mtgLeadRows(env, clientId, lead.Id)), notified, notify_error});
+}
+// POST /meetings/cancel {id}
+async function handleMeetingsCancel(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const nowIso=new Date().toISOString();
+  const res=await env.DB.prepare(`UPDATE meetings SET status='cancelled', outcome_at=?, updated_at=? WHERE id=? AND client_id=? AND status IN ('scheduled','pending','agreed','link_sent','clicked')`)
+    .bind(nowIso, nowIso, Number(body.id), Number(payload.cid)).run().catch(()=>null);
+  if(!res?.meta?.changes) return json({error:'Meeting not found (or already finished).'}, 404);
+  return json({ok:true});
+}
+// GET /meetings/lead-states — {lead_id: state} for every lead with meeting activity in the last
+// 120 days (badges on lead rows, the chat header and the Leads "Meeting" filter).
+async function handleMeetingsLeadStates(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!(await mtgEnsureSchema(env))) return json({states:{}, unavailable:true});
+  const since=new Date(Date.now()-120*86400e3).toISOString();
+  const rows=(await env.DB.prepare(`SELECT id, lead_id, status, title, link_name, mode, location, join_url, start_at, end_at, sent_at, sent_by, scheduled_by, source, token, calcom_uid, outcome, outcome_at, created_at, updated_at FROM meetings WHERE client_id=? AND lead_id IS NOT NULL AND (created_at>=? OR start_at>=?) ORDER BY id DESC LIMIT 5000`)
+    .bind(Number(payload.cid), since, since).all().catch(()=>({results:[]})))?.results||[];
+  return json({states:mtgLeadStatesByLead(rows)});
+}
+// GET /meetings/lead?lead_id= — one lead's meeting history (lead ⋯ → Meeting history).
+async function handleMeetingsForLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!(await mtgEnsureSchema(env))) return json({meetings:[], state:null});
+  const leadId=Number(new URL(request.url).searchParams.get('lead_id'));
+  if(!leadId) return json({error:'lead_id is required'}, 400);
+  const rows=await mtgLeadRows(env, payload.cid, leadId);
+  return json({meetings:rows.map(({token, webhook_secret, ...r})=>r), state:mtgLeadState(rows)});
+}
+// GET /meetings/points?days=7 — meeting points per rep (Team Performance leaderboard) and the
+// client's point values (the dashboard adds `call` points from its own call log).
+async function handleMeetingsPoints(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const days=Math.min(365, Math.max(1, Number(new URL(request.url).searchParams.get('days'))||7));
+  const cfg=await mtgGetConfig(env, payload.cid);
+  const weights=mtgNormalizePoints(cfg?.settings?.points);
+  if(!(await mtgEnsureSchema(env))) return json({weights, reps:{}, days});
+  const now=new Date(), since=now.getTime()-days*86400e3;
+  const from=new Date(since-30*86400e3).toISOString();
+  const rows=(await env.DB.prepare(`SELECT id, lead_id, status, start_at, end_at, sent_by, scheduled_by, booked_at, outcome, outcome_at, created_at, updated_at FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=? OR outcome_at>=?)`)
+    .bind(Number(payload.cid), from, from, from).all().catch(()=>({results:[]})))?.results||[];
+  return json({weights, reps:mtgRepPoints(rows, weights, {since, now}), days});
+}
+
+// WhatsApp brief to the rep running the meeting (their number from User Management → profile,
+// the same map Hot Lead Alerts use). Free text, so it only lands while the rep's own 24h window
+// with the business number is open — best effort, like the hot-lead alert without a template.
+async function mtgSendRepBrief(env, c, clientId, cfg, row){
+  const lead=row.lead_id?await mtgFindLead(env, clientId, {leadId:row.lead_id}).catch(()=>null):null;
+  const phones=parseTeamWhatsapp(c);
+  const who=[row.scheduled_by, row.sent_by, lead?.Owner, c?.authentik_email].map(e=>String(e||'').trim().toLowerCase()).find(e=>e && phones[e]);
+  if(!who) return {ok:false, error:'No WhatsApp number on file for the rep'};
+  const text=mtgBriefText(row, lead, monthlyMktClientTimezone(c), row.lead_id?hotLeadAlertLink(env, row.lead_id):'');
+  return mtgSendWhatsApp(env, c, clientId, cfg, phones[who], text, null);
+}
+
 // 15-minute cron: reminders for scheduled meetings, marks meetings past their end time as
 // completed (awaiting an outcome) in case the client's webhook doesn't include MEETING_ENDED, and
 // sends one nudge to leads who got a link 24-72h ago but haven't booked.
 export async function runMeetingsForAllClients(env, now=new Date()){
   let configs=[];
-  try{ configs=(await env.DB.prepare(`SELECT client_id FROM meetings_config WHERE links_json<>'[]'`).all())?.results||[]; }
-  catch(e){ return; } // migration 0104 not applied yet
+  // Clients with Cal.com links, plus any client with a meeting a rep marked by hand (those get
+  // reminders even without Cal.com set up).
+  if(!(await mtgEnsureSchema(env))) return; // migration 0104 not applied yet
+  try{ configs=(await env.DB.prepare(`SELECT client_id FROM meetings_config WHERE links_json<>'[]' UNION SELECT DISTINCT client_id FROM meetings WHERE status IN ('scheduled','agreed')`).all())?.results||[]; }
+  catch(e){ return; }
   let budget=MTG_MAX_SENDS_PER_TICK;
   const nowIso=now.toISOString();
   for(const {client_id:clientId} of configs){
     if(budget<=0) break;
     try{
       const cfg=await mtgGetConfig(env, clientId);
-      if(!cfg?.links?.length) continue;
+      if(!cfg) continue;
       await env.DB.prepare(`UPDATE meetings SET status='completed', updated_at=? WHERE client_id=? AND status='scheduled' AND COALESCE(end_at, start_at)<?`)
         .bind(nowIso, Number(clientId), new Date(now.getTime()-30*60e3).toISOString()).run();
       const s=cfg.settings;
       const due=[];
       if(s.remind24||s.remind1){
-        const rows=(await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND status='scheduled' AND start_at>? AND start_at<=?`)
+        const rows=(await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND status='scheduled' AND COALESCE(notify,1)=1 AND start_at>? AND start_at<=?`)
           .bind(Number(clientId), nowIso, new Date(now.getTime()+24*3600e3).toISOString()).all())?.results||[];
         for(const r of rows){ const kind=mtgReminderDue(r, s, now); if(kind) due.push({r, kind, col:kind==='remind1'?'remind1_at':'remind24_at'}); }
+      }
+      if(s.rep_brief){
+        const rows=(await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND status='scheduled' AND brief_at IS NULL AND start_at>? AND start_at<=?`)
+          .bind(Number(clientId), nowIso, new Date(now.getTime()+MTG_BRIEF_BEFORE_MS).toISOString()).all())?.results||[];
+        for(const r of rows) if(mtgBriefDue(r, s, now)) due.push({r, kind:'brief', col:'brief_at'});
       }
       if(s.nudge){
         const rows=(await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND status IN ('link_sent','clicked') AND nudge_at IS NULL AND sent_at<=? AND sent_at>?`)
@@ -14931,7 +15287,7 @@ export async function runMeetingsForAllClients(env, now=new Date()){
         const claim=await env.DB.prepare(`UPDATE meetings SET ${col}=? WHERE id=? AND ${col} IS NULL`).bind(nowIso, r.id).run();
         if(!claim?.meta?.changes) continue;
         budget--;
-        const res=await mtgSendKind(env, c, clientId, cfg, r, kind);
+        const res=kind==='brief'?await mtgSendRepBrief(env, c, clientId, cfg, r):await mtgSendKind(env, c, clientId, cfg, r, kind);
         if(!res.ok) console.error('[meetings]', kind, 'failed for meeting', r.id, 'client', clientId, res.error);
       }
     }catch(e){ console.error('[meetings] failed for client', clientId, e.message); }
@@ -25574,6 +25930,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead, routing.intent);
+      sysPrompt+=await mtgBotPromptBlock(env, c, clientId, state.leadId);
       if(ltLiveAgencyEnabled(c)) sysPrompt+=ltTravelAgencyPromptBlock(await ltLiveTicketsConnected(env, clientId));
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
@@ -33278,6 +33635,8 @@ const FOLLOWUP_V3_DEPS={
   sendStep:sendFollowupLadderStep,
   sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
   orderPhones:fv3OrderPhones,
+  meetingLeadIds:(env, cid)=>mtgActiveLeadIds(env, cid),
+  leadHasMeeting:(env, cid, leadId)=>mtgLeadHasActiveMeeting(env, cid, leadId),
   leadColumns:async env=>(await ncTableMeta(env, DEFAULT_LEADS_TABLE)).names,
   objectionPlaybook:c=>{ try{ const p=JSON.parse(c?.objection_playbook||'[]'); return Array.isArray(p)?p:[]; }catch(e){ return []; } },
 };
@@ -36314,6 +36673,8 @@ export class LeadFollowupAgent{
     const c=cData?.list?.[0];
     if(!c){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
     if(await fv3IsEnabled(this.env, clientId)) return; // Follow-up V3 took over this client — stand down
+    // Meeting booked/agreed — hold the ladder and look again in 6h (meeting reminders still go out).
+    if(await mtgLeadHasActiveMeeting(this.env, clientId, leadId)){ await this.state.storage.setAlarm(Date.now()+6*3600000); return; }
 
     if(!followupWithinQuietHours(c)){
       await this.state.storage.setAlarm(Date.now()+3600000); // outside send window — retry in 1h
@@ -36646,8 +37007,19 @@ async function handleInternalChatMessage(request, env){
   const configuredMembers=[ownerEmail,...String(c.team_emails||'').split(',').map(x=>x.trim()).filter(Boolean)];
   const observedMembers=[...leads.map(l=>l.Owner),...tasks.map(t=>t.assignee_email)].filter(Boolean);
   const memberEmails=[...new Set([...configuredMembers,...observedMembers].map(x=>String(x).trim()).filter(Boolean))];
+  // Meetings booked/held + points per rep (last 7 and 30 days) — "who booked the most meetings this week?"
+  let mtgWeek={}, mtgMonth={};
+  if(await mtgEnsureSchema(env)){
+    const from=new Date(Date.now()-60*86400e3).toISOString();
+    const mRows=(await env.DB.prepare(`SELECT id, lead_id, status, start_at, end_at, sent_by, scheduled_by, booked_at, outcome, outcome_at, created_at, updated_at FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=? OR outcome_at>=?)`)
+      .bind(Number(cid), from, from, from).all().catch(()=>({results:[]})))?.results||[];
+    const weights=(await mtgGetConfig(env, cid))?.settings?.points;
+    mtgWeek=mtgRepPoints(mRows, weights, {since:Date.now()-7*86400e3});
+    mtgMonth=mtgRepPoints(mRows, weights, {since:Date.now()-30*86400e3});
+  }
   const teamRows=memberEmails.map(email=>{
     const norm=email.toLowerCase();
+    const mw=mtgWeek[norm]||{}, mm=mtgMonth[norm]||{};
     const mine=leads.filter(l=>String(l.Owner||'').toLowerCase()===norm);
     const mineWon=mine.filter(won);
     const mineTasks=tasks.filter(t=>String(t.assignee_email||'').toLowerCase()===norm);
@@ -36665,9 +37037,11 @@ async function handleInternalChatMessage(request, env){
       completed:mineTasks.filter(t=>t.status==='done').length,
       open:mineOpen.length,
       overdue:mineOverdue.length,
+      meetings_week:mw.scheduled||0, held_week:mw.held||0, points_week:mw.points||0,
+      meetings_month:mm.scheduled||0, held_month:mm.held||0, points_month:mm.points||0,
     };
   }).sort((a,b)=>b.won-a.won||b.revenue-a.revenue||b.leads-a.leads);
-  const teamSummary=teamRows.length?teamRows.map(r=>`${r.name} (${r.email}): ${r.leads} leads, ${r.won} won, ${r.conversion}% conversion, ${currency} ${r.revenue} revenue, ${r.completed}/${r.tasks} tasks completed, ${r.open} open, ${r.overdue} overdue`).join('\n- '):'No configured or assigned team members';
+  const teamSummary=teamRows.length?teamRows.map(r=>`${r.name} (${r.email}): ${r.leads} leads, ${r.won} won, ${r.conversion}% conversion, ${currency} ${r.revenue} revenue, ${r.completed}/${r.tasks} tasks completed, ${r.open} open, ${r.overdue} overdue; meetings booked ${r.meetings_week} this week / ${r.meetings_month} in 30 days, held ${r.held_week} / ${r.held_month}, meeting points ${r.points_week} this week / ${r.points_month} in 30 days`).join('\n- '):'No configured or assigned team members';
 
   const snapshot=`## Live Business Data (tenant ${cid}, generated ${now})
 
@@ -37182,6 +37556,11 @@ export default {
       else if(url.pathname==='/meetings/list' && request.method==='GET'){ res=await handleMeetingsList(request, env); }
       else if(url.pathname==='/meetings/send' && request.method==='POST'){ res=await handleMeetingsSend(request, env); }
       else if(url.pathname==='/meetings/outcome' && request.method==='POST'){ res=await handleMeetingsOutcome(request, env); }
+      else if(url.pathname==='/meetings/manual' && request.method==='POST'){ res=await handleMeetingsManual(request, env); }
+      else if(url.pathname==='/meetings/cancel' && request.method==='POST'){ res=await handleMeetingsCancel(request, env); }
+      else if(url.pathname==='/meetings/lead-states' && request.method==='GET'){ res=await handleMeetingsLeadStates(request, env); }
+      else if(url.pathname==='/meetings/lead' && request.method==='GET'){ res=await handleMeetingsForLead(request, env); }
+      else if(url.pathname==='/meetings/points' && request.method==='GET'){ res=await handleMeetingsPoints(request, env); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }

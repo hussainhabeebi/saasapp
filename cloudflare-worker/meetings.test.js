@@ -113,7 +113,7 @@ test('mtgSummarize counts the funnel and per-rep numbers', ()=>{
   ], new Date('2026-09-24T10:00:00Z'));
   assert.deepEqual({sent:s.sent, clicked:s.clicked, booked:s.booked, attended:s.attended, no_show:s.no_show, converted:s.converted, this_week:s.this_week},
     {sent:2, clicked:1, booked:3, attended:1, no_show:1, converted:1, this_week:1});
-  assert.deepEqual(s.reps['a@x'], {sent:2, booked:1, attended:1, no_show:0});
+  assert.deepEqual(s.reps['a@x'], {sent:2, clicked:1, booked:1, attended:1, no_show:0, interested:1});
 });
 
 describe('webhook + cron end to end', ()=>{
