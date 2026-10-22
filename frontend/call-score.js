@@ -112,7 +112,7 @@ function csOverdueTasks(email){
 
 let _csCache=null;
 function csEvents(){
-  const sig=allLeads.length+'|'+allLeads.reduce((s,l)=>s+(l.CallLog||'').length+(l.Stage||'').length+(l.ClosedAt||'').length,0)+'|'+_csWork.at+'|'+(clientRecord?.manual_tasks||'').length;
+  const sig=allLeads.length+'|'+allLeads.reduce((s,l)=>s+(l.CallLog||'').length+(l.Stage||'').length+(l.ClosedAt||'').length,0)+'|'+_csWork.at+'|'+(clientRecord?.manual_tasks||'').length+'|'+(window._mtgArenaSig||'').length;
   if(_csCache && _csCache.sig===sig) return _csCache.events;
   const events=[];
   const wonValues=allLeads.filter(l=>isWonLead(l)&&Number(l.DealValue)>0).map(l=>Number(l.DealValue)).sort((a,b)=>a-b);
@@ -166,6 +166,9 @@ function csEvents(){
     const ms=Math.max(...done.map(t=>t.doneMs));
     for(const by of new Set(done.map(t=>csEmailKey(t.by)))) events.push({by, ms, kind:'project', pts:CS_PTS.project, projectId:Number(pr.id), projectName:pr.name||''});
   }
+  // Meetings (dashboard.html mtgLoadArenaEvents ← worker.js mtgRepPoints): booked (once held),
+  // held, outcome logged fast, interested, no-show rebooked — and a penalty for an unlogged outcome.
+  for(const e of (window._mtgArenaEvents||[])) if(e.by && isFinite(e.ms)) events.push({...e, by:csEmailKey(e.by)});
   _csCache={sig, events};
   return events;
 }
@@ -396,6 +399,7 @@ function csUserStats(email, range){
   return {calls:callEvs.length, answered:answered.length, avgTalk:durations.length?Math.round(durations.reduce((s,n)=>s+n,0)/durations.length):null,
     won:won.length, wonValue:won.reduce((s,e)=>s+(e.value||0),0), leadsCalled:leadsCalled.size, speed:csMedian(speeds), speedN:speeds.length, cbDue, cbOnTime,
     tasks:taskEvs.length, tasksOnTime:taskEvs.filter(e=>e.ontime).length, projects:evs.filter(e=>e.kind==='project').length,
+    meetings:evs.filter(e=>e.kind==='mtg_booked').length,
     pts:evs.reduce((s,e)=>s+e.pts,0), outcomes, workDays:work.length, daysMet, target, streak:csStreak(email), today:csTodaySummary(email)};
 }
 function csFunnel(email, range){
@@ -552,6 +556,7 @@ const CS_BADGES=[
   {id:'sharp',    icon:'🎯', name:'Sharpshooter', why:'Best connect rate (10+ calls)',  val:s=>s.answered/Math.max(1,s.calls),         ok:s=>s.calls>=10},
   {id:'speed',    icon:'⚡', name:'Speedster',    why:'Fastest first call (3+ leads)',  val:s=>-s.speed,                               ok:s=>s.speed!=null&&s.speedN>=3},
   {id:'tasks',    icon:'🛠️', name:'Task Master',  why:'Most tasks done (3+)',           val:s=>s.tasks*10+s.tasksOnTime,               ok:s=>s.tasks>=3},
+  {id:'meetings', icon:'📅', name:'Meeting Maker', why:'Most meetings booked & held',  val:s=>s.meetings,                             ok:s=>s.meetings>0},
   {id:'reliable', icon:'🔁', name:'Reliable',     why:'Most callbacks on time (3+)',    val:s=>s.cbOnTime/Math.max(1,s.cbDue)*1000+s.cbOnTime, ok:s=>s.cbDue>=3&&s.cbOnTime>0},
 ];
 function csWeekBadges(board){
@@ -683,7 +688,7 @@ function csRenderHomeArena(){
   const hall=solo?[]:[-1,-2,-3,-4].map(o=>({o, w:csWeekWinner(o)})).filter(x=>x.w);
   html+=`<details class="csa-more"><summary>Badges &amp; how points work</summary>
     <div class="csa-badges">${CS_BADGES.map(b=>{ const who=board.find(r=>(badges[csEmailKey(r.m.email)]||[]).includes(b)); return `<div class="csa-badge${who?'':' off'}${who&&isMe(who)?' mine':''}" title="${esc(b.why)}"><span class="csa-b-icon">${b.icon}</span><span class="csa-b-name">${esc(b.name)}</span><span class="csa-b-who">${who?(solo||isMe(who)?'Yours!':esc(csName(who.m))):'Up for grabs'}</span></div>`; }).join('')}</div>
-    <div class="csa-rules">📞 Call +${CS_PTS.call} · answered +${CS_PTS.answered} · first call in 5 min <b>2×</b>${power?` · ⚡ ${csHour(power.ph.start)}–${csHour(power.ph.end)} <b>2×</b>`:''} · ✅ converted +${CS_PTS.won} · 🛠️ task +${CS_PTS.task} (+${CS_PTS.taskOnTime} on time) · 🚀 project +${CS_PTS.project}</div>
+    <div class="csa-rules">📞 Call +${CS_PTS.call} · answered +${CS_PTS.answered} · first call in 5 min <b>2×</b>${power?` · ⚡ ${csHour(power.ph.start)}–${csHour(power.ph.end)} <b>2×</b>`:''} · ✅ converted +${CS_PTS.won} · 🛠️ task +${CS_PTS.task} (+${CS_PTS.taskOnTime} on time) · 🚀 project +${CS_PTS.project}${window._mtgPoints?` · 📅 meeting booked +${window._mtgPoints.scheduled} (once held), held +${window._mtgPoints.held}`:''}</div>
     ${hall.length>1?`<div class="csa-hall">🏛 ${hall.map(x=>`${esc(csName(x.w.m))} <small>${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</small>`).join(' · ')}</div>`:''}
   </details>`;
   html+=`</div></div>`;

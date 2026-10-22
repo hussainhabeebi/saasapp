@@ -107,6 +107,13 @@ describe('mtgRepPoints', ()=>{
     assert.equal(r['a@x'].scheduled, 2);
     assert.equal(r['a@x'].held, 1);
   });
+  test('events list every award with its date, for the Weekly Arena', ()=>{
+    const events=[];
+    mtgRepPoints([{id:2, lead_id:2, status:'completed', scheduled_by:'a@x', booked_at:iso(-48), start_at:iso(-24), end_at:iso(-23), outcome:'interested', outcome_at:iso(-22)}], W, {since, now:NOW, events});
+    assert.deepEqual(events.map(e=>e.kind).sort(), ['mtg_booked','mtg_fast','mtg_held','mtg_interested']);
+    assert.equal(events.find(e=>e.kind==='mtg_booked').ms, Date.parse(iso(-48)));
+    assert.equal(events.reduce((s,e)=>s+e.pts,0), W.scheduled+W.held+W.outcome_fast+W.interested);
+  });
   test('only one booking per lead counts; no-shows earn nothing; rebooking after a no-show earns the bonus', ()=>{
     const r=mtgRepPoints([
       {id:1, lead_id:1, status:'completed', sent_by:'b@x', booked_at:iso(-100), start_at:iso(-80), end_at:iso(-79), outcome:'no_show', outcome_at:iso(-78)},
@@ -124,10 +131,10 @@ describe('mtgRepPoints', ()=>{
     assert.equal(r['b@x'], undefined);
   });
   test('custom point values are clamped and keep defaults', ()=>{
-    const p=mtgNormalizePoints({scheduled:'8', held:1000, call:''});
+    const p=mtgNormalizePoints({scheduled:'8', held:1000, rebook:''});
     assert.equal(p.scheduled, 8);
     assert.equal(p.held, 100);
-    assert.equal(p.call, MTG_DEFAULT_POINTS.call);
+    assert.equal(p.rebook, MTG_DEFAULT_POINTS.rebook);
   });
 });
 
@@ -237,6 +244,7 @@ describe('routes', ()=>{
     assert.equal(hist.data.meetings.length, 1);
     const pts=await call('/meetings/points?days=7');
     assert.equal(pts.data.reps['rita@biz.com'].provisional, MTG_DEFAULT_POINTS.scheduled);
+    assert.deepEqual(pts.data.events, []);   // nothing confirmed until the meeting is held
     assert.equal((await call('/meetings/cancel', {id:a.data.id})).status, 200);
     assert.equal((await call('/meetings/lead-states')).data.states['42'].state, 'rebook');
     assert.deepEqual([...(await mtgActiveLeadIds(env, 7))], []);

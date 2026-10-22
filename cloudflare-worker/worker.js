@@ -14481,9 +14481,9 @@ async function handleCalcomWebhook(request, env, clientId){
 const MTG_OUTCOMES=new Set(['interested','not_interested','follow_up','no_show']);
 const MTG_MAX_LINKS=6;
 const MTG_DEFAULT_SETTINGS={confirm:true, remind24:true, remind1:true, nudge:true, cancel_followup:true, bot_share:false, rep_brief:false, template_name:'', template_lang:'en'};
-// Sales-team points (Team Performance leaderboard). Editable per client in the Meetings card;
-// `call` is applied by the dashboard to its own call log, the rest by mtgRepPoints below.
-export const MTG_DEFAULT_POINTS={call:1, scheduled:5, held:5, outcome_fast:2, interested:10, rebook:3, late_outcome:-2};
+// Sales-team points for meetings — added to the dashboard's 🏆 Weekly Arena (call-score.js), on the
+// same scale (answered call +15, converted +50). Editable per client in the Meetings card.
+export const MTG_DEFAULT_POINTS={scheduled:25, held:20, outcome_fast:5, interested:15, rebook:10, late_outcome:-10};
 const MTG_MODES=new Set(['video','phone','in_person']);
 const MTG_BRIEF_BEFORE_MS=30*60e3;
 const MTG_MAX_SENDS_PER_TICK=150;
@@ -14679,7 +14679,8 @@ export function mtgBotPromptText(st, tz){
 // becomes real points once the meeting is held — until then it shows as `provisional` — and only
 // one booking per lead counts, so marking the same lead twice earns nothing extra.
 const MTG_HELD_OUTCOMES=new Set(['interested','not_interested','follow_up']);
-export function mtgRepPoints(rows, weights, {since, now=new Date()}={}){
+// `events` (optional array) collects every point award as {by, ms, kind, pts, lead_id} for the Arena.
+export function mtgRepPoints(rows, weights, {since, now=new Date(), events=null}={}){
   const w=mtgNormalizePoints(weights);
   const t=now.getTime(), from=Number.isFinite(since)?since:t-7*86400e3;
   const inWin=iso=>{ const x=Date.parse(iso||''); return Number.isFinite(x) && x>=from && x<=t; };
@@ -14688,6 +14689,10 @@ export function mtgRepPoints(rows, weights, {since, now=new Date()}={}){
   const byLead={};
   for(const r of rows||[]) if(r.lead_id) (byLead[r.lead_id]||(byLead[r.lead_id]=[])).push(r);
   const credited=new Set();
+  const award=(owner, p, kind, pts, iso, r)=>{
+    p.points+=pts;
+    if(events){ const ms=Date.parse(iso); if(Number.isFinite(ms)) events.push({by:owner, ms, kind, pts, lead_id:r.lead_id||null}); }
+  };
   const sorted=[...(rows||[])].sort((a,b)=>(Date.parse(a.booked_at||a.created_at||'')||0)-(Date.parse(b.booked_at||b.created_at||'')||0));
   for(const r of sorted){
     const owner=String(r.scheduled_by||r.sent_by||'').trim().toLowerCase();
@@ -14700,25 +14705,25 @@ export function mtgRepPoints(rows, weights, {since, now=new Date()}={}){
         // A no-show doesn't use up the lead's one booking credit — rebooking them is the point.
         if(r.outcome!=='no_show') credited.add(key);
         const p=rep(owner); p.scheduled++;
-        if(held) p.points+=w.scheduled;
+        if(held) award(owner, p, 'mtg_booked', w.scheduled, r.booked_at, r);
         else if(r.outcome!=='no_show') p.provisional+=w.scheduled;
         // Rebooked within 3 days of the same lead's no-show.
         const prevNoShow=(byLead[r.lead_id]||[]).some(o=>o.id!==r.id && o.outcome==='no_show' && (()=>{ const ns=Date.parse(o.outcome_at||o.updated_at||''); const b=Date.parse(r.booked_at); return ns<=b && b-ns<=3*86400e3; })());
-        if(prevNoShow){ p.points+=w.rebook; p.rebooked++; }
+        if(prevNoShow){ award(owner, p, 'mtg_rebook', w.rebook, r.booked_at, r); p.rebooked++; }
       }
     }
     if(r.outcome && inWin(r.outcome_at)){
       const p=rep(owner);
       if(r.outcome==='no_show') p.no_show++;
-      if(held){ p.held++; p.points+=w.held; }
-      if(r.outcome==='interested'){ p.interested++; p.points+=w.interested; }
+      if(held){ p.held++; award(owner, p, 'mtg_held', w.held, r.outcome_at, r); }
+      if(r.outcome==='interested'){ p.interested++; award(owner, p, 'mtg_interested', w.interested, r.outcome_at, r); }
       const lag=Date.parse(r.outcome_at)-end;
       if(Number.isFinite(lag) && r.outcome!=='no_show'){
-        if(lag<=24*3600e3) p.points+=w.outcome_fast;
-        else if(lag>48*3600e3){ p.points+=w.late_outcome; p.late++; }
+        if(lag<=24*3600e3) award(owner, p, 'mtg_fast', w.outcome_fast, r.outcome_at, r);
+        else if(lag>48*3600e3){ award(owner, p, 'mtg_late', w.late_outcome, r.outcome_at, r); p.late++; }
       }
     } else if(!r.outcome && (r.status==='completed' || r.status==='scheduled') && Number.isFinite(end) && t-end>48*3600e3 && end+48*3600e3>=from){
-      const p=rep(owner); p.points+=w.late_outcome; p.late++;
+      const p=rep(owner); award(owner, p, 'mtg_late', w.late_outcome, new Date(end+48*3600e3).toISOString(), r); p.late++;
     }
   }
   return reps;
@@ -15207,8 +15212,8 @@ async function handleMeetingsForLead(request, env){
   const rows=await mtgLeadRows(env, payload.cid, leadId);
   return json({meetings:rows.map(({token, webhook_secret, ...r})=>r), state:mtgLeadState(rows)});
 }
-// GET /meetings/points?days=7 — meeting points per rep (Team Performance leaderboard) and the
-// client's point values (the dashboard adds `call` points from its own call log).
+// GET /meetings/points?days=7 — meeting points per rep, every point award as an event (the
+// dashboard's 🏆 Weekly Arena adds them to its own call/task points) and the client's point values.
 async function handleMeetingsPoints(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -15220,7 +15225,9 @@ async function handleMeetingsPoints(request, env){
   const from=new Date(since-30*86400e3).toISOString();
   const rows=(await env.DB.prepare(`SELECT id, lead_id, status, start_at, end_at, sent_by, scheduled_by, booked_at, outcome, outcome_at, created_at, updated_at FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=? OR outcome_at>=?)`)
     .bind(Number(payload.cid), from, from, from).all().catch(()=>({results:[]})))?.results||[];
-  return json({weights, reps:mtgRepPoints(rows, weights, {since, now}), days});
+  const events=[];
+  const reps=mtgRepPoints(rows, weights, {since, now, events});
+  return json({weights, reps, events, days});
 }
 
 // WhatsApp brief to the rep running the meeting (their number from User Management → profile,
