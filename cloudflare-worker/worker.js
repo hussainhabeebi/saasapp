@@ -33323,7 +33323,11 @@ async function handleAdminAccountingToggle(request, env){
   if(!cid) return json({error:'client_id required'}, 400);
   const val=enabled==='Yes'?'Yes':'No';
   await ensureClientColumns(env, ['accounting_enabled']);
-  await patchClientFields(env, cid, {accounting_enabled:val});
+  // Verified write: the very first enable creates the column, and NocoDB can silently ignore a
+  // PATCH to a column created moments earlier — re-read and retry instead of reporting a save
+  // that never happened (which left the module hidden while admin showed it as enabled).
+  const r=await ncPatchVerified(env, cid, {accounting_enabled:val});
+  if(!r.ok) return json({error:r.data?.error||`Save failed: HTTP ${r.status}`}, r.status||502);
   return json({ok:true, accounting_enabled:val});
 }
 async function handleAdminCeoBotToggle(request, env){
