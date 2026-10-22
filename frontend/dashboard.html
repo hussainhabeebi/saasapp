@@ -15447,8 +15447,16 @@ async function saveMetaCapiConfig(){
     clientRecord.meta_pixel_id=data.meta_pixel_id??fields.meta_pixel_id;
     clientRecord.meta_ad_account_id=data.meta_ad_account_id??fields.meta_ad_account_id;
     $id('cfgMetaCapiToken').value='';
-    msg.textContent='✓ Saved'; msg.className='save-msg ok';
     loadMetaCapiStatus();
+    // What Meta said about the token (worker metaCheckToken): shown under Save, warnings in red.
+    const ck=data.check||{};
+    const bits=['✓ Saved'];
+    if(ck.token_ok) bits.push('token valid');
+    if(ck.ads_read===true) bits.push('ads_read ✓');
+    if(ck.account_name) bits.push(`ad account "${ck.account_name}"${ck.account_currency?' ('+ck.account_currency+')':''}`);
+    const warn=[ck.invalid?ck.error:'', ...(ck.warnings||[])].filter(Boolean).join(' ');
+    msg.innerHTML=esc(bits.join(' · '))+(warn?`<br><span style="color:var(--red)">⚠️ ${esc(warn)}</span>`:'');
+    msg.className='save-msg '+(warn?'err':'ok');
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 

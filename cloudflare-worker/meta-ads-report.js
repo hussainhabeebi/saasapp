@@ -244,7 +244,10 @@ async function graphGet(url){
   return {ok:r.ok, status:r.status, data};
 }
 function graphErr(res, what){
-  const m=res.data?.error?.message||'HTTP '+res.status;
+  const e=res.data?.error||{};
+  const m=e.message||'HTTP '+res.status;
+  if(e.code===190||/access token/i.test(m))
+    return new Error(`The Meta token in Settings → Integrations → Meta Ads isn't valid (${m}). Paste a fresh System User token with ads_read there and Save.`);
   return new Error(/permission|ads_read|\(#(200|10|272)\)/i.test(m)?`${what}: ${m} — the token needs the ads_read permission on this ad account.`:`${what}: ${m}`);
 }
 

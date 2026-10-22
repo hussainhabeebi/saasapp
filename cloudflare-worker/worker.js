@@ -2530,6 +2530,10 @@ async function handleMetaCapiConfigSet(request, env){
   const body=await request.json().catch(()=>({}));
   const fields={};
   META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=String(body[k]||'').trim(); });
+  if('meta_capi_token' in fields){
+    fields.meta_capi_token=metaCleanToken(fields.meta_capi_token);
+    if(!fields.meta_capi_token) delete fields.meta_capi_token; // blank = keep the current token
+  }
   if(!Object.keys(fields).length) return json({error:'Nothing to save'}, 400);
   if('meta_ad_account_id' in fields){
     const acct=metaNormalizeAdAccountId(fields.meta_ad_account_id);
@@ -2538,6 +2542,13 @@ async function handleMetaCapiConfigSet(request, env){
   }
   if('meta_pixel_id' in fields && fields.meta_pixel_id && !/^\d{5,25}$/.test(fields.meta_pixel_id))
     return json({error:'Pixel ID should be the number from Events Manager, e.g. 744598038086701.'}, 400);
+  // Ask Meta about the token before keeping it — a bad paste otherwise looked "Connected" here
+  // while every Conversions API event and the Ads ROI sync failed with "Cannot parse access token".
+  const before=await getClientById(env, payload.cid);
+  const tokenToCheck=fields.meta_capi_token||before?.meta_capi_token||'';
+  const acctToCheck='meta_ad_account_id' in fields?fields.meta_ad_account_id:(before?.meta_ad_account_id||'');
+  const check=tokenToCheck?await metaCheckToken(tokenToCheck, acctToCheck):null;
+  if(fields.meta_capi_token && check?.invalid) return json({error:check.error, check}, 400);
   // These columns aren't on every CLIENTS table (meta_ad_account_id came later than the Pixel
   // fields): NocoDB drops or refuses a field it doesn't have, so the value never stuck.
   await ensureClientColumns(env, Object.keys(fields));
@@ -2547,7 +2558,37 @@ async function handleMetaCapiConfigSet(request, env){
   const c=await getClientById(env, payload.cid);
   const lost=c?Object.keys(fields).filter(k=>String(c[k]??'')!==fields[k]):[];
   if(lost.length) return json({error:`Not saved: ${lost.join(', ')} — the clients table couldn't take this field. Ask LeadVyne support to add the column.`}, 502);
-  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||''});
+  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||'', check});
+}
+// A token as pasted from Business Settings / Events Manager: drop whitespace and line breaks
+// (phones wrap long tokens), surrounding quotes, and a "Bearer " / "access_token=" prefix.
+export function metaCleanToken(v){
+  return String(v||'').trim().replace(/^bearer\s+/i,'').replace(/^access_token=/i,'').replace(/^["'`]+|["'`]+$/g,'').replace(/\s+/g,'');
+}
+// What Meta says about a token: invalid (can't be parsed / expired / revoked → never saved),
+// whether it has ads_read (Ads ROI spend) and ads_management (Ads Automation), and whether it can
+// see the ad account. A network failure never blocks a save (unknown:true).
+export async function metaCheckToken(token, adAccountId){
+  const base='https://graph.facebook.com/v23.0';
+  const t=encodeURIComponent(token);
+  const get=async url=>{ try{ const r=await fetch(url, {signal:AbortSignal.timeout?.(10000)}); return {ok:r.ok, status:r.status, data:await r.json().catch(()=>({}))}; }catch(e){ return {ok:false, status:0, data:{}, network:e.message}; } };
+  const perms=await get(`${base}/me/permissions?access_token=${t}`);
+  if(perms.network) return {unknown:true, warnings:['Could not reach Meta to check the token — it was saved unchecked.']};
+  if(!perms.ok){
+    const e=perms.data?.error||{};
+    if(e.code===190||/access token|session has expired|session is invalid/i.test(e.message||''))
+      return {invalid:true, error:`Meta says this token isn't valid (${e.message||'HTTP '+perms.status}). Copy the whole token again from Business Settings → System Users → Generate token and paste it here.`};
+  }
+  const granted=new Set((perms.data?.data||[]).filter(p=>p.status==='granted').map(p=>p.permission));
+  const known=perms.ok;
+  const out={token_ok:true, ads_read:known?granted.has('ads_read'):null, ads_management:known?granted.has('ads_management'):null, warnings:[]};
+  if(known && !out.ads_read) out.warnings.push('This token is missing the ads_read permission — Reports → 💸 Ads ROI can\'t read spend until you add it (Business Settings → System Users → Generate token, tick ads_read).');
+  if(adAccountId){
+    const acct=await get(`${base}/act_${encodeURIComponent(adAccountId)}?fields=name,currency&access_token=${t}`);
+    if(acct.ok){ out.account_name=String(acct.data?.name||''); out.account_currency=String(acct.data?.currency||''); }
+    else if(!acct.network) out.warnings.push(`This token can't open ad account ${adAccountId} (${acct.data?.error?.message||'HTTP '+acct.status}). In Business Settings → System Users, assign the ad account to the token's system user.`);
+  }
+  return out;
 }
 // "act_123…", "123…" or " 123 456 " → "123…"; '' stays '' (clearing it); anything else → null.
 export function metaNormalizeAdAccountId(v){
