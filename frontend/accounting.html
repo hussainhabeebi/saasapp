@@ -195,6 +195,18 @@ tbody tr:hover{background:var(--bg)}
 .doc-status-sel{font-size:11px;padding:4px 7px;border:1.5px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-family:var(--body);cursor:pointer;transition:border-color .15s var(--ease)}
 .doc-status-sel:focus{outline:none;border-color:var(--accent)}
 
+/* ── Layout: grouped left sidebar on PC, horizontal tab strip on phones/tablets ── */
+#accLayout{flex:1;display:flex;flex-direction:column;min-height:0}
+.nav-head{display:none}
+.acc-legacy{display:none}
+@media(min-width:1024px){
+  #accLayout{flex-direction:row}
+  #tabs{flex-direction:column;width:236px;flex-shrink:0;padding:12px 10px 20px;overflow-y:auto;overflow-x:hidden;border-bottom:none;border-right:1px solid var(--line);gap:2px}
+  #tabs .tab{text-align:left;border-bottom:none;margin:0;border-radius:10px;padding:9px 12px;font-size:13.5px}
+  #tabs .tab.active{background:var(--accent-soft);color:var(--accent-ink);box-shadow:inset 3px 0 0 var(--accent)}
+  .nav-head{display:block;font-family:var(--disp);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:14px 12px 4px}
+  main{flex:1;min-width:0}
+}
 /* ── Ledger tabs (accounting-ledger.js) ── */
 .acc-root,.acc-sub-body{display:flex;flex-direction:column;gap:18px}
 .acc-root>.fp-subnav{margin-bottom:0}
@@ -254,32 +266,51 @@ td.neg{color:var(--red)}
     <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
   </header>
 
-  <div id="tabs">
-    <button class="tab" data-tab="overview" onclick="showTab('overview')">🏠 Overview</button>
-    <button class="tab active" data-tab="documents" onclick="showTab('documents')">🧾 Documents</button>
-    <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
-    <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
+  <div id="accLayout">
+  <nav id="tabs" aria-label="Accounting sections">
+    <button class="tab active" data-tab="overview" onclick="showTab('overview')">🏠 Overview</button>
+    <div class="nav-head">Sales</div>
+    <button class="tab" data-tab="documents" onclick="showTab('documents')">🧾 Invoices &amp; Quotes</button>
+    <button class="tab" data-tab="subscriptions" onclick="showTab('subscriptions')">🔁 Recurring &amp; Subscriptions</button>
+    <button class="tab" data-tab="customers" onclick="showTab('customers')">👥 Customers</button>
+    <button class="tab" data-tab="collections" onclick="showTab('collections')">📨 Collections</button>
+    <div class="nav-head">Purchases</div>
+    <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expenses</button>
     <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
+    <button class="tab" data-tab="suppliers" onclick="showTab('suppliers')">🏭 Suppliers</button>
+    <div class="nav-head">Banking</div>
     <button class="tab" data-tab="bankcash" onclick="showTab('bankcash')">🏦 Bank &amp; Cash</button>
-    <button class="tab" data-tab="reports" onclick="showTab('reports')">📊 Reports</button>
+    <div class="nav-head">Accounting</div>
     <button class="tab" data-tab="books" onclick="showTab('books')">📒 Books</button>
-    <button class="tab" data-tab="subscriptions" onclick="showTab('subscriptions')">🔁 Subscriptions</button>
-    <button class="tab" data-tab="tax" onclick="showTab('tax')">🧾 Tax</button>
-    <button class="tab" data-tab="ops" onclick="showTab('ops')">⚙️ Operations</button>
-  </div>
+    <button class="tab" data-tab="reports" onclick="showTab('reports')">📊 Reports</button>
+    <button class="tab" data-tab="tax" onclick="showTab('tax')">🏛️ Tax &amp; GST</button>
+    <button class="tab" data-tab="payroll" onclick="showTab('payroll')">👩‍💼 Payroll</button>
+    <div class="nav-head">Setup</div>
+    <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+  </nav>
 
   <main>
   <div class="inner">
 
     <!-- Ledger tabs — rendered by accounting-ledger.js the first time each is opened -->
-    <div id="tabOverview" class="page"><div class="acc-root"></div></div>
-    <div id="tabBooks" class="page"><div class="acc-root"></div></div>
+    <div id="tabOverview" class="page active"><div class="acc-root"></div></div>
     <div id="tabSubscriptions" class="page"><div class="acc-root"></div></div>
+    <div id="tabCustomers" class="page"><div class="acc-root"></div></div>
+    <div id="tabCollections" class="page"><div class="acc-root"></div></div>
+    <div id="tabExpenses" class="page"><div class="acc-root"></div></div>
+    <div id="tabSuppliers" class="page"><div class="acc-root"></div></div>
+    <div id="tabBankcash" class="page"><div class="acc-root"></div></div>
+    <div id="tabBooks" class="page"><div class="acc-root"></div></div>
+    <div id="tabReports" class="page"><div class="acc-root"></div></div>
     <div id="tabTax" class="page"><div class="acc-root"></div></div>
-    <div id="tabOps" class="page"><div class="acc-root"></div></div>
+    <div id="tabPayroll" class="page"><div class="acc-root"></div></div>
+    <div id="tabSettings" class="page"><div class="acc-root"></div></div>
+    <!-- The legacy Financial Planning / Expense Entry / Reports / Bank & Cash pages below are no
+         longer pages of their own: accounting-ledger.js mounts their panels inside the pages above
+         (see LEGACY panels there), so every screen exists in exactly one place. -->
 
     <!-- DOCUMENTS: Quotation → Invoice → Receipt, all tied to an existing lead -->
-    <div id="tabDocuments" class="page active">
+    <div id="tabDocuments" class="page">
       <div class="card">
         <div class="card-title-row">
           <div class="card-title">Quotations, Invoices &amp; Receipts</div>
@@ -301,7 +332,7 @@ td.neg{color:var(--red)}
 
     <!-- FINANCIAL PLANNING — this app's own recurring-billing/expense tracking (D1-backed — see
          migrations/0015_financial_planning.sql and SETUP.md "Financial Planning module"). -->
-    <div id="tabFinancial" class="page">
+    <div id="legacyFinancial" class="acc-legacy">
       <div class="fp-subnav">
         <button class="fp-pill active" data-fpsub="dashboard" onclick="showFpSub('dashboard')">📊 Dashboard</button>
         <button class="fp-pill" data-fpsub="customers" onclick="showFpSub('customers')">👥 Customers</button>
@@ -315,28 +346,6 @@ td.neg{color:var(--red)}
       <div id="fpSubDashboard" class="fp-sub active">
         <div class="card" id="fpDashLoading"><span class="spinner"></span>Loading dashboard…</div>
         <div id="fpDashContent" style="display:none">
-          <!-- AI BUSINESS SNAPSHOT — one auto-written plain-English paragraph, cached per calendar
-               month (worker.js fpAiGetOrRefreshSnapshot) so it doesn't re-call the AI on every
-               dashboard load. -->
-          <div class="card">
-            <div class="card-title-row">
-              <div class="card-title">🤖 Your Business, in Plain English</div>
-              <div class="card-actions"><button class="save-btn sec" id="fpAiSnapshotRegenBtn" onclick="regenerateAiSnapshot()" style="padding:6px 12px;font-size:12px">🔄 Regenerate</button></div>
-            </div>
-            <div id="fpAiSnapshotText" style="font-size:14px;line-height:1.6;color:var(--ink)">Loading…</div>
-          </div>
-          <!-- ASK YOUR BOOKS — natural-language Q&A answered only from this account's own real
-               numbers (worker.js handleFpAiAsk computes the data server-side and hands it to the
-               model as its entire universe of facts, so it can't invent an answer). -->
-          <div class="card">
-            <div class="card-title">💬 Ask Your Books</div>
-            <div class="s-hint" style="margin-bottom:10px">Ask in plain English — e.g. "How much do I owe in bills?" or "Am I making money this month?"</div>
-            <div style="display:flex;gap:8px">
-              <input class="s-input" id="fpAskInput" placeholder="Ask a question about your business…" onkeydown="if(event.key==='Enter')askYourBooks()">
-              <button class="save-btn" onclick="askYourBooks()" style="flex-shrink:0">Ask</button>
-            </div>
-            <div id="fpAskAnswer" style="margin-top:12px;font-size:14px;line-height:1.6"></div>
-          </div>
           <div class="card">
             <div class="card-title" id="fpDashPeriodLabel">This Month</div>
             <div class="stat-grid">
@@ -348,12 +357,6 @@ td.neg{color:var(--red)}
               <div class="stat-card"><div class="stat-lbl">Money You Owe</div><div class="stat-val" id="fpStatMoneyYouOwe">—</div><div class="stat-sub" id="fpStatMoneyYouOweSub"></div></div>
               <div class="stat-card" id="fpStatTaxCard" style="display:none"><div class="stat-lbl">Consider Setting Aside for Tax</div><div class="stat-val" id="fpStatTax">—</div><div class="stat-sub">Estimate only — not filing advice</div></div>
             </div>
-          </div>
-          <!-- CASH FLOW FORECAST — plain-English outlook built from open Expected Funds due before
-               month end + still-unbooked fixed expenses (worker.js fpAiComputeForecastData). -->
-          <div class="card">
-            <div class="card-title">📈 Cash Flow Outlook (Rest of This Month)</div>
-            <div id="fpForecastText" style="font-size:14px;line-height:1.6;color:var(--ink)">Loading…</div>
           </div>
           <div class="card">
             <div class="card-title">Money Owed to You — How Overdue</div>
@@ -462,20 +465,6 @@ td.neg{color:var(--red)}
 
       <!-- EXPENSES -->
       <div id="fpSubExpenses" class="fp-sub">
-        <!-- AI QUICK ADD — Snap & Save (photo of a receipt) and Type-it-in (a plain sentence),
-             both parsed by worker.js's /financial/ai/parse-expense and handed to the One-time
-             Expense modal as a draft for the owner to review and save — never auto-saved from
-             here, so a misread amount can't slip straight into the books. -->
-        <div class="card">
-          <div class="card-title">🤖 AI Quick Add</div>
-          <div class="s-hint" style="margin-bottom:10px">Describe an expense in plain English, or snap a photo of a receipt — either way it'll pre-fill the form below for you to check and save.</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <input class="s-input" id="fpAiQuickAddText" placeholder="e.g. paid 3500 for electricity yesterday" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')aiQuickAddFromText()">
-            <button class="save-btn" onclick="aiQuickAddFromText()">✨ Add with AI</button>
-            <label class="save-btn sec" style="cursor:pointer;margin:0">📸 Snap a Receipt<input type="file" accept="image/*" capture="environment" id="fpAiQuickAddPhoto" style="display:none" onchange="aiQuickAddFromPhoto(this)"></label>
-          </div>
-          <div class="save-msg" id="fpAiQuickAddMsg" style="margin-top:8px"></div>
-        </div>
         <div class="card">
           <div class="card-title-row">
             <div class="card-title">Fixed Recurring Expenses</div>
@@ -491,14 +480,13 @@ td.neg{color:var(--red)}
         </div>
         <div class="card">
           <div class="card-title-row">
-            <div class="card-title">All Expenses (Fixed + One-time)</div>
+            <div class="card-title">Fixed Expenses Booked</div>
             <div class="card-actions">
               <select class="s-input" id="fpExpensesMonths" style="width:auto" onchange="loadFpExpensesAndRender()">
                 <option value="3">Last 3 months</option>
                 <option value="6" selected>Last 6 months</option>
                 <option value="12">Last 12 months</option>
               </select>
-              <button class="save-btn sec" onclick="openFpOnetimeExpenseModal()">+ One-time Expense</button>
             </div>
           </div>
           <div class="tbl-wrap">
@@ -512,8 +500,8 @@ td.neg{color:var(--red)}
 
       <!-- SETTINGS — fp_config: gates for the monthly cron + reminder sweep, Razorpay credentials -->
       <div id="fpSubSettings" class="fp-sub">
-        <div class="card">
-          <div class="card-title">⚙️ Financial Planning Settings</div>
+        <div class="card" id="fpSettingsCard">
+          <div class="card-title">💳 Payments, automation &amp; WhatsApp</div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgEnabled"><label class="s-lbl" style="margin:0">Enabled — generate Expected Funds &amp; fixed expenses automatically on the 1st of each month</label></div>
           <div class="toggle-row"><input type="checkbox" id="fpCfgRemindersEnabled"><label class="s-lbl" style="margin:0">Send WhatsApp reminders for overdue Expected Funds (via Chatwoot)</label></div>
           <div class="card-title" style="margin-top:10px">Reminder WhatsApp Template</div>
@@ -523,16 +511,16 @@ td.neg{color:var(--red)}
             <div><label class="s-lbl">Category</label><input class="s-input" id="fpCfgReminderTplCategory" placeholder="MARKETING"></div>
             <div><label class="s-lbl">Language</label><input class="s-input" id="fpCfgReminderTplLanguage" placeholder="en"></div>
           </div>
-          <div class="card-title" style="margin-top:10px">Default Currency</div>
+          <div style="display:none"><!-- edited in Settings → General & tax (kept in sync there) --><div class="card-title" style="margin-top:10px">Default Currency</div>
           <div class="s-hint" style="margin-bottom:10px">Used as the starting currency everywhere in this module — Documents, Expense Entry, Vendor Bills, and Financial Planning — so you don't have to re-type it each time. Every currency field stays editable, this is just the shared default.</div>
-          <div style="max-width:160px"><input class="s-input" id="fpCfgDefaultCurrency" placeholder="e.g. USD" maxlength="10"></div>
+          <div style="max-width:160px"><input class="s-input" id="fpCfgDefaultCurrency" placeholder="e.g. USD" maxlength="10"></div></div>
           <div class="card-title" style="margin-top:10px">🤖 AI Bookkeeping via WhatsApp (optional)</div>
           <div class="s-hint" style="margin-bottom:10px">Add your own phone number(s) here to text your books directly — e.g. "spent 2000 on fuel", a voice note, or a photo of a receipt, sent to this same WhatsApp number. Messages from these numbers are handled as bookkeeping, not as customer leads. One per line or comma-separated.</div>
           <textarea class="s-input" id="fpCfgAdminPhones" rows="2" placeholder="e.g. +971501234567" style="resize:vertical"></textarea>
           <div class="card-title" style="margin-top:14px">Tax Set-Aside Estimate (optional)</div>
           <div class="s-hint" style="margin-bottom:10px">Shows a rough "set aside ~X" nudge on the Dashboard whenever you're in profit for the month — a simple estimate, not tax or filing advice.</div>
           <div style="max-width:220px"><label class="s-lbl">Set aside this % of profit</label><input class="s-input" id="fpCfgTaxReservePct" type="number" min="0" max="100" placeholder="e.g. 15"></div>
-          <div class="card-title" style="margin-top:14px">🏛️ GST Configuration (India)</div>
+          <div style="display:none"><!-- edited in Settings → General & tax (kept in sync there) --><div class="card-title" style="margin-top:14px">🏛️ GST Configuration (India)</div>
           <div class="s-hint" style="margin-bottom:10px">Required for generating GST-compliant Tax Invoices. Business GSTIN and State Code are printed on all Tax Invoices as the supplier details.</div>
           <div class="modal-grid" style="margin-bottom:0">
             <div><label class="s-lbl">Business GSTIN</label><input class="s-input" id="fpCfgBusinessGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
@@ -540,7 +528,7 @@ td.neg{color:var(--red)}
               <select class="s-input" id="fpCfgBusinessStateCode"><option value="">— Select State —</option></select>
             </div>
             <div><label class="s-lbl">Default GST Rate (%)</label><input class="s-input" id="fpCfgDefaultGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18"></div>
-          </div>
+          </div></div>
           <div class="card-title" style="margin-top:14px">Razorpay (optional)</div>
           <div class="s-hint" style="margin-bottom:14px">Connect Razorpay to auto-record collections from webhook events (payment.captured / payment_link.paid). Pass <code>fp_customer_id</code> (and optionally <code>fp_expected_due_id</code>) in the payment's Notes so the webhook knows which customer to credit.</div>
           <div class="modal-grid" style="margin-bottom:0">
@@ -554,7 +542,7 @@ td.neg{color:var(--red)}
             <span class="save-msg" id="fpCfgSaveMsg"></span>
           </div>
         </div>
-        <div class="card">
+        <div class="card" id="fpReminderLogCard">
           <div class="card-title">📋 Reminder Log</div>
           <div class="s-hint" style="margin-bottom:14px">Last 100 reminder attempts — sent, failed, or skipped (and why), so every overdue-payment reminder and 24-hour-window follow-up stays trackable.</div>
           <div class="tbl-wrap">
@@ -573,8 +561,8 @@ td.neg{color:var(--red)}
          "Cash"), not looked up from anywhere. Separate from Financial Planning's "🧾 Expenses"
          sub-tab (fp_expenses — recurring/fixed-cost bookkeeping with monthly auto-booking); this is
          the general one-off "record an expense" flow. -->
-    <div id="tabExpenses" class="page">
-      <div class="card">
+    <div id="legacyExpenses" class="acc-legacy">
+      <div class="card" id="legacyExpensesCard">
         <div class="card-title-row">
           <div class="card-title">Expense Entries</div>
           <div class="card-actions">
@@ -615,7 +603,7 @@ td.neg{color:var(--red)}
 
     <!-- REPORTS — standard SMB accounting reports computed on demand from the same tables the
          rest of this module already writes to (no separate ledger). -->
-    <div id="tabReports" class="page">
+    <div id="legacyReports" class="acc-legacy">
       <div class="fp-subnav">
         <button class="fp-pill active" data-repsub="pl" onclick="showReportSub('pl')">📈 Profit &amp; Loss</button>
         <button class="fp-pill" data-repsub="ar" onclick="showReportSub('ar')">📥 Receivables Aging</button>
@@ -749,7 +737,7 @@ td.neg{color:var(--red)}
          client's own live NocoDB customers table instead of fp_customers below. -->
 
     <!-- ── BANK & CASH TAB ── -->
-    <div id="tabBankcash" class="page">
+    <div id="legacyBankcash" class="acc-legacy">
       <div class="inner">
         <!-- Sub-nav -->
         <div id="bcSubnav" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
@@ -847,6 +835,7 @@ td.neg{color:var(--red)}
 
   </div>
   </main>
+  </div>
 </div>
 
 <datalist id="fpCustomersDatalist"></datalist>
@@ -1448,6 +1437,8 @@ async function init(){
     ['fpCfgBusinessStateCode','docQuotationPlaceOfSupply','docInvoicePlaceOfSupply','fpCustStateCode'].forEach(id=>renderStateOptions(id,''));
     // SaaS Ops now lives in its own standalone top-level tab (frontend/saas-ops.html) — nothing
     // to load here anymore.
+    // Land on the Overview (rendered by accounting-ledger.js) once the shared data above is loaded.
+    showTab(document.querySelector('.tab.active')?.dataset.tab||'overview');
   }catch(e){
     document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
@@ -1528,61 +1519,8 @@ function renderFinancialPlanning(){
   renderFpExpenseTemplatesTable();
   renderFpExpensesTable();
   renderFpConfigForm();
-  loadAiSnapshot();
-  loadAiForecast();
 }
 
-/* ── AI Business Snapshot ── */
-async function loadAiSnapshot(){
-  const el=document.getElementById('fpAiSnapshotText');
-  try{
-    const data=await acctFetch('/financial/ai/snapshot',{method:'GET'});
-    el.textContent=data.snapshot||data.error||'Not enough data yet to summarize.';
-  }catch(e){ el.textContent="Couldn't load your snapshot: "+e.message; }
-}
-async function regenerateAiSnapshot(){
-  const el=document.getElementById('fpAiSnapshotText');
-  const btn=document.getElementById('fpAiSnapshotRegenBtn');
-  el.textContent='Thinking…'; btn.disabled=true;
-  try{
-    const data=await acctFetch('/financial/ai/snapshot/regenerate',{method:'POST'});
-    el.textContent=data.snapshot||data.error||'Not enough data yet to summarize.';
-  }catch(e){ el.textContent="Couldn't regenerate: "+e.message; }
-  finally{ btn.disabled=false; }
-}
-
-/* ── Ask Your Books ── */
-async function askYourBooks(){
-  const input=document.getElementById('fpAskInput');
-  const question=input.value.trim();
-  if(!question) return;
-  const answerEl=document.getElementById('fpAskAnswer');
-  answerEl.textContent='Thinking…';
-  try{
-    const data=await acctFetch('/financial/ai/ask',{method:'POST',body:JSON.stringify({question})});
-    answerEl.textContent=data.answer||data.error||"Couldn't find an answer.";
-  }catch(e){ answerEl.textContent='Error: '+e.message; }
-}
-
-/* ── Cash Flow Forecast ── */
-async function loadAiForecast(){
-  const el=document.getElementById('fpForecastText');
-  try{
-    const data=await acctFetch('/financial/ai/forecast',{method:'GET'});
-    el.textContent=data.forecast||data.error||'Not enough data yet to forecast.';
-  }catch(e){ el.textContent="Couldn't load forecast: "+e.message; }
-}
-
-/* ── AI-drafted reminder for one overdue customer — a preview to copy/send yourself; the
-   automatic overdue sweep (fpSendRemindersForClient) already sends this same kind of
-   AI-drafted message via WhatsApp on its own schedule, so this button is for chasing one
-   customer right now rather than waiting for that sweep. ── */
-async function draftReminderForDue(dueId){
-  try{
-    const {draft}=await acctFetch('/financial/ai/draft-reminder',{method:'POST',body:JSON.stringify({due_id:dueId})});
-    prompt('AI-drafted reminder — copy and send it however you\'d like (WhatsApp, SMS, email):', draft||'');
-  }catch(e){ alert('Failed to draft reminder: '+e.message); }
-}
 
 /* ── Dashboard ── */
 function renderFpDashboard(){
@@ -1648,7 +1586,7 @@ function renderFpOutstanding(){
     <td>${fmtMoney(r.balance,r.currency)}</td>
     <td>${r.overdue_days>0?r.overdue_days+'d':'—'}</td>
     <td>${r.aging_bucket?`<span class="badge">${esc(r.aging_bucket)}</span>`:'—'}</td>
-    <td><button class="icon-btn" title="AI-draft a reminder" onclick="draftReminderForDue(${r.Id})">✨ Draft reminder</button></td>
+    <td><button class="icon-btn" onclick="openFpCollectionModal(${r.Id})">💵 Record payment</button></td>
   </tr>`).join('');
 }
 function renderFpTrendChart(){
@@ -2037,36 +1975,6 @@ function openFpOnetimeExpenseModal(prefill){
 }
 function closeFpOnetimeExpenseModal(){ document.getElementById('fpOnetimeExpenseModal').classList.remove('active'); }
 
-/* ── AI Quick Add — Snap & Save / Type-it-in, both feed openFpOnetimeExpenseModal's prefill ── */
-async function aiQuickAddFromText(){
-  const input=document.getElementById('fpAiQuickAddText');
-  const text=input.value.trim();
-  const msg=document.getElementById('fpAiQuickAddMsg');
-  if(!text) return;
-  msg.textContent='✨ Reading that…'; msg.className='save-msg';
-  try{
-    const {parsed}=await acctFetch('/financial/ai/parse-expense',{method:'POST',body:JSON.stringify({text})});
-    input.value=''; msg.textContent='';
-    openFpOnetimeExpenseModal(parsed);
-  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
-}
-async function aiQuickAddFromPhoto(fileInput){
-  const file=fileInput.files?.[0];
-  if(!file) return;
-  const msg=document.getElementById('fpAiQuickAddMsg');
-  msg.textContent='✨ Reading the receipt…'; msg.className='save-msg';
-  try{
-    const imageBase64=await new Promise((resolve,reject)=>{
-      const reader=new FileReader();
-      reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
-      reader.onerror=reject;
-      reader.readAsDataURL(file);
-    });
-    const {parsed}=await acctFetch('/financial/ai/parse-expense',{method:'POST',body:JSON.stringify({imageBase64, mimeType:file.type})});
-    fileInput.value=''; msg.textContent='';
-    openFpOnetimeExpenseModal(parsed);
-  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
-}
 async function saveFpOnetimeExpense(){
   const msg=document.getElementById('fpOtSaveMsg');
   const name=document.getElementById('fpOtName').value.trim();
@@ -3115,7 +3023,7 @@ async function confirmSendDocumentEmail(){
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
-init();
+// init() is called at the end of this script, after the Bank & Cash / FY-preset hook below wraps it.
 
 /* ══════════════════ BANK & CASH MODULE ══════════════════ */
 let allBankAccounts=[], allPaymentEntries=[];
@@ -3503,6 +3411,7 @@ function applyFyPreset(reportKey){
 const _origInit=init;
 init=async function(){
   await _origInit();
+  if(!document.getElementById('bcAccountsTbody')) return; // module not enabled / failed to load — nothing below exists
   populateFySelects();
   // Pre-select current FY in both report date pickers
   const fyOpts=buildFyOptions();
@@ -3516,6 +3425,7 @@ init=async function(){
   }
   try{ await loadBankAccounts(); }catch(e){ console.error('[bank-accounts]', e.message); }
 };
+init();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="accounting-ledger.js"></script>
