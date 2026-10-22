@@ -10,6 +10,7 @@ export const TA_PKG_PDF_PREFIX='TPKGPDF:';
 export const TA_PKG_ENQUIRE_PREFIX='TPKGENQ:';
 
 const ITEM_ICON={flight:'✈️',hotel:'🏨',activity:'📍',transfer:'🚌',meal:'🍽️',note:'📝'};
+const MEAL_LABEL={B:'Breakfast',L:'Lunch',D:'Dinner'};
 const ITEM_LABEL={flight:'Flight',hotel:'Hotel',activity:'Visit',transfer:'Transfer',meal:'Meal',note:'Note'};
 // Words that name the kind of listing rather than which one, so "hyderabad train" finds
 // "HYDERABAD TRAIN PACKAGE" and "hyderabad package" alone matches none of three Hyderabad packages.
@@ -27,8 +28,10 @@ function days(v){
   let d=v;
   if(typeof d==='string'){try{d=JSON.parse(d);}catch(e){d=[];}}
   return (Array.isArray(d)?d:[]).map((x,i)=>({day_no:Number(x?.day_no)||i+1,title:String(x?.title||'').trim(),
-    items:(Array.isArray(x?.items)?x.items:[]).map(it=>({type:ITEM_ICON[it?.type]?it.type:'note',description:String(it?.description||'').trim(),image:String(it?.image||'')})).filter(it=>it.description)}))
-    .filter(x=>x.title||x.items.length);
+    description:String(x?.description||'').trim(),overnight:String(x?.overnight||'').trim(),
+    meals:(Array.isArray(x?.meals)?x.meals:[]).filter(m=>MEAL_LABEL[m]),
+    items:(Array.isArray(x?.items)?x.items:[]).map(it=>({type:ITEM_ICON[it?.type]?it.type:'note',time:String(it?.time||'').trim(),description:String(it?.description||'').trim(),image:String(it?.image||'')})).filter(it=>it.description)}))
+    .filter(x=>x.title||x.items.length||x.description);
 }
 const norm=s=>String(s||'').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const words=s=>norm(s).split(' ').filter(Boolean);
@@ -37,6 +40,11 @@ const words=s=>norm(s).split(' ').filter(Boolean);
 export function taPackagePrice(p){
   const s=Number(p?.sell_price),b=Number(p?.base_price);
   return s>0?s:b>0?b:0;
+}
+// Child / infant rates set on the package (dashboard → Packages): [{label,amount}] for each one > 0.
+export function taChildRates(p){
+  return [['Child (with bed)',p?.child_price],['Child (no bed)',p?.child_nobed_price],['Infant',p?.infant_price]]
+    .map(([label,v])=>({label,amount:Number(v)||0})).filter(r=>r.amount>0);
 }
 export function taMoney(n,cur){
   const v=Number(n);
@@ -146,11 +154,15 @@ export function taPackageItineraryText(pkg,itin){
   if(dateLine(itin))out.push(`📅 ${dateLine(itin)}`);
   if(paxLine(pkg))out.push(`👥 ${paxLine(pkg)}`);
   if(price)out.push(`💰 *${price}* per person`);
+  if(price)taChildRates(pkg).forEach(r=>out.push(`👶 ${r.label}: *${taMoney(r.amount,pkg?.currency)}*`));
   if(plan.days.length){
     out.push('','🗓️ *Day-wise itinerary*');
     plan.days.forEach(d=>{
       out.push('',`*Day ${d.day_no}${d.title?` – ${d.title}`:''}*`);
-      d.items.filter(it=>!(it.description===d.title&&d.items.length===1)).forEach(it=>out.push(`${ITEM_ICON[it.type]} ${it.description}`));
+      if(d.description)out.push(d.description);
+      d.items.filter(it=>!(it.description===d.title&&d.items.length===1)).forEach(it=>out.push(`${ITEM_ICON[it.type]} ${it.time?it.time+' ':''}${it.description}`));
+      if(d.meals?.length)out.push(`🍽️ ${d.meals.map(m=>MEAL_LABEL[m]).join(', ')}`);
+      if(d.overnight)out.push(`🌙 Overnight: ${d.overnight}`);
     });
   }
   if(inc.length)out.push('','✅ *Includes*',...inc.map(x=>`• ${x}`));

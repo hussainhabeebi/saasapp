@@ -331,7 +331,10 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Max Pax</label><input class="form-input" type="number" id="pkgPaxMax" value="99"></div>
         <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="pkgCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
         <div class="form-group"><label class="form-label">Base (Cost) Price / pax</label><input class="form-input" type="number" id="pkgBasePrice" placeholder="0"></div>
-        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sell Price / pax (with margin)</label><input class="form-input" type="number" id="pkgSellPrice" placeholder="0"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sell Price / adult (with margin)</label><input class="form-input" type="number" id="pkgSellPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Child Price (with bed)</label><input class="form-input" type="number" id="pkgChildPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Child Price (no bed)</label><input class="form-input" type="number" id="pkgChildNoBedPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Infant Price</label><input class="form-input" type="number" id="pkgInfantPrice" placeholder="0"></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Inclusions (one per line)</label><textarea class="form-input" id="pkgInclusions" rows="4" placeholder="Visa&#10;Return flights&#10;4-star hotel&#10;Airport transfers"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Exclusions (one per line)</label><textarea class="form-input" id="pkgExclusions" rows="3" placeholder="Travel insurance&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="pkgNotes" rows="2"></textarea></div>
@@ -345,15 +348,39 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   </div>
 
   <!-- TA: ITINERARY MODAL -->
-  <div class="modal" id="modalItin" style="width:640px">
+  <div class="modal" id="modalItin" style="width:760px">
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="itinModalTitle">New Itinerary</div><button class="icon-btn" onclick="closeModal('modalItin')">✕</button></div>
     <div class="modal-body">
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Title *</label><input class="form-input" id="itinTitle" placeholder="e.g. Dubai City Tour 5D4N"></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="itinDest" placeholder="Dubai, UAE"></div>
-        <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom"></div>
+        <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom" onchange="renderItinDays()"></div>
         <div class="form-group"><label class="form-label">To Date</label><input class="form-input" type="date" id="itinTo"></div>
+        <div class="form-group"><label class="form-label">Nights</label><input class="form-input" type="number" min="0" id="itinNights" placeholder="Auto from dates"></div>
+        <div class="form-group"><label class="form-label">Departure City</label><input class="form-input" id="itinDepCity" placeholder="e.g. Kozhikode"></div>
+        <div class="form-group"><label class="form-label">Hotel Category</label><select class="form-input" id="itinHotelCat"><option value="">—</option><option>Budget</option><option>3 Star</option><option>4 Star</option><option>5 Star</option><option>Luxury</option><option>Houseboat / Resort</option></select></div>
+        <div class="form-group"><label class="form-label">Meal Plan</label><select class="form-input" id="itinMealPlan"><option value="">—</option><option>Room Only</option><option>Breakfast (CP)</option><option>Half Board (MAP)</option><option>Full Board (AP)</option><option>All Inclusive</option></select></div>
+        <div class="form-group"><label class="form-label">Transport</label><input class="form-input" id="itinTransport" placeholder="e.g. AC bus, private car, train"></div>
+      </div>
+      <div class="sec-hd">Travellers &amp; Rates</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:6px">
+        <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="0" id="itinAdults" value="1" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Children (with bed)</label><input class="form-input" type="number" min="0" id="itinChildren" value="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Children (no bed)</label><input class="form-input" type="number" min="0" id="itinChildrenNoBed" value="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Infants</label><input class="form-input" type="number" min="0" id="itinInfants" value="0" oninput="itinUpdateRateTotal()"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:6px">
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="itinCurrency" onchange="itinUpdateRateTotal()"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option><option>QAR</option><option>KWD</option><option>OMR</option><option>BHD</option></select></div>
+        <div class="form-group"><label class="form-label">Adult Price</label><input class="form-input" type="number" min="0" id="itinAdultPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Child Price (with bed)</label><input class="form-input" type="number" min="0" id="itinChildPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Child Price (no bed)</label><input class="form-input" type="number" min="0" id="itinChildNoBedPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Infant Price</label><input class="form-input" type="number" min="0" id="itinInfantPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+      </div>
+      <div id="itinRateTotal" style="font-size:12.5px;color:var(--accent-ink);font-weight:600;margin-bottom:14px"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
+        <div class="form-group"><label class="form-label">Inclusions (one per line)</label><textarea class="form-input" id="itinInclusions" rows="4" placeholder="Accommodation&#10;Daily breakfast&#10;All transfers"></textarea></div>
+        <div class="form-group"><label class="form-label">Exclusions (one per line)</label><textarea class="form-input" id="itinExclusions" rows="4" placeholder="Entry tickets&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="itinNotes" rows="2"></textarea></div>
         <div class="form-group" style="grid-column:1/-1">
           <label class="form-label">Logo (optional — overrides your account logo on this itinerary's PDF only)</label>
@@ -1000,6 +1027,38 @@ async function taCreate(key,record){
 async function taUpdate(key,rowId,record){
   await taWithRepair(key,id=>ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId,...record}));
 }
+// Columns added after these tables first shipped. taSetupTables() creates them on new tables;
+// accounts whose tables already exist get them from taEnsureColumns() on the first save, the
+// same check-then-add the clients table uses for its newer fields.
+const TA_ADDED_COLUMNS={
+  packages:[
+    {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},{title:'infant_price',uidt:'Decimal'},
+  ],
+  itineraries:[
+    {title:'nights',uidt:'Number'},{title:'departure_city',uidt:'SingleLineText'},
+    {title:'hotel_category',uidt:'SingleLineText'},{title:'meal_plan',uidt:'SingleLineText'},
+    {title:'transport',uidt:'SingleLineText'},
+    {title:'adults',uidt:'Number'},{title:'children',uidt:'Number'},
+    {title:'children_nobed',uidt:'Number'},{title:'infants',uidt:'Number'},
+    {title:'currency',uidt:'SingleLineText'},{title:'adult_price',uidt:'Decimal'},
+    {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},
+    {title:'infant_price',uidt:'Decimal'},
+    {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},
+  ],
+};
+const _taColumnsChecked=new Set();
+async function taEnsureColumns(key){
+  const add=TA_ADDED_COLUMNS[key];
+  if(!add||_taColumnsChecked.has(key)) return;
+  await taWithRepair(key,async id=>{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}`);
+    const have=new Set((info.columns||[]).map(c=>c.title));
+    for(const c of add){
+      if(!have.has(c.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}/fields`,{column_name:c.title,...c});
+    }
+  });
+  _taColumnsChecked.add(key);
+}
 async function taDeleteRow(key,rowId){
   await taWithRepair(key,id=>ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId}));
 }
@@ -1202,6 +1261,7 @@ async function taSetupTables(){
         {title:'nights',uidt:'Number'},{title:'pax_min',uidt:'Number'},{title:'pax_max',uidt:'Number'},
         {title:'currency',uidt:'SingleLineText'},{title:'base_price',uidt:'Decimal'},{title:'sell_price',uidt:'Decimal'},
         {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+        ...TA_ADDED_COLUMNS.packages,
       ]},
       bookings:{title:'ta_bookings',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'client_name',uidt:'SingleLineText'},
@@ -1223,6 +1283,7 @@ async function taSetupTables(){
         {title:'destination',uidt:'SingleLineText'},{title:'from_date',uidt:'Date'},
         {title:'to_date',uidt:'Date'},{title:'days',uidt:'LongText'},{title:'notes',uidt:'LongText'},
         {title:'logo_url',uidt:'LongText'},
+        ...TA_ADDED_COLUMNS.itineraries,
       ]},
       umrah_groups:{title:'ta_umrah_groups',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
@@ -1572,6 +1633,7 @@ function openPkgModal(id){
   $id('pkgPaxMin').value=p.pax_min||1; $id('pkgPaxMax').value=p.pax_max||99;
   $id('pkgCurrency').value=p.currency||'AED'; $id('pkgBasePrice').value=p.base_price||'';
   $id('pkgSellPrice').value=p.sell_price||'';
+  $id('pkgChildPrice').value=p.child_price||''; $id('pkgChildNoBedPrice').value=p.child_nobed_price||''; $id('pkgInfantPrice').value=p.infant_price||'';
   $id('pkgInclusions').value=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]).join('\n');
   $id('pkgExclusions').value=safeJson(p.exclusions,p.exclusions instanceof Array?p.exclusions:[]).join('\n');
   $id('pkgNotes').value=p.notes||'';
@@ -1583,9 +1645,10 @@ async function savePkg(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const inc=$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const exc=$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
+  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
   if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
+    await taEnsureColumns('packages');
     if(_editPkgId) await taUpdate('packages',_editPkgId,p); else await taCreate('packages',p);
     msg.textContent='✓ Saved';
     _taLoaded=false;
@@ -1613,6 +1676,13 @@ let _itinLogoDims = null;
 // this instead of _itinLogoDims when sending, since the modal that set _itinLogoDims usually
 // isn't open at send time.
 let _itinSendLogoDims = null;
+// The account logo's (CLIENTS.quote_logo_url) natural size, measured the same way before a
+// preview or send so both PDF layouts can keep its aspect ratio.
+let _quoteLogoDims = null;
+function sqMeasureImage(url){
+  if(!url) return Promise.resolve(null);
+  return new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=url; });
+}
 // Which inner tab the Itineraries page is showing — the itinerary list, or the bulk
 // "send this as a quotation to leads" compose view (state lives here, not in
 // renderAgencySubPage, since it's local to the itineraries ta-tab).
@@ -1644,9 +1714,11 @@ function renderItinList() {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
         <div>
           <div style="font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:3px">${esc(it.title||'—')}</div>
-          <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${(it.days||[]).length} days · Created ${esc(it.created_at||'')}</div>
+          <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${it.nights?`${it.nights}N / ${(it.days||[]).length}D`:`${(it.days||[]).length} days`}${taPaxSummary(it)?' · '+esc(taPaxSummary(it)):''} · Created ${esc(it.created_at||'')}</div>
+          ${parseFloat(it.adult_price)?`<div style="font-size:11.5px;color:var(--accent-ink);font-weight:600;margin-top:3px">${esc(it.currency||'AED')} ${parseFloat(it.adult_price).toLocaleString()} / adult${parseFloat(it.child_price)?` · ${esc(it.currency||'AED')} ${parseFloat(it.child_price).toLocaleString()} / child`:''}</div>`:''}
         </div>
         <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" title="Duplicate" onclick="duplicateItin('${it.Id}')">⧉</button>
           <button class="btn btn-sm" onclick="printItinerary('${it.Id}')">🖨️ PDF</button>
           ${clientRecord?.wa_phone_id?`<button class="btn btn-sm" onclick="sendItinViaWa('${it.Id}')">📲 WA</button>`:''}
           <button class="btn btn-secondary btn-sm" onclick="openItinModal('${it.Id}')">Edit</button>
@@ -1677,6 +1749,63 @@ const ITIN_TYPE_META={
 function itinTypeMeta(type){ return ITIN_TYPE_META[type]||ITIN_TYPE_META.note; }
 function itinItemIcon(type) { return itinTypeMeta(type).icon; }
 
+// Traveller types a quote is priced by — the count and price field names are the same on an
+// itinerary record and in the Send Quotation form, so one list drives both.
+const TA_PAX_TYPES=[
+  {label:'Adult',count:'adults',price:'adult_price'},
+  {label:'Child (with bed)',count:'children',price:'child_price'},
+  {label:'Child (no bed)',count:'children_nobed',price:'child_nobed_price'},
+  {label:'Infant',count:'infants',price:'infant_price'},
+];
+// One line per traveller type that has travellers: {label,count,price,total}.
+function taPaxLines(rec){
+  return TA_PAX_TYPES.map(t=>{
+    const count=parseInt(rec?.[t.count])||0,price=parseFloat(rec?.[t.price])||0;
+    return {label:t.label,count,price,total:count*price};
+  }).filter(l=>l.count>0);
+}
+// "2 Adults, 1 Child (with bed)" — for meta lines and list cards.
+function taPaxSummary(rec){
+  return taPaxLines(rec).map(l=>`${l.count} ${l.label.replace(/^(Adult|Child|Infant)/,w=>l.count>1?(w==='Child'?'Children':w+'s'):w)}`).join(', ');
+}
+// Lists stored as a JSON array (or older newline/";" text) → array of trimmed strings.
+function taList(v){
+  if(Array.isArray(v)) return v.map(x=>String(x).trim()).filter(Boolean);
+  if(v==null||v==='') return [];
+  const a=safeJson(v,null);
+  if(Array.isArray(a)) return a.map(x=>String(x).trim()).filter(Boolean);
+  return String(v).split(/\n|;/).map(x=>x.trim()).filter(Boolean);
+}
+function itinNightsFromDates(from,to){
+  if(!from||!to) return 0;
+  const n=Math.round((new Date(to)-new Date(from))/86400000);
+  return n>0?n:0;
+}
+// Day N's calendar date when the trip has a start date, e.g. "Sat, 14 Nov 2026".
+function itinDayDate(fromDate,dayNo){
+  if(!fromDate) return '';
+  const d=new Date(fromDate+'T00:00:00');
+  if(isNaN(d)) return '';
+  d.setDate(d.getDate()+(dayNo-1));
+  return d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+}
+const ITIN_MEALS=[['B','Breakfast'],['L','Lunch'],['D','Dinner']];
+function itinMealsText(meals){
+  return ITIN_MEALS.filter(([k])=>(meals||[]).includes(k)).map(([,label])=>label).join(', ');
+}
+function itinUpdateRateTotal(){
+  const el=$id('itinRateTotal'); if(!el) return;
+  const rec={};
+  [['adults','itinAdults'],['children','itinChildren'],['children_nobed','itinChildrenNoBed'],['infants','itinInfants'],
+   ['adult_price','itinAdultPrice'],['child_price','itinChildPrice'],['child_nobed_price','itinChildNoBedPrice'],['infant_price','itinInfantPrice']]
+    .forEach(([k,id])=>{rec[k]=$id(id).value;});
+  const lines=taPaxLines(rec).filter(l=>l.price);
+  const cur=$id('itinCurrency').value||'AED';
+  el.textContent=lines.length
+    ? 'Estimated total: '+lines.map(l=>`${l.count} × ${l.label} @ ${cur} ${l.price.toLocaleString()}`).join(' + ')+` = ${cur} ${lines.reduce((s,l)=>s+l.total,0).toLocaleString()}`
+    : '';
+}
+
 // `prefill` (title/destination/from_date/to_date/notes/days — same shape as an itinerary record)
 // lets pkgCreateItin/groupFareCreateItin/specialFareCreateItin below open this as a brand-new,
 // pre-populated itinerary instead of a blank one. Only used when `id` is falsy — an existing
@@ -1689,6 +1818,17 @@ function openItinModal(id, prefill) {
   $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
   $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
   $id('itinNotes').value=it.notes||'';
+  $id('itinNights').value=it.nights||''; $id('itinDepCity').value=it.departure_city||'';
+  $id('itinHotelCat').value=it.hotel_category||''; $id('itinMealPlan').value=it.meal_plan||'';
+  $id('itinTransport').value=it.transport||'';
+  $id('itinAdults').value=it.adults??1; $id('itinChildren').value=it.children||0;
+  $id('itinChildrenNoBed').value=it.children_nobed||0; $id('itinInfants').value=it.infants||0;
+  $id('itinCurrency').value=it.currency||'AED';
+  $id('itinAdultPrice').value=it.adult_price||''; $id('itinChildPrice').value=it.child_price||'';
+  $id('itinChildNoBedPrice').value=it.child_nobed_price||''; $id('itinInfantPrice').value=it.infant_price||'';
+  $id('itinInclusions').value=taList(it.inclusions).join('\n');
+  $id('itinExclusions').value=taList(it.exclusions).join('\n');
+  itinUpdateRateTotal();
   _itinLogoUrl=it.logo_url||''; _itinLogoDims=null;
   if(_itinLogoUrl) itinLoadLogoDims(_itinLogoUrl);
   itinRenderLogoWrap();
@@ -1704,12 +1844,12 @@ function openItinModal(id, prefill) {
 function pkgToItinPrefill(p){
   const nights=Math.max(1,parseInt(p.nights)||1);
   const days=[];
-  for(let i=0;i<nights;i++) days.push({day_no:i+1,title:'',items:[]});
+  for(let i=0;i<=nights;i++) days.push({day_no:i+1,title:'',items:[]});
   const inc=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]);
-  const notesParts=[];
-  if(inc.length) notesParts.push('Includes: '+inc.join(', '));
-  if((p.notes||'').trim()) notesParts.push(p.notes.trim());
-  return {title:p.name||'',destination:p.destination||'',from_date:'',to_date:'',notes:notesParts.join('\n\n'),days};
+  return {title:p.name||'',destination:p.destination||'',from_date:'',to_date:'',notes:(p.notes||'').trim(),days,
+    nights:parseInt(p.nights)||'',currency:p.currency||'AED',adults:Math.max(1,parseInt(p.pax_min)||1),
+    adult_price:p.sell_price||p.base_price||'',child_price:p.child_price||'',child_nobed_price:p.child_nobed_price||'',
+    infant_price:p.infant_price||'',inclusions:inc,exclusions:safeJson(p.exclusions,p.exclusions instanceof Array?p.exclusions:[])};
 }
 function pkgCreateItin(id){
   const p=_taPackages.find(x=>String(x.Id)===String(id));
@@ -1786,12 +1926,25 @@ function itinLoadLogoDims(url){
 }
 
 function renderItinDays() {
+  const from=$id('itinFrom').value;
+  const last=_itinDays.length-1;
+  const iconBtn='background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)';
   $id('itinDaysList').innerHTML = _itinDays.map((d,di)=>`
     <div style="background:var(--bg);border-radius:var(--r-sm);padding:14px;margin-bottom:10px;border-left:3px solid var(--accent)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px">Day ${d.day_no}</span>
-        <input class="form-input" style="flex:1;padding:6px 10px;font-size:13px" placeholder="Day title" value="${esc(d.title||'')}" oninput="_itinDays[${di}].title=this.value">
-        <button onclick="removeItinDay(${di})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)">✕</button>
+        ${from?`<span style="font-size:11px;color:var(--muted)">${esc(itinDayDate(from,d.day_no))}</span>`:''}
+        <input class="form-input" style="flex:1;min-width:160px;padding:6px 10px;font-size:13px" placeholder="Day title, e.g. Arrival & Charminar visit" value="${esc(d.title||'')}" oninput="_itinDays[${di}].title=this.value">
+        <button title="Move up" onclick="moveItinDay(${di},-1)" style="${iconBtn}" ${di===0?'disabled':''}>↑</button>
+        <button title="Move down" onclick="moveItinDay(${di},1)" style="${iconBtn}" ${di===last?'disabled':''}>↓</button>
+        <button title="Duplicate day" onclick="duplicateItinDay(${di})" style="${iconBtn}">⧉</button>
+        <button title="Remove day" onclick="removeItinDay(${di})" style="${iconBtn}">✕</button>
+      </div>
+      <textarea class="form-input" rows="2" style="padding:6px 10px;font-size:12.5px;margin-bottom:8px" placeholder="What the day looks like (shown on the PDF under the day title)" oninput="_itinDays[${di}].description=this.value">${esc(d.description||'')}</textarea>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <input class="form-input" style="flex:1;min-width:180px;padding:6px 10px;font-size:12.5px" placeholder="Overnight stay (hotel / city)" value="${esc(d.overnight||'')}" oninput="_itinDays[${di}].overnight=this.value">
+        <span style="font-size:11.5px;color:var(--muted)">Meals:</span>
+        ${ITIN_MEALS.map(([k,label])=>`<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" ${(d.meals||[]).includes(k)?'checked':''} onchange="toggleItinMeal(${di},'${k}',this.checked)">${label}</label>`).join('')}
       </div>
       ${(d.items||[]).map((item,ii)=>{
         const meta=itinTypeMeta(item.type);
@@ -1804,6 +1957,7 @@ function renderItinDays() {
               <select class="form-input" style="padding:4px 8px;font-size:12px;flex:0 0 130px" onchange="_itinDays[${di}].items[${ii}].type=this.value;renderItinDays()">
                 ${ITIN_TYPES.map(t=>`<option value="${t}" ${item.type===t?'selected':''}>${ITIN_TYPE_META[t].label}</option>`).join('')}
               </select>
+              <input class="form-input" type="time" title="Time (optional)" style="padding:4px 8px;font-size:12px;flex:0 0 110px" value="${esc(item.time||'')}" oninput="_itinDays[${di}].items[${ii}].time=this.value">
               <button onclick="removeItinItem(${di},${ii})" style="margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px;flex-shrink:0">✕</button>
             </div>
             <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="e.g. flight number & time, hotel name, activity details" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
@@ -1819,9 +1973,20 @@ function renderItinDays() {
     </div>`).join('')+'<button onclick="addItinDay()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px;margin-top:4px">+ Add Day</button>';
 }
 
-function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',items:[]});renderItinDays();}
-function removeItinDay(i){_itinDays.splice(i,1);_itinDays.forEach((d,j)=>d.day_no=j+1);renderItinDays();}
-function addItinItem(di){_itinDays[di].items.push({type:'activity',description:'',image:''});renderItinDays();}
+function itinRenumberDays(){ _itinDays.forEach((d,j)=>d.day_no=j+1); renderItinDays(); }
+function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',description:'',overnight:'',meals:[],items:[]});renderItinDays();}
+function removeItinDay(i){_itinDays.splice(i,1);itinRenumberDays();}
+function moveItinDay(i,dir){
+  const j=i+dir; if(j<0||j>=_itinDays.length) return;
+  [_itinDays[i],_itinDays[j]]=[_itinDays[j],_itinDays[i]]; itinRenumberDays();
+}
+function duplicateItinDay(i){ _itinDays.splice(i+1,0,JSON.parse(JSON.stringify(_itinDays[i]))); itinRenumberDays(); }
+function toggleItinMeal(di,k,on){
+  const m=new Set(_itinDays[di].meals||[]);
+  if(on) m.add(k); else m.delete(k);
+  _itinDays[di].meals=ITIN_MEALS.map(([x])=>x).filter(x=>m.has(x));
+}
+function addItinItem(di){_itinDays[di].items.push({type:'activity',time:'',description:'',image:''});renderItinDays();}
 function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
 
 // Stored as a base64 data URL directly on the item, same pattern as CLIENTS.quote_logo_url — no
@@ -1841,13 +2006,29 @@ async function saveItin() {
   const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
-  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),logo_url:_itinLogoUrl,created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  const num=id=>parseFloat($id(id).value)||0;
+  const lines=id=>JSON.stringify($id(id).value.split('\n').map(x=>x.trim()).filter(Boolean));
+  const from=$id('itinFrom').value,to=$id('itinTo').value;
+  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:from,to_date:to,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),logo_url:_itinLogoUrl,created_at:existing.created_at||new Date().toISOString().slice(0,10),
+    nights:parseInt($id('itinNights').value)||itinNightsFromDates(from,to)||Math.max(0,_itinDays.length-1),
+    departure_city:$id('itinDepCity').value.trim(),hotel_category:$id('itinHotelCat').value,meal_plan:$id('itinMealPlan').value,transport:$id('itinTransport').value.trim(),
+    adults:parseInt($id('itinAdults').value)||0,children:parseInt($id('itinChildren').value)||0,children_nobed:parseInt($id('itinChildrenNoBed').value)||0,infants:parseInt($id('itinInfants').value)||0,
+    currency:$id('itinCurrency').value,adult_price:num('itinAdultPrice'),child_price:num('itinChildPrice'),child_nobed_price:num('itinChildNoBedPrice'),infant_price:num('itinInfantPrice'),
+    inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions')};
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
+    await taEnsureColumns('itineraries');
     if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
     msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad();renderAgencySubPage('itineraries');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
+}
+
+function duplicateItin(id){
+  const it=_taItineraries.find(x=>String(x.Id)===String(id));
+  if(!it) return;
+  const {Id,CreatedAt,UpdatedAt,created_at,...copy}=JSON.parse(JSON.stringify(it));
+  openItinModal(null,{...copy,title:(it.title||'Itinerary')+' (copy)'});
 }
 
 async function deleteItin(id){
@@ -1876,6 +2057,24 @@ const SQ_CAPTION_TEMPLATES={
   itinerary_full:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find your itinerary for {{trip_title}} attached. Let us know if you'd like to proceed or have any questions.`,
 };
 
+// Child / infant rows on a quotation — priced and counted separately from the adult price/pax.
+// Field names match TA_PAX_TYPES, so a package's or itinerary's own rates prefill them.
+const SQ_CHILD_FIELDS=[
+  {label:'Child (with bed)',plural:'children w/ bed',price:'child_price',count:'children',priceId:'sqChildPrice',countId:'sqChildren'},
+  {label:'Child (no bed)',plural:'children no bed',price:'child_nobed_price',count:'children_nobed',priceId:'sqChildNoBedPrice',countId:'sqChildrenNoBed'},
+  {label:'Infant',plural:'infants',price:'infant_price',count:'infants',priceId:'sqInfantPrice',countId:'sqInfants'},
+];
+// Price / pax / child rows / validity as currently typed in the Send Quotation form.
+function sqReadPricing(){
+  return {
+    price:parseFloat($id('sqPrice').value)||0,
+    currency:$id('sqCurrency').value||'AED',
+    pax:parseInt($id('sqPax').value)||1,
+    validity:parseInt($id('sqValidity').value)||7,
+    kids:SQ_CHILD_FIELDS.map(f=>({label:f.label,price:parseFloat($id(f.priceId)?.value)||0,count:parseInt($id(f.countId)?.value)||0})).filter(k=>k.count>0),
+  };
+}
+
 let _sqFormat='package';       // 'package' | 'group_fare' | 'travel_service' — PDF wording/layout only
 let _sqSourceKey='';           // e.g. 'pkg-12' or 'itin-7'
 let _sqSelectedIds=new Set();  // lead Ids selected for this bulk send
@@ -1884,7 +2083,7 @@ let _sqFilteredLeads=[];
 function sqSources(){
   return[
     ..._taPackages.map(p=>({key:'pkg-'+p.Id,type:'package',rec:p,label:'📦 '+(p.name||'Unnamed package'),price:p.sell_price||p.base_price||'',currency:p.currency||'AED',group:'Packages'})),
-    ..._taItineraries.map(it=>({key:'itin-'+it.Id,type:'itinerary',rec:it,label:'🗺️ '+(it.title||'Untitled itinerary'),price:'',currency:'AED',group:'Itineraries'})),
+    ..._taItineraries.map(it=>({key:'itin-'+it.Id,type:'itinerary',rec:it,label:'🗺️ '+(it.title||'Untitled itinerary'),price:parseFloat(it.adult_price)||'',currency:it.currency||'AED',group:'Itineraries'})),
   ];
 }
 
@@ -1905,7 +2104,7 @@ function sqSetFormat(fmt){
   _sqFormat=fmt;
   const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
   const priceLabel=$id('sqPriceLabel'); if(priceLabel) priceLabel.textContent=fmt==='group_fare'?'Fare / person':fmt==='travel_service'?'Service price':'Price / person';
-  const paxLabel=$id('sqPaxLabel'); if(paxLabel) paxLabel.textContent=fmt==='group_fare'?'Seats available':'Pax';
+  const paxLabel=$id('sqPaxLabel'); if(paxLabel) paxLabel.textContent=fmt==='group_fare'?'Adults':'Adults (pax)';
   // No pricing table on a full-itinerary send — the price/currency/pax/validity row is irrelevant.
   const grid=$id('sqPricingGrid'); if(grid) grid.style.display=fmt==='itinerary_full'?'none':'grid';
 }
@@ -1917,6 +2116,18 @@ function sqOnSourceChange(){
     $id('sqPrice').value=src.price||'';
     $id('sqCurrency').value=src.currency||'AED';
     if(_sqFormat==='itinerary_full') _sqFormat='package';
+  }
+  if(src){
+    // Rates (and, for an itinerary, traveller counts) come from the picked source.
+    if(src.type==='itinerary'){
+      if(parseFloat(src.rec.adult_price)) $id('sqPrice').value=src.rec.adult_price;
+      if(src.rec.currency) $id('sqCurrency').value=src.rec.currency;
+      $id('sqPax').value=parseInt(src.rec.adults)||1;
+    }
+    SQ_CHILD_FIELDS.forEach(f=>{
+      $id(f.priceId).value=parseFloat(src.rec[f.price])||'';
+      $id(f.countId).value=src.type==='itinerary'?(parseInt(src.rec[f.count])||0):0;
+    });
   }
   const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
   const grid=$id('sqPricingGrid'); if(grid) grid.style.display=_sqFormat==='itinerary_full'?'none':'grid';
@@ -1959,12 +2170,20 @@ function renderItinSendQuote(){
       <div class="form-group"><label class="form-label" id="sqPriceLabel">Price / person</label>
         <input class="form-input" type="number" min="0" id="sqPrice" value="${esc(String(selected?.price||''))}" placeholder="0">
       </div>
-      <div class="form-group"><label class="form-label" id="sqPaxLabel">Pax</label>
-        <input class="form-input" type="number" min="1" id="sqPax" value="1">
+      <div class="form-group"><label class="form-label" id="sqPaxLabel">${_sqFormat==='group_fare'?'Adults':'Adults (pax)'}</label>
+        <input class="form-input" type="number" min="1" id="sqPax" value="${parseInt(selected?.rec?.adults)||1}">
       </div>
       <div class="form-group"><label class="form-label">Valid for (days)</label>
         <input class="form-input" type="number" min="1" id="sqValidity" value="7">
       </div>
+      <div style="grid-column:1/-1;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:-6px">👶 Child &amp; infant rates <span style="font-weight:400">— leave the count at 0 to quote adults only</span></div>
+      ${SQ_CHILD_FIELDS.map(f=>`
+      <div class="form-group"><label class="form-label">${f.label} price</label>
+        <input class="form-input" type="number" min="0" id="${f.priceId}" value="${esc(String(parseFloat(selected?.rec?.[f.price])||''))}" placeholder="0">
+      </div>
+      <div class="form-group"><label class="form-label">No. of ${f.plural}</label>
+        <input class="form-input" type="number" min="0" id="${f.countId}" value="${parseInt(selected?.rec?.[f.count])||0}">
+      </div>`).join('')}
     </div>
 
     <div class="s-head" style="margin-bottom:8px">Select Leads</div>
@@ -2090,14 +2309,17 @@ function sqShade(rgb,percent){
 // Builds the itemized rows for the quotation table (Description / No. of Persons / Price /
 // Total), one row per unit the client's charging for plus zero-priced context rows (inclusions,
 // itinerary days, notes) — mirrors a standard line-item quote layout regardless of format.
-function sqBuildLineItems(src,format,price,currency,pax){
+function sqBuildLineItems(src,format,price,currency,pax,kids){
   const rows=[];
   const unitPrice=parseFloat(price)||0;
+  // Adult row label suffix + one row per child/infant type, added right after the adult row.
+  const adultTag=(kids||[]).length?' — Adult':'';
+  const kidRows=label=>(kids||[]).map(k=>({desc:`${label} — ${k.label}`,persons:k.count,price:k.price,total:k.price*k.count}));
   if(format==='package'){
     if(src.type==='package'){
       const p=src.rec;
       safeJson(p.inclusions,[]).forEach(inc=>rows.push({desc:'Included: '+inc,persons:'',price:0,total:0}));
-      rows.push({desc:p.name||'Package',persons:pax,price:unitPrice,total:unitPrice*pax});
+      rows.push({desc:(p.name||'Package')+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(p.name||'Package'));
       if((p.notes||'').trim()) rows.push({desc:'Note: '+p.notes.trim(),persons:'',price:0,total:0});
     }else{
       const it=src.rec;
@@ -2105,15 +2327,16 @@ function sqBuildLineItems(src,format,price,currency,pax){
         const items=(d.items||[]).map(i=>i.description).filter(Boolean).join(', ');
         rows.push({desc:`Day ${d.day_no}: ${d.title||''}${items?' — '+items:''}`,persons:'',price:0,total:0});
       });
-      rows.push({desc:it.title||'Itinerary',persons:pax,price:unitPrice,total:unitPrice*pax});
+      rows.push({desc:(it.title||'Itinerary')+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(it.title||'Itinerary'));
       if((it.notes||'').trim()) rows.push({desc:'Note: '+it.notes.trim(),persons:'',price:0,total:0});
     }
   }else if(format==='group_fare'){
-    rows.push({desc:src.rec.destination?`Group Fare — ${src.rec.destination}`:'Group Fare',persons:pax,price:unitPrice,total:unitPrice*pax});
+    const fareLabel=src.rec.destination?`Group Fare — ${src.rec.destination}`:'Group Fare';
+    rows.push({desc:fareLabel+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(fareLabel));
     if((src.rec.notes||'').trim()) rows.push({desc:'Note: '+src.rec.notes.trim(),persons:'',price:0,total:0});
   }else{ // travel_service
     const label=src.type==='package'?(src.rec.name||'Travel Service'):(src.rec.title||'Travel Service');
-    rows.push({desc:label,persons:pax,price:unitPrice,total:unitPrice*pax});
+    rows.push({desc:label+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(label));
     if((src.rec.notes||'').trim()) rows.push({desc:'Note: '+src.rec.notes.trim(),persons:'',price:0,total:0});
   }
   const subtotal=rows.reduce((s,r)=>s+(r.total||0),0);
@@ -2204,14 +2427,20 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   // as the Quotation PDF's own meta grid (sqBuildPdfDoc), just itinerary-specific fields, so a
   // customer receiving both document types from this business sees one consistent format.
   const dateRange=it.from_date&&it.to_date?`${it.from_date} to ${it.to_date}`:(it.from_date||it.to_date||'');
-  const metaLeft=[['Destination:',it.destination||'—'],['Trip Dates:',dateRange||'—'],['Duration:',`${(it.days||[]).length} day(s)`]];
+  const nDays=(it.days||[]).length,nights=parseInt(it.nights)||0;
+  const metaLeft=[['Destination:',it.destination||'—'],['Trip Dates:',dateRange||'—'],['Duration:',nights?`${nights} Night(s) / ${Math.max(nDays,nights+1)} Day(s)`:`${nDays} day(s)`]];
+  if((it.departure_city||'').trim()) metaLeft.push(['Departure From:',it.departure_city.trim()]);
+  if(taPaxSummary(it)) metaLeft.push(['Travellers:',taPaxSummary(it)]);
   const metaRight=[['Itinerary No.:',quoteNumber||'—'],['Issued On:',new Date().toLocaleDateString()],['Prepared By:',clientRecord.client_name||'—']];
+  [['Hotel:',it.hotel_category],['Meal Plan:',it.meal_plan],['Transport:',it.transport]].forEach(([lab,val])=>{ if((val||'').trim()) metaRight.push([lab,val.trim()]); });
   doc.setFontSize(9);
   let my=y;
   metaLeft.forEach(([lab,val])=>{
     doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX,my);
-    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+120,my);
-    my+=15;
+    // Wrapped so a long value (e.g. "2 Adults, 1 Child (with bed), 1 Infant") stays out of the right column.
+    const lines=doc.splitTextToSize(String(val),contentW/2-130);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(lines,marginX+120,my);
+    my+=15+(lines.length-1)*11;
   });
   let my2=y;
   metaRight.forEach(([lab,val])=>{
@@ -2260,8 +2489,18 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
     doc.roundedRect(marginX,y,contentW,22,4,4,'F');
     doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(255,255,255);
     doc.text(`Day ${d.day_no}${d.title?' — '+d.title:''}`,marginX+10,y+15);
+    const dayDate=itinDayDate(it.from_date,d.day_no);
+    if(dayDate){ doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.text(dayDate,pageW-marginX-10,y+15,{align:'right'}); }
     doc.setTextColor(0);
     y+=32;
+
+    if((d.description||'').trim()){
+      const lines=doc.splitTextToSize(d.description.trim(),contentW-8);
+      doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(40);
+      lines.forEach(line=>{ ensureSpace(14); doc.text(line,marginX+4,y); y+=12; });
+      doc.setTextColor(0);
+      y+=6;
+    }
 
     (d.items||[]).forEach(item=>{
       const meta=itinTypeMeta(item.type);
@@ -2288,7 +2527,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       doc.rect(marginX+4,y,contentW-4,blockH,'F');
 
       doc.setFont('helvetica','bold');doc.setFontSize(7.5);
-      const pillLabel=meta.label.toUpperCase();
+      const pillLabel=(item.time?item.time+' · ':'')+meta.label.toUpperCase();
       const pillW=doc.getTextWidth(pillLabel)+14;
       doc.setFillColor(...typeRgb);
       doc.roundedRect(marginX+innerLeft,y+6,pillW,13,3,3,'F');
@@ -2309,7 +2548,77 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       doc.setTextColor(0);
       y+=blockH+8;
     });
+
+    const dayFacts=[itinMealsText(d.meals)?'Meals: '+itinMealsText(d.meals):'',(d.overnight||'').trim()?'Overnight: '+d.overnight.trim():''].filter(Boolean).join('     ·     ');
+    if(dayFacts){
+      ensureSpace(18);
+      doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
+      doc.text(doc.splitTextToSize(dayFacts,contentW-8)[0],marginX+4,y+4);
+      doc.setTextColor(0);
+      y+=16;
+    }
+    y+=4;
   });
+
+  // Inclusions / Exclusions side by side, each as a bulleted list.
+  const inc=taList(it.inclusions),exc=taList(it.exclusions);
+  if(inc.length||exc.length){
+    const colW=(inc.length&&exc.length)?(contentW-12)/2:contentW;
+    const boxes=[['Inclusions',inc,'+'],['Exclusions',exc,'-']].filter(([,list])=>list.length).map(([title,list,mark])=>{
+      const lines=list.flatMap(x=>doc.splitTextToSize(`${mark}  ${x}`,colW-20));
+      return {title,lines,h:26+lines.length*11};
+    });
+    const boxH=Math.max(...boxes.map(b=>b.h));
+    ensureSpace(boxH+16);
+    boxes.forEach((b,i)=>{
+      const x=marginX+i*(colW+12);
+      doc.setFillColor(...accentSoft);
+      doc.roundedRect(x,y,colW,boxH,4,4,'F');
+      doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+      doc.text(b.title,x+10,y+15);
+      doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(50);
+      doc.text(b.lines,x+10,y+28);
+    });
+    doc.setTextColor(0);
+    y+=boxH+16;
+  }
+
+  // Package price per traveller type (adult / child with bed / child no bed / infant).
+  const cur=it.currency||'AED';
+  const priced=TA_PAX_TYPES.map(t=>({label:t.label,price:parseFloat(it[t.price])||0,count:parseInt(it[t.count])||0})).filter(r=>r.price>0);
+  if(priced.length){
+    const rowH=18,boxH=22+rowH*priced.length+(priced.some(r=>r.count)?rowH+4:0);
+    ensureSpace(boxH+16);
+    const colCount=marginX+contentW-190,colPrice=marginX+contentW-100,colTotal=marginX+contentW-12;
+    doc.setFillColor(...accent);
+    doc.rect(marginX,y,contentW,22,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(255,255,255);
+    doc.text('PACKAGE PRICE',marginX+12,y+14);
+    doc.text('TRAVELLERS',colCount,y+14,{align:'right'});
+    doc.text('PER PERSON',colPrice,y+14,{align:'right'});
+    doc.text('TOTAL',colTotal,y+14,{align:'right'});
+    y+=22;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(20);
+    let grand=0;
+    priced.forEach((r,i)=>{
+      if(i%2===1){doc.setFillColor(...accentSoft);doc.rect(marginX,y,contentW,rowH,'F');}
+      doc.text(r.label,marginX+12,y+13);
+      doc.text(r.count?String(r.count):'—',colCount,y+13,{align:'right'});
+      doc.text(`${cur} ${r.price.toLocaleString()}`,colPrice,y+13,{align:'right'});
+      doc.text(r.count?`${cur} ${(r.count*r.price).toLocaleString()}`:'—',colTotal,y+13,{align:'right'});
+      grand+=r.count*r.price;
+      y+=rowH;
+    });
+    if(priced.some(r=>r.count)){
+      doc.setDrawColor(...accent);doc.setLineWidth(1);doc.line(marginX,y,pageW-marginX,y);
+      doc.setFont('helvetica','bold');doc.setTextColor(...accentInk);
+      doc.text('Total',colPrice,y+14,{align:'right'});
+      doc.text(`${cur} ${grand.toLocaleString()}`,colTotal,y+14,{align:'right'});
+      y+=rowH+4;
+    }
+    doc.setTextColor(0);
+    y+=12;
+  }
 
   if((it.notes||'').trim()){
     const noteLines=doc.splitTextToSize(it.notes.trim(),contentW-20);
@@ -2351,7 +2660,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   return doc;
 }
 
-function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
+function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber,kids){
   if(format==='itinerary_full') return itinBuildFullPdfDoc(lead,src.rec,quoteNumber);
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
@@ -2398,7 +2707,8 @@ function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
 
   // Meta grid — trip basics on the left, document identity on the right
   const departure=src.type==='itinerary'?(src.rec.from_date||'—'):'—';
-  const metaLeft=[['Departure:',departure],['Operator:',clientRecord.client_name||'—'],['No. of Passengers:',String(pax)]];
+  const paxText=(kids||[]).length?[`${pax} Adult${pax===1?'':'s'}`,...kids.map(k=>`${k.count} ${k.label}`)].join(', '):String(pax);
+  const metaLeft=[['Departure:',departure],['Operator:',clientRecord.client_name||'—'],['No. of Passengers:',paxText]];
   const metaRight=[['Quote No.:',quoteNumber||'—'],['Quote Date:',new Date().toLocaleDateString()],['Valid Until:',new Date(Date.now()+validity*86400000).toLocaleDateString()]];
   doc.setFontSize(9);
   let my=y;
@@ -2446,7 +2756,7 @@ function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
   y=Math.max(fy,ty)+18;
 
   // Line-items table (Description / No. of Persons / Price / Total)
-  const {rows,subtotal}=sqBuildLineItems(src,format,price,currency,pax);
+  const {rows,subtotal}=sqBuildLineItems(src,format,price,currency,pax,kids);
   const taxPct=parseFloat(clientRecord.quote_tax_percent)||0;
   const tax=subtotal*taxPct/100;
   const grandTotal=subtotal+tax;
@@ -2571,17 +2881,17 @@ async function sqPreviewPdf(){
   const format=_sqFormat;
   const isItinFull=format==='itinerary_full';
   if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
-  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  const pr=sqReadPricing();
+  const price=isItinFull?0:pr.price,kids=isItinFull?[]:pr.kids;
+  const {currency,pax,validity}=pr;
   if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
-  const currency=$id('sqCurrency').value||'AED';
-  const pax=parseInt($id('sqPax').value)||1;
-  const validity=parseInt($id('sqValidity').value)||7;
+  const missingKid=kids.find(k=>!k.price);
+  if(missingKid){msg.textContent=`Enter the ${missingKid.label} price, or set its count to 0.`;msg.className='save-msg err';return;}
 
   // Same batch-wide logo dims measurement sqSend does before its loop — a preview is just a
   // one-off "batch" of one.
-  _itinSendLogoDims=isItinFull&&src.rec.logo_url
-    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
-    : null;
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url?await sqMeasureImage(src.rec.logo_url):null;
+  _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
 
   // Prefers the first selected lead so the preview shows real customer details; falls back to a
   // placeholder when none are picked yet, since previewing shouldn't require selecting leads first.
@@ -2590,7 +2900,7 @@ async function sqPreviewPdf(){
   const previewNum=(isItinFull?'ITN-':'QUO-')+'0000 (preview)';
   msg.textContent='';msg.className='save-msg';
   try{ await loadJsPdf(); }catch(e){ msg.textContent=e.message; msg.className='save-msg err'; return; }
-  const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum);
+  const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum,kids);
   window.open(doc.output('bloburl'),'_blank');
 }
 
@@ -2603,18 +2913,18 @@ async function sqSend(){
   // Full-itinerary sends have no pricing table, so the price field isn't required for them.
   const isItinFull=format==='itinerary_full';
   if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
-  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  const pr=sqReadPricing();
+  const price=isItinFull?0:pr.price,kids=isItinFull?[]:pr.kids;
+  const {currency,pax,validity}=pr;
   if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
-  const currency=$id('sqCurrency').value||'AED';
-  const pax=parseInt($id('sqPax').value)||1;
-  const validity=parseInt($id('sqValidity').value)||7;
+  const missingKid=kids.find(k=>!k.price);
+  if(missingKid){msg.textContent=`Enter the ${missingKid.label} price, or set its count to 0.`;msg.className='save-msg err';return;}
 
   // Measured once for the whole batch (not per lead) — itinBuildFullPdfDoc reads this instead of
   // _itinLogoDims, since the itinerary modal that measured the latter usually isn't open anymore
   // by the time a bulk send runs.
-  _itinSendLogoDims=isItinFull&&src.rec.logo_url
-    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
-    : null;
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url?await sqMeasureImage(src.rec.logo_url):null;
+  _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
 
   const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
@@ -2632,6 +2942,11 @@ async function sqSend(){
   let quoteSeq=parseInt(clientRecord.quote_number_seq)||0;
   let itinSeq=parseInt(clientRecord.itin_number_seq)||0;
 
+  // The caption's {{total}}: a group fare quotes the per-person fare; the other formats quote the
+  // whole quotation (adults + children + infants, plus tax) — the same Grand Total the PDF shows.
+  const captionTotal=isItinFull?0:format==='group_fare'?price
+    :sqBuildLineItems(src,format,price,currency,pax,kids).subtotal*(1+(parseFloat(clientRecord.quote_tax_percent)||0)/100);
+
   let sent=0,failed=0,skipped=0;
   try{ await loadJsPdf(); }catch(e){ logRow('❌ '+e.message,'#DC2626'); btn.disabled=false; return; }
   for(let i=0;i<leads.length;i++){
@@ -2647,9 +2962,9 @@ async function sqSend(){
       let quoteNumber;
       if(isItinFull){ itinSeq++; quoteNumber='ITN-'+String(itinSeq).padStart(4,'0'); }
       else { quoteSeq++; quoteNumber='QUO-'+String(quoteSeq).padStart(4,'0'); }
-      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber);
+      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber,kids);
       const pdfBlob=doc.output('blob');
-      const caption=sqBuildCaption(lead,format,price,currency,validity,isItinFull?{trip_title:src.rec.title||'your trip'}:null);
+      const caption=sqBuildCaption(lead,format,captionTotal,currency,validity,isItinFull?{trip_title:src.rec.title||'your trip'}:null);
       const fd=new FormData();
       fd.append('conv_id',convId);
       fd.append('caption',caption);
@@ -2663,7 +2978,7 @@ async function sqSend(){
       if(!tags.includes(tagName)) tags.push(tagName);
       lead.Tags=tags.join(',');
       const sentAt=new Date().toISOString();
-      const totalLabel=isItinFull?'':`${currency} ${price.toLocaleString()}`;
+      const totalLabel=isItinFull?'':`${currency} ${captionTotal.toLocaleString()}`;
       try{
         const hist=await freshConvHistory(lead);
         hist.push({role:'assistant',content:caption+(isItinFull?`\n[Itinerary PDF — ${src.rec.title||'Itinerary'}]`:`\n[Quotation PDF — ${SQ_FORMAT_TITLES[format]}, ${totalLabel}]`),ts:sentAt});
@@ -3508,16 +3823,55 @@ function printItinerary(id){
   const days=it.days||[];
   const w=window.open('','_blank');
   if(!w)return;
-  let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${esc(it.destination||'')} &middot; ${days.length} days</p>`;
+  const facts=[it.destination,it.nights?`${it.nights} nights / ${days.length} days`:`${days.length} days`,it.departure_city?'From '+it.departure_city:'',it.hotel_category,it.meal_plan,it.transport,taPaxSummary(it)].filter(Boolean);
+  let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${facts.map(esc).join(' &middot; ')}</p>`;
   days.forEach(d=>{
-    body+=`<h2>Day ${d.day_no}: ${esc(d.title||'')}</h2><ul>`;
-    (d.items||[]).forEach(i=>{body+=`<li>${esc(i.description||'')}</li>`;});
+    const date=itinDayDate(it.from_date,d.day_no);
+    body+=`<h2>Day ${d.day_no}: ${esc(d.title||'')}${date?` <small>${esc(date)}</small>`:''}</h2>`;
+    if(d.description) body+=`<p>${esc(d.description)}</p>`;
+    body+='<ul>';
+    (d.items||[]).forEach(i=>{body+=`<li>${i.time?`<b>${esc(i.time)}</b> `:''}${esc(i.description||'')}</li>`;});
     body+='</ul>';
+    const dayFacts=[itinMealsText(d.meals)?'Meals: '+itinMealsText(d.meals):'',d.overnight?'Overnight: '+d.overnight:''].filter(Boolean);
+    if(dayFacts.length) body+=`<p class="facts">${dayFacts.map(esc).join(' &middot; ')}</p>`;
   });
+  const inc=taList(it.inclusions),exc=taList(it.exclusions);
+  if(inc.length) body+=`<h2>Inclusions</h2><ul>${inc.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  if(exc.length) body+=`<h2>Exclusions</h2><ul>${exc.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  const cur=it.currency||'AED';
+  const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
+  if(priced.length) body+=`<h2>Package Price</h2><table>${priced.map(t=>`<tr><td>${t.label}</td><td>${esc(cur)} ${parseFloat(it[t.price]).toLocaleString()} per person</td></tr>`).join('')}</table>`;
   if(it.notes)body+=`<p><em>${esc(it.notes)}</em></p>`;
-  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}ul{margin:8px 0 0 18px}li{margin-bottom:4px}</style></head><body>${body}</body></html>`);
+  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}h2 small{font-size:12px;color:#666;font-weight:normal}ul{margin:8px 0 0 18px}li{margin-bottom:4px}.facts{font-size:13px;color:#555}td{padding:4px 16px 4px 0}</style></head><body>${body}</body></html>`);
   w.document.close();
   w.print();
+}
+
+// The itinerary as a WhatsApp message — same content as the PDF, in WhatsApp formatting.
+function itinWaText(it){
+  const days=it.days||[];
+  const facts=[it.destination,it.nights?`${it.nights}N / ${days.length}D`:`${days.length} days`].filter(Boolean).join(' · ');
+  let body=`*${it.title}*\n${facts}\n`;
+  if(it.from_date) body+=`📅 ${it.from_date}${it.to_date?' to '+it.to_date:''}\n`;
+  if(taPaxSummary(it)) body+=`👥 ${taPaxSummary(it)}\n`;
+  [['🏨',it.hotel_category],['🍽️',it.meal_plan],['🚌',it.transport]].forEach(([icon,v])=>{ if(v) body+=`${icon} ${v}\n`; });
+  body+='\n';
+  days.forEach(d=>{
+    body+=`*Day ${d.day_no}: ${d.title||''}*\n`;
+    if(d.description) body+=`${d.description}\n`;
+    (d.items||[]).forEach(i=>{body+=`• ${i.time?i.time+' ':''}${i.description||''}\n`;});
+    if(itinMealsText(d.meals)) body+=`🍽️ ${itinMealsText(d.meals)}\n`;
+    if(d.overnight) body+=`🌙 Overnight: ${d.overnight}\n`;
+    body+='\n';
+  });
+  const inc=taList(it.inclusions),exc=taList(it.exclusions);
+  if(inc.length) body+=`✅ *Includes*\n${inc.map(x=>'• '+x).join('\n')}\n\n`;
+  if(exc.length) body+=`❌ *Excludes*\n${exc.map(x=>'• '+x).join('\n')}\n\n`;
+  const cur=it.currency||'AED';
+  const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
+  if(priced.length) body+=`💰 *Price per person*\n${priced.map(t=>`• ${t.label}: ${cur} ${parseFloat(it[t.price]).toLocaleString()}`).join('\n')}\n\n`;
+  if(it.notes)body+=`_${it.notes}_`;
+  return body.trim();
 }
 
 async function sendItinViaWa(id){
@@ -3525,14 +3879,7 @@ async function sendItinViaWa(id){
   if(!it)return;
   const phone=prompt('Send to phone (with country code, e.g. 971501234567):');
   if(!phone)return;
-  const days=it.days||[];
-  let body=`*${it.title}*\n${it.destination||''} · ${days.length} days\n\n`;
-  days.forEach(d=>{
-    body+=`*Day ${d.day_no}: ${d.title||''}*\n`;
-    (d.items||[]).forEach(i=>{body+=`• ${i.description||''}\n`;});
-    body+='\n';
-  });
-  if(it.notes)body+=`_${it.notes}_`;
+  const body=itinWaText(it);
   try{
     const resp=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{
       method:'POST',
