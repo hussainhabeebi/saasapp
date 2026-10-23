@@ -103,7 +103,7 @@ button:active{transform:scale(.98)}
 .lead .acts{display:flex;gap:8px;flex:none}
 .lead .acts button{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:var(--blue-soft);color:var(--blue-2)}
 .lead .acts .call{color:#fff;background:var(--green)}
-.tagl{font-size:11px;font-weight:700;border-radius:8px;padding:2px 8px;background:var(--surface);color:var(--muted);white-space:nowrap;flex:none;text-transform:capitalize}.tagl.hot{background:var(--red-soft);color:var(--red)}.tagl.won{background:var(--green-soft);color:var(--green)}.tagl.new{background:var(--blue-soft);color:var(--blue-2)}.tagl.due{background:#FEF3C7;color:#92400E}
+.tagl{font-size:11px;font-weight:700;border-radius:8px;padding:2px 8px;background:var(--surface);color:var(--muted);white-space:nowrap;flex:none}.tagl.st{text-transform:capitalize}.tagl.hot{background:var(--red-soft);color:var(--red)}.tagl.won{background:var(--green-soft);color:var(--green)}.tagl.new{background:var(--blue-soft);color:var(--blue-2)}.tagl.due{background:#FEF3C7;color:#92400E}
 .attn{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden;background:var(--bg)}
 .attn-h{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 10px}.attn-h b{font-size:17px;font-weight:800;letter-spacing:-.01em}.attn-h small{color:var(--muted);font-size:12.5px}
 .seg{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 12px 6px}
@@ -111,6 +111,29 @@ button:active{transform:scale(.98)}
 .seg .n{font-size:22px;font-weight:800;letter-spacing:-.01em;min-width:22px}
 .seg button[data-k="new"].on{background:var(--blue);color:#fff}.seg button[data-k="unans"].on{background:var(--green);color:#fff}
 .attn .lead{padding-left:12px}.attn .lead:last-of-type .info{border-bottom:0}.attn .empty{padding:20px 16px}
+.sheet-bg{position:fixed;inset:0;background:rgba(11,37,69,.35);z-index:30}
+.sheet{position:fixed;left:0;right:0;bottom:0;max-width:760px;margin:0 auto;max-height:92dvh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;z-index:31;box-shadow:0 -10px 40px rgba(11,37,69,.2);padding:8px 0 calc(18px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.sheet .grab{width:42px;height:5px;border-radius:3px;background:#D5DAE1;margin:4px auto 10px}
+.ls-head{display:flex;align-items:center;gap:14px;padding:4px 20px 14px}
+.ls-head .av{width:56px;height:56px;border-radius:18px;font-size:22px}
+.ls-head h2{margin:0;font-size:21px;font-weight:800;letter-spacing:-.01em;line-height:1.2;word-break:break-word}
+.ls-head small{display:block;color:var(--muted);font-size:13.5px;margin-top:3px}
+.ls-x{margin-left:auto;align-self:flex-start}
+.ls-tags{display:flex;flex-wrap:wrap;gap:6px;padding:0 20px 14px}
+.ls-acts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 16px 8px}
+.ls-acts button{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 4px;border-radius:18px;font-weight:700;font-size:13px;background:var(--blue-soft);color:var(--blue-2)}
+.ls-acts button.call{background:var(--green);color:#fff}.ls-acts button.log{background:var(--surface);color:var(--ink)}
+.ls-sec{padding:16px 20px 6px;font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.kv{display:flex;justify-content:space-between;gap:16px;padding:11px 20px;border-bottom:1px solid var(--line);font-size:14.5px}.kv span{color:var(--muted)}.kv b{font-weight:600;text-align:right;word-break:break-word}
+.kv input{border:1px solid var(--line);border-radius:10px;padding:6px 8px;font:inherit;font-size:14px;color:var(--ink);background:var(--surface)}
+.calls .c{display:flex;gap:12px;padding:10px 20px;border-bottom:1px solid var(--line)}.calls .c i{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;font-style:normal;flex:none;background:var(--surface)}
+.calls .c div{flex:1;min-width:0;font-size:14px}.calls .c small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+.ls-full{display:block;margin:16px auto 0;color:var(--muted);font-size:13px;text-decoration:underline}
+.oc{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:4px 16px 8px}
+.oc button{padding:14px 10px;border-radius:16px;background:var(--surface);font-weight:700;font-size:14.5px;border:2px solid transparent}
+.oc button.on{border-color:var(--green);background:var(--green-soft);color:var(--green)}
+.cs-notes{display:block;width:calc(100% - 32px);margin:8px 16px;border:1px solid var(--line);border-radius:14px;padding:10px 12px;font:inherit;font-size:15px;min-height:70px;resize:vertical;background:var(--surface)}
+.cs-save{display:block;width:calc(100% - 32px);margin:8px 16px 0;padding:14px;border-radius:16px;background:var(--green);color:#fff;font-weight:800;font-size:16px}.cs-save:disabled{opacity:.5}
 .more-btn{display:block;margin:14px auto;color:var(--blue-2);font-weight:700;padding:10px 18px;border-radius:14px;background:var(--blue-soft)}
 svg{display:block}
 </style>
@@ -186,6 +209,11 @@ svg{display:block}
     <button data-tab="more" onclick="go('more')"><span class="pill"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>More</button>
   </nav>
 </div>
+<div class="sheet-bg hidden" id="sheetBg" onclick="closeSheets()"></div>
+<!-- Lead card: opens over any tab; Back closes it. -->
+<section class="sheet hidden" id="leadSheet" aria-label="Lead"></section>
+<!-- After a call: how did it go? Saved to the lead's CallLog like the dashboard's Log Call. -->
+<section class="sheet hidden" id="callSheet" aria-label="Log call"></section>
 <div id="toast" class="toast hidden"></div>
 <script>
 'use strict';
@@ -197,6 +225,7 @@ try{clientId=localStorage.getItem('lv_cid')||'';sessionToken=localStorage.getIte
 // Not signed in (or the session is gone): the full dashboard owns sign-in.
 if(!clientId||!sessionToken)location.replace('dashboard.html?full=1');
 const homeKey=`lv_m_home_${clientId}`;
+async function apiSend(path,method,body){const r=await fetch(WORKER+path,{method,headers:{Authorization:'Bearer '+sessionToken,'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.status===401){location.replace('dashboard.html?full=1');throw new Error('signed out')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
 async function api(path){const r=await fetch(WORKER+path,{headers:{Authorization:'Bearer '+sessionToken}});if(r.status===401){location.replace('dashboard.html?full=1');throw new Error('signed out')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
 function toast(t){const el=$('toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>el.classList.add('hidden'),2600)}
 function openCrm(page){location.href='dashboard.html?full=1'+(page?'&page='+encodeURIComponent(page):'')}
@@ -220,6 +249,7 @@ function go(tab){
 }
 addEventListener('popstate',()=>{
  if(skipPop){skipPop=false;return}
+ if(sheetOpen()){closeSheets(true);return}
  if(threadOpen){post({close:true});return}
  render(history.state?.lvTab||'home');
 });
@@ -330,7 +360,7 @@ function loadLeads(force){
    const [rows]=await Promise.all([fetchLeadRows(),loadEcomOrderPhones(),mtgLoadArenaEvents(),ensureCrmScripts().catch(()=>{})]);
    allLeads=rows;leadsAt=Date.now();
    try{localStorage.setItem(leadsKey,JSON.stringify(rows.filter(leadVisibilityFilter()).slice(0,LEAD_PAGE).map(slimForCache)))}catch{}
-   renderTeam();renderAttention();renderLeads();if(force)toast('Leads updated');
+   renderTeam();renderAttention();renderLeads();checkCallReturn();if(force)toast('Leads updated');
   }catch(e){if(force||cur==='leads')toast('Could not load leads — check your connection')}
   finally{leadsLoading=null}
  })();
@@ -366,7 +396,7 @@ const LEAD_FILTERS=[['all','All'],['mine','Mine'],['new','🆕 Not called'],['un
 function leadMatch(f){return l=>f==='mine'?sameEmail(l.Owner,myEmail):f==='new'?isNotCalled(l):f==='unans'?isUnanswered(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
 function setLeadFilter(f){leadFilter=f;leadShown=LEAD_PAGE;$id('leadList').scrollTop=0;renderLeads()}
 function leadRefId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0}
-const leadTag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':isUnanswered(l)?'<span class="tagl hot">📵 No answer</span>':l.Stage?`<span class="tagl">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';
+const leadTag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':isUnanswered(l)?'<span class="tagl hot">📵 No answer</span>':l.Stage?`<span class="tagl st">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';
 // One lead row (Leads tab and Home's Prime attention). when: the right-hand time, default arrival.
 function leadRowHtml(l,when){const name=l.Name||l.Phone||'Unknown';return `<div class="lead" data-id="${esc(l.Id)}"><span class="av" style="${avStyle(name)}">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div class="info" data-act="open"><span class="r1" style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><span class="nm" style="flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.Score==='Hot'?'🔥 ':''}${esc(name)}</span><span class="tm" style="font-size:12px;color:var(--muted);white-space:nowrap">${esc(when!==undefined?when:(l.Date?timeAgo(l.Date):''))}</span></span><span style="display:flex;gap:6px;align-items:center;min-width:0"><span style="flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.Phone||'')}${leadCalls(l)?` · 📞 ${leadCalls(l)}`:''}</span>${leadTag(l)}</span></div><div class="acts">${l.ConversationID?'<button data-act="chat" title="Open chat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></button>':''}${l.Phone?'<button class="call" data-act="call" title="Call (logs the call in the CRM)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg></button>':''}</div></div>`}
 function renderLeads(){
@@ -383,14 +413,133 @@ function renderLeads(){
 }
 function leadAct(e){
  const row=e.target.closest('.lead'),act=e.target.closest('[data-act]')?.dataset.act;if(!row||!act)return;
- const id=row.dataset.id;
- // Calls go through the CRM's lead card so they're logged (CallLog) — the Arena and Staff
- // Performance count from that log.
- if(act==='open'||act==='call')location.href='dashboard.html?full=1&lead='+encodeURIComponent(id);
- else if(act==='chat'){const l=allLeads.find(x=>String(x.Id)===id);openChats({leadId:id,channel:String(l?.Channel||'').toLowerCase()==='instagram'?'instagram':'whatsapp'})}
+ const l=findLead(row.dataset.id);if(!l)return;
+ if(act==='open')openLeadSheet(l);
+ else if(act==='call')startCall(l);
+ else if(act==='chat')chatLead(l);
 }
 $id('leadList').addEventListener('click',leadAct);
 $id('attn').addEventListener('click',leadAct); // on the card: a cached paint replaces #attnList
+
+// ── Lead card, calls and chat — all inside this app ────────────────────────────────────────
+// Calls are recorded exactly like the dashboard's Log Call (appendCallLog): the newest entry goes
+// first in the lead's CallLog, with who called, when, the outcome and how long since the dial —
+// the Weekly Arena, Staff Performance and Prime attention all count from that log.
+function findLead(id){
+ id=String(id);let l=allLeads.find(x=>String(x.Id)===id);
+ if(!l){try{l=JSON.parse(localStorage.getItem(leadsKey)||'[]').find(x=>String(x.Id)===id)}catch{}}
+ return l||null;
+}
+const leadsUrl=()=>`/nocodb/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`;
+const telOf=l=>{const d=String(l.Phone||'').replace(/[^0-9]/g,'');return d?'+'+d:''};
+function sheetOpen(){return !$id('leadSheet').classList.contains('hidden')||!$id('callSheet').classList.contains('hidden')}
+function showSheet(id){
+ if(!sheetOpen())history.pushState({...(history.state||{}),lvSheet:1},'');
+ ['leadSheet','callSheet'].forEach(x=>$id(x).classList.toggle('hidden',x!==id));$id('sheetBg').classList.remove('hidden');
+}
+// fromPop: Back already removed the history entry.
+function closeSheets(fromPop){
+ if(!sheetOpen())return;
+ ['leadSheet','callSheet'].forEach(x=>$id(x).classList.add('hidden'));$id('sheetBg').classList.add('hidden');
+ if(!fromPop&&history.state?.lvSheet){skipPop=true;history.back()}
+}
+function chatLead(l){
+ closeSheets();
+ if(l.ConversationID)openChats({leadId:String(l.Id),channel:String(l.Channel||'').toLowerCase()==='instagram'?'instagram':'whatsapp'});
+ else{const d=String(l.Phone||'').replace(/[^0-9]/g,'');if(d)window.open('https://wa.me/'+d,'_blank');else toast('No phone number on this lead')}
+}
+const OUTCOME_ICON={'Answered':'✅','No Answer':'📵','Voicemail':'📬','Callback Requested':'🔁','Moved to WhatsApp':'💬'};
+const DETAIL_FIELDS=[['Stage','Stage'],['Score','Score'],['Owner','Owner'],['Source','Source'],['LeadSource','Source'],['Campaign','Campaign'],['Email','Email'],['City','City'],['Location','Location'],['Product','Product'],['Interest','Interest'],['Budget','Budget'],['DealValue','Deal value'],['Notes','Notes']];
+function fmtWhen(v){const d=new Date(v||0);return v&&!isNaN(d)?d.toLocaleString([],{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):''}
+function openLeadSheet(l){
+ const name=l.Name||l.Phone||'Unknown',calls=parseCallLog(l.CallLog),ref=Number(l.Id)>0?'LD-'+String(l.Id).padStart(5,'0'):'';
+ const owner=l.Owner?(getTeamMembers().find(m=>sameEmail(m.email,l.Owner))?.name||l.Owner):'Unassigned';
+ const seen=new Set(),rows=DETAIL_FIELDS.filter(([k,label])=>{const v=l[k];if(v===undefined||v===null||String(v).trim()===''||seen.has(label))return false;seen.add(label);return true})
+  .map(([k,label])=>`<div class="kv"><span>${esc(label)}</span><b>${esc(k==='Owner'?owner:k==='Stage'?String(l[k]).replace(/_/g,' '):String(l[k]))}</b></div>`).join('');
+ const rem=l.ReminderDate?String(l.ReminderDate).slice(0,16):'';
+ $id('leadSheet').innerHTML=`<div class="grab"></div>
+  <div class="ls-head"><span class="av" style="${avStyle(name)}">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div style="min-width:0"><h2>${l.Score==='Hot'?'🔥 ':''}${esc(name)}</h2><small>${esc(l.Phone||'')}${ref?' · '+ref:''}</small></div><button class="icon ls-x" title="Close" onclick="closeSheets()">✕</button></div>
+  <div class="ls-tags">${leadTag(l)}${l.Date?`<span class="tagl">Arrived ${esc(timeAgo(l.Date))}</span>`:''}${calls.length?`<span class="tagl">📞 ${calls.length} call${calls.length>1?'s':''}</span>`:''}${!l.Owner?'<span class="tagl new">Unassigned</span>':''}</div>
+  <div class="ls-acts">
+   <button class="call" onclick="startCall(findLead('${esc(l.Id)}'))" ${telOf(l)?'':'disabled'}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg>Call</button>
+   <button onclick="chatLead(findLead('${esc(l.Id)}'))"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg>${l.ConversationID?'Chat':'WhatsApp'}</button>
+   <button class="log" onclick="openCallSheet('${esc(l.Id)}',0)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Log call</button>
+  </div>
+  <div class="ls-sec">Details</div>${rows||'<div class="kv"><span>No details yet</span><b></b></div>'}
+  <div class="kv"><span>Follow-up</span><input type="datetime-local" value="${esc(rem)}" onchange="setReminder('${esc(l.Id)}',this.value)"></div>
+  <div class="ls-sec">Calls</div><div class="calls">${calls.length?calls.slice(0,20).map(c=>`<div class="c"><i>${OUTCOME_ICON[c.outcome]||'📞'}</i><div><b>${esc(c.outcome||'Call')}</b>${c.duration?` · ${esc(c.duration)} min`:''}<small>${esc(fmtWhen(c.at||c.date))}${c.by?' · '+esc(getTeamMembers().find(m=>sameEmail(m.email,c.by))?.name||c.by):''}</small>${c.notes?`<small>${esc(c.notes)}</small>`:''}</div></div>`).join(''):'<div class="kv"><span>No calls yet</span><b></b></div>'}</div>
+  <button class="ls-full" onclick="location.href='dashboard.html?full=1&lead=${encodeURIComponent(l.Id)}'">Open in the full CRM (edit, stage, meetings…)</button>`;
+ showSheet('leadSheet');$id('leadSheet').scrollTop=0;
+}
+async function setReminder(id,v){
+ const l=findLead(id);if(!l)return;
+ try{await apiSend(leadsUrl(),'PATCH',{Id:l.Id,ReminderDate:v||null});l.ReminderDate=v||null;toast(v?'⏰ Follow-up set':'Follow-up cleared');renderAttention();renderLeads()}catch(e){toast('Not saved: '+e.message)}
+}
+// First action on an unassigned lead makes it yours — same as the dashboard's claimLeadIfUnowned
+// (re-reads Owner first so two people can't both claim it; leaves the same note in the chat history).
+async function claimIfUnowned(l,activity){
+ if(!myEmail||l.Owner)return;
+ try{
+  const fresh=await api(`${leadsUrl()}/${l.Id}?fields=Id,Owner,ConvHistory`);
+  if(fresh?.Owner){l.Owner=fresh.Owner;if(!sameEmail(fresh.Owner,myEmail))toast('This lead was just picked up by '+fresh.Owner);return}
+  let hist=[];try{hist=JSON.parse(fresh?.ConvHistory||'[]')}catch{}if(!Array.isArray(hist))hist=[];
+  hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity}`,ts:new Date().toISOString()});
+  await apiSend(leadsUrl(),'PATCH',{Id:l.Id,Owner:myEmail,ConvHistory:JSON.stringify(hist.slice(-40))});
+  l.Owner=myEmail;
+ }catch(e){}
+}
+// Dial: remember the call (survives the phone app or Android reloading this page), hand the number
+// to the dialer, and ask for the outcome when the person comes back.
+const callKey=()=>`lv_m_call_${clientId}`;
+function startCall(l){
+ if(!l)return;const tel=telOf(l);if(!tel){toast('No phone number on this lead');return}
+ try{localStorage.setItem(callKey(),JSON.stringify({id:String(l.Id),start:Date.now()}))}catch{}
+ claimIfUnowned(l,'Call');
+ location.href='tel:'+tel;
+}
+function pendingCall(){try{const c=JSON.parse(localStorage.getItem(callKey())||'null');if(c&&Date.now()-c.start<3*3600e3)return c;localStorage.removeItem(callKey())}catch{}return null}
+let callOutcome='',callStart=0,callLeadId='';
+function openCallSheet(id,start){
+ const l=findLead(id);if(!l)return;callLeadId=String(id);callStart=start||0;callOutcome='';
+ const mins=start?Math.max(0,Math.round((Date.now()-start)/60000)):'';
+ $id('callSheet').innerHTML=`<div class="grab"></div>
+  <div class="ls-head"><span class="av" style="${avStyle(l.Name||l.Phone)}">${esc((String(l.Name||l.Phone||'?').trim()[0]||'?').toUpperCase())}</span><div style="min-width:0"><h2>How did the call go?</h2><small>${esc(l.Name||'')} · ${esc(l.Phone||'')}</small></div><button class="icon ls-x" title="Close" onclick="dismissCall()">✕</button></div>
+  <div class="oc">${['Answered','No Answer','Voicemail','Callback Requested'].map(o=>`<button data-o="${o}" onclick="pickOutcome(this)">${OUTCOME_ICON[o]} ${o==='Callback Requested'?'Call back':o}</button>`).join('')}</div>
+  <div class="kv" style="border:0"><span>Duration (minutes)</span><input id="csDur" type="number" min="0" inputmode="numeric" style="width:90px" value="${mins}"></div>
+  <textarea class="cs-notes" id="csNotes" placeholder="Notes (optional)"></textarea>
+  <button class="cs-save" id="csSave" disabled onclick="saveCall()">Save call</button>`;
+ showSheet('callSheet');
+}
+function pickOutcome(b){callOutcome=b.dataset.o;document.querySelectorAll('#callSheet .oc button').forEach(x=>x.classList.toggle('on',x===b));$id('csSave').disabled=false}
+function dismissCall(){try{localStorage.removeItem(callKey())}catch{}closeSheets()}
+let savingCall=false;
+async function saveCall(){
+ const l=findLead(callLeadId);if(!l||!callOutcome||savingCall)return;savingCall=true;$id('csSave').disabled=true;
+ const entry={outcome:callOutcome,duration:$id('csDur').value||'',notes:$id('csNotes').value.trim(),date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail,...(callStart?{src:'dial',secs:Math.max(0,Math.round((Date.now()-callStart)/1000))}:{src:'manual'})};
+ try{
+  await claimIfUnowned(l,'Call log');
+  let calls;try{calls=parseCallLog((await api(`${leadsUrl()}/${l.Id}?fields=CallLog`))?.CallLog)}catch{calls=parseCallLog(l.CallLog)}
+  calls.unshift(entry);const log=JSON.stringify(calls);
+  await apiSend(leadsUrl(),'PATCH',{Id:l.Id,CallLog:log});
+  l.CallLog=log;delete l._called;delete l._last;
+  try{localStorage.removeItem(callKey())}catch{}
+  closeSheets();toast('Call saved ✓');
+  // Same follow-ups as the dashboard's Log Call.
+  if(callOutcome==='No Answer')noAnswerFollowUp(l);
+  if(callOutcome==='Callback Requested'){const in2h=new Date(Date.now()+2*3600e3).toISOString().slice(0,16);setReminder(l.Id,in2h)}
+  renderTeam();renderAttention();renderLeads();
+ }catch(e){toast('Call not saved — check your connection and try again');$id('csSave').disabled=false}
+ finally{savingCall=false}
+}
+async function noAnswerFollowUp(l){
+ const phone=String(l.Phone||'').replace(/[^0-9]/g,'');if(!phone)return;
+ const name=String(l.Name||'there').split(' ')[0];
+ try{await apiSend('/wa/send','POST',{phone,text:`Hi ${name}, we tried reaching you just now but couldn't connect. We'll try again soon — or feel free to call us back anytime! 😊`,inbox_id:l.InboxId||undefined});toast('💬 WhatsApp follow-up sent')}
+ catch(e){toast('WhatsApp follow-up not sent: '+e.message)}
+}
+// Back from the dialer (or the page reloaded meanwhile): ask how it went.
+function checkCallReturn(){const c=pendingCall();if(c&&!sheetOpen()&&findLead(c.id))openCallSheet(c.id,c.start)}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(checkCallReturn,400)});
 
 // ── Home → ⚡ Prime attention: leads nobody has called yet and calls that weren't answered ────
 // The leads this person may see (Leads-tab rule). Not called: hot first, then newest — speed to
