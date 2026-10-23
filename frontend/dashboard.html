@@ -4,6 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Leadvyne · CRM</title>
+<script>
+// Phones open the light app (m.html — Home · Chats · More, WhatsApp-style) instead of this full CRM:
+// this page plus its CDN scripts is several MB to download and parse on a phone, and while it sat in
+// memory under the Chats iframe Android often killed the tab when the gallery/camera opened, so a
+// picked photo was lost. Runs before anything else loads. Only a signed-in, plain open redirects —
+// any query param (?full=1 from m.html's More menu, ?lead=, ?billing, OAuth ?code=, ?logout…) stays here.
+(function(){try{
+  var phone=matchMedia('(max-width:700px)').matches;
+  window.LV_LITE=phone;
+  var q=new URLSearchParams(location.search),other=[];q.forEach(function(v,k){if(k!=='client')other.push(k)});
+  if(phone&&!other.length&&localStorage.getItem('lv_cid')&&localStorage.getItem('lv_session'))location.replace('m.html'+location.hash);
+}catch(e){}})();
+</script>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
@@ -4654,6 +4667,7 @@ const ROLES = {
     <div class="more-sheet-handle"></div>
     <div class="more-sheet-title">More</div>
     <div class="more-sheet-grid">
+      <button class="more-item" onclick="location.href='m.html'"><span class="bnIcon">📱</span><span class="bnLabel">Simple app</span></button>
       <button class="more-item" data-page="bizai" id="moreBizaiTab"><span class="bnIcon">🤖</span><span class="bnLabel">AI Assistant</span></button>
       <button class="more-item" data-page="tasks" style="position:relative"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
@@ -6198,6 +6212,8 @@ function pushLeadToProjects(lead){
 document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
     if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
+    // Phones: Home and Chats live in the light app (m.html), so the bottom bar goes back there.
+    if(window.LV_LITE&&b.classList.contains('bnItem')&&(b.dataset.page==='home'||b.dataset.page==='chats')){ location.href='m.html#'+b.dataset.page; return; }
     if(b.dataset.page==='projects'){ openProjectsTool(); closeMoreSheet(); return; }
     // Real task management (manual tasks, the "Projects" grouping, Google Calendar sync, the
     // Advanced Pipeline follow-up cadence's to-dos) all moved to the Projects tool — see
@@ -6269,6 +6285,9 @@ function showApp(){
   else if(params.has('integrations')||shopifyParam) landingPage='integrations';
   else if(gscParam) landingPage='reports';
   else if(gcalParam) landingPage='tasks';
+  // ?page=<page> — m.html's More menu opens a CRM page directly.
+  const pageParam=String(params.get('page')||'');
+  if(/^[a-z]+$/.test(pageParam)&&$id('page'+cap(PAGE_HOST[pageParam]||pageParam))) landingPage=pageParam;
   navigate(landingPage);
   // ?lead=<id> — from a 🔥 hot-lead WhatsApp alert: open that lead with Call one tap away.
   const leadParam=Number(params.get('lead'));

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>Leadvyne</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://leadvyne-api-proxy.leadvyne.workers.dev">
+<!-- Leadvyne on a phone: Home · Chats · More, WhatsApp-style. dashboard.html sends phones here
+     (see the script at the top of its <head>). This page is tiny and loads no libraries; Chats is
+     chats.html in an iframe (same bridge as the dashboard's Chats tab, see chats.js), and every
+     other CRM page opens from More as dashboard.html?full=1&page=<page>. -->
+<style>
+:root{--wa:#00a884;--wa-dark:#008069;--soft:#e7fce9;--ink:#111b21;--muted:#667781;--line:#e9edef;--bg:#fff;--nav:62px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+#app{position:relative;height:100dvh;max-width:760px;margin:0 auto;overflow:hidden}
+.tab{position:absolute;left:0;right:0;top:0;bottom:calc(var(--nav) + env(safe-area-inset-bottom));display:flex;flex-direction:column;visibility:hidden;background:var(--bg)}
+.tab.on{visibility:visible}
+.thread-open .tab{bottom:0}.thread-open #nav{display:none}
+.top{height:58px;display:flex;align-items:center;gap:10px;padding:0 8px 0 16px;flex:none;border-bottom:1px solid var(--line)}
+.top h1{margin:0;font-size:22px;font-weight:700;color:var(--wa-dark);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top .biz{font-size:12px;color:var(--muted);font-weight:500;max-width:45%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.icon{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;color:#54656f;flex:none}.icon:active{background:#f0f2f5}
+.scroll{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding-bottom:16px}
+.hello{padding:16px 16px 4px;font-size:15px;color:var(--muted)}.hello b{color:var(--ink);font-size:19px;display:block;margin-top:2px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px 16px}
+.tile{text-align:left;border-radius:14px;padding:13px 14px;background:#f7f8fa;border:1px solid var(--line);min-height:78px;display:flex;flex-direction:column;justify-content:space-between}
+.tile:active{background:var(--soft)}
+.tile .n{font-size:26px;font-weight:700;line-height:1.1}.tile .l{font-size:13px;color:var(--muted)}
+.tile.hot{background:#fff4f4;border-color:#ffd9dc}.tile.hot .n{color:#d1242f}.tile.green .n{color:var(--wa-dark)}
+.sec{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 4px}.sec h3{margin:0;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600}.sec button{color:var(--wa-dark);font-size:14px;font-weight:600}
+.row{display:flex;gap:12px;align-items:center;width:100%;text-align:left;padding:0 16px;min-height:72px}.row:active{background:#f5f6f6}
+.av{width:48px;height:48px;border-radius:50%;background:#dfe5e7;color:#54656f;display:grid;place-items:center;font-weight:700;font-size:18px;flex:none}
+.row .info{flex:1;min-width:0;border-bottom:1px solid #f0f2f5;padding:12px 0;align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.row .r1,.row .r2{display:flex;align-items:center;gap:8px}.row .r1{margin-bottom:3px}
+.row .nm{flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tm{font-size:12px;color:var(--muted);white-space:nowrap}
+.row .pv{flex:1;min-width:0;font-size:14px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.unread .nm{font-weight:650}.row.unread .tm{color:var(--wa);font-weight:600}
+.bdg{min-width:20px;height:20px;border-radius:10px;background:var(--wa);color:#fff;font-size:11.5px;font-weight:600;display:grid;place-items:center;padding:0 6px}
+.empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px}
+.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px 12px}
+.q{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 2px;border-radius:12px;font-size:12px;color:#3b4a54}.q:active{background:#f0f2f5}.q i{font-style:normal;font-size:24px;width:48px;height:48px;border-radius:50%;background:#f0f2f5;display:grid;place-items:center}
+.list .item{display:flex;align-items:center;gap:16px;width:100%;text-align:left;padding:0 16px;min-height:58px;font-size:16px}.list .item:active{background:#f5f6f6}
+.list .item i{font-style:normal;font-size:21px;width:28px;text-align:center}.list .item span{flex:1;border-bottom:1px solid #f0f2f5;align-self:stretch;display:flex;align-items:center}.list .item:last-child span{border-bottom:0}
+.list .item.danger{color:#d1242f}
+.group{margin:8px 0;border-top:8px solid #f7f8fa}
+#chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
+.loading{flex:1;display:grid;place-items:center;color:var(--muted);font-size:14px}
+#nav{position:absolute;left:0;right:0;bottom:0;height:calc(var(--nav) + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom);display:flex;background:#fff;border-top:1px solid var(--line);z-index:5}
+#nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:12px;font-weight:600;color:#54656f;position:relative}
+#nav .pill{width:60px;height:30px;border-radius:15px;display:grid;place-items:center;transition:background .15s}
+#nav button.on{color:var(--ink)}#nav button.on .pill{background:#d9fdd3;color:var(--wa-dark)}
+#nav .dot{position:absolute;top:5px;left:calc(50% + 8px);min-width:18px;height:18px;border-radius:9px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}
+.toast{position:fixed;left:50%;bottom:calc(var(--nav) + 18px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#323739;color:#fff;padding:10px 16px;border-radius:8px;font-size:14px;z-index:20;max-width:90vw}
+.hidden{display:none!important}
+svg{display:block}
+</style>
+</head>
+<body>
+<div id="app">
+  <section class="tab" id="tabHome">
+    <div class="top"><h1>Leadvyne</h1><span class="biz" id="biz"></span><button class="icon" title="Refresh" onclick="loadHome(true)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button></div>
+    <div class="scroll" id="homeScroll">
+      <div class="hello" id="hello"></div>
+      <div class="tiles">
+        <button class="tile green" onclick="openChats({filter:'unread'})"><span class="n" id="cUnread">–</span><span class="l">Unread chats</span></button>
+        <button class="tile hot" onclick="openChats({filter:'needs'})"><span class="n" id="cNeeds">–</span><span class="l">Need you (handed over)</span></button>
+        <button class="tile" onclick="openChats({filter:'mine'})"><span class="n" id="cMine">–</span><span class="l">Assigned to me</span></button>
+        <button class="tile" onclick="openChats({filter:'unassigned'})"><span class="n" id="cUnassigned">–</span><span class="l">Unassigned</span></button>
+      </div>
+      <div class="sec"><h3>Recent chats</h3><button onclick="openChats({filter:'all'})">See all</button></div>
+      <div id="recent"><div class="empty">Loading…</div></div>
+      <div class="sec"><h3>Quick open</h3></div>
+      <div class="quick">
+        <button class="q" onclick="openCrm('leads')"><i>👥</i>Leads</button>
+        <button class="q" onclick="openCrm('humandeals')"><i>🤝</i>Deals</button>
+        <button class="q" onclick="openCrm('followups')"><i>🔁</i>Follow-ups</button>
+        <button class="q" onclick="openCrm('broadcast')"><i>📢</i>Campaigns</button>
+      </div>
+    </div>
+  </section>
+  <section class="tab" id="tabChats"><div class="loading" id="chatsLoading">Opening Chats…</div></section>
+  <section class="tab" id="tabMore">
+    <div class="top"><h1>More</h1></div>
+    <div class="scroll list">
+      <button class="item" onclick="openCrm('leads')"><i>👥</i><span>Leads</span></button>
+      <button class="item" onclick="openCrm('humandeals')"><i>🤝</i><span>Deals</span></button>
+      <button class="item" onclick="openCrm('followups')"><i>🔁</i><span>Follow-ups</span></button>
+      <button class="item" onclick="openCrm('broadcast')"><i>📢</i><span>Campaigns</span></button>
+      <button class="item" onclick="openCrm('reports')"><i>📈</i><span>Reports</span></button>
+      <button class="item" onclick="openCrm('team')"><i>📊</i><span>Team</span></button>
+      <button class="item" onclick="openCrm('knowledgebase')"><i>📚</i><span>Knowledge Base</span></button>
+      <div class="group"></div>
+      <button class="item" onclick="openCrm('billing')"><i>💳</i><span>Billing</span></button>
+      <button class="item" onclick="openCrm('settings')"><i>⚙️</i><span>Settings</span></button>
+      <button class="item" onclick="openCrm('')"><i>🖥️</i><span>Full dashboard (all features)</span></button>
+      <div class="group"></div>
+      <button class="item danger" onclick="location.href='dashboard.html?logout=1'"><i>🚪</i><span>Sign out</span></button>
+    </div>
+  </section>
+  <nav id="nav">
+    <button data-tab="home" onclick="go('home')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg></span>Home</button>
+    <button data-tab="chats" onclick="go('chats')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></span>Chats<span class="dot hidden" id="chatDot"></span></button>
+    <button data-tab="more" onclick="go('more')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span>More</button>
+  </nav>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script>
+'use strict';
+const WORKER='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+let clientId='',sessionToken='';
+try{clientId=localStorage.getItem('lv_cid')||'';sessionToken=localStorage.getItem('lv_session')||''}catch{}
+// Not signed in (or the session is gone): the full dashboard owns sign-in.
+if(!clientId||!sessionToken)location.replace('dashboard.html?full=1');
+const homeKey=`lv_m_home_${clientId}`;
+async function api(path){const r=await fetch(WORKER+path,{headers:{Authorization:'Bearer '+sessionToken}});if(r.status===401){location.replace('dashboard.html?full=1');throw new Error('signed out')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
+function toast(t){const el=$('toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>el.classList.add('hidden'),2600)}
+function openCrm(page){location.href='dashboard.html?full=1'+(page?'&page='+encodeURIComponent(page):'')}
+
+// ── Tabs. Phone Back: chat → chat list → Home → leave, like WhatsApp. ─────────────────────────
+let cur='',threadOpen=false,skipPop=false;
+function render(tab){
+ cur=tab;
+ document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id==='tab'+tab[0].toUpperCase()+tab.slice(1)));
+ document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+ if(tab==='chats')ensureChats();
+ if(tab==='home')loadHome();
+}
+function go(tab){
+ if(tab===cur){if(tab==='chats'&&threadOpen)post({close:true});return}
+ if(cur==='home'&&tab!=='home')history.pushState({lvTab:tab},'','#'+tab);
+ else if(tab==='home'&&history.state?.lvTab){skipPop=true;history.back()}
+ else history.replaceState({lvTab:tab},'','#'+tab);
+ render(tab);
+}
+addEventListener('popstate',()=>{
+ if(skipPop){skipPop=false;return}
+ if(threadOpen){post({close:true});return}
+ render(history.state?.lvTab||'home');
+});
+
+// ── Chats: chats.html embedded, same postMessage bridge as dashboard.html (chats.js) ──────────
+let chatsReady=false,pending=null;
+const frame=()=>$('chatsFrame');
+const origin=()=>location.protocol==='file:'?'*':location.origin;
+function ensureChats(){
+ if(frame())return;
+ const f=document.createElement('iframe');f.id='chatsFrame';f.title='Chats';f.allow='microphone; clipboard-write; autoplay';
+ f.src='chats.html?'+new URLSearchParams({client:clientId,token:sessionToken,embed:'1'});
+ f.onload=()=>$('chatsLoading')?.remove();
+ $('tabChats').appendChild(f);
+}
+function post(msg){pending={...pending,...msg};flush()}
+function flush(){const f=frame();if(!chatsReady||!pending||!f?.contentWindow)return;try{f.contentWindow.postMessage({source:'lv-dashboard',...pending},origin());pending=null}catch{}}
+function openChats(msg){if(msg)post(msg);go('chats')}
+addEventListener('message',e=>{
+ const f=frame();if(!f||e.source!==f.contentWindow||e.data?.source!=='lv-chats')return;
+ const d=e.data;
+ if(d.type==='ready'){chatsReady=true;flush()}
+ else if(d.type==='thread'){
+  const open=!!d.leadId;
+  if(open&&!threadOpen&&!history.state?.lvThread)history.pushState({lvTab:'chats',lvThread:1},'','#chats');
+  if(!open&&threadOpen&&history.state?.lvThread){skipPop=true;history.back()}
+  threadOpen=open;document.body.classList.toggle('thread-open',open);
+ }
+ else if(d.type==='read')loadCounts();
+ else if(d.type==='home')go('home');
+ else if(d.type==='openLead'||d.type==='meeting'){if(d.leadId)location.href='dashboard.html?full=1&lead='+encodeURIComponent(d.leadId)}
+});
+
+// ── Home: counts + recent chats, painted from this phone's last copy first ────────────────────
+function fmtTime(ts){const d=new Date(ts||0);if(!ts||isNaN(d))return'';const n=new Date();if(d.toDateString()===n.toDateString())return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'Yesterday';return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
+function paintCounts(c){
+ if(!c)return;
+ $('cUnread').textContent=c.unread??0;$('cNeeds').textContent=c.needs??0;$('cMine').textContent=c.mine??0;$('cUnassigned').textContent=c.unassigned??0;
+ const dot=$('chatDot'),n=Number(c.unread)||0;dot.textContent=n>99?'99+':n;dot.classList.toggle('hidden',!n);
+}
+function paintRecent(rows){
+ const el=$('recent');
+ if(!rows)return;
+ if(!rows.length){el.innerHTML='<div class="empty">No chats yet.</div>';return}
+ el.innerHTML=rows.map(r=>{const name=r.name||r.phone||'Unknown',un=Number(r.unread_count)||0;return `<button class="row${un?' unread':''}" data-id="${esc(r.lead_id)}" data-ch="${esc(r.channel||'whatsapp')}"><span class="av">${esc((name.trim()[0]||'?').toUpperCase())}</span><span class="info"><span class="r1"><span class="nm">${esc(name)}</span><span class="tm">${esc(fmtTime(r.last_message_at))}</span></span><span class="r2"><span class="pv">${r.last_message_dir==='out'?'✓✓ ':''}${esc(r.last_message_preview||'')}</span>${un?`<span class="bdg">${un>99?'99+':un}</span>`:''}</span></span></button>`}).join('');
+}
+$('recent').addEventListener('click',e=>{const b=e.target.closest('.row');if(b)openChats({leadId:b.dataset.id,channel:b.dataset.ch==='instagram'?'instagram':'whatsapp'})});
+function paintHello(name,biz){
+ const h=new Date().getHours(),part=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+ $('hello').innerHTML=`${part}<b>${esc(name||'Welcome back')}</b>`;$('biz').textContent=biz||'';
+}
+let cache={};try{cache=JSON.parse(localStorage.getItem(homeKey)||'{}')||{}}catch{}
+function saveCache(){try{localStorage.setItem(homeKey,JSON.stringify(cache))}catch{}}
+let homeAt=0;
+async function loadCounts(){try{cache.counts=await api('/chats/v2/counts');paintCounts(cache.counts);saveCache()}catch{}}
+async function loadHome(force){
+ if(!force&&Date.now()-homeAt<20000)return;homeAt=Date.now();
+ const [c,l]=await Promise.allSettled([api('/chats/v2/counts'),api('/chats/v2/list?'+new URLSearchParams({view:'all',channel:'all',limit:'8',sort:'newest'}))]);
+ if(c.status==='fulfilled'){cache.counts=c.value;paintCounts(c.value)}
+ if(l.status==='fulfilled'){cache.rows=(l.value.rows||[]).slice(0,8);paintRecent(cache.rows)}
+ else if(!cache.rows)$('recent').innerHTML='<div class="empty">Could not load recent chats. <button style="color:var(--wa-dark);font-weight:600" onclick="openChats()">Open Chats</button></div>';
+ if(c.status==='rejected'&&l.status==='rejected'&&force)toast('No connection — showing the last saved view');
+ else if(force)toast('Updated');
+ saveCache();
+}
+async function loadMe(){try{const me=await api('/session/me');const c=me.client||{};cache.me={name:me.name||me.user?.name||String(me.email||me.user?.email||'').split('@')[0],biz:c.client_name||c.business_name||''};paintHello(cache.me.name,cache.me.biz);saveCache()}catch{}}
+
+// Boot: paint the cached view instantly, then refresh. Chats loads quietly in the background
+// once Home is up, so tapping the Chats tab opens straight into the list.
+paintHello(cache.me?.name,cache.me?.biz||(()=>{try{return localStorage.getItem('lv_cached_name')||''}catch{return''}})());
+paintCounts(cache.counts);paintRecent(cache.rows);
+const startTab=['chats','more'].includes(location.hash.slice(1))?location.hash.slice(1):'home';
+history.replaceState(startTab==='home'?null:{lvTab:startTab},'',startTab==='home'?location.pathname:'#'+startTab);
+if(clientId&&sessionToken){
+ render(startTab);loadMe();
+ const idle=window.requestIdleCallback||(f=>setTimeout(f,1200));idle(()=>ensureChats(),{timeout:2500});
+ setInterval(()=>{if(!document.hidden&&cur==='home')loadHome()},60000);
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cur==='home')loadHome()});
+}
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
