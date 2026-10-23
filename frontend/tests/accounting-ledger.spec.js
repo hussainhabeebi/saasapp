@@ -45,7 +45,7 @@ async function setup(page, { enabled = true } = {}) {
   db.prepare(`INSERT INTO accounting_expenses (client_id, expense_account, amount, currency, expense_date, category, vendor, created_at) VALUES (7,'x',4500,'INR',?,'Software','Figma',?)`).run(T, T);
   db.prepare(`INSERT INTO accounting_vendor_bills (client_id, supplier, bill_date, due_date, line_items_json, currency, subtotal, total, status, created_at) VALUES (7,'Ravi (freelancer)',?,?,?,'INR',20000,20000,'unpaid',?)`).run(T, T, JSON.stringify([{ name: 'Video editing', qty: 1, price: 20000 }]), T);
 
-  const errors = [];
+  const errors = [], fpPatches = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.route('**/*', async (route) => {
     const req = route.request(), url = req.url();
@@ -62,53 +62,90 @@ async function setup(page, { enabled = true } = {}) {
     if (p === '/accounting/documents') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_documents`).all().map((r) => ({ ...r, Id: r.id })) } });
     if (p === '/accounting/expenses') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_expenses`).all().map((r) => ({ ...r, Id: r.id })) } });
     if (p === '/accounting/vendor-bills') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_vendor_bills`).all().map((r) => ({ ...r, Id: r.id })) } });
-    if (p === '/financial/config') return route.fulfill({ json: { default_currency: 'INR' } });
+    if (p.startsWith('/financial/reports/')) return route.fulfill({ json: { currency: 'INR', buckets: [], items: [], categories: [], by_type: [], total: 0, total_documents: 0, since: '2026-01-01', from: '2026-01-01', to: '2026-12-31' } });
+    if (p === '/accounting/bank-accounts') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM acc_bank_accounts`).all().map((r) => ({ ...r, Id: r.id })) } });
+    if (p === '/financial/config') { if (req.method() === 'PATCH') { const b = JSON.parse(req.postData()); fpPatches.push(b); return route.fulfill({ json: { default_currency: 'INR', ...b } }); } return route.fulfill({ json: { default_currency: 'INR' } }); }
     if (p === '/financial/dashboard') return route.fulfill({ json: { currency: 'INR', expected: 0, collected: 0, outstanding: 0, expenses: 0, trend: [], overdue: [], money_owed_to_you: [], money_you_owe: [] } });
     return route.fulfill({ json: { list: [] } });
   });
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
   if (enabled) await expect(page.locator('.tab[data-tab="books"]')).toBeVisible();
-  return { db, errors };
+  return { db, errors, fpPatches };
 }
-const subs = async (page, tab) => {
-  const pills = page.locator(`#${tab} .fp-pill`);
+const PAGES = ['overview', 'documents', 'subscriptions', 'customers', 'collections', 'expenses', 'vendorbills', 'suppliers', 'bankcash', 'books', 'reports', 'tax', 'payroll', 'settings'];
+const pageId = (t) => 'tab' + t.charAt(0).toUpperCase() + t.slice(1);
+const settle = async (page, id) => {
+  await expect(page.locator(`#${id} .acc-sub-body .spinner`)).toHaveCount(0, { timeout: 10000 });
+  await expect(page.locator(`#${id} .acc-sub-body`)).not.toContainText(/Something went wrong|is not a function|undefined|not available/);
+};
+const sections = async (page, id) => {
+  const pills = page.locator(`#${id} .fp-pill`);
   const n = await pills.count();
-  for (let i = 0; i < n; i++) {
-    await pills.nth(i).click();
-    await expect(page.locator(`#${tab} .acc-sub-body .spinner`)).toHaveCount(0, { timeout: 10000 });
-    await expect(page.locator(`#${tab} .acc-sub-body`)).not.toContainText(/Something went wrong|is not a function|undefined/);
-  }
+  for (let i = 0; i < n; i++) { await pills.nth(i).click(); await settle(page, id); }
+  if (!n) await settle(page, id);
   return n;
 };
 
-test('every ledger tab and sub-view renders against the real ledger', async ({ page }) => {
+test('PC view: grouped left sidebar; each screen exists once; every section renders', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 900 });
   const { errors } = await setup(page);
-  await page.click('.tab[data-tab="overview"]');
+  const nav = await page.locator('#tabs').boundingBox();
+  expect(nav.height).toBeGreaterThan(nav.width); // vertical sidebar
+  await expect(page.locator('#tabs .nav-head')).toHaveText(['Sales', 'Purchases', 'Banking', 'Accounting', 'Setup']);
+  expect(await page.locator('#tabs .tab').evaluateAll((els) => els.map((e) => e.dataset.tab))).toEqual(PAGES);
+  for (const gone of ['financial', 'ops']) await expect(page.locator(`.tab[data-tab="${gone}"]`)).toHaveCount(0);
   await expect(page.locator('#tabOverview')).toContainText('Customers owe you');
   await expect(page.locator('#tabOverview')).toContainText('59,000.00');
-  await expect(page.locator('#tabOverview')).toContainText('13-week cash forecast');
-  for (const [tab, id] of [['books', 'tabBooks'], ['subscriptions', 'tabSubscriptions'], ['tax', 'tabTax'], ['ops', 'tabOps']]) {
-    await page.click(`.tab[data-tab="${tab}"]`);
-    expect(await subs(page, id)).toBeGreaterThan(4);
+  await expect(page.locator('#tabOverview')).not.toContainText(/Ask your books|AI/);
+  for (const t of PAGES.filter((t) => !['overview', 'documents', 'vendorbills'].includes(t))) {
+    await page.click(`.tab[data-tab="${t}"]`);
+    await sections(page, pageId(t));
   }
   expect(errors).toEqual([]);
 });
 
-test('P&L, balance sheet and trial balance tie out; manual journal posts', async ({ page }) => {
+test('phone view keeps a horizontal tab strip', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await setup(page);
+  const nav = await page.locator('#tabs').boundingBox();
+  expect(nav.width).toBeGreaterThan(nav.height);
+  await expect(page.locator('#tabs .nav-head').first()).toBeHidden();
+});
+
+test('mounted legacy panels survive switching away and back (Expenses, Suppliers, Bank & Cash)', async ({ page }) => {
   const { errors } = await setup(page);
-  await page.click('.tab[data-tab="books"]');
-  await page.click('#tabBooks .fp-pill[data-k="pl"]');
+  await page.click('.tab[data-tab="expenses"]');
+  await page.click('#tabExpenses .fp-pill[data-k="all"]');
+  await expect(page.locator('#tabExpenses #expensesTbody')).toContainText('Figma');
+  await page.click('#tabExpenses .fp-pill[data-k="fixed"]');
+  await expect(page.locator('#tabExpenses')).toContainText('Fixed Recurring Expenses');
+  await expect(page.locator('#tabExpenses')).not.toContainText('AI Quick Add');
+  await page.click('#tabExpenses .fp-pill[data-k="all"]');
+  await expect(page.locator('#tabExpenses #expensesTbody')).toContainText('Figma');
+  await page.click('.tab[data-tab="bankcash"]');
+  await page.click('#tabBankcash .fp-pill[data-k="accounts"]');
+  await expect(page.locator('#tabBankcash')).toContainText('HDFC Current');
+  // Parked panels stay in the DOM (hidden), so their own render code still finds them by id.
+  await page.click('.tab[data-tab="suppliers"]');
+  expect(await page.evaluate(() => !!document.getElementById('expensesTbody') && !!document.getElementById('bcSubAccounts'))).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Reports: P&L, balance sheet and trial balance tie out; Books: manual journal posts', async ({ page }) => {
+  const { errors } = await setup(page);
+  await page.click('.tab[data-tab="reports"]');
+  await page.click('#tabReports .fp-pill[data-k="pl"]');
   await expect(page.locator('#accPlOut')).toContainText('Net profit');
   await expect(page.locator('#accPlOut')).toContainText('25,500.00'); // 50,000 − 4,500 − 20,000
-  await page.click('#tabBooks .fp-pill[data-k="bs"]');
+  await page.click('#tabReports .fp-pill[data-k="bs"]');
   await expect(page.locator('#accBsOut')).toContainText('Assets = Liabilities + Equity');
+  await page.click('.tab[data-tab="books"]');
   await page.click('#tabBooks .fp-pill[data-k="journals"]');
   await page.click('text=+ Manual journal');
   await page.fill('#accF_memo', 'Owner capital');
   const rows = page.locator('#accLinesBody .acc-line');
-  await rows.nth(0).locator('select').selectOption({ label: '3000 · Owner\'s Capital' }).catch(async () => {
-    const v = await rows.nth(0).locator('option', { hasText: 'Owner' }).first().getAttribute('value'); await rows.nth(0).locator('select').selectOption(v);
-  });
+  const owner = await rows.nth(0).locator('option', { hasText: 'Owner' }).first().getAttribute('value');
+  await rows.nth(0).locator('select').selectOption(owner);
   await rows.nth(0).locator('.acc-l-cr').fill('10000');
   const cash = await rows.nth(1).locator('option', { hasText: 'Cash in Hand' }).first().getAttribute('value');
   await rows.nth(1).locator('select').selectOption(cash);
@@ -116,12 +153,13 @@ test('P&L, balance sheet and trial balance tie out; manual journal posts', async
   await expect(page.locator('#accLinesTotals')).toContainText('Balanced');
   await page.click('#accFormSave');
   await expect(page.locator('#accJOut')).toContainText('Owner capital');
-  await page.click('#tabBooks .fp-pill[data-k="tb"]');
+  await page.click('.tab[data-tab="reports"]');
+  await page.click('#tabReports .fp-pill[data-k="tb"]');
   await expect(page.locator('#accTbOut')).toContainText('✓ Balanced');
   expect(errors).toEqual([]);
 });
 
-test('subscription → billing run → invoice appears; GSTR-1 picks it up; Reports P&L uses the ledger', async ({ page }) => {
+test('subscription → billing run → invoice appears; GSTR-1 picks it up', async ({ page }) => {
   const { db, errors } = await setup(page);
   await page.click('.tab[data-tab="subscriptions"]');
   await page.click('#tabSubscriptions .fp-pill[data-k="subs"]');
@@ -137,23 +175,31 @@ test('subscription → billing run → invoice appears; GSTR-1 picks it up; Repo
   expect(db.prepare(`SELECT COUNT(*) n FROM accounting_documents WHERE customer_name='Gamma SaaS'`).get().n).toBe(1);
   await page.click('#tabSubscriptions .fp-pill[data-k="metrics"]');
   await expect(page.locator('#tabSubscriptions')).toContainText('1,000.00'); // MRR of a 12,000/yr plan
-  await page.click('#tabSubscriptions .fp-pill[data-k="revrec"]');
-  await expect(page.locator('#tabSubscriptions')).toContainText('Gamma SaaS');
   await page.click('.tab[data-tab="tax"]');
   await page.click('#tabTax .fp-pill[data-k="gstr1"]');
   await expect(page.locator('#accG1Out')).toContainText('62,000.00'); // 50,000 + 12,000 taxable
-  await page.click('.tab[data-tab="reports"]');
-  await page.click('button[data-repsub="pl"]');
-  await page.click('#repSubPl >> text=Run');
-  await expect(page.locator('#repPlContent')).toContainText('From the double-entry ledger');
+  expect(errors).toEqual([]);
+});
+
+test('Settings → Business & tax saves the books and the invoice GST/currency settings together', async ({ page }) => {
+  const { db, fpPatches, errors } = await setup(page);
+  await page.click('.tab[data-tab="settings"]');
+  await page.click('#tabSettings .fp-pill[data-k="general"]');
+  await page.fill('#accS_gstin', '32ABCDE1234F1Z5');
+  await page.selectOption('#accS_state_code', '32');
+  await page.fill('#accS_default_gst_rate', '18');
+  await page.click('text=Save settings');
+  await expect.poll(() => fpPatches.length).toBe(1);
+  expect(fpPatches[0]).toMatchObject({ business_gstin: '32ABCDE1234F1Z5', business_state_code: '32', default_gst_rate: 18, default_currency: 'INR' });
+  expect(db.prepare(`SELECT gstin, state_code FROM acc_settings WHERE client_id=7`).get()).toEqual({ gstin: '32ABCDE1234F1Z5', state_code: '32' });
   expect(errors).toEqual([]);
 });
 
 test('client portal shows the customer their open invoice', async ({ page }) => {
   const { db } = await setup(page);
-  await page.click('.tab[data-tab="ops"]');
-  await page.click('#tabOps .fp-pill[data-k="links"]');
-  await expect(page.locator('#tabOps')).toContainText('Beta Foods');
+  await page.click('.tab[data-tab="collections"]');
+  await page.click('#tabCollections .fp-pill[data-k="links"]');
+  await expect(page.locator('#tabCollections')).toContainText('Beta Foods');
   const token = (await page.evaluate(() => AccLedger.post('portal-tokens', { customer_name: 'Beta Foods' }))).token;
   expect(db.prepare(`SELECT COUNT(*) n FROM acc_portal_tokens`).get().n).toBe(1);
   await page.goto(`${portalUrl}?t=${token}`);

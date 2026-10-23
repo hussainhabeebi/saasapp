@@ -7360,6 +7360,14 @@ updating preview.
 A double-entry General Ledger under the existing Documents / Expense Entry / Vendor Bills / Bank &
 Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and operations tooling.
 
+- **Layout.** A grouped left sidebar on PC (≥1024px), a horizontal tab strip on phones:
+  Overview · Sales (Invoices & Quotes, Recurring & Subscriptions, Customers, Collections) ·
+  Purchases (Expenses, Vendor Bills, Suppliers) · Banking (Bank & Cash) · Accounting (Books,
+  Reports, Tax & GST, Payroll) · Setup (Settings). Every screen exists once: the older Financial
+  Planning / Expense Entry / Reports / Bank & Cash pages are hidden containers whose panels
+  `accounting-ledger.js` mounts into those pages (`L.legacy(id)`), parking them back (still in the
+  DOM) when you switch away. Settings → Business & Tax writes currency + GST to both `acc_settings`
+  and `fp_config`, so invoices and the books never disagree. No AI or receipt OCR in this module.
 - **Enabling it.** Off by default per client. Turn it on in **Leadvyne admin → Edit client → 💰
   Accounting module** (`POST /admin/accounting-module`, admin session only; `accounting_enabled` is
   in `PLAN_MANAGED_FIELDS` so a client can't set it). Until then: the dashboard's Accounting tab is
