@@ -17,6 +17,8 @@
   if(phone&&!other.length&&localStorage.getItem('lv_cid')&&localStorage.getItem('lv_session'))location.replace('m.html'+location.hash);
 }catch(e){}})();
 </script>
+<!-- Android app (TWA) pop-up handling — inert in a normal browser, see twa.js -->
+<script src="twa.js?v=1"></script>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
@@ -5664,6 +5666,9 @@ function completeLoginResult(session){
   // — never trusted for anything real, /session/me is still the actual source of truth every
   // time.
   if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
+  // Signed in from the Android app on a phone: back to the app's Home (m.html). New sign-ups stay
+  // here for the welcome setup.
+  if(window.LV_TWA && window.LV_LITE && !session.isFreshSignup){ location.replace('m.html'); return; }
   showApp();
   if(!session.isFreshSignup) showLastLoginToast();
   if(session.isFreshSignup){
