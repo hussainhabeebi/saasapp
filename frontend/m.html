@@ -321,6 +321,7 @@ const _ecomPhoneKey=p=>String(p||'').replace(/\D/g,'').slice(-10);
 function leadHasEcomOrder(l){if(!_ecomOrderPhones)return false;const k=_ecomPhoneKey(l.Phone);return k.length>=7&&_ecomOrderPhones.has(k)}
 function isWonLead(l){return l.Stage==='won'||l.Stage==='converted'||(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')||leadHasEcomOrder(l)}
 function isLostLead(l){return l.Stage==='lost'}
+function personalKind(l){const t=String(l?.Tags||'').split(',').map(x=>x.trim().toLowerCase());return t.includes('staff')?'Staff':t.includes('personal')?'Personal':''}
 function timeAgo(iso){const m=Math.floor((Date.now()-new Date(iso).getTime())/60000);if(!(m>=1))return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';return Math.floor(h/24)+'d ago'}
 function showToast(t){toast(t)}
 // The Arena's "Report →" / "Set a weekly team goal →" links call these.
@@ -358,7 +359,9 @@ function loadLeads(force){
  leadsLoading=(async()=>{
   try{
    const [rows]=await Promise.all([fetchLeadRows(),loadEcomOrderPhones(),mtgLoadArenaEvents(),ensureCrmScripts().catch(()=>{})]);
-   allLeads=rows;leadsAt=Date.now();
+   // Personal chats and staff (dashboard.html markLeadPersonal) aren't leads: kept out of every list
+   // and count here, like the dashboard does.
+   allLeads=rows.filter(l=>!personalKind(l));leadsAt=Date.now();
    try{localStorage.setItem(leadsKey,JSON.stringify(rows.filter(leadVisibilityFilter()).slice(0,LEAD_PAGE).map(slimForCache)))}catch{}
    renderTeam();renderAttention();renderLeads();checkCallReturn();if(force)toast('Leads updated');
   }catch(e){if(force||cur==='leads')toast('Could not load leads — check your connection')}
@@ -468,8 +471,20 @@ function openLeadSheet(l){
   <div class="ls-sec">Details</div>${rows||'<div class="kv"><span>No details yet</span><b></b></div>'}
   <div class="kv"><span>Follow-up</span><input type="datetime-local" value="${esc(rem)}" onchange="setReminder('${esc(l.Id)}',this.value)"></div>
   <div class="ls-sec">Calls</div><div class="calls">${calls.length?calls.slice(0,20).map(c=>`<div class="c"><i>${OUTCOME_ICON[c.outcome]||'📞'}</i><div><b>${esc(c.outcome||'Call')}</b>${c.duration?` · ${esc(c.duration)} min`:''}<small>${esc(fmtWhen(c.at||c.date))}${c.by?' · '+esc(getTeamMembers().find(m=>sameEmail(m.email,c.by))?.name||c.by):''}</small>${c.notes?`<small>${esc(c.notes)}</small>`:''}</div></div>`).join(''):'<div class="kv"><span>No calls yet</span><b></b></div>'}</div>
+  <div class="ls-sec">Not a sales lead?</div>
+  <div class="ls-acts" style="grid-template-columns:1fr 1fr"><button class="log" onclick="markPersonal('${esc(l.Id)}','Personal')">👤 Personal chat</button><button class="log" onclick="markPersonal('${esc(l.Id)}','Staff')">🧑‍💼 Staff</button></div>
   <button class="ls-full" onclick="location.href='dashboard.html?full=1&lead=${encodeURIComponent(l.Id)}'">Open in the full CRM (edit, stage, meetings…)</button>`;
  showSheet('leadSheet');$id('leadSheet').scrollTop=0;
+}
+// Same as the dashboard's ⋯ → "Personal chat / Staff — not a lead": a Personal/Staff tag plus
+// OptOut=Yes (the bot stops replying), and the contact leaves every lead list and count.
+async function markPersonal(id,kind){
+ const l=findLead(id);if(!l||!confirm(`Mark ${l.Name||'this contact'} as ${kind.toLowerCase()}? They won't count as a lead and the bot won't reply to them. Undo from Leads → Personal & staff in the full CRM.`))return;
+ const tags=String(l.Tags||'').split(',').map(t=>t.trim()).filter(t=>t&&!/^(personal|staff)$/i.test(t)).concat(kind).join(', ');
+ try{await apiSend(leadsUrl(),'PATCH',{Id:l.Id,Tags:tags,OptOut:'Yes'})}catch(e){toast('Not saved: '+e.message);return}
+ l.Tags=tags;l.OptOut='Yes';allLeads=allLeads.filter(x=>x!==l);
+ try{localStorage.setItem(leadsKey,JSON.stringify(JSON.parse(localStorage.getItem(leadsKey)||'[]').filter(x=>String(x.Id)!==String(id))))}catch{}
+ closeSheets();toast(`${kind==='Staff'?'🧑‍💼':'👤'} Marked as ${kind.toLowerCase()} — not a lead`);renderTeam();renderAttention();renderLeads();
 }
 async function setReminder(id,v){
  const l=findLead(id);if(!l)return;

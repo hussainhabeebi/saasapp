@@ -110,7 +110,20 @@ test('Log call by hand and Chat from the lead card stay in the app', async ({ pa
   await page.locator('#nav [data-tab="leads"]').click();
   await page.locator('#leadList .lead', { hasText: 'Sahilath' }).locator('.info').click();
   await expect(page.locator('#leadSheet .calls')).toContainText('Answered');
-  await page.locator('#leadSheet').getByRole('button', { name: 'Chat' }).click();
+  await page.locator('#leadSheet').getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(page.locator('#leadSheet')).toBeHidden();
   await expect(page.locator('#tabChats')).toBeVisible();
+});
+
+test('lead card → Staff: the contact stops being a lead (tag + bot stopped) and leaves the lists', async ({ page }) => {
+  const { patches } = await open(page, { owner: 'sales@x.test' });
+  page.on('dialog', (d) => d.accept());
+  await page.locator('#attn .lead', { hasText: 'Sahilath' }).locator('.info').click();
+  await page.locator('#leadSheet').getByRole('button', { name: '🧑‍💼 Staff' }).click();
+  await expect.poll(() => patches.find((p) => p.OptOut)).toBeTruthy();
+  expect(patches.find((p) => p.OptOut)).toEqual({ Id: 11, Tags: 'Staff', OptOut: 'Yes' });
+  await expect(page.locator('#leadSheet')).toBeHidden();
+  await expect(page.locator('#attn .lead', { hasText: 'Sahilath' })).toHaveCount(0);
+  await page.locator('#nav [data-tab="leads"]').click();
+  await expect(page.locator('#leadList .lead', { hasText: 'Sahilath' })).toHaveCount(0);
 });
