@@ -3,7 +3,7 @@ name: Android app (APK)
 # Builds the Leadvyne Android app — a Trusted Web Activity (android/, see android/README.md) that
 # opens https://app.leadvyne.com/m.html full-screen. Nothing here touches the website or the Worker;
 # it only produces an APK. Download it from this run's "leadvyne-apk" artifact, or from the GitHub
-# Release that pushes to main create.
+# Release that builds on main create (push or "Run workflow").
 on:
   push:
     paths:
@@ -74,8 +74,10 @@ jobs:
           name: leadvyne-apk
           path: ${{ steps.check.outputs.name }}
           retention-days: 30
+      # Pushes to main and "Run workflow" on main both publish — the first official build usually
+      # comes from a manual run right after the keystore secrets are added.
       - name: GitHub Release (main, official key only)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.key.outputs.official == 'true'
+        if: github.ref == 'refs/heads/main' && steps.key.outputs.official == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
