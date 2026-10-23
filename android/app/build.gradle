@@ -56,7 +56,8 @@ android {
     defaultConfig {
         applicationId "com.leadvyne.app"
         minSdkVersion 21
-        targetSdkVersion 35
+        // Android 16 — Google Play requires new apps and updates to target a recent Android version.
+        targetSdkVersion 36
         // CI passes LV_VERSION_CODE (the workflow run number) so every build installs over the last.
         versionCode Integer.parseInt(System.getenv("LV_VERSION_CODE") ?: "1")
         versionName "1.0." + (System.getenv("LV_VERSION_CODE") ?: "0")
