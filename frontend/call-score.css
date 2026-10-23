@@ -1,0 +1,87 @@
+/* Home → 🏆 Weekly Arena (call-score.js csRenderHomeArena) — kept deliberately simple: hero, team
+   goal, one "today" row, a short leaderboard; badges/rules behind "more". Shared by dashboard.html
+   and the phone app m.html; uses the dashboard's CSS variables (--card, --line, --muted, --accent…),
+   which m.html defines too. */
+.csa{border-radius:20px;overflow:hidden;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
+.csa-hero{background:radial-gradient(120% 140% at 100% 0%,#14B8A6 0%,rgba(20,184,166,0) 55%),linear-gradient(135deg,#0B1F33 0%,#123B4A 60%,#0D6E68 100%);color:#fff;padding:14px 16px 16px}
+.csa-top{display:flex;align-items:center;gap:8px}
+.csa-title{font-weight:800;font-size:15px;margin-right:auto}
+.csa-pill{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.14)}
+.csa-link{font-size:12px;font-weight:600;color:#99F6E4;text-decoration:none}
+.csa-power{margin-top:10px;font-size:12.5px;padding:6px 10px;border-radius:10px;background:linear-gradient(90deg,#F59E0B,#FBBF24);color:#451A03;font-weight:600;animation:csaPulse 2s ease-in-out infinite}
+@keyframes csaPulse{50%{filter:brightness(1.1)}}
+.csa-me{display:flex;align-items:center;gap:14px;margin-top:12px}
+.csa-ring-wrap{position:relative;width:76px;height:76px;flex-shrink:0}
+.csa-ring{width:76px;height:76px}
+.csa-ring-bg{fill:none;stroke:rgba(255,255,255,.15);stroke-width:7}
+.csa-ring-fg{fill:none;stroke:#FBBF24;stroke-width:7;stroke-linecap:round;transition:stroke-dasharray .6s ease}
+.csa-ring-in{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1}
+.csa-ring-in b{font-size:20px;font-weight:800}
+.csa-ring-in span{font-size:10px;opacity:.75}
+.csa-me-main{flex:1;min-width:0;max-width:440px}
+.csa-pts{font-size:32px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.csa-pts small{font-size:13px;font-weight:500;opacity:.75}
+.csa-line{font-size:13px;margin:5px 0 7px}
+.csa-line b{color:#FDE68A}
+.csa-bar{height:6px;border-radius:99px;background:rgba(255,255,255,.15);overflow:hidden}
+.csa-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#FBBF24,#F59E0B)}
+.csa-sub{font-size:11px;opacity:.75;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.csa-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
+.csa-goal{border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--bg)}
+.csa-goal.done{border-color:#86EFAC;background:linear-gradient(180deg,rgba(16,185,129,.08),transparent)}
+.csa-goal-top{display:flex;justify-content:space-between;font-size:13px;font-weight:600}
+.csa-qbar{height:6px;border-radius:99px;background:var(--line);margin:7px 0 4px;overflow:hidden}
+.csa-qbar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#2DD4BF);border-radius:99px}
+.csa-q-sub{font-size:11px;color:var(--muted)}
+.csa-setgoal{font-size:12px;color:var(--accent-ink);text-decoration:none;font-weight:600}
+.csa-today{display:flex;gap:6px;flex-wrap:wrap}
+.csa-chip{font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--bg)}
+.csa-chip.done{border-color:#86EFAC;color:#047857;background:rgba(16,185,129,.08)}
+.csa-chip.warn{border-color:#FCA5A5;color:#B91C1C;background:rgba(239,68,68,.07)}
+.csa-list{display:flex;flex-direction:column;gap:5px}
+.csa-champ-line{font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:5px 10px;align-self:flex-start}
+.csa-av{width:30px;height:30px;border-radius:50%;color:#fff;font-weight:800;font-size:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 0 0 2px var(--card)}
+.csa-row{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:12px;border:1px solid var(--line)}
+.csa-row.top1{background:linear-gradient(90deg,rgba(251,191,36,.12),transparent 70%);border-color:#FDE68A}
+.csa-row.me{border-color:var(--accent);box-shadow:0 0 0 2px rgba(13,156,147,.12)}
+.csa-rank{width:22px;text-align:center;font-weight:800;font-size:14px;color:var(--muted);flex-shrink:0}
+.csa-row-main{flex:1;min-width:0}
+.csa-row-name{display:flex;align-items:center;gap:4px;font-weight:700;font-size:13px;min-width:0}
+.csa-nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.csa-row-name em{flex-shrink:0;font-style:normal;font-size:10px;font-weight:800;color:#fff;background:var(--accent);padding:1px 6px;border-radius:99px}
+.csa-mini{flex-shrink:0;font-size:12px}
+.csa-row-bar{height:4px;border-radius:99px;background:var(--line);margin-top:5px;overflow:hidden}
+.csa-row-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#2DD4BF)}
+.csa-row.top1 .csa-row-bar span{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
+.csa-row-pts{font-weight:800;font-size:16px;flex-shrink:0}
+.csa-gap{text-align:center;color:var(--muted);font-size:12px;line-height:1}
+.csa-idle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);padding:2px 4px 0}
+.csa-stack{display:inline-flex}
+.csa-stack .csa-av{margin-left:-7px;font-size:9px}
+.csa-stack .csa-av:first-child{margin-left:0}
+.csa-empty{font-size:13px;color:var(--muted);padding:10px 12px;border:1px dashed var(--line);border-radius:14px;text-align:center}
+.csa-more summary{font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;list-style:none}
+.csa-more summary::before{content:'▸ '}
+.csa-more[open] summary::before{content:'▾ '}
+.csa-badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.csa-badge{flex:0 0 auto;min-width:92px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 8px;border-radius:12px;border:1px solid var(--line);background:var(--bg);text-align:center}
+.csa-badge.mine{border-color:var(--accent);background:linear-gradient(180deg,rgba(13,156,147,.1),transparent)}
+.csa-badge.off{opacity:.55}
+.csa-b-icon{font-size:20px}
+.csa-b-name{font-size:11px;font-weight:700}
+.csa-b-who{font-size:10.5px;color:var(--muted);max-width:96px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.csa-rules{font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.5}
+.csa-hall{font-size:11.5px;color:var(--muted);margin-top:6px}
+.csa-hall small{opacity:.7}
+/* Desktop: use the full width — summary panel on the left, team goal / today / leaderboard on the right */
+@media(min-width:900px){
+  .csa{display:grid;grid-template-columns:minmax(300px,360px) minmax(0,1fr)}
+  .csa-hero{padding:18px 20px 20px;display:flex;flex-direction:column}
+  .csa-me{margin-top:18px}
+  .csa-ring-wrap,.csa-ring{width:84px;height:84px}
+  .csa-body{padding:16px 20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 20px;align-content:start}
+  .csa-body>.csa-goal,.csa-body>.csa-setgoal{grid-column:1}
+  .csa-body>.csa-today{grid-column:2;align-self:center;justify-content:flex-end}
+  .csa-body>.csa-list,.csa-body>.csa-empty,.csa-body>.csa-more{grid-column:1/-1}
+  .csa-body>.csa-today:first-child{grid-column:1/-1;justify-content:flex-start}
+}
