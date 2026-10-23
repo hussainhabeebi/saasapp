@@ -15844,8 +15844,8 @@ export const AI_PROVIDERS={
     models:['claude-opus-5-5','claude-opus-5','claude-sonnet-5','claude-haiku-5-5','claude-haiku-4-5','claude-fable-5-1'], default_model:'claude-opus-5-5'},
   // Runs on the Worker's own ANTHROPIC_API_KEY secret (no client key) and is locked to the models
   // listed here. Hidden from the card until that secret is set.
-  leadvyne_claude:{label:'Claude Haiku 4.5 (Leadvyne, no key needed)', format:'anthropic', base:'https://api.anthropic.com/v1',
-    models:['claude-haiku-4-5'], default_model:'claude-haiku-4-5', shared:true},
+  leadvyne_claude:{label:'Claude Haiku 5.5 (Leadvyne, no key needed)', format:'anthropic', base:'https://api.anthropic.com/v1',
+    models:['claude-haiku-5-5'], default_model:'claude-haiku-5-5', shared:true},
   openai:{label:'ChatGPT (OpenAI)', format:'openai', base:'https://api.openai.com/v1', models:[], default_model:''},
   gemini:{label:'Google Gemini (own key)', format:'gemini', base:'https://generativelanguage.googleapis.com/v1beta',
     models:['gemini-2.5-flash','gemini-2.5-pro'], default_model:'gemini-2.5-flash'},
