@@ -2100,6 +2100,7 @@ const ROLES = {
               <button class="btn btn-primary btn-sm" onclick="openAddLead()" style="flex-shrink:0">+ Add Lead</button>
               <button class="btn btn-secondary btn-sm" onclick="exportCsv()" style="flex-shrink:0">📥 CSV</button>
               <button class="btn btn-secondary btn-sm" onclick="openImport()" style="flex-shrink:0">📤 Import</button>
+              <button class="btn btn-secondary btn-sm" id="personalBtn" onclick="openPersonalContacts()" style="flex-shrink:0;display:none" title="Contacts marked as personal or staff — not counted as leads"></button>
             </div>
           </div>
 
@@ -4970,6 +4971,16 @@ const ROLES = {
   </div>
 </div>
 
+<!-- MODAL: Personal & staff contacts (markLeadPersonal) -->
+<div class="modal" id="modalPersonal" style="max-width:460px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><span class="modal-title">👤 Personal &amp; staff</span><button class="icon-btn" onclick="closeModal('modalPersonal')">✕</button></div>
+  <div class="modal-body">
+    <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Not counted as leads anywhere, and the bot doesn't reply to them. Their chats stay in Chats.</div>
+    <div id="personalList"></div>
+  </div>
+</div>
+
 <!-- MODAL: Log Call -->
 <div class="modal" id="modalCall" style="max-width:420px">
   <span class="modal-drag"></span>
@@ -6312,6 +6323,64 @@ function _cacheLeads(list){
   catch(e){ try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e2){} }
 }
 
+/* ── 👤 PERSONAL & STAFF CONTACTS ──
+   A chat from a friend, family member or a teammate on the business WhatsApp is not a lead. Marking
+   it (lead ⋯ menu → "Mark as personal" / "Mark as staff") adds a "Personal" or "Staff" tag and sets
+   OptOut=Yes, which already stops the bot, follow-up sequences, automations, hot alerts and
+   broadcasts on the Worker side. Here, such contacts are kept out of allLeads altogether, so no
+   list, count, report, Staff Performance row or Weekly Arena point treats them as sales; they live in
+   _personalLeads, listed under Leads → "👤 Personal & staff", where they can be turned back into
+   leads. Their chats stay in Chats as normal conversations. */
+let _personalLeads=[];
+function personalKind(l){ const t=parseTags(l?.Tags).map(x=>x.toLowerCase()); return t.includes('staff')?'Staff':t.includes('personal')?'Personal':''; }
+function _splitPersonal(list){
+  _personalLeads=list.filter(l=>personalKind(l));
+  const btn=$id('personalBtn'); if(btn){ btn.style.display=_personalLeads.length?'':'none'; btn.textContent=`👤 Personal & staff (${_personalLeads.length})`; }
+  return _personalLeads.length?list.filter(l=>!personalKind(l)):list;
+}
+async function markLeadPersonal(leadId, kind, ev){
+  ev?.stopPropagation();
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const before={Id:leadId, Tags:lead.Tags??null, OptOut:lead.OptOut??null};
+  const tags=parseTags(lead.Tags).filter(t=>!/^(personal|staff)$/i.test(t)).concat(kind);
+  const patch={Id:leadId, Tags:tags.join(', '), OptOut:'Yes'};
+  try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch); }
+  catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  Object.assign(lead,patch);
+  if(currentLead?.Id===leadId) closeModal('modalDetail');
+  allLeads=_splitPersonal(allLeads.concat(_personalLeads));
+  renderLeadsCurrentView(); renderHome();
+  showUndoToast(`${kind==='Staff'?'🧑‍💼':'👤'} Marked as ${kind.toLowerCase()} — not a lead`, async ()=>{
+    try{
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,before);
+      Object.assign(lead,before);
+      allLeads=_splitPersonal(allLeads.concat(_personalLeads));
+      renderLeadsCurrentView(); renderHome();
+      showToast('↩️ Back in your leads','ok');
+    }catch(e){ showToast('Undo failed: '+e.message,'err'); }
+  });
+}
+// Back to a normal lead: tag removed and OptOut cleared, so the bot replies to them again.
+async function unmarkLeadPersonal(leadId){
+  const lead=_personalLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const patch={Id:leadId, Tags:parseTags(lead.Tags).filter(t=>!/^(personal|staff)$/i.test(t)).join(', '), OptOut:'No'};
+  try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch); }
+  catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  Object.assign(lead,patch);
+  allLeads=_splitPersonal(allLeads.concat(_personalLeads));
+  renderPersonalContacts(); renderLeadsCurrentView(); renderHome();
+  showToast('✓ Back in your leads — the bot will reply to them again','ok');
+}
+function openPersonalContacts(){ renderPersonalContacts(); openModal('modalPersonal'); }
+function renderPersonalContacts(){
+  const el=$id('personalList'); if(!el) return;
+  const rows=_personalLeads.slice().sort((a,b)=>String(a.Name||'').localeCompare(String(b.Name||'')));
+  el.innerHTML=rows.length?rows.map(l=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1;min-width:0"><div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${personalKind(l)==='Staff'?'🧑‍💼':'👤'} ${esc(l.Name||'Unknown')}</div><div style="font-size:12px;color:var(--muted)">${esc(maskPhone(l.Phone))} · ${personalKind(l)}</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="unmarkLeadPersonal(${l.Id})">Make a lead again</button></div>`).join('')
+    :'<div style="color:var(--muted);padding:12px 0">No personal or staff contacts.</div>';
+}
+
 async function loadAll(silent=false, force=false){
   const gen=++_leadsLoadGen;
   const hadLeads=allLeads.length>0;
@@ -6321,7 +6390,7 @@ async function loadAll(silent=false, force=false){
     if(cached){
       const {ts,list}=JSON.parse(cached);
       if(list&&list.length){
-        allLeads=_carryConvHistory(list);
+        allLeads=_splitPersonal(_carryConvHistory(list));
         loadEcomOrderPhones();
         mtgLoadLeadStates();
         renderHome();
@@ -6346,7 +6415,7 @@ async function loadAll(silent=false, force=false){
       // already on screen (cache or an earlier load) the partial slice is skipped, so totals
       // never visibly drop to 100 and climb back.
       if(!allLeads.length){
-        allLeads=head;
+        allLeads=_splitPersonal(head);
         renderHome();
         _rerenderVisibleLeads();
         if(!silent) $id('hUpdated').textContent='Loading leads…';
@@ -6360,8 +6429,9 @@ async function loadAll(silent=false, force=false){
       const seen=new Set(head.map(l=>l.Id));
       list=head.concat((rest.list||[]).filter(l=>!seen.has(l.Id)));
     }
-    allLeads=_carryConvHistory(list);
-    _cacheLeads(allLeads);
+    // The cache keeps personal/staff contacts too, so the next cached paint still knows them.
+    allLeads=_splitPersonal(_carryConvHistory(list));
+    _cacheLeads(allLeads.concat(_personalLeads));
     loadEcomOrderPhones();
     mtgLoadLeadStates();
     renderHome();
@@ -10277,6 +10347,9 @@ function leadMoreMenuHTML(l, key=String(l.Id)){
       <div class="lmd-sep"></div>
       <button role="menuitem" onclick="${go(`markLeadWon(${l.Id},event)`)}">✅ Mark Won</button>
       <button role="menuitem" class="lead-spam-btn lmd-danger" onclick="${go(`markLeadSpam(${l.Id},event)`)}">🚫 Mark as spam</button>
+      <div class="lmd-sep"></div>
+      <button role="menuitem" onclick="${go(`markLeadPersonal(${l.Id},'Personal',event)`)}">👤 Personal chat — not a lead</button>
+      <button role="menuitem" onclick="${go(`markLeadPersonal(${l.Id},'Staff',event)`)}">🧑‍💼 Staff — not a lead</button>
     </div>`;
 }
 function toggleLeadMoreMenu(id, btn, force){
@@ -10285,16 +10358,24 @@ function toggleLeadMoreMenu(id, btn, force){
   const open=typeof force==='boolean'?force:!drop.classList.contains('open');
   document.querySelectorAll('.call-channel-drop.open').forEach(d=>d.classList.remove('open'));
   if(!open) return;
-  if(btn){
-    const r=btn.getBoundingClientRect();
-    drop.style.top=(r.bottom+4)+'px';
-    drop.style.left=Math.max(8,Math.min(r.right-170,window.innerWidth-178))+'px';
-  }
+  drop.style.maxHeight=''; drop.style.overflowY='';
   drop.classList.add('open');
-  const close=()=>drop.classList.remove('open');
+  if(btn){
+    // Below the button when it fits, else above it, else pinned to the screen and scrollable — a lead
+    // near the bottom of a phone screen used to push the lower items (Won, Spam…) off-screen.
+    const r=btn.getBoundingClientRect(), h=drop.offsetHeight, w=drop.offsetWidth||178, vh=window.innerHeight;
+    let top=r.bottom+4;
+    if(top+h>vh-8) top=r.top-h-4>=8?r.top-h-4:Math.max(8,vh-8-h);
+    if(h>vh-16){ top=8; drop.style.maxHeight=(vh-16)+'px'; drop.style.overflowY='auto'; }
+    drop.style.top=top+'px';
+    drop.style.left=Math.max(8,Math.min(r.right-w,window.innerWidth-w-8))+'px';
+  }
+  const close=()=>{ drop.classList.remove('open'); window.removeEventListener('scroll',onScroll,true); };
+  // Scrolling the page closes the menu; scrolling inside the menu itself doesn't.
+  const onScroll=e=>{ if(!drop.contains(e.target)) close(); };
   setTimeout(()=>{
     document.addEventListener('click',close,{once:true});
-    window.addEventListener('scroll',close,{once:true,capture:true});
+    window.addEventListener('scroll',onScroll,true);
   },0);
 }
 
@@ -19411,7 +19492,7 @@ function rptPopulateMemberFilter(){
   sel.innerHTML='<option value="">All Members</option>'+members.map(m=>`<option value="${esc(m.email)}"${cur===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
 }
 function rptLeads(src){
-  let leads=src||allLeads;
+  let leads=(src||allLeads).filter(l=>!personalKind(l)); // older pages loaded for reports aren't split
   const f=_rptFilters;
   if(f.period!=='all'||f.from||f.to){
     const now=new Date(); let fromD=null, toD=null;

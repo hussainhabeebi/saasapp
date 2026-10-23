@@ -64,7 +64,7 @@ test('Home shows the Weekly Arena and Staff Performance; the leads load without 
   await expect(page.locator('#homeStaffPerf .sp-periods button.on')).toHaveText('7 days');
 });
 
-test('Leads tab: owner sees every lead, filters and search work, Call opens the CRM lead card', async ({ page }) => {
+test('Leads tab: owner sees every lead, filters and search work, a lead opens inside the app', async ({ page }) => {
   await open(page);
   await page.locator('#nav [data-tab="leads"]').click();
   await expect(page.locator('#leadList .lead')).toHaveCount(5);
@@ -76,9 +76,10 @@ test('Leads tab: owner sees every lead, filters and search work, Call opens the 
   await expect(page.locator('#leadList .lead')).toHaveCount(1);
   await expect(page.locator('#leadList .lead')).toContainText('Arjun');
   await page.locator('#leadSearch').fill('');
-  const nav = page.waitForURL(/dashboard\.html\?full=1&lead=4/);
-  await page.locator('#leadList .lead', { hasText: 'Nobody Yet' }).locator('[data-act="call"]').click();
-  await nav;
+  await page.locator('#leadList .lead', { hasText: 'Nobody Yet' }).locator('.info').click();
+  await expect(page.locator('#leadSheet')).toBeVisible();
+  await expect(page.locator('#leadSheet h2')).toHaveText('Nobody Yet');
+  expect(page.url()).toContain('m.html');
 });
 
 test('Leads tab: a staff member with routing on sees only their own leads', async ({ page }) => {

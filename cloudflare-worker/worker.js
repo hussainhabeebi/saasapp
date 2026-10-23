@@ -17581,6 +17581,12 @@ async function engineAdoptLegacyInstagramLead(env, clientId, state, parsed){
     Object.assign(state, legacy);
   }catch(e){}
 }
+// Marked in the dashboard as a personal chat or a staff member (Tags "Personal"/"Staff", plus
+// OptOut=Yes — dashboard.html markLeadPersonal): not a lead. The bot never replies to them, and
+// "START" (which re-subscribes an ordinary opted-out lead) doesn't switch it back on.
+export function engineIsPersonalContact(lead){
+  return String(lead?.Tags||'').split(',').some(t=>/^(personal|staff)$/i.test(t.trim()));
+}
 async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(${identityField},eq,${encodeURIComponent(phone)})&limit=100`);
   const d=await r.json().catch(()=>({}));
@@ -17622,6 +17628,7 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
+    personalContact:engineIsPersonalContact(lead),
     winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null,
     // Self-healing column (ensureLeadsColumns/ncFetch's own auto-create behavior, same as every
     // other CLIENTS/LEADS field this file adds over time) — see the rate-limit check in
@@ -23684,6 +23691,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await logEngineSkip(env,clientId,phone,convId,healthcareHandoverSilence?'healthcare-handover-5h':'handed-over',`stage ${state.stage||''}`);
       return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
     }
+    if(state.personalContact){ await logEngineSkip(env, clientId, phone, convId, 'personal-contact'); return json({ok:true, skipped:'personal-contact'}); }
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
 
     // After-sales support: won/converted leads never enter the AI pipeline.
