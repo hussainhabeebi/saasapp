@@ -2704,7 +2704,11 @@ disabled one, takes exactly the same code path as before.
 
 **Providers:**
 - **Claude (Anthropic):** `claude-opus-5-5` is the default and newest; also `claude-opus-5`,
-  `claude-sonnet-5`, `claude-haiku-4-5` and `claude-fable-5-1`.
+  `claude-sonnet-5`, `claude-haiku-5-5` (the cheapest and fastest, with light thinking), `claude-haiku-4-5`
+  and `claude-fable-5-1`.
+- **Claude Haiku 5.5 (Leadvyne, no key needed):** runs on the Worker's own `ANTHROPIC_API_KEY`
+  secret, billed to Leadvyne, and is locked to `claude-haiku-5-5` (low effort). It only appears on the card once
+  that secret is set. If it fails and the client left fallback on, Leadvyne AI (Gemini) answers.
 - **ChatGPT (OpenAI).**
 - **Google Gemini:** the client's own key, not the shared one.
 - **OpenRouter, Groq, DeepSeek, Mistral.**
@@ -2721,6 +2725,8 @@ disabled one, takes exactly the same code path as before.
    later makes saved keys unreadable**. Affected clients silently go back to Leadvyne AI until they
    re-enter their key. Until the secret is set, the card says the feature isn't enabled and saving
    is refused.
+3. Optional, for the "Claude Haiku 5.5 (Leadvyne)" option: `wrangler secret put ANTHROPIC_API_KEY`.
+   Removing the secret later sends clients on that option back to Leadvyne AI (Gemini) automatically.
 
 **What runs on the client's key:**
 - Bot replies (`engineCallLlm`)
