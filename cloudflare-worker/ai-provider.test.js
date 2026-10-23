@@ -14,6 +14,7 @@ import {
   aiProviderCall,
   aiProviderListModels,
   aiClientGenerate,
+  aiVisibleProviders,
 } from './worker.js';
 
 function d1(db){
@@ -178,6 +179,20 @@ describe('aiClientGenerate against the D1 migration', ()=>{
     assert.equal(calls[0].init.headers['x-api-key'], 'sk-client-key-9999');
     assert.ok(env._db.prepare('SELECT last_ok_at FROM ai_provider_config WHERE client_id=7').get().last_ok_at);
   });
+  test('Leadvyne Claude row runs on the Worker ANTHROPIC_API_KEY with Haiku 4.5', async()=>{
+    const now=new Date().toISOString();
+    env._db.prepare(`INSERT INTO ai_provider_config (client_id, provider, model, api_key_enc, key_hint, enabled, fallback_shared, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(8, 'leadvyne_claude', 'claude-haiku-4-5', '', '', 1, 1, now, now);
+    stubFetch(()=>({json:{content:[{type:'text', text:'Hi!'}]}}));
+    const out=await aiClientGenerate({...env, AI_KEY_ENC_SECRET:undefined, ANTHROPIC_API_KEY:'sk-worker-key'}, {Id:8}, 's', 'u');
+    assert.deepEqual(out, {text:'Hi!', fallback:true});
+    assert.equal(calls[0].init.headers['x-api-key'], 'sk-worker-key');
+    assert.equal(calls[0].body.model, 'claude-haiku-4-5');
+    assert.equal(calls[0].body.output_config, undefined);
+    // Secret removed → back on the original shared path.
+    stubFetch(()=>{ throw new Error('should not be called'); });
+    assert.equal(await aiClientGenerate(env, {Id:8}, 's', 'u'), null);
+  });
   test('failure records the error and reports the client fallback preference', async()=>{
     await insert({fallback:0});
     stubFetch(()=>({status:429, json:{error:{message:'rate limited'}}}));
@@ -195,4 +210,18 @@ test('provider catalog lists Claude models with the latest first', ()=>{
     assert.ok(['anthropic','openai','gemini'].includes(p.format), id);
     if(id!=='custom') assert.match(p.base, /^https:\/\//, id);
   }
+});
+
+describe('Leadvyne Claude (Worker key) provider', ()=>{
+  test('hidden until ANTHROPIC_API_KEY is set; locked to Haiku 4.5', async()=>{
+    assert.equal(aiVisibleProviders({}).leadvyne_claude, undefined);
+    assert.ok(aiVisibleProviders({}).anthropic);
+    assert.deepEqual(aiVisibleProviders({ANTHROPIC_API_KEY:'k'}).leadvyne_claude.models, ['claude-haiku-4-5']);
+    stubFetch(()=>{ throw new Error('should not be called'); });
+    const r=await aiProviderCall({provider:'leadvyne_claude', model:'claude-opus-5-5', apiKey:'k'}, '', 'x');
+    assert.equal(r.ok, false);
+    assert.match(r.error, /Only claude-haiku-4-5/);
+    assert.deepEqual(await aiProviderListModels({provider:'leadvyne_claude', apiKey:'k'}), {ok:true, models:['claude-haiku-4-5']});
+    assert.equal(calls.length, 0);
+  });
 });

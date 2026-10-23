@@ -3503,7 +3503,7 @@ const ROLES = {
         <div class="card" style="margin-bottom:14px" id="aiCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🤖 AI Models <span id="aiStatusBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Leadvyne AI</span></div>
-            <div class="s-note">Your bot runs on the built-in Leadvyne AI by default. To use Claude, ChatGPT or another model instead, connect your own API key here. Usage is billed to your own account with that provider. Voice notes and images are still read by Leadvyne AI.</div>
+            <div class="s-note">Your bot runs on the built-in Leadvyne AI by default. To use Claude, ChatGPT or another model instead, connect your own API key here. Usage is billed to your own account with that provider. Options marked "Leadvyne, no key needed" run on Leadvyne's own account. Voice notes and images are still read by Leadvyne AI.</div>
             <div id="aiLoadMsg" class="s-note" style="display:none"></div>
 
             <div id="aiBody">
@@ -3515,8 +3515,10 @@ const ROLES = {
                 <input class="form-input" id="aiBaseUrl" type="url" placeholder="https://api.together.xyz/v1" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
               </div>
 
-              <label class="form-label">API key</label>
-              <input class="form-input" id="aiApiKey" type="password" autocomplete="off" placeholder="Paste your API key" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
+              <div id="aiApiKeyRow">
+                <label class="form-label">API key</label>
+                <input class="form-input" id="aiApiKey" type="password" autocomplete="off" placeholder="Paste your API key" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
+              </div>
 
               <label class="form-label">Model</label>
               <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
@@ -14747,7 +14749,7 @@ async function aiInit(){
   try{ d=await aiApi('/ai-provider/config'); }
   catch(e){ msg.style.display='block'; msg.textContent='Could not load AI Models: '+e.message; return; }
   _aiConfig=d.config;
-  if(!d.server_ready){ msg.style.display='block'; msg.textContent='Connecting your own AI key isn\'t enabled on this server yet — your bot keeps using Leadvyne AI.'; }
+  if(!d.server_ready && !d.shared_ready){ msg.style.display='block'; msg.textContent='Connecting your own AI key isn\'t enabled on this server yet — your bot keeps using Leadvyne AI.'; }
   const sel=$id('aiProvider');
   sel.innerHTML=Object.entries(_aiConfig.providers).map(([id,p])=>`<option value="${esc(id)}">${esc(p.label)}</option>`).join('');
   sel.value=_aiConfig.connected?_aiConfig.provider:'anthropic';
@@ -14775,6 +14777,10 @@ function aiRenderStatus(){
 function aiOnProviderChange(keepModel){
   const id=$id('aiProvider').value, p=_aiConfig?.providers?.[id]||{};
   $id('aiBaseUrlRow').style.display=id==='custom'?'block':'none';
+  // Leadvyne-hosted options use the server's key and a fixed model list.
+  $id('aiApiKeyRow').style.display=p.shared?'none':'block';
+  $id('aiLoadModelsBtn').style.display=p.shared?'none':'';
+  $id('aiModel').readOnly=!!p.shared;
   $id('aiModelList').innerHTML=(p.models||[]).map(m=>`<option value="${esc(m)}">`).join('');
   if(keepModel!==true) $id('aiModel').value=p.default_model||'';
   $id('aiModel').placeholder=id==='openai'?'Click "Load models", or type e.g. a GPT model name':'Model name';
