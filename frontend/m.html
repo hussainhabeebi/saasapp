@@ -103,6 +103,13 @@ button:active{transform:scale(.98)}
 .lead .acts button{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:var(--blue-soft);color:var(--blue-2)}
 .lead .acts .call{color:#fff;background:var(--green)}
 .tagl{font-size:11px;font-weight:700;border-radius:8px;padding:2px 8px;background:var(--surface);color:var(--muted);white-space:nowrap;flex:none;text-transform:capitalize}.tagl.hot{background:var(--red-soft);color:var(--red)}.tagl.won{background:var(--green-soft);color:var(--green)}.tagl.new{background:var(--blue-soft);color:var(--blue-2)}.tagl.due{background:#FEF3C7;color:#92400E}
+.attn{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden;background:var(--bg)}
+.attn-h{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 10px}.attn-h b{font-size:17px;font-weight:800;letter-spacing:-.01em}.attn-h small{color:var(--muted);font-size:12.5px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 12px 6px}
+.seg button{display:flex;align-items:center;gap:10px;border-radius:16px;padding:10px 12px;background:var(--surface);font-weight:700;font-size:13.5px;text-align:left}
+.seg .n{font-size:22px;font-weight:800;letter-spacing:-.01em;min-width:22px}
+.seg button[data-k="new"].on{background:var(--blue);color:#fff}.seg button[data-k="unans"].on{background:var(--green);color:#fff}
+.attn .lead{padding-left:12px}.attn .lead:last-of-type .info{border-bottom:0}.attn .empty{padding:20px 16px}
 .more-btn{display:block;margin:14px auto;color:var(--blue-2);font-weight:700;padding:10px 18px;border-radius:14px;background:var(--blue-soft)}
 svg{display:block}
 </style>
@@ -120,6 +127,11 @@ svg{display:block}
         <button class="tile hot" onclick="openChats({filter:'needs'})"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg></span><span class="n" id="cNeeds">–</span><span class="l">Need you</span></button>
         <button class="tile blue" onclick="openChats({filter:'mine'})"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span class="n" id="cMine">–</span><span class="l">Assigned to me</span></button>
         <button class="tile green" onclick="openChats({filter:'unassigned'})"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5 5h14l2 8v6H3v-6z"/></svg></span><span class="n" id="cUnassigned">–</span><span class="l">Unassigned</span></button>
+      </div>
+      <div class="attn hidden" id="attn">
+        <div class="attn-h"><b>⚡ Prime attention</b><small>Call these first</small></div>
+        <div class="seg"><button data-k="new" onclick="setAttnTab('new')"><span class="n" id="attnNew">0</span>Not called</button><button data-k="unans" onclick="setAttnTab('unans')"><span class="n" id="attnUnans">0</span>Unanswered</button></div>
+        <div id="attnList"></div>
       </div>
       <div class="pad"><div id="homeArena" style="display:none"></div></div>
       <div class="sec"><h3>Recent chats</h3><button onclick="openChats({filter:'all'})">See all</button></div>
@@ -317,7 +329,7 @@ function loadLeads(force){
    const [rows]=await Promise.all([fetchLeadRows(),loadEcomOrderPhones(),mtgLoadArenaEvents(),ensureCrmScripts().catch(()=>{})]);
    allLeads=rows;leadsAt=Date.now();
    try{localStorage.setItem(leadsKey,JSON.stringify(rows.filter(leadVisibilityFilter()).slice(0,LEAD_PAGE).map(slimForCache)))}catch{}
-   renderTeam();renderLeads();if(force)toast('Leads updated');
+   renderTeam();renderAttention();renderLeads();if(force)toast('Leads updated');
   }catch(e){if(force||cur==='leads')toast('Could not load leads — check your connection')}
   finally{leadsLoading=null}
  })();
@@ -337,15 +349,25 @@ function renderTeam(){
 
 // ── Leads tab: the leads this person may see (same rule as the dashboard's Leads page) ─────────
 const LEAD_PAGE=60;let leadShown=LEAD_PAGE,leadFilter='all';
-const leadsKey=`lv_m_leads_${clientId}`,teamKey=`lv_m_team_${clientId}`;
-const slimForCache=l=>({Id:l.Id,Name:l.Name,Phone:l.Phone,Stage:l.Stage,Score:l.Score,Date:l.Date,Owner:l.Owner,ReminderDate:l.ReminderDate,ConversationID:l.ConversationID,Channel:l.Channel,_called:parseCallLog(l.CallLog).length});
+const leadsKey=`lv_m_leads_${clientId}`,teamKey=`lv_m_team_${clientId}`,attnKey=`lv_m_attn_${clientId}`;
+const slimForCache=l=>({Id:l.Id,Name:l.Name,Phone:l.Phone,Stage:l.Stage,Score:l.Score,Date:l.Date,Owner:l.Owner,ReminderDate:l.ReminderDate,ConversationID:l.ConversationID,Channel:l.Channel,Tags:l.Tags,OptOut:l.OptOut,_called:parseCallLog(l.CallLog).length,_last:lastCall(l)});
 const leadCalls=l=>l._called??parseCallLog(l.CallLog).length;
-const isOpenLead=l=>!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
+// CallLog is newest-first (dashboard.html appendCallLog unshifts).
+function lastCall(l){if(l._last!==undefined)return l._last;const c=parseCallLog(l.CallLog)[0];return c?{outcome:c.outcome||'',at:c.at||c.date||''}:null}
+// Unanswered = same rule as Staff Performance's "Not responding": open, and the latest call was
+// No Answer / Voicemail, or the lead is tagged "No Answer".
+const NO_ANSWER=new Set(['No Answer','Voicemail']);
+const isOpenLead=l=>!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes'&&l.HandoverOutcome!=='Spam';
+const isUnanswered=l=>isOpenLead(l)&&(NO_ANSWER.has(lastCall(l)?.outcome)||String(l.Tags||'').split(',').some(t=>t.trim().toLowerCase()==='no answer'));
+const isNotCalled=l=>isOpenLead(l)&&!leadCalls(l);
 const followDue=l=>!!l.ReminderDate&&String(l.ReminderDate).slice(0,10)<=new Date().toISOString().slice(0,10)&&isOpenLead(l);
-const LEAD_FILTERS=[['all','All'],['mine','Mine'],['new','🆕 Not called'],['hot','🔥 Hot'],['due','⏰ Follow-up due'],['won','✅ Won']];
-function leadMatch(f){return l=>f==='mine'?sameEmail(l.Owner,myEmail):f==='new'?isOpenLead(l)&&!leadCalls(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
+const LEAD_FILTERS=[['all','All'],['mine','Mine'],['new','🆕 Not called'],['unans','📵 Unanswered'],['hot','🔥 Hot'],['due','⏰ Follow-up due'],['won','✅ Won']];
+function leadMatch(f){return l=>f==='mine'?sameEmail(l.Owner,myEmail):f==='new'?isNotCalled(l):f==='unans'?isUnanswered(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
 function setLeadFilter(f){leadFilter=f;leadShown=LEAD_PAGE;$id('leadList').scrollTop=0;renderLeads()}
 function leadRefId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0}
+const leadTag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':isUnanswered(l)?'<span class="tagl hot">📵 No answer</span>':l.Stage?`<span class="tagl">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';
+// One lead row (Leads tab and Home's Prime attention). when: the right-hand time, default arrival.
+function leadRowHtml(l,when){const name=l.Name||l.Phone||'Unknown';return `<div class="lead" data-id="${esc(l.Id)}"><span class="av" style="${avStyle(name)}">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div class="info" data-act="open"><span class="r1" style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><span class="nm" style="flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.Score==='Hot'?'🔥 ':''}${esc(name)}</span><span class="tm" style="font-size:12px;color:var(--muted);white-space:nowrap">${esc(when!==undefined?when:(l.Date?timeAgo(l.Date):''))}</span></span><span style="display:flex;gap:6px;align-items:center;min-width:0"><span style="flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.Phone||'')}${leadCalls(l)?` · 📞 ${leadCalls(l)}`:''}</span>${leadTag(l)}</span></div><div class="acts">${l.ConversationID?'<button data-act="chat" title="Open chat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></button>':''}${l.Phone?'<button class="call" data-act="call" title="Call (logs the call in the CRM)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg></button>':''}</div></div>`}
 function renderLeads(){
  const el=$id('leadList');if(!el)return;
  let base=allLeads.length?allLeads.filter(leadVisibilityFilter()):(()=>{try{return JSON.parse(localStorage.getItem(leadsKey)||'[]')}catch{return[]}})();
@@ -355,18 +377,41 @@ function renderLeads(){
  let list=base.filter(leadMatch(leadFilter));
  if(q)list=list.filter(l=>String(l.Name||'').toLowerCase().includes(q)||(qd.length>=3&&String(l.Phone||'').replace(/\D/g,'').includes(qd))||(qid&&Number(l.Id)===qid));
  if(!list.length){el.innerHTML=`<div class="empty">${allLeads.length||base.length?'No leads match.':'Loading leads…'}</div>`;return}
- const tag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':l.Stage?`<span class="tagl">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';
- el.innerHTML=list.slice(0,leadShown).map(l=>{const name=l.Name||l.Phone||'Unknown';return `<div class="lead" data-id="${esc(l.Id)}"><span class="av" style="${avStyle(name)}">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div class="info" data-act="open"><span class="r1" style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><span class="nm" style="flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.Score==='Hot'?'🔥 ':''}${esc(name)}</span><span class="tm" style="font-size:12px;color:var(--muted);white-space:nowrap">${l.Date?esc(timeAgo(l.Date)):''}</span></span><span style="display:flex;gap:6px;align-items:center;min-width:0"><span style="flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.Phone||'')}${leadCalls(l)?` · 📞 ${leadCalls(l)}`:''}</span>${tag(l)}</span></div><div class="acts">${l.ConversationID?'<button data-act="chat" title="Open chat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></button>':''}${l.Phone?'<button class="call" data-act="call" title="Call (logs the call in the CRM)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg></button>':''}</div></div>`}).join('')
+ el.innerHTML=list.slice(0,leadShown).map(l=>leadRowHtml(l)).join('')
   +(list.length>leadShown?`<button class="more-btn" onclick="leadShown+=LEAD_PAGE;renderLeads()">Show more (${list.length-leadShown})</button>`:'');
 }
-$id('leadList').addEventListener('click',e=>{
+function leadAct(e){
  const row=e.target.closest('.lead'),act=e.target.closest('[data-act]')?.dataset.act;if(!row||!act)return;
  const id=row.dataset.id;
  // Calls go through the CRM's lead card so they're logged (CallLog) — the Arena and Staff
  // Performance count from that log.
  if(act==='open'||act==='call')location.href='dashboard.html?full=1&lead='+encodeURIComponent(id);
  else if(act==='chat'){const l=allLeads.find(x=>String(x.Id)===id);openChats({leadId:id,channel:String(l?.Channel||'').toLowerCase()==='instagram'?'instagram':'whatsapp'})}
-});
+}
+$id('leadList').addEventListener('click',leadAct);
+$id('attn').addEventListener('click',leadAct); // on the card: a cached paint replaces #attnList
+
+// ── Home → ⚡ Prime attention: leads nobody has called yet and calls that weren't answered ────
+// The leads this person may see (Leads-tab rule). Not called: hot first, then newest — speed to
+// lead matters most. Unanswered: hot first, then the longest since that last try.
+let attnTab='new';
+function attnLists(){
+ const base=allLeads.filter(leadVisibilityFilter()),hot=l=>l.Score==='Hot'?1:0,t=v=>Date.parse(v||'')||0;
+ return {new:base.filter(isNotCalled).sort((a,b)=>hot(b)-hot(a)||t(b.Date)-t(a.Date)),
+  unans:base.filter(isUnanswered).sort((a,b)=>hot(b)-hot(a)||t(lastCall(a)?.at)-t(lastCall(b)?.at))};
+}
+function setAttnTab(k){attnTab=k;renderAttention()}
+function renderAttention(){
+ if(!allLeads.length)return;
+ const L=attnLists(),list=L[attnTab],card=$id('attn');
+ card.classList.remove('hidden');
+ $id('attnNew').textContent=L.new.length;$id('attnUnans').textContent=L.unans.length;
+ document.querySelectorAll('#attn .seg button').forEach(b=>b.classList.toggle('on',b.dataset.k===attnTab));
+ $id('attnList').innerHTML=list.length?list.slice(0,5).map(l=>leadRowHtml(l,attnTab==='unans'&&lastCall(l)?.at?'tried '+timeAgo(lastCall(l).at):undefined)).join('')
+  +(list.length>5?`<button class="more-btn" onclick="leadFilter='${attnTab}';leadShown=LEAD_PAGE;go('leads')">See all ${list.length}</button>`:'')
+  :`<div class="empty">${attnTab==='new'?'Every lead has been called 🎉':'No unanswered calls waiting 🎉'}</div>`;
+ try{localStorage.setItem(attnKey,card.innerHTML)}catch{}
+}
 
 // ── Home: counts + recent chats, painted from this phone's last copy first ────────────────────
 function fmtTime(ts){const d=new Date(ts||0);if(!ts||isNaN(d))return'';const n=new Date();if(d.toDateString()===n.toDateString())return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'Yesterday';return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
@@ -417,6 +462,7 @@ async function loadMe(){
 // once Home is up, so tapping the Chats tab opens straight into the list.
 paintHello(cache.me?.name,cache.me?.biz||(()=>{try{return localStorage.getItem('lv_cached_name')||''}catch{return''}})());
 paintCounts(cache.counts);paintRecent(cache.rows);
+try{const a=localStorage.getItem(attnKey);if(a){$id('attn').innerHTML=a;$id('attn').classList.remove('hidden')}}catch{}
 try{const t=JSON.parse(localStorage.getItem(teamKey)||'null');if(t?.arena){$id('homeArena').innerHTML=t.arena;$id('homeArena').style.display=''}if(t?.sp){$id('homeStaffPerf').innerHTML=t.sp;$id('spCard').classList.remove('hidden')}}catch{}
 const startTab=['chats','leads','more'].includes(location.hash.slice(1))?location.hash.slice(1):'home';
 history.replaceState(startTab==='home'?null:{lvTab:startTab},'',startTab==='home'?location.pathname:'#'+startTab);

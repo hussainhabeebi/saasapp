@@ -15,6 +15,7 @@ const LEADS = [
   { Id: 2, ClientId: '48', Name: 'Fathima', Phone: '919800000002', Owner: 'riya@x.test', Stage: 'won', Date: iso(7200e3), ClosedAt: iso(600e3), CallLog: JSON.stringify([call('riya@x.test', 'Answered', 3000e3)]) },
   { Id: 3, ClientId: '48', Name: 'Arjun', Phone: '919800000003', Owner: 'arun@x.test', Stage: 'new', Date: iso(5400e3), CallLog: '' },
   { Id: 4, ClientId: '48', Name: 'Nobody Yet', Phone: '919800000004', Owner: '', Stage: 'new', Date: iso(900e3), CallLog: '' },
+  { Id: 5, ClientId: '48', Name: 'Shabna', Phone: '919800000005', Owner: 'riya@x.test', Stage: 'new', Date: iso(86400e3), ConversationID: '57', CallLog: JSON.stringify([call('riya@x.test', 'No Answer', 7200e3), call('riya@x.test', 'Answered', 80000e3)]) },
 ];
 const client = (routing) => ({
   authentik_email: 'owner@x.test', client_name: 'Couplo', team_emails: 'riya@x.test,arun@x.test',
@@ -66,7 +67,7 @@ test('Home shows the Weekly Arena and Staff Performance; the leads load without 
 test('Leads tab: owner sees every lead, filters and search work, Call opens the CRM lead card', async ({ page }) => {
   await open(page);
   await page.locator('#nav [data-tab="leads"]').click();
-  await expect(page.locator('#leadList .lead')).toHaveCount(4);
+  await expect(page.locator('#leadList .lead')).toHaveCount(5);
   await page.locator('#leadChips .chip', { hasText: 'Hot' }).click();
   await expect(page.locator('#leadList .lead')).toHaveCount(1);
   await expect(page.locator('#leadList .lead')).toContainText('Muhsina');
@@ -94,4 +95,31 @@ test('the chat button on a lead opens that conversation in Chats', async ({ page
   await page.locator('#nav [data-tab="leads"]').click();
   await page.locator('#leadList .lead', { hasText: 'Muhsina' }).locator('[data-act="chat"]').click();
   await expect(page.locator('#tabChats')).toBeVisible();
+});
+
+test('Home → Prime attention lists not-called and unanswered leads, each with Call and Chat', async ({ page }) => {
+  await open(page);
+  const card = page.locator('#attn');
+  await expect(card.locator('#attnNew')).toHaveText('2');
+  await expect(card.locator('#attnUnans')).toHaveText('1');
+  // Not called: newest first.
+  await expect(card.locator('.lead .nm')).toHaveText(['Nobody Yet', 'Arjun']);
+  await card.locator('.seg button', { hasText: 'Unanswered' }).click();
+  await expect(card.locator('.lead')).toHaveCount(1);
+  await expect(card.locator('.lead')).toContainText('Shabna');
+  await expect(card.locator('.lead')).toContainText('tried 2h ago');
+  await card.locator('.lead [data-act="chat"]').click();
+  await expect(page.locator('#tabChats')).toBeVisible();
+  await page.goBack();
+  await page.locator('#nav [data-tab="leads"]').click();
+  await page.locator('#leadChips .chip', { hasText: 'Unanswered' }).click();
+  await expect(page.locator('#leadList .lead')).toHaveCount(1);
+  await expect(page.locator('#leadList .lead')).toContainText('No answer');
+});
+
+test('Prime attention: a staff member only sees their own leads in it', async ({ page }) => {
+  await open(page, { email: 'arun@x.test', routing: true });
+  await expect(page.locator('#attnNew')).toHaveText('1');
+  await expect(page.locator('#attnUnans')).toHaveText('0');
+  await expect(page.locator('#attn .lead .nm')).toHaveText(['Arjun']);
 });
