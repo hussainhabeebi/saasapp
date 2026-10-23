@@ -9,12 +9,18 @@
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://leadvyne-api-proxy.leadvyne.workers.dev">
-<!-- Leadvyne on a phone: Home · Chats · More, WhatsApp-style. dashboard.html sends phones here
+<link rel="stylesheet" href="call-score.css?v=1">
+<!-- Leadvyne on a phone: Home · Chats · Leads · More, WhatsApp-style. dashboard.html sends phones here
      (see the script at the top of its <head>). This page is tiny and loads no libraries; Chats is
      chats.html in an iframe (same bridge as the dashboard's Chats tab, see chats.js), and every
-     other CRM page opens from More as dashboard.html?full=1&page=<page>. -->
+     other CRM page opens from More as dashboard.html?full=1&page=<page>. Home's 🏆 Weekly Arena and
+     Staff Performance table are the dashboard's own (call-score.js, staff-performance.js), run here
+     on a leads list loaded without chat transcripts — see "CRM data" in the script below. -->
 <style>
-:root{--wa:#00a884;--wa-dark:#008069;--soft:#e7fce9;--ink:#111b21;--muted:#667781;--line:#e9edef;--bg:#fff;--nav:62px}
+:root{--wa:#00a884;--wa-dark:#008069;--soft:#e7fce9;--ink:#111b21;--muted:#667781;--line:#e9edef;--bg:#fff;--nav:62px;
+  /* dashboard.html variables that call-score.css / staff-performance.js styles use */
+  --card:#fff;--accent:#0D9C93;--accent-ink:#1E3A6E;--accent-soft:#DFF6F3;--shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --disp:inherit;--mono:ui-monospace,Menlo,Consolas,monospace}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
@@ -59,6 +65,20 @@ button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:poin
 #nav .dot{position:absolute;top:5px;left:calc(50% + 8px);min-width:18px;height:18px;border-radius:9px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}
 .toast{position:fixed;left:50%;bottom:calc(var(--nav) + 18px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#323739;color:#fff;padding:10px 16px;border-radius:8px;font-size:14px;z-index:20;max-width:90vw}
 .hidden{display:none!important}
+.pad{padding:8px 16px}
+.section-title{font-weight:700;font-size:15px;margin-bottom:10px}
+.sp-card{margin:8px 16px;border:1px solid var(--line);border-radius:14px;padding:12px}
+/* Leads tab */
+.search{padding:8px 12px;flex:none}.search input{width:100%;height:40px;border:0;border-radius:20px;background:#f0f2f5;padding:0 16px;font-size:15px;outline:0}
+.chips{display:flex;gap:7px;overflow-x:auto;padding:0 12px 8px;flex:none;scrollbar-width:none;border-bottom:1px solid var(--line)}.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;border:1px solid #d1d7db;border-radius:16px;padding:5px 12px;font-size:13px;color:#54656f;white-space:nowrap}.chip.on{background:var(--soft);border-color:#c6f0d2;color:var(--wa-dark);font-weight:600}.chip .n{margin-left:4px;font-size:11.5px}
+.lead{display:flex;gap:12px;align-items:center;padding:0 8px 0 16px;min-height:74px}
+.lead .info{flex:1;min-width:0;border-bottom:1px solid #f0f2f5;padding:11px 0;align-self:stretch;display:flex;flex-direction:column;justify-content:center;cursor:pointer}
+.lead .acts{display:flex;gap:2px;flex:none}
+.lead .acts button{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;font-size:19px}.lead .acts button:active{background:#f0f2f5}
+.lead .acts .call{color:var(--wa-dark);background:var(--soft)}
+.tagl{font-size:11px;border-radius:9px;padding:1px 7px;background:#eef1f3;color:#54656f;white-space:nowrap;flex:none}.tagl.hot{background:#ffe1e3;color:#c4001c}.tagl.won{background:#dcfce7;color:#166534}.tagl.new{background:#dbeafe;color:#1e40af}.tagl.due{background:#ede9fe;color:#5b21b6}
+.more-btn{display:block;margin:12px auto;color:var(--wa-dark);font-weight:600;padding:10px 18px}
 svg{display:block}
 </style>
 </head>
@@ -74,22 +94,30 @@ svg{display:block}
         <button class="tile" onclick="openChats({filter:'mine'})"><span class="n" id="cMine">–</span><span class="l">Assigned to me</span></button>
         <button class="tile" onclick="openChats({filter:'unassigned'})"><span class="n" id="cUnassigned">–</span><span class="l">Unassigned</span></button>
       </div>
+      <div class="pad"><div id="homeArena" style="display:none"></div></div>
       <div class="sec"><h3>Recent chats</h3><button onclick="openChats({filter:'all'})">See all</button></div>
       <div id="recent"><div class="empty">Loading…</div></div>
+      <div class="sp-card hidden" id="spCard"><div id="homeStaffPerf"></div></div>
       <div class="sec"><h3>Quick open</h3></div>
       <div class="quick">
-        <button class="q" onclick="openCrm('leads')"><i>👥</i>Leads</button>
         <button class="q" onclick="openCrm('humandeals')"><i>🤝</i>Deals</button>
         <button class="q" onclick="openCrm('followups')"><i>🔁</i>Follow-ups</button>
         <button class="q" onclick="openCrm('broadcast')"><i>📢</i>Campaigns</button>
+        <button class="q" onclick="openCrm('reports')"><i>📈</i>Reports</button>
       </div>
     </div>
   </section>
   <section class="tab" id="tabChats"><div class="loading" id="chatsLoading">Opening Chats…</div></section>
+  <section class="tab" id="tabLeads">
+    <div class="top"><h1>Leads</h1><button class="icon" title="Refresh" onclick="loadLeads(true)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button><button class="icon" title="Add or manage in the full CRM" onclick="openCrm('leads')"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
+    <div class="search"><input id="leadSearch" type="search" placeholder="Search name, phone or LD-number" autocomplete="off" oninput="leadShown=LEAD_PAGE;renderLeads()"></div>
+    <div class="chips" id="leadChips"></div>
+    <div class="scroll" id="leadList"><div class="empty">Loading leads…</div></div>
+  </section>
   <section class="tab" id="tabMore">
     <div class="top"><h1>More</h1></div>
     <div class="scroll list">
-      <button class="item" onclick="openCrm('leads')"><i>👥</i><span>Leads</span></button>
+      <button class="item" onclick="openCrm('leads')"><i>👥</i><span>Leads (full view, pipeline)</span></button>
       <button class="item" onclick="openCrm('humandeals')"><i>🤝</i><span>Deals</span></button>
       <button class="item" onclick="openCrm('followups')"><i>🔁</i><span>Follow-ups</span></button>
       <button class="item" onclick="openCrm('broadcast')"><i>📢</i><span>Campaigns</span></button>
@@ -107,6 +135,7 @@ svg{display:block}
   <nav id="nav">
     <button data-tab="home" onclick="go('home')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg></span>Home</button>
     <button data-tab="chats" onclick="go('chats')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></span>Chats<span class="dot hidden" id="chatDot"></span></button>
+    <button data-tab="leads" onclick="go('leads')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></svg></span>Leads</button>
     <button data-tab="more" onclick="go('more')"><span class="pill"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span>More</button>
   </nav>
 </div>
@@ -133,6 +162,7 @@ function render(tab){
  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
  if(tab==='chats')ensureChats();
  if(tab==='home')loadHome();
+ if(tab==='leads'){renderLeads();if(Date.now()-leadsAt>120000)loadLeads()}
 }
 function go(tab){
  if(tab===cur){if(tab==='chats'&&threadOpen)post({close:true});return}
@@ -176,6 +206,134 @@ addEventListener('message',e=>{
  else if(d.type==='openLead'||d.type==='meeting'){if(d.leadId)location.href='dashboard.html?full=1&lead='+encodeURIComponent(d.leadId)}
 });
 
+// ── CRM data: the leads list + the globals call-score.js / staff-performance.js expect ──────
+// Those two files are the dashboard's own Weekly Arena and Staff Performance code; they read
+// dashboard.html globals, so the few they use are defined here with the same behaviour (copied
+// from dashboard.html — keep in step: isWonLead, getTeamMembers, seesAllLeads, parseCallLog…).
+// Leads come from the same NocoDB table the dashboard reads, without ConvHistory (each lead's chat
+// transcript, by far the heaviest column), so the phone downloads a fraction of what it used to.
+const CONFIG={WORKER_BASE:WORKER,NOCODB_BASE:WORKER+'/nocodb',LEADS_TABLE_ID:'mvg6rcw0ia5qqrx'};
+let allLeads=[],clientRecord={},myEmail='';
+try{myEmail=(localStorage.getItem('lv_me_email')||'').toLowerCase()}catch{}
+const $id=id=>document.getElementById(id);
+const ncAuthHeaders=extra=>({Authorization:'Bearer '+sessionToken,...extra});
+const TERMINAL=new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
+const LEADS_FULL_ACCESS_ROLES=['admin','general_manager'];
+function sameEmail(a,b){const x=String(a||'').trim().toLowerCase();return !!x&&x===String(b||'').trim().toLowerCase()}
+function isAccountOwner(email){const e=String((email===undefined?myEmail:email)||'').trim().toLowerCase();return !!e&&e===String(clientRecord?.authentik_email||'').trim().toLowerCase()}
+function getTeamPermissions(){try{return JSON.parse(clientRecord.team_permissions||'{}')}catch{return{}}}
+function getLeadRouting(){try{return JSON.parse(clientRecord.lead_routing||'{}')}catch{return{}}}
+function myRole(){if(!clientRecord||!myEmail||isAccountOwner())return null;return getTeamPermissions()[myEmail]?.role||null}
+function seesAllLeads(){return isAccountOwner()||LEADS_FULL_ACCESS_ROLES.includes(myRole())}
+function leadVisibilityFilter(){if(seesAllLeads())return()=>true;const routed=!!getLeadRouting().enabled;return l=>l?.Owner?sameEmail(l.Owner,myEmail):!routed}
+function getTeamMembers(){
+ const owner=(clientRecord?.authentik_email||'').trim();
+ const teamEmails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+ let names={};try{names=JSON.parse(clientRecord?.team_names||'{}')}catch{}
+ return [...new Set([owner,...teamEmails].filter(Boolean))].map(email=>({email,name:email.toLowerCase()===owner.toLowerCase()?(clientRecord?.client_name||email):(names[email]||email)}));
+}
+function getTasksState(){try{const p=JSON.parse(clientRecord?.manual_tasks||'{}');return{items:Array.isArray(p.items)?p.items:[],dismissed:Array.isArray(p.dismissed)?p.dismissed:[],projects:Array.isArray(p.projects)?p.projects:[]}}catch{return{items:[],dismissed:[],projects:[]}}}
+function parseCallLog(raw){
+ if(Array.isArray(raw))return raw;const s=String(raw||'').trim();if(!s)return[];
+ try{const a=JSON.parse(s);return Array.isArray(a)?a:[]}catch{}
+ const out=[];for(const part of s.split(/\]\s*\[/)){try{const a=JSON.parse((part.startsWith('[')?'':'[')+part+(part.endsWith(']')?'':']'));if(Array.isArray(a))out.push(...a)}catch{}}
+ return out.sort((a,b)=>(Date.parse(b.at||b.date||'')||0)-(Date.parse(a.at||a.date||'')||0));
+}
+let _ecomOrderPhones=null;
+const _ecomPhoneKey=p=>String(p||'').replace(/\D/g,'').slice(-10);
+function leadHasEcomOrder(l){if(!_ecomOrderPhones)return false;const k=_ecomPhoneKey(l.Phone);return k.length>=7&&_ecomOrderPhones.has(k)}
+function isWonLead(l){return l.Stage==='won'||l.Stage==='converted'||(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')||leadHasEcomOrder(l)}
+function isLostLead(l){return l.Stage==='lost'}
+function timeAgo(iso){const m=Math.floor((Date.now()-new Date(iso).getTime())/60000);if(!(m>=1))return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';return Math.floor(h/24)+'d ago'}
+function showToast(t){toast(t)}
+// The Arena's "Report →" / "Set a weekly team goal →" links call these.
+function navigate(page){openCrm(page)}
+function renderReportsSubPage(){}
+
+let leadsAt=0,leadsLoading=null,crmScripts=null,meLoaded=false;
+function loadScript(src){return new Promise((ok,no)=>{const t=document.createElement('script');t.src=src;t.onload=ok;t.onerror=no;document.head.appendChild(t)})}
+// Same ?v= as dashboard.html's <script> tags — sw.js serves scripts cache-first by URL.
+function ensureCrmScripts(){return crmScripts||(crmScripts=Promise.all([loadScript('call-score.js?v=8'),loadScript('staff-performance.js?v=1')])
+ // staff-performance.js brings its own renderStaffPerformanceAll (dashboard containers); use ours.
+ .then(()=>{window.renderStaffPerformanceAll=renderTeam}).catch(e=>{crmScripts=null;throw e}))}
+async function fetchLeadRows(){
+ const url=extra=>`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})&sort=-Date&${extra}`;
+ // Columns the dashboard has seen on this browser (dashboard.html _slimLeadFields); otherwise learn
+ // them from one full row. NocoDB's fields param is a whitelist.
+ let cols=[];try{cols=JSON.parse(localStorage.getItem('lv_lead_cols')||'[]')}catch{}
+ if(!Array.isArray(cols)||!cols.length){const one=await api(url('limit=1').slice(WORKER.length));cols=Object.keys(one.list?.[0]||{})}
+ cols=cols.filter(c=>c!=='ConvHistory');
+ const fields=cols.length?'&fields='+encodeURIComponent(cols.join(',')):'';
+ try{return (await api(url('limit=2000'+fields).slice(WORKER.length))).list||[]}
+ catch(e){if(!fields)throw e;return (await api(url('limit=2000').slice(WORKER.length))).list||[]}
+}
+async function loadEcomOrderPhones(){
+ if(!(clientRecord.industry==='ecommerce'||clientRecord.ecom_enabled==='Yes')){_ecomOrderPhones=null;return}
+ try{const d=await api('/ecom/order-phones');_ecomOrderPhones=new Set(Object.keys(d.phones||{}).map(_ecomPhoneKey).filter(k=>k.length>=7))}catch{}
+}
+async function mtgLoadArenaEvents(){
+ try{const d=await api('/meetings/points?days=40');window._mtgPoints=d.weights||null;
+  window._mtgArenaEvents=(d.events||[]).map(e=>({by:String(e.by||'').toLowerCase(),ms:e.ms,kind:e.kind,pts:e.pts,leadId:e.lead_id}));window._mtgArenaSig=JSON.stringify(d.events||[])}catch{}
+}
+function loadLeads(force){
+ if(leadsLoading)return leadsLoading;
+ if(!meLoaded)return Promise.resolve(); // runs again once /session/me is back (boot)
+ leadsLoading=(async()=>{
+  try{
+   const [rows]=await Promise.all([fetchLeadRows(),loadEcomOrderPhones(),mtgLoadArenaEvents(),ensureCrmScripts().catch(()=>{})]);
+   allLeads=rows;leadsAt=Date.now();
+   try{localStorage.setItem(leadsKey,JSON.stringify(rows.filter(leadVisibilityFilter()).slice(0,LEAD_PAGE).map(slimForCache)))}catch{}
+   renderTeam();renderLeads();if(force)toast('Leads updated');
+  }catch(e){if(force||cur==='leads')toast('Could not load leads — check your connection')}
+  finally{leadsLoading=null}
+ })();
+ return leadsLoading;
+}
+// 🏆 Weekly Arena (whole team's leads, like the dashboard) + Staff Performance (a teammate without
+// full access sees only their own leads — dashboard.html withHomeScope).
+function renderTeam(){
+ if(typeof csRenderHomeArena==='function'){try{csRenderHomeArena()}catch(e){}}
+ if(typeof renderStaffPerformance==='function'){
+  const all=allLeads;
+  try{if(myEmail&&!seesAllLeads())allLeads=all.filter(l=>sameEmail(l.Owner,myEmail));renderStaffPerformance($id('homeStaffPerf'));$id('spCard').classList.remove('hidden')}catch(e){}
+  finally{allLeads=all}
+ }
+ try{localStorage.setItem(teamKey,JSON.stringify({arena:$id('homeArena').style.display==='none'?'':$id('homeArena').innerHTML,sp:$id('spCard').classList.contains('hidden')?'':$id('homeStaffPerf').innerHTML}))}catch{}
+}
+
+// ── Leads tab: the leads this person may see (same rule as the dashboard's Leads page) ─────────
+const LEAD_PAGE=60;let leadShown=LEAD_PAGE,leadFilter='all';
+const leadsKey=`lv_m_leads_${clientId}`,teamKey=`lv_m_team_${clientId}`;
+const slimForCache=l=>({Id:l.Id,Name:l.Name,Phone:l.Phone,Stage:l.Stage,Score:l.Score,Date:l.Date,Owner:l.Owner,ReminderDate:l.ReminderDate,ConversationID:l.ConversationID,Channel:l.Channel,_called:parseCallLog(l.CallLog).length});
+const leadCalls=l=>l._called??parseCallLog(l.CallLog).length;
+const isOpenLead=l=>!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
+const followDue=l=>!!l.ReminderDate&&String(l.ReminderDate).slice(0,10)<=new Date().toISOString().slice(0,10)&&isOpenLead(l);
+const LEAD_FILTERS=[['all','All'],['mine','Mine'],['new','🆕 Not called'],['hot','🔥 Hot'],['due','⏰ Follow-up due'],['won','✅ Won']];
+function leadMatch(f){return l=>f==='mine'?sameEmail(l.Owner,myEmail):f==='new'?isOpenLead(l)&&!leadCalls(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
+function setLeadFilter(f){leadFilter=f;leadShown=LEAD_PAGE;$id('leadList').scrollTop=0;renderLeads()}
+function leadRefId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0}
+function renderLeads(){
+ const el=$id('leadList');if(!el)return;
+ let base=allLeads.length?allLeads.filter(leadVisibilityFilter()):(()=>{try{return JSON.parse(localStorage.getItem(leadsKey)||'[]')}catch{return[]}})();
+ const counts=Object.fromEntries(LEAD_FILTERS.map(([k])=>[k,base.filter(leadMatch(k)).length]));
+ $id('leadChips').innerHTML=LEAD_FILTERS.filter(([k])=>k!=='mine'||myEmail).map(([k,t])=>`<button class="chip${leadFilter===k?' on':''}" onclick="setLeadFilter('${k}')">${t}${k!=='all'&&counts[k]?`<span class="n">${counts[k]}</span>`:''}</button>`).join('');
+ const q=($id('leadSearch')?.value||'').trim().toLowerCase(),qd=q.replace(/\D/g,''),qid=leadRefId(q);
+ let list=base.filter(leadMatch(leadFilter));
+ if(q)list=list.filter(l=>String(l.Name||'').toLowerCase().includes(q)||(qd.length>=3&&String(l.Phone||'').replace(/\D/g,'').includes(qd))||(qid&&Number(l.Id)===qid));
+ if(!list.length){el.innerHTML=`<div class="empty">${allLeads.length||base.length?'No leads match.':'Loading leads…'}</div>`;return}
+ const tag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':l.Stage?`<span class="tagl">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';
+ el.innerHTML=list.slice(0,leadShown).map(l=>{const name=l.Name||l.Phone||'Unknown';return `<div class="lead" data-id="${esc(l.Id)}"><span class="av">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div class="info" data-act="open"><span class="r1" style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><span class="nm" style="flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.Score==='Hot'?'🔥 ':''}${esc(name)}</span><span class="tm" style="font-size:12px;color:var(--muted);white-space:nowrap">${l.Date?esc(timeAgo(l.Date)):''}</span></span><span style="display:flex;gap:6px;align-items:center;min-width:0"><span style="flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.Phone||'')}${leadCalls(l)?` · 📞 ${leadCalls(l)}`:''}</span>${tag(l)}</span></div><div class="acts">${l.ConversationID?'<button data-act="chat" title="Open chat">💬</button>':''}${l.Phone?'<button class="call" data-act="call" title="Call (logs the call in the CRM)">📞</button>':''}</div></div>`}).join('')
+  +(list.length>leadShown?`<button class="more-btn" onclick="leadShown+=LEAD_PAGE;renderLeads()">Show more (${list.length-leadShown})</button>`:'');
+}
+$id('leadList').addEventListener('click',e=>{
+ const row=e.target.closest('.lead'),act=e.target.closest('[data-act]')?.dataset.act;if(!row||!act)return;
+ const id=row.dataset.id;
+ // Calls go through the CRM's lead card so they're logged (CallLog) — the Arena and Staff
+ // Performance count from that log.
+ if(act==='open'||act==='call')location.href='dashboard.html?full=1&lead='+encodeURIComponent(id);
+ else if(act==='chat'){const l=allLeads.find(x=>String(x.Id)===id);openChats({leadId:id,channel:String(l?.Channel||'').toLowerCase()==='instagram'?'instagram':'whatsapp'})}
+});
+
 // ── Home: counts + recent chats, painted from this phone's last copy first ────────────────────
 function fmtTime(ts){const d=new Date(ts||0);if(!ts||isNaN(d))return'';const n=new Date();if(d.toDateString()===n.toDateString())return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'Yesterday';return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
 function paintCounts(c){
@@ -208,18 +366,29 @@ async function loadHome(force){
  else if(force)toast('Updated');
  saveCache();
 }
-async function loadMe(){try{const me=await api('/session/me');const c=me.client||{};cache.me={name:me.name||me.user?.name||String(me.email||me.user?.email||'').split('@')[0],biz:c.client_name||c.business_name||''};paintHello(cache.me.name,cache.me.biz);saveCache()}catch{}}
+async function loadMe(){
+ try{const me=await api('/session/me');const c=me.client||{};
+  // Same sliding refresh the dashboard does (resumeSession): keep the reissued token.
+  if(me.session_token){sessionToken=me.session_token;try{localStorage.setItem('lv_session',sessionToken)}catch{}}
+  myEmail=String(me.email||'').trim().toLowerCase();clientRecord=c;meLoaded=true;
+  try{if(myEmail)localStorage.setItem('lv_me_email',myEmail)}catch{}
+  const mine=getTeamMembers().find(m=>sameEmail(m.email,myEmail));
+  cache.me={name:(mine&&!sameEmail(mine.email,c.authentik_email)?mine.name:'')||myEmail.split('@')[0],biz:c.client_name||c.business_name||''};paintHello(cache.me.name,cache.me.biz);saveCache();
+  return true}catch{return false}}
 
 // Boot: paint the cached view instantly, then refresh. Chats loads quietly in the background
 // once Home is up, so tapping the Chats tab opens straight into the list.
 paintHello(cache.me?.name,cache.me?.biz||(()=>{try{return localStorage.getItem('lv_cached_name')||''}catch{return''}})());
 paintCounts(cache.counts);paintRecent(cache.rows);
-const startTab=['chats','more'].includes(location.hash.slice(1))?location.hash.slice(1):'home';
+try{const t=JSON.parse(localStorage.getItem(teamKey)||'null');if(t?.arena){$id('homeArena').innerHTML=t.arena;$id('homeArena').style.display=''}if(t?.sp){$id('homeStaffPerf').innerHTML=t.sp;$id('spCard').classList.remove('hidden')}}catch{}
+const startTab=['chats','leads','more'].includes(location.hash.slice(1))?location.hash.slice(1):'home';
 history.replaceState(startTab==='home'?null:{lvTab:startTab},'',startTab==='home'?location.pathname:'#'+startTab);
 if(clientId&&sessionToken){
- render(startTab);loadMe();
+ render(startTab);
+ loadMe().then(ok=>{if(ok)loadLeads()});
  const idle=window.requestIdleCallback||(f=>setTimeout(f,1200));idle(()=>ensureChats(),{timeout:2500});
  setInterval(()=>{if(!document.hidden&&cur==='home')loadHome()},60000);
+ setInterval(()=>{if(!document.hidden&&(cur==='home'||cur==='leads'))loadLeads()},180000);
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cur==='home')loadHome()});
 }
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
