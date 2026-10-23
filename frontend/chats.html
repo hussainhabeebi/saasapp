@@ -170,7 +170,8 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
   </aside>
   <main class="main" id="main"><div class="empty-main"><div class="box"><div class="big">💬</div><h2>Leadvyne Chats</h2><p>Send messages, photos, documents and voice notes in a familiar WhatsApp-style workspace. Choose a conversation to start.</p></div></div></main>
 </div>
-<input type="file" id="fileInput" class="hidden">
+<!-- Off-screen, not display:none: some Android in-app browsers / older iOS ignore .click() on a display:none file input. -->
+<input type="file" id="fileInput" tabindex="-1" aria-hidden="true" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
 <div id="toast" class="toast hidden"></div>
 <script src="followup-status.js?v=1"></script>
 <script>
@@ -784,14 +785,38 @@ async function sendMessage(){
 }
 async function uploadFile(lead,file,{caption='',kind='',duration=0}={}){
  const fd=new FormData();fd.append('conv_id',convId(lead));fd.append('lead_id',lead.Id);fd.append('caption',caption);if(kind)fd.append('kind',kind);if(duration)fd.append('duration',String(duration));fd.append('file',file,file.name);
- const r=await fetch(WORKER+'/quote/send',{method:'POST',headers:headers(),body:fd});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Upload failed');return d;
+ // A stalled upload on mobile data used to sit on the 🕓 forever; give up after 2 min so it shows Retry.
+ const ac='AbortController'in window?new AbortController():null,tm=ac&&setTimeout(()=>ac.abort(),120000);
+ try{const r=await fetch(WORKER+'/quote/send',{method:'POST',headers:headers(),body:fd,signal:ac?.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Upload failed');return d}
+ catch(e){throw e?.name==='AbortError'?new Error('network timeout'):e}finally{clearTimeout(tm)}
 }
+// Phone photos are 3–12 MB (12–50 MP). WhatsApp refuses images over 5 MB and a big upload on mobile
+// data often never finishes, so photos are shrunk before sending the way WhatsApp itself does
+// (longest side 1600 px, JPEG). Anything that can't be decoded (HEIC on Chrome, a broken file) goes
+// as it is; so does a GIF (would lose its animation) and anything already small.
+const IMG_MAX_SIDE=1600,IMG_SHRINK_OVER=900*1024;
+async function shrinkImage(file){
+ if(!/^image\/(jpeg|jpg|png|webp|heic|heif)$/i.test(file.type||'')||file.size<=IMG_SHRINK_OVER||typeof createImageBitmap!=='function')return file;
+ try{
+  const bmp=await createImageBitmap(file,{imageOrientation:'from-image'}).catch(()=>createImageBitmap(file));
+  const s=Math.min(1,IMG_MAX_SIDE/Math.max(bmp.width,bmp.height)),w=Math.max(1,Math.round(bmp.width*s)),h=Math.max(1,Math.round(bmp.height*s));
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(bmp,0,0,w,h);bmp.close?.();
+  const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',.82));
+  if(!blob||blob.size>=file.size)return file;
+  return new File([blob],String(file.name||'photo').replace(/\.[^.]+$/,'')+'.jpg',{type:'image/jpeg',lastModified:Date.now()});
+ }catch{return file}
+}
+// Some Android gallery / file-manager apps hand over a file with an empty type; without it a photo
+// was sent as a "document". Fill it in from the extension.
+const EXT_TYPES={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp',gif:'image/gif',heic:'image/heic',heif:'image/heif',mp4:'video/mp4',mov:'video/quicktime','3gp':'video/3gpp',mp3:'audio/mpeg',ogg:'audio/ogg',opus:'audio/ogg',m4a:'audio/mp4',aac:'audio/aac',amr:'audio/amr',pdf:'application/pdf'};
+function withType(f){if(f.type)return f;const t=EXT_TYPES[String(f.name||'').split('.').pop().toLowerCase()];try{return t?new File([f],f.name,{type:t,lastModified:f.lastModified}):f}catch{return f}}
 function kindOfFile(f){const t=f.type||'';return t.startsWith('image')?'image':t.startsWith('video')?'video':t.startsWith('audio')?'audio':'document'}
 function sendFileMessage(lead,file,{caption='',kind,duration=0}={}){
  kind=kind||kindOfFile(file);
  const local=['image','video','audio','voice'].includes(kind)?URL.createObjectURL(file):'';
  const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind,type:file.type,name:kind==='voice'?'Voice message':file.name,size:file.size,url:local,...(duration?{duration}:{})}});
- msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{const d=await uploadFile(lead,file,{caption,kind:kind==='voice'?'voice':'',duration});const u=d?.data?.attachments?.[0]?.data_url;if(u&&!local)msg.attachment.url=u;setMsgStatus(lead,msg,null)}catch(e){setMsgStatus(lead,msg,'failed');toast('Not sent: '+e.message)}};
+ let upFile=null;
+ msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{upFile=upFile||(kind==='image'?await shrinkImage(file):file);const d=await uploadFile(lead,upFile,{caption,kind:kind==='voice'?'voice':'',duration});const u=d?.data?.attachments?.[0]?.data_url;if(u&&!local)msg.attachment.url=u;setMsgStatus(lead,msg,null)}catch(e){setMsgStatus(lead,msg,'failed',e.message);toast('Not sent: '+failReason(e.message))}};
  return msg._retry();
 }
 
@@ -803,11 +828,11 @@ $('fileInput').onchange=e=>{const f=[...(e.target.files||[])];e.target.value='';
 function openPreview(files){
  if(!current)return;if(!convId(current)){toast('No linked WhatsApp conversation');return}
  const big=files.filter(f=>f.size>MAX_FILE);if(big.length)toast(`${big.length} file(s) over 40 MB skipped`);
- files=files.filter(f=>f.size<=MAX_FILE).slice(0,10);if(!files.length)return;
+ files=files.filter(f=>f.size<=MAX_FILE).slice(0,10).map(withType);if(!files.length)return;
  previewFiles.forEach(p=>p.url&&URL.revokeObjectURL(p.url));
  previewFiles=files.map(f=>({file:f,kind:kindOfFile(f),url:/^(image|video|audio)\//.test(f.type)?URL.createObjectURL(f):''}));previewIdx=0;
  let ov=$('previewOv');if(!ov){ov=document.createElement('div');ov.id='previewOv';ov.className='overlay preview';document.body.appendChild(ov)}
- ov.classList.remove('hidden');drawPreview();setTimeout(()=>$('capInput')?.focus(),50);
+ ov.classList.remove('hidden');drawPreview();if(matchMedia('(min-width:701px)').matches)setTimeout(()=>$('capInput')?.focus(),50);
 }
 function drawPreview(){
  const ov=$('previewOv'),p=previewFiles[previewIdx];if(!p)return closePreview();
@@ -1373,7 +1398,10 @@ document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
  const {channel:ch,leadId}=e.data;
+ // m.html: the phone's Back button closes the open chat; Home's tiles open a filtered list.
+ if(e.data.close){if(current)closeConversation();return}
  if(ch&&ch!==channel)setChannel(ch);
+ if(e.data.filter&&e.data.filter!==filter)setFilter(e.data.filter);
  if(!leadId)return;
  // A live-message ping for the conversation already on screen just refreshes it — reopening
  // would throw away the reply target and composer state.
