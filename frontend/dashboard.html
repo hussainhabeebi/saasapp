@@ -4,6 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Leadvyne · CRM</title>
+<script>
+// Phones open the light app (m.html — Home · Chats · More, WhatsApp-style) instead of this full CRM:
+// this page plus its CDN scripts is several MB to download and parse on a phone, and while it sat in
+// memory under the Chats iframe Android often killed the tab when the gallery/camera opened, so a
+// picked photo was lost. Runs before anything else loads. Only a signed-in, plain open redirects —
+// any query param (?full=1 from m.html's More menu, ?lead=, ?billing, OAuth ?code=, ?logout…) stays here.
+(function(){try{
+  var phone=matchMedia('(max-width:700px)').matches;
+  window.LV_LITE=phone;
+  var q=new URLSearchParams(location.search),other=[];q.forEach(function(v,k){if(k!=='client')other.push(k)});
+  if(phone&&!other.length&&localStorage.getItem('lv_cid')&&localStorage.getItem('lv_session'))location.replace('m.html'+location.hash);
+}catch(e){}})();
+</script>
+<!-- Android app (TWA) pop-up handling — inert in a normal browser, see twa.js -->
+<script src="twa.js?v=1"></script>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
@@ -24,6 +39,8 @@
      (frontend/chats.css) alongside chats.js, so the Chats view is one step closer to a real
      standalone module instead of living entirely inside this 18k-line file. -->
 <link rel="stylesheet" href="chats.css">
+<!-- 🏆 Weekly Arena styles, shared with the phone app (m.html) -->
+<link rel="stylesheet" href="call-score.css?v=1">
 <style>
 :root{
   --bg:#F2F5F3;--card:#FFFFFF;--ink:#0C1E16;--muted:#637870;
@@ -666,91 +683,6 @@ tr.has-origin td:first-child{box-shadow:inset 3px 0 0 var(--o)}
 .cs-targets th,.cs-targets td{padding:6px 8px;font-size:13px}
 .cs-targets input{width:90px;padding:6px 8px}
 .cs-click{cursor:pointer}
-/* Home → Weekly Arena (call-score.js csRenderHomeArena) — kept deliberately simple:
-   hero, team goal, one "today" row, a short leaderboard; badges/rules behind "more". */
-.csa{border-radius:20px;overflow:hidden;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
-.csa-hero{background:radial-gradient(120% 140% at 100% 0%,#14B8A6 0%,rgba(20,184,166,0) 55%),linear-gradient(135deg,#0B1F33 0%,#123B4A 60%,#0D6E68 100%);color:#fff;padding:14px 16px 16px}
-.csa-top{display:flex;align-items:center;gap:8px}
-.csa-title{font-weight:800;font-size:15px;margin-right:auto}
-.csa-pill{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.14)}
-.csa-link{font-size:12px;font-weight:600;color:#99F6E4;text-decoration:none}
-.csa-power{margin-top:10px;font-size:12.5px;padding:6px 10px;border-radius:10px;background:linear-gradient(90deg,#F59E0B,#FBBF24);color:#451A03;font-weight:600;animation:csaPulse 2s ease-in-out infinite}
-@keyframes csaPulse{50%{filter:brightness(1.1)}}
-.csa-me{display:flex;align-items:center;gap:14px;margin-top:12px}
-.csa-ring-wrap{position:relative;width:76px;height:76px;flex-shrink:0}
-.csa-ring{width:76px;height:76px}
-.csa-ring-bg{fill:none;stroke:rgba(255,255,255,.15);stroke-width:7}
-.csa-ring-fg{fill:none;stroke:#FBBF24;stroke-width:7;stroke-linecap:round;transition:stroke-dasharray .6s ease}
-.csa-ring-in{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1}
-.csa-ring-in b{font-size:20px;font-weight:800}
-.csa-ring-in span{font-size:10px;opacity:.75}
-.csa-me-main{flex:1;min-width:0;max-width:440px}
-.csa-pts{font-size:32px;font-weight:800;letter-spacing:-.02em;line-height:1}
-.csa-pts small{font-size:13px;font-weight:500;opacity:.75}
-.csa-line{font-size:13px;margin:5px 0 7px}
-.csa-line b{color:#FDE68A}
-.csa-bar{height:6px;border-radius:99px;background:rgba(255,255,255,.15);overflow:hidden}
-.csa-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#FBBF24,#F59E0B)}
-.csa-sub{font-size:11px;opacity:.75;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.csa-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
-.csa-goal{border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--bg)}
-.csa-goal.done{border-color:#86EFAC;background:linear-gradient(180deg,rgba(16,185,129,.08),transparent)}
-.csa-goal-top{display:flex;justify-content:space-between;font-size:13px;font-weight:600}
-.csa-qbar{height:6px;border-radius:99px;background:var(--line);margin:7px 0 4px;overflow:hidden}
-.csa-qbar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#2DD4BF);border-radius:99px}
-.csa-q-sub{font-size:11px;color:var(--muted)}
-.csa-setgoal{font-size:12px;color:var(--accent-ink);text-decoration:none;font-weight:600}
-.csa-today{display:flex;gap:6px;flex-wrap:wrap}
-.csa-chip{font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--bg)}
-.csa-chip.done{border-color:#86EFAC;color:#047857;background:rgba(16,185,129,.08)}
-.csa-chip.warn{border-color:#FCA5A5;color:#B91C1C;background:rgba(239,68,68,.07)}
-.csa-list{display:flex;flex-direction:column;gap:5px}
-.csa-champ-line{font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:5px 10px;align-self:flex-start}
-.csa-av{width:30px;height:30px;border-radius:50%;color:#fff;font-weight:800;font-size:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 0 0 2px var(--card)}
-.csa-row{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:12px;border:1px solid var(--line)}
-.csa-row.top1{background:linear-gradient(90deg,rgba(251,191,36,.12),transparent 70%);border-color:#FDE68A}
-.csa-row.me{border-color:var(--accent);box-shadow:0 0 0 2px rgba(13,156,147,.12)}
-.csa-rank{width:22px;text-align:center;font-weight:800;font-size:14px;color:var(--muted);flex-shrink:0}
-.csa-row-main{flex:1;min-width:0}
-.csa-row-name{display:flex;align-items:center;gap:4px;font-weight:700;font-size:13px;min-width:0}
-.csa-nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.csa-row-name em{flex-shrink:0;font-style:normal;font-size:10px;font-weight:800;color:#fff;background:var(--accent);padding:1px 6px;border-radius:99px}
-.csa-mini{flex-shrink:0;font-size:12px}
-.csa-row-bar{height:4px;border-radius:99px;background:var(--line);margin-top:5px;overflow:hidden}
-.csa-row-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#2DD4BF)}
-.csa-row.top1 .csa-row-bar span{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
-.csa-row-pts{font-weight:800;font-size:16px;flex-shrink:0}
-.csa-gap{text-align:center;color:var(--muted);font-size:12px;line-height:1}
-.csa-idle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);padding:2px 4px 0}
-.csa-stack{display:inline-flex}
-.csa-stack .csa-av{margin-left:-7px;font-size:9px}
-.csa-stack .csa-av:first-child{margin-left:0}
-.csa-empty{font-size:13px;color:var(--muted);padding:10px 12px;border:1px dashed var(--line);border-radius:14px;text-align:center}
-.csa-more summary{font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;list-style:none}
-.csa-more summary::before{content:'▸ '}
-.csa-more[open] summary::before{content:'▾ '}
-.csa-badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.csa-badge{flex:0 0 auto;min-width:92px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 8px;border-radius:12px;border:1px solid var(--line);background:var(--bg);text-align:center}
-.csa-badge.mine{border-color:var(--accent);background:linear-gradient(180deg,rgba(13,156,147,.1),transparent)}
-.csa-badge.off{opacity:.55}
-.csa-b-icon{font-size:20px}
-.csa-b-name{font-size:11px;font-weight:700}
-.csa-b-who{font-size:10.5px;color:var(--muted);max-width:96px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.csa-rules{font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.5}
-.csa-hall{font-size:11.5px;color:var(--muted);margin-top:6px}
-.csa-hall small{opacity:.7}
-/* Desktop: use the full width — summary panel on the left, team goal / today / leaderboard on the right */
-@media(min-width:900px){
-  .csa{display:grid;grid-template-columns:minmax(300px,360px) minmax(0,1fr)}
-  .csa-hero{padding:18px 20px 20px;display:flex;flex-direction:column}
-  .csa-me{margin-top:18px}
-  .csa-ring-wrap,.csa-ring{width:84px;height:84px}
-  .csa-body{padding:16px 20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 20px;align-content:start}
-  .csa-body>.csa-goal,.csa-body>.csa-setgoal{grid-column:1}
-  .csa-body>.csa-today{grid-column:2;align-self:center;justify-content:flex-end}
-  .csa-body>.csa-list,.csa-body>.csa-empty,.csa-body>.csa-more{grid-column:1/-1}
-  .csa-body>.csa-today:first-child{grid-column:1/-1;justify-content:flex-start}
-}
 /* 🔔 New-lead alert banner (call-score.js csNewLeadAlert) */
 .cs-alert{position:fixed;left:50%;top:12px;transform:translate(-50%,-140%);z-index:10001;display:flex;align-items:center;gap:10px;width:min(560px,calc(100vw - 24px));padding:10px 12px;border-radius:16px;background:#0B1F33;color:#fff;box-shadow:0 12px 32px rgba(0,0,0,.28);transition:transform .3s ease}
 .cs-alert.show{transform:translate(-50%,0)}
@@ -2168,6 +2100,7 @@ const ROLES = {
               <button class="btn btn-primary btn-sm" onclick="openAddLead()" style="flex-shrink:0">+ Add Lead</button>
               <button class="btn btn-secondary btn-sm" onclick="exportCsv()" style="flex-shrink:0">📥 CSV</button>
               <button class="btn btn-secondary btn-sm" onclick="openImport()" style="flex-shrink:0">📤 Import</button>
+              <button class="btn btn-secondary btn-sm" id="personalBtn" onclick="openPersonalContacts()" style="flex-shrink:0;display:none" title="Contacts marked as personal or staff — not counted as leads"></button>
             </div>
           </div>
 
@@ -3570,7 +3503,7 @@ const ROLES = {
         <div class="card" style="margin-bottom:14px" id="aiCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🤖 AI Models <span id="aiStatusBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Leadvyne AI</span></div>
-            <div class="s-note">Your bot runs on the built-in Leadvyne AI by default. To use Claude, ChatGPT or another model instead, connect your own API key here. Usage is billed to your own account with that provider. Voice notes and images are still read by Leadvyne AI.</div>
+            <div class="s-note">Your bot runs on the built-in Leadvyne AI by default. To use Claude, ChatGPT or another model instead, connect your own API key here. Usage is billed to your own account with that provider. Options marked "Leadvyne, no key needed" run on Leadvyne's own account. Voice notes and images are still read by Leadvyne AI.</div>
             <div id="aiLoadMsg" class="s-note" style="display:none"></div>
 
             <div id="aiBody">
@@ -3582,8 +3515,10 @@ const ROLES = {
                 <input class="form-input" id="aiBaseUrl" type="url" placeholder="https://api.together.xyz/v1" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
               </div>
 
-              <label class="form-label">API key</label>
-              <input class="form-input" id="aiApiKey" type="password" autocomplete="off" placeholder="Paste your API key" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
+              <div id="aiApiKeyRow">
+                <label class="form-label">API key</label>
+                <input class="form-input" id="aiApiKey" type="password" autocomplete="off" placeholder="Paste your API key" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
+              </div>
 
               <label class="form-label">Model</label>
               <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
@@ -4654,6 +4589,7 @@ const ROLES = {
     <div class="more-sheet-handle"></div>
     <div class="more-sheet-title">More</div>
     <div class="more-sheet-grid">
+      <button class="more-item" onclick="location.href='m.html'"><span class="bnIcon">📱</span><span class="bnLabel">Simple app</span></button>
       <button class="more-item" data-page="bizai" id="moreBizaiTab"><span class="bnIcon">🤖</span><span class="bnLabel">AI Assistant</span></button>
       <button class="more-item" data-page="tasks" style="position:relative"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
@@ -5034,6 +4970,16 @@ const ROLES = {
       <button class="btn btn-secondary btn-sm" onclick="toggleCrossSell()">🔄 Cross-Sell</button>
       <div id="crossSellCard" class="coach-card" style="display:none;margin-top:10px"></div>
     </div>
+  </div>
+</div>
+
+<!-- MODAL: Personal & staff contacts (markLeadPersonal) -->
+<div class="modal" id="modalPersonal" style="max-width:460px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><span class="modal-title">👤 Personal &amp; staff</span><button class="icon-btn" onclick="closeModal('modalPersonal')">✕</button></div>
+  <div class="modal-body">
+    <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Not counted as leads anywhere, and the bot doesn't reply to them. Their chats stay in Chats.</div>
+    <div id="personalList"></div>
   </div>
 </div>
 
@@ -5733,6 +5679,9 @@ function completeLoginResult(session){
   // — never trusted for anything real, /session/me is still the actual source of truth every
   // time.
   if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
+  // Signed in from the Android app on a phone: back to the app's Home (m.html). New sign-ups stay
+  // here for the welcome setup.
+  if(window.LV_TWA && window.LV_LITE && !session.isFreshSignup){ location.replace('m.html'); return; }
   showApp();
   if(!session.isFreshSignup) showLastLoginToast();
   if(session.isFreshSignup){
@@ -6198,6 +6147,8 @@ function pushLeadToProjects(lead){
 document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
     if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
+    // Phones: Home and Chats live in the light app (m.html), so the bottom bar goes back there.
+    if(window.LV_LITE&&b.classList.contains('bnItem')&&(b.dataset.page==='home'||b.dataset.page==='chats')){ location.href='m.html#'+b.dataset.page; return; }
     if(b.dataset.page==='projects'){ openProjectsTool(); closeMoreSheet(); return; }
     // Real task management (manual tasks, the "Projects" grouping, Google Calendar sync, the
     // Advanced Pipeline follow-up cadence's to-dos) all moved to the Projects tool — see
@@ -6269,6 +6220,9 @@ function showApp(){
   else if(params.has('integrations')||shopifyParam) landingPage='integrations';
   else if(gscParam) landingPage='reports';
   else if(gcalParam) landingPage='tasks';
+  // ?page=<page> — m.html's More menu opens a CRM page directly.
+  const pageParam=String(params.get('page')||'');
+  if(/^[a-z]+$/.test(pageParam)&&$id('page'+cap(PAGE_HOST[pageParam]||pageParam))) landingPage=pageParam;
   navigate(landingPage);
   // ?lead=<id> — from a 🔥 hot-lead WhatsApp alert: open that lead with Call one tap away.
   const leadParam=Number(params.get('lead'));
@@ -6371,6 +6325,64 @@ function _cacheLeads(list){
   catch(e){ try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e2){} }
 }
 
+/* ── 👤 PERSONAL & STAFF CONTACTS ──
+   A chat from a friend, family member or a teammate on the business WhatsApp is not a lead. Marking
+   it (lead ⋯ menu → "Mark as personal" / "Mark as staff") adds a "Personal" or "Staff" tag and sets
+   OptOut=Yes, which already stops the bot, follow-up sequences, automations, hot alerts and
+   broadcasts on the Worker side. Here, such contacts are kept out of allLeads altogether, so no
+   list, count, report, Staff Performance row or Weekly Arena point treats them as sales; they live in
+   _personalLeads, listed under Leads → "👤 Personal & staff", where they can be turned back into
+   leads. Their chats stay in Chats as normal conversations. */
+let _personalLeads=[];
+function personalKind(l){ const t=parseTags(l?.Tags).map(x=>x.toLowerCase()); return t.includes('staff')?'Staff':t.includes('personal')?'Personal':''; }
+function _splitPersonal(list){
+  _personalLeads=list.filter(l=>personalKind(l));
+  const btn=$id('personalBtn'); if(btn){ btn.style.display=_personalLeads.length?'':'none'; btn.textContent=`👤 Personal & staff (${_personalLeads.length})`; }
+  return _personalLeads.length?list.filter(l=>!personalKind(l)):list;
+}
+async function markLeadPersonal(leadId, kind, ev){
+  ev?.stopPropagation();
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const before={Id:leadId, Tags:lead.Tags??null, OptOut:lead.OptOut??null};
+  const tags=parseTags(lead.Tags).filter(t=>!/^(personal|staff)$/i.test(t)).concat(kind);
+  const patch={Id:leadId, Tags:tags.join(', '), OptOut:'Yes'};
+  try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch); }
+  catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  Object.assign(lead,patch);
+  if(currentLead?.Id===leadId) closeModal('modalDetail');
+  allLeads=_splitPersonal(allLeads.concat(_personalLeads));
+  renderLeadsCurrentView(); renderHome();
+  showUndoToast(`${kind==='Staff'?'🧑‍💼':'👤'} Marked as ${kind.toLowerCase()} — not a lead`, async ()=>{
+    try{
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,before);
+      Object.assign(lead,before);
+      allLeads=_splitPersonal(allLeads.concat(_personalLeads));
+      renderLeadsCurrentView(); renderHome();
+      showToast('↩️ Back in your leads','ok');
+    }catch(e){ showToast('Undo failed: '+e.message,'err'); }
+  });
+}
+// Back to a normal lead: tag removed and OptOut cleared, so the bot replies to them again.
+async function unmarkLeadPersonal(leadId){
+  const lead=_personalLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const patch={Id:leadId, Tags:parseTags(lead.Tags).filter(t=>!/^(personal|staff)$/i.test(t)).join(', '), OptOut:'No'};
+  try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch); }
+  catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  Object.assign(lead,patch);
+  allLeads=_splitPersonal(allLeads.concat(_personalLeads));
+  renderPersonalContacts(); renderLeadsCurrentView(); renderHome();
+  showToast('✓ Back in your leads — the bot will reply to them again','ok');
+}
+function openPersonalContacts(){ renderPersonalContacts(); openModal('modalPersonal'); }
+function renderPersonalContacts(){
+  const el=$id('personalList'); if(!el) return;
+  const rows=_personalLeads.slice().sort((a,b)=>String(a.Name||'').localeCompare(String(b.Name||'')));
+  el.innerHTML=rows.length?rows.map(l=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1;min-width:0"><div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${personalKind(l)==='Staff'?'🧑‍💼':'👤'} ${esc(l.Name||'Unknown')}</div><div style="font-size:12px;color:var(--muted)">${esc(maskPhone(l.Phone))} · ${personalKind(l)}</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="unmarkLeadPersonal(${l.Id})">Make a lead again</button></div>`).join('')
+    :'<div style="color:var(--muted);padding:12px 0">No personal or staff contacts.</div>';
+}
+
 async function loadAll(silent=false, force=false){
   const gen=++_leadsLoadGen;
   const hadLeads=allLeads.length>0;
@@ -6380,7 +6392,7 @@ async function loadAll(silent=false, force=false){
     if(cached){
       const {ts,list}=JSON.parse(cached);
       if(list&&list.length){
-        allLeads=_carryConvHistory(list);
+        allLeads=_splitPersonal(_carryConvHistory(list));
         loadEcomOrderPhones();
         mtgLoadLeadStates();
         renderHome();
@@ -6405,7 +6417,7 @@ async function loadAll(silent=false, force=false){
       // already on screen (cache or an earlier load) the partial slice is skipped, so totals
       // never visibly drop to 100 and climb back.
       if(!allLeads.length){
-        allLeads=head;
+        allLeads=_splitPersonal(head);
         renderHome();
         _rerenderVisibleLeads();
         if(!silent) $id('hUpdated').textContent='Loading leads…';
@@ -6419,8 +6431,9 @@ async function loadAll(silent=false, force=false){
       const seen=new Set(head.map(l=>l.Id));
       list=head.concat((rest.list||[]).filter(l=>!seen.has(l.Id)));
     }
-    allLeads=_carryConvHistory(list);
-    _cacheLeads(allLeads);
+    // The cache keeps personal/staff contacts too, so the next cached paint still knows them.
+    allLeads=_splitPersonal(_carryConvHistory(list));
+    _cacheLeads(allLeads.concat(_personalLeads));
     loadEcomOrderPhones();
     mtgLoadLeadStates();
     renderHome();
@@ -10336,6 +10349,9 @@ function leadMoreMenuHTML(l, key=String(l.Id)){
       <div class="lmd-sep"></div>
       <button role="menuitem" onclick="${go(`markLeadWon(${l.Id},event)`)}">✅ Mark Won</button>
       <button role="menuitem" class="lead-spam-btn lmd-danger" onclick="${go(`markLeadSpam(${l.Id},event)`)}">🚫 Mark as spam</button>
+      <div class="lmd-sep"></div>
+      <button role="menuitem" onclick="${go(`markLeadPersonal(${l.Id},'Personal',event)`)}">👤 Personal chat — not a lead</button>
+      <button role="menuitem" onclick="${go(`markLeadPersonal(${l.Id},'Staff',event)`)}">🧑‍💼 Staff — not a lead</button>
     </div>`;
 }
 function toggleLeadMoreMenu(id, btn, force){
@@ -10344,16 +10360,24 @@ function toggleLeadMoreMenu(id, btn, force){
   const open=typeof force==='boolean'?force:!drop.classList.contains('open');
   document.querySelectorAll('.call-channel-drop.open').forEach(d=>d.classList.remove('open'));
   if(!open) return;
-  if(btn){
-    const r=btn.getBoundingClientRect();
-    drop.style.top=(r.bottom+4)+'px';
-    drop.style.left=Math.max(8,Math.min(r.right-170,window.innerWidth-178))+'px';
-  }
+  drop.style.maxHeight=''; drop.style.overflowY='';
   drop.classList.add('open');
-  const close=()=>drop.classList.remove('open');
+  if(btn){
+    // Below the button when it fits, else above it, else pinned to the screen and scrollable — a lead
+    // near the bottom of a phone screen used to push the lower items (Won, Spam…) off-screen.
+    const r=btn.getBoundingClientRect(), h=drop.offsetHeight, w=drop.offsetWidth||178, vh=window.innerHeight;
+    let top=r.bottom+4;
+    if(top+h>vh-8) top=r.top-h-4>=8?r.top-h-4:Math.max(8,vh-8-h);
+    if(h>vh-16){ top=8; drop.style.maxHeight=(vh-16)+'px'; drop.style.overflowY='auto'; }
+    drop.style.top=top+'px';
+    drop.style.left=Math.max(8,Math.min(r.right-w,window.innerWidth-w-8))+'px';
+  }
+  const close=()=>{ drop.classList.remove('open'); window.removeEventListener('scroll',onScroll,true); };
+  // Scrolling the page closes the menu; scrolling inside the menu itself doesn't.
+  const onScroll=e=>{ if(!drop.contains(e.target)) close(); };
   setTimeout(()=>{
     document.addEventListener('click',close,{once:true});
-    window.addEventListener('scroll',close,{once:true,capture:true});
+    window.addEventListener('scroll',onScroll,true);
   },0);
 }
 
@@ -14725,7 +14749,7 @@ async function aiInit(){
   try{ d=await aiApi('/ai-provider/config'); }
   catch(e){ msg.style.display='block'; msg.textContent='Could not load AI Models: '+e.message; return; }
   _aiConfig=d.config;
-  if(!d.server_ready){ msg.style.display='block'; msg.textContent='Connecting your own AI key isn\'t enabled on this server yet — your bot keeps using Leadvyne AI.'; }
+  if(!d.server_ready && !d.shared_ready){ msg.style.display='block'; msg.textContent='Connecting your own AI key isn\'t enabled on this server yet — your bot keeps using Leadvyne AI.'; }
   const sel=$id('aiProvider');
   sel.innerHTML=Object.entries(_aiConfig.providers).map(([id,p])=>`<option value="${esc(id)}">${esc(p.label)}</option>`).join('');
   sel.value=_aiConfig.connected?_aiConfig.provider:'anthropic';
@@ -14753,6 +14777,10 @@ function aiRenderStatus(){
 function aiOnProviderChange(keepModel){
   const id=$id('aiProvider').value, p=_aiConfig?.providers?.[id]||{};
   $id('aiBaseUrlRow').style.display=id==='custom'?'block':'none';
+  // Leadvyne-hosted options use the server's key and a fixed model list.
+  $id('aiApiKeyRow').style.display=p.shared?'none':'block';
+  $id('aiLoadModelsBtn').style.display=p.shared?'none':'';
+  $id('aiModel').readOnly=!!p.shared;
   $id('aiModelList').innerHTML=(p.models||[]).map(m=>`<option value="${esc(m)}">`).join('');
   if(keepModel!==true) $id('aiModel').value=p.default_model||'';
   $id('aiModel').placeholder=id==='openai'?'Click "Load models", or type e.g. a GPT model name':'Model name';
@@ -19470,7 +19498,7 @@ function rptPopulateMemberFilter(){
   sel.innerHTML='<option value="">All Members</option>'+members.map(m=>`<option value="${esc(m.email)}"${cur===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
 }
 function rptLeads(src){
-  let leads=src||allLeads;
+  let leads=(src||allLeads).filter(l=>!personalKind(l)); // older pages loaded for reports aren't split
   const f=_rptFilters;
   if(f.period!=='all'||f.from||f.to){
     const now=new Date(); let fromD=null, toD=null;

@@ -652,6 +652,25 @@ teammate again.
 **Tested:** `frontend/tests/leads-staff-scope.spec.js`; `worker.test.js` "engineResolveLeadOwner
 round-robin".
 
+### 38 — [frontend] Phones: light Home · Chats · More app; photos from a phone actually send
+**Area:** `m.html` (new), phone redirect + `?page=` + bottom-nav hook (`frontend/dashboard.html`);
+`shrinkImage`/`withType`/`uploadFile`/`sendFileMessage`, `#fileInput`, parent `close`/`filter`
+messages (`frontend/chats.html`)
+**Broke:** On a phone the Chats tab sometimes didn't work and photos sometimes didn't send. Chats
+ran inside the full dashboard (several MB of page + CDN libraries), and Android often killed that
+tab while the gallery/camera was open, so the picked photo was lost. Photos that did get through
+were 3–12 MB camera files: slow on mobile data, and over WhatsApp's 5 MB image limit. Some gallery
+apps hand over files with no type, so a photo went as a "document".
+**Fix:** A signed-in phone opening dashboard.html (no query params) is sent to `m.html`: Home
+(chat counts, recent chats, quick links), Chats (chats.html, full-screen while a chat is open, phone
+Back closes it) and More (every other page, opened as `dashboard.html?full=1&page=<page>`). Photos
+over 900 KB are resized to 1600 px JPEG before upload (falls back to the original if it can't be
+decoded); a missing file type is filled from the extension; an upload gives up after 2 min and
+shows Retry; the file input is off-screen instead of `display:none`.
+**Don't revert:** Putting phones back on the full dashboard brings back the lost-photo reloads;
+dropping the shrink brings back photos WhatsApp refuses.
+**Tested:** `frontend/tests/mobile-app.spec.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)

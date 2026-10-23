@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>Leadvyne</title>
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://leadvyne-api-proxy.leadvyne.workers.dev">
+<link rel="stylesheet" href="call-score.css?v=1">
+<script src="twa.js?v=1"></script>
+<!-- Leadvyne on a phone: Home · Chats · Leads · More, WhatsApp-style. dashboard.html sends phones here
+     (see the script at the top of its <head>). This page is tiny and loads no libraries; Chats is
+     chats.html in an iframe (same bridge as the dashboard's Chats tab, see chats.js), and every
+     other CRM page opens from More as dashboard.html?full=1&page=<page>. Home's 🏆 Weekly Arena and
+     Staff Performance table are the dashboard's own (call-score.js, staff-performance.js), run here
+     on a leads list loaded without chat transcripts — see "CRM data" in the script below. -->
+<style>
+/* Theme: white background, black text, dark green + dark blue accents. */
+:root{--green:#065F46;--green-2:#047857;--green-soft:#E7F4EE;--blue:#0B2545;--blue-2:#1E3A8A;--blue-soft:#ECF0F8;
+  --ink:#0B0B0C;--muted:#6B7280;--line:#ECEEF2;--surface:#F4F6F8;--bg:#fff;--red:#B42318;--red-soft:#FDECEA;
+  --nav:66px;--navgap:10px;--r:20px;
+  /* dashboard.html variables that call-score.css / staff-performance.js styles use */
+  --card:#fff;--accent:#065F46;--accent-ink:#0B2545;--accent-soft:#E7F4EE;--shadow:0 1px 2px rgba(11,37,69,.04),0 6px 20px rgba(11,37,69,.06);
+  --disp:inherit;--mono:ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+button:active{transform:scale(.98)}
+#app{position:relative;height:100dvh;max-width:760px;margin:0 auto;overflow:hidden;background:var(--bg)}
+.tab{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;flex-direction:column;visibility:hidden;background:var(--bg)}
+.tab.on{visibility:visible}
+.thread-open #nav{display:none}
+#tabChats{bottom:calc(var(--nav) + var(--navgap)*2 + env(safe-area-inset-bottom))}.thread-open #tabChats{bottom:0}
+.top{min-height:64px;display:flex;align-items:center;gap:8px;padding:calc(6px + env(safe-area-inset-top)) 12px 6px 20px;flex:none;background:var(--bg)}
+.top h1{margin:0;font-size:28px;font-weight:800;letter-spacing:-.02em;color:var(--ink);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,var(--blue),var(--green));color:#fff;display:grid;place-items:center;font-weight:800;font-size:17px;flex:none}
+.brand b{display:block;font-size:18px;font-weight:800;letter-spacing:-.01em}.brand small{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.biz{max-width:100%}
+.icon{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;color:var(--ink);flex:none;background:var(--surface)}.icon:active{background:var(--line)}
+.scroll{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding-bottom:calc(var(--nav) + var(--navgap)*2 + 20px + env(safe-area-inset-bottom))}
+/* Home hero */
+.hero{margin:6px 16px 0;border-radius:24px;padding:18px 18px 16px;color:#fff;background:radial-gradient(120% 120% at 100% 0%,rgba(4,120,87,.9) 0%,rgba(4,120,87,0) 60%),linear-gradient(135deg,var(--blue) 0%,#0E3B5C 55%,var(--green) 100%);box-shadow:0 10px 30px rgba(11,37,69,.18)}
+.hello{font-size:14px;opacity:.8}.hello b{display:block;font-size:22px;font-weight:800;letter-spacing:-.01em;opacity:1;margin-top:2px;color:#fff}
+.hero-row{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-top:16px}
+.hero-n{font-size:40px;font-weight:800;line-height:1;letter-spacing:-.02em}.hero-l{font-size:13px;opacity:.8;margin-top:4px}
+.hero-btn{background:#fff;color:var(--green);font-weight:700;font-size:14px;border-radius:14px;padding:11px 14px;display:flex;align-items:center;gap:6px;flex:none}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px 16px 4px}
+.tile{text-align:left;border-radius:18px;padding:12px;background:var(--bg);border:1px solid var(--line);box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px;min-width:0}
+.tile .ic{width:30px;height:30px;border-radius:10px;display:grid;place-items:center}
+.tile .n{font-size:22px;font-weight:800;line-height:1;letter-spacing:-.01em}.tile .l{font-size:12px;color:var(--muted);line-height:1.25}
+.tile.hot .ic{background:var(--red-soft);color:var(--red)}.tile.blue .ic{background:var(--blue-soft);color:var(--blue-2)}.tile.green .ic{background:var(--green-soft);color:var(--green)}
+.sec{display:flex;align-items:center;justify-content:space-between;padding:22px 20px 10px}.sec h3{margin:0;font-size:18px;font-weight:800;letter-spacing:-.01em;color:var(--ink)}.sec button{color:var(--blue-2);font-size:14px;font-weight:700}
+.card{margin:0 16px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+.row{display:flex;gap:12px;align-items:center;width:100%;text-align:left;padding:0 14px;min-height:70px}.row:active{background:var(--surface)}
+.av{width:46px;height:46px;border-radius:16px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center;font-weight:800;font-size:17px;flex:none}
+.row .info{flex:1;min-width:0;border-bottom:1px solid var(--line);padding:12px 0;align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.card .row:last-child .info{border-bottom:0}
+.row .r1,.row .r2{display:flex;align-items:center;gap:8px}.row .r1{margin-bottom:3px}
+.row .nm{flex:1;min-width:0;font-size:15.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tm{font-size:12px;color:var(--muted);white-space:nowrap}
+.row .pv{flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.unread .nm{font-weight:800}.row.unread .pv{color:var(--ink)}.row.unread .tm{color:var(--green);font-weight:700}
+.bdg{min-width:20px;height:20px;border-radius:10px;background:var(--green);color:#fff;font-size:11.5px;font-weight:700;display:grid;place-items:center;padding:0 6px}
+.empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px}
+.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:0 16px}
+.q{display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 2px;border-radius:18px;font-size:12px;font-weight:600;color:var(--ink);background:var(--bg);border:1px solid var(--line)}
+.q i{width:44px;height:44px;border-radius:14px;display:grid;place-items:center}.q:nth-child(odd) i{background:var(--green-soft);color:var(--green)}.q:nth-child(even) i{background:var(--blue-soft);color:var(--blue-2)}
+/* More */
+.group-t{padding:18px 22px 8px;font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.list .card{display:block}
+.item{display:flex;align-items:center;gap:14px;width:100%;text-align:left;padding:0 14px;min-height:60px;font-size:16px;font-weight:600}.item:active{background:var(--surface)}
+.item i{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;background:var(--green-soft);color:var(--green)}.item.b i{background:var(--blue-soft);color:var(--blue-2)}
+.item span{flex:1;border-bottom:1px solid var(--line);align-self:stretch;display:flex;align-items:center;justify-content:space-between}.item span::after{content:"›";color:#B6BCC6;font-size:22px;font-weight:400;padding-right:4px}
+.card .item:last-child span{border-bottom:0}
+.item.danger{color:var(--red)}.item.danger i{background:var(--red-soft);color:var(--red)}.item.danger span::after{content:""}
+#chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
+.loading{flex:1;display:grid;place-items:center;color:var(--muted);font-size:14px}
+/* Floating tab bar */
+#nav{position:absolute;left:12px;right:12px;bottom:calc(var(--navgap) + env(safe-area-inset-bottom));height:var(--nav);display:flex;padding:6px;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:24px;box-shadow:0 10px 30px rgba(11,37,69,.14);z-index:5}
+#nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:11.5px;font-weight:600;color:var(--muted);position:relative;border-radius:18px;transition:background .15s,color .15s}
+#nav .pill{display:grid;place-items:center}
+#nav button.on{color:var(--green);background:var(--green-soft);font-weight:800}
+#nav .dot{position:absolute;top:4px;left:calc(50% + 6px);min-width:18px;height:18px;border-radius:9px;background:var(--blue-2);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center;padding:0 5px;box-shadow:0 0 0 2px #fff}
+.toast{position:fixed;left:50%;bottom:calc(var(--nav) + 30px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--blue);color:#fff;padding:11px 16px;border-radius:14px;font-size:14px;z-index:20;max-width:90vw;box-shadow:0 8px 24px rgba(11,37,69,.25)}
+.hidden{display:none!important}
+.pad{padding:16px 16px 0}
+.section-title{font-weight:800;font-size:17px;margin-bottom:12px;letter-spacing:-.01em}
+.sp-card{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);padding:14px;box-shadow:var(--shadow)}
+.csa{border-radius:22px}.csa-hero{background:radial-gradient(120% 140% at 100% 0%,rgba(4,120,87,.85) 0%,rgba(4,120,87,0) 55%),linear-gradient(135deg,var(--blue) 0%,#0E3B5C 60%,var(--green) 100%)}
+/* Leads tab */
+.search{padding:4px 16px 10px;flex:none;position:relative}.search svg{position:absolute;left:30px;top:16px;color:var(--muted)}
+.search input{width:100%;height:46px;border:1px solid transparent;border-radius:16px;background:var(--surface);padding:0 16px 0 44px;font-size:15.5px;outline:0;color:var(--ink)}.search input:focus{border-color:var(--blue-2);background:#fff}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:0 16px 10px;flex:none;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;border-radius:14px;padding:8px 14px;font-size:13.5px;font-weight:600;color:var(--ink);background:var(--surface);white-space:nowrap}.chip.on{background:var(--blue);color:#fff}.chip .n{margin-left:6px;font-size:12px;opacity:.65}
+#leadList{padding-top:2px}
+.lead{display:flex;gap:12px;align-items:center;padding:0 12px 0 16px;min-height:76px}
+.lead .info{flex:1;min-width:0;border-bottom:1px solid var(--line);padding:12px 0;align-self:stretch;display:flex;flex-direction:column;justify-content:center;cursor:pointer}
+.lead .nm{font-weight:700}
+.lead .acts{display:flex;gap:8px;flex:none}
+.lead .acts button{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;background:var(--blue-soft);color:var(--blue-2)}
+.lead .acts .call{color:#fff;background:var(--green)}
+.tagl{font-size:11px;font-weight:700;border-radius:8px;padding:2px 8px;background:var(--surface);color:var(--muted);white-space:nowrap;flex:none}.tagl.st{text-transform:capitalize}.tagl.hot{background:var(--red-soft);color:var(--red)}.tagl.won{background:var(--green-soft);color:var(--green)}.tagl.new{background:var(--blue-soft);color:var(--blue-2)}.tagl.due{background:#FEF3C7;color:#92400E}
+.attn{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden;background:var(--bg)}
+.attn-h{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 10px}.attn-h b{font-size:17px;font-weight:800;letter-spacing:-.01em}.attn-h small{color:var(--muted);font-size:12.5px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 12px 6px}
+.seg button{display:flex;align-items:center;gap:10px;border-radius:16px;padding:10px 12px;background:var(--surface);font-weight:700;font-size:13.5px;text-align:left}
+.seg .n{font-size:22px;font-weight:800;letter-spacing:-.01em;min-width:22px}
+.seg button[data-k="new"].on{background:var(--blue);color:#fff}.seg button[data-k="unans"].on{background:var(--green);color:#fff}
+.attn .lead{padding-left:12px}.attn .lead:last-of-type .info{border-bottom:0}.attn .empty{padding:20px 16px}
+.sheet-bg{position:fixed;inset:0;background:rgba(11,37,69,.35);z-index:30}
+.sheet{position:fixed;left:0;right:0;bottom:0;max-width:760px;margin:0 auto;max-height:92dvh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;z-index:31;box-shadow:0 -10px 40px rgba(11,37,69,.2);padding:8px 0 calc(18px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.sheet .grab{width:42px;height:5px;border-radius:3px;background:#D5DAE1;margin:4px auto 10px}
+.ls-head{display:flex;align-items:center;gap:14px;padding:4px 20px 14px}
+.ls-head .av{width:56px;height:56px;border-radius:18px;font-size:22px}
+.ls-head h2{margin:0;font-size:21px;font-weight:800;letter-spacing:-.01em;line-height:1.2;word-break:break-word}
+.ls-head small{display:block;color:var(--muted);font-size:13.5px;margin-top:3px}
+.ls-x{margin-left:auto;align-self:flex-start}
+.ls-tags{display:flex;flex-wrap:wrap;gap:6px;padding:0 20px 14px}
+.ls-acts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 16px 8px}
+.ls-acts button{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 4px;border-radius:18px;font-weight:700;font-size:13px;background:var(--blue-soft);color:var(--blue-2)}
+.ls-acts button.call{background:var(--green);color:#fff}.ls-acts button.log{background:var(--surface);color:var(--ink)}
+.ls-sec{padding:16px 20px 6px;font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.kv{display:flex;justify-content:space-between;gap:16px;padding:11px 20px;border-bottom:1px solid var(--line);font-size:14.5px}.kv span{color:var(--muted)}.kv b{font-weight:600;text-align:right;word-break:break-word}
+.kv input{border:1px solid var(--line);border-radius:10px;padding:6px 8px;font:inherit;font-size:14px;color:var(--ink);background:var(--surface)}
+.calls .c{display:flex;gap:12px;padding:10px 20px;border-bottom:1px solid var(--line)}.calls .c i{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;font-style:normal;flex:none;background:var(--surface)}
+.calls .c div{flex:1;min-width:0;font-size:14px}.calls .c small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+.ls-full{display:block;margin:16px auto 0;color:var(--muted);font-size:13px;text-decoration:underline}
+.oc{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:4px 16px 8px}
+.oc button{padding:14px 10px;border-radius:16px;background:var(--surface);font-weight:700;font-size:14.5px;border:2px solid transparent}
+.oc button.on{border-color:var(--green);background:var(--green-soft);color:var(--green)}
+.cs-notes{display:block;width:calc(100% - 32px);margin:8px 16px;border:1px solid var(--line);border-radius:14px;padding:10px 12px;font:inherit;font-size:15px;min-height:70px;resize:vertical;background:var(--surface)}
+.cs-save{display:block;width:calc(100% - 32px);margin:8px 16px 0;padding:14px;border-radius:16px;background:var(--green);color:#fff;font-weight:800;font-size:16px}.cs-save:disabled{opacity:.5}
+.more-btn{display:block;margin:14px auto;color:var(--blue-2);font-weight:700;padding:10px 18px;border-radius:14px;background:var(--blue-soft)}
+svg{display:block}
+</style>
+</head>
+<body>
+<div id="app">
+  <section class="tab" id="tabHome">
+    <div class="top"><div class="brand"><span class="logo">L</span><div style="min-width:0"><b>Leadvyne</b><small class="biz" id="biz"></small></div></div><button class="icon" title="Refresh" onclick="loadHome(true);loadLeads(true)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button></div>
+    <div class="scroll" id="homeScroll">
+      <div class="hero">
+        <div class="hello" id="hello"></div>
+        <div class="hero-row"><div><div class="hero-n" id="cUnread">–</div><div class="hero-l">Unread chats</div></div><button class="hero-btn" onclick="openChats({filter:'unread'})">Open chats <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></div>
+      </div>
+      <div class="tiles">
+        <button class="tile hot" onclick="openChats({filter:'needs'})"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg></span><span class="n" id="cNeeds">–</span><span class="l">Need you</span></button>
+        <button class="tile blue" onclick="openChats({filter:'mine'})"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span class="n" id="cMine">–</span><span class="l">Assigned to me</span></button>
+        <button class="tile green" onclick="openChats({filter:'unassigned'})"><span class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5 5h14l2 8v6H3v-6z"/></svg></span><span class="n" id="cUnassigned">–</span><span class="l">Unassigned</span></button>
+      </div>
+      <div class="attn hidden" id="attn">
+        <div class="attn-h"><b>⚡ Prime attention</b><small>Call these first</small></div>
+        <div class="seg"><button data-k="new" onclick="setAttnTab('new')"><span class="n" id="attnNew">0</span>Not called</button><button data-k="unans" onclick="setAttnTab('unans')"><span class="n" id="attnUnans">0</span>Unanswered</button></div>
+        <div id="attnList"></div>
+      </div>
+      <div class="pad"><div id="homeArena" style="display:none"></div></div>
+      <div class="sec"><h3>Recent chats</h3><button onclick="openChats({filter:'all'})">See all</button></div>
+      <div class="card" id="recent"><div class="empty">Loading…</div></div>
+      <div class="sp-card hidden" id="spCard"><div id="homeStaffPerf"></div></div>
+      <div class="sec"><h3>Quick open</h3></div>
+      <div class="quick">
+        <button class="q" onclick="openCrm('humandeals')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/></svg></i>Deals</button>
+        <button class="q" onclick="openCrm('followups')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg></i>Follow-ups</button>
+        <button class="q" onclick="openCrm('broadcast')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1z"/><path d="M17 8a5 5 0 0 1 0 8"/></svg></i>Campaigns</button>
+        <button class="q" onclick="openCrm('reports')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></i>Reports</button>
+      </div>
+    </div>
+  </section>
+  <section class="tab" id="tabChats"><div class="loading" id="chatsLoading">Opening Chats…</div></section>
+  <section class="tab" id="tabLeads">
+    <div class="top"><h1>Leads</h1><button class="icon" title="Refresh" onclick="loadLeads(true)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button><button class="icon" title="Add or manage in the full CRM" onclick="openCrm('leads')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
+    <div class="search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="leadSearch" type="search" placeholder="Search name, phone or LD-number" autocomplete="off" oninput="leadShown=LEAD_PAGE;renderLeads()"></div>
+    <div class="chips" id="leadChips"></div>
+    <div class="scroll" id="leadList"><div class="empty">Loading leads…</div></div>
+  </section>
+  <section class="tab" id="tabMore">
+    <div class="top"><h1>More</h1></div>
+    <div class="scroll list">
+      <div class="group-t">Work</div>
+      <div class="card">
+        <button class="item" onclick="openCrm('leads')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></svg></i><span>Leads (full view, pipeline)</span></button>
+        <button class="item b" onclick="openCrm('humandeals')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/></svg></i><span>Deals</span></button>
+        <button class="item" onclick="openCrm('followups')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg></i><span>Follow-ups</span></button>
+        <button class="item b" onclick="openCrm('broadcast')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1z"/><path d="M17 8a5 5 0 0 1 0 8"/></svg></i><span>Campaigns</span></button>
+        <button class="item" onclick="openCrm('reports')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></i><span>Reports</span></button>
+        <button class="item b" onclick="openCrm('team')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18M6 16V9M12 16V5M18 16v-4"/></svg></i><span>Team</span></button>
+        <button class="item" onclick="openCrm('knowledgebase')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5V21h16"/></svg></i><span>Knowledge Base</span></button>
+      </div>
+      <div class="group-t">Account</div>
+      <div class="card">
+        <button class="item b" onclick="openCrm('billing')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></i><span>Billing</span></button>
+        <button class="item" onclick="openCrm('settings')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></i><span>Settings</span></button>
+        <button class="item b" onclick="openCrm('')"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></i><span>Full dashboard (all features)</span></button>
+      </div>
+      <div class="group-t"></div>
+      <div class="card">
+        <button class="item danger" onclick="location.href='dashboard.html?logout=1'"><i><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></i><span>Sign out</span></button>
+      </div>
+    </div>
+  </section>
+  <nav id="nav">
+    <button data-tab="home" onclick="go('home')"><span class="pill"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg></span>Home</button>
+    <button data-tab="chats" onclick="go('chats')"><span class="pill"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></span>Chats<span class="dot hidden" id="chatDot"></span></button>
+    <button data-tab="leads" onclick="go('leads')"><span class="pill"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></svg></span>Leads</button>
+    <button data-tab="more" onclick="go('more')"><span class="pill"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>More</button>
+  </nav>
+</div>
+<div class="sheet-bg hidden" id="sheetBg" onclick="closeSheets()"></div>
+<!-- Lead card: opens over any tab; Back closes it. -->
+<section class="sheet hidden" id="leadSheet" aria-label="Lead"></section>
+<!-- After a call: how did it go? Saved to the lead's CallLog like the dashboard's Log Call. -->
+<section class="sheet hidden" id="callSheet" aria-label="Log call"></section>
+<div id="toast" class="toast hidden"></div>
+<script>
+'use strict';
+const WORKER='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+let clientId='',sessionToken='';
+try{clientId=localStorage.getItem('lv_cid')||'';sessionToken=localStorage.getItem('lv_session')||''}catch{}
+// Not signed in (or the session is gone): the full dashboard owns sign-in.
+if(!clientId||!sessionToken)location.replace('dashboard.html?full=1');
+const homeKey=`lv_m_home_${clientId}`;
+async function apiSend(path,method,body){const r=await fetch(WORKER+path,{method,headers:{Authorization:'Bearer '+sessionToken,'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.status===401){location.replace('dashboard.html?full=1');throw new Error('signed out')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
+async function api(path){const r=await fetch(WORKER+path,{headers:{Authorization:'Bearer '+sessionToken}});if(r.status===401){location.replace('dashboard.html?full=1');throw new Error('signed out')}const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
+function toast(t){const el=$('toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>el.classList.add('hidden'),2600)}
+function openCrm(page){location.href='dashboard.html?full=1'+(page?'&page='+encodeURIComponent(page):'')}
+
+// ── Tabs. Phone Back: chat → chat list → Home → leave, like WhatsApp. ─────────────────────────
+let cur='',threadOpen=false,skipPop=false;
+function render(tab){
+ cur=tab;
+ document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id==='tab'+tab[0].toUpperCase()+tab.slice(1)));
+ document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+ if(tab==='chats')ensureChats();
+ if(tab==='home')loadHome();
+ if(tab==='leads'){renderLeads();if(Date.now()-leadsAt>120000)loadLeads()}
+}
+function go(tab){
+ if(tab===cur){if(tab==='chats'&&threadOpen)post({close:true});return}
+ if(cur==='home'&&tab!=='home')history.pushState({lvTab:tab},'','#'+tab);
+ else if(tab==='home'&&history.state?.lvTab){skipPop=true;history.back()}
+ else history.replaceState({lvTab:tab},'','#'+tab);
+ render(tab);
+}
+addEventListener('popstate',()=>{
+ if(skipPop){skipPop=false;return}
+ if(sheetOpen()){closeSheets(true);return}
+ if(threadOpen){post({close:true});return}
+ render(history.state?.lvTab||'home');
+});
+
+// ── Chats: chats.html embedded, same postMessage bridge as dashboard.html (chats.js) ──────────
+let chatsReady=false,pending=null;
+const frame=()=>$('chatsFrame');
+const origin=()=>location.protocol==='file:'?'*':location.origin;
+function ensureChats(){
+ if(frame())return;
+ const f=document.createElement('iframe');f.id='chatsFrame';f.title='Chats';f.allow='microphone; clipboard-write; autoplay';
+ f.src='chats.html?'+new URLSearchParams({client:clientId,token:sessionToken,embed:'1',skin:'m'}); // skin=m: this app's colours
+ f.onload=()=>$('chatsLoading')?.remove();
+ $('tabChats').appendChild(f);
+}
+function post(msg){pending={...pending,...msg};flush()}
+function flush(){const f=frame();if(!chatsReady||!pending||!f?.contentWindow)return;try{f.contentWindow.postMessage({source:'lv-dashboard',...pending},origin());pending=null}catch{}}
+function openChats(msg){if(msg)post(msg);go('chats')}
+addEventListener('message',e=>{
+ const f=frame();if(!f||e.source!==f.contentWindow||e.data?.source!=='lv-chats')return;
+ const d=e.data;
+ if(d.type==='ready'){chatsReady=true;flush()}
+ else if(d.type==='thread'){
+  const open=!!d.leadId;
+  if(open&&!threadOpen&&!history.state?.lvThread)history.pushState({lvTab:'chats',lvThread:1},'','#chats');
+  if(!open&&threadOpen&&history.state?.lvThread){skipPop=true;history.back()}
+  threadOpen=open;document.body.classList.toggle('thread-open',open);
+ }
+ else if(d.type==='read')loadCounts();
+ else if(d.type==='home')go('home');
+ else if(d.type==='openLead'||d.type==='meeting'){if(d.leadId)location.href='dashboard.html?full=1&lead='+encodeURIComponent(d.leadId)}
+});
+
+// ── CRM data: the leads list + the globals call-score.js / staff-performance.js expect ──────
+// Those two files are the dashboard's own Weekly Arena and Staff Performance code; they read
+// dashboard.html globals, so the few they use are defined here with the same behaviour (copied
+// from dashboard.html — keep in step: isWonLead, getTeamMembers, seesAllLeads, parseCallLog…).
+// Leads come from the same NocoDB table the dashboard reads, without ConvHistory (each lead's chat
+// transcript, by far the heaviest column), so the phone downloads a fraction of what it used to.
+const CONFIG={WORKER_BASE:WORKER,NOCODB_BASE:WORKER+'/nocodb',LEADS_TABLE_ID:'mvg6rcw0ia5qqrx'};
+let allLeads=[],clientRecord={},myEmail='';
+try{myEmail=(localStorage.getItem('lv_me_email')||'').toLowerCase()}catch{}
+const $id=id=>document.getElementById(id);
+const ncAuthHeaders=extra=>({Authorization:'Bearer '+sessionToken,...extra});
+const TERMINAL=new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
+const LEADS_FULL_ACCESS_ROLES=['admin','general_manager'];
+function sameEmail(a,b){const x=String(a||'').trim().toLowerCase();return !!x&&x===String(b||'').trim().toLowerCase()}
+function isAccountOwner(email){const e=String((email===undefined?myEmail:email)||'').trim().toLowerCase();return !!e&&e===String(clientRecord?.authentik_email||'').trim().toLowerCase()}
+function getTeamPermissions(){try{return JSON.parse(clientRecord.team_permissions||'{}')}catch{return{}}}
+function getLeadRouting(){try{return JSON.parse(clientRecord.lead_routing||'{}')}catch{return{}}}
+function myRole(){if(!clientRecord||!myEmail||isAccountOwner())return null;return getTeamPermissions()[myEmail]?.role||null}
+function seesAllLeads(){return isAccountOwner()||LEADS_FULL_ACCESS_ROLES.includes(myRole())}
+function leadVisibilityFilter(){if(seesAllLeads())return()=>true;const routed=!!getLeadRouting().enabled;return l=>l?.Owner?sameEmail(l.Owner,myEmail):!routed}
+function getTeamMembers(){
+ const owner=(clientRecord?.authentik_email||'').trim();
+ const teamEmails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
+ let names={};try{names=JSON.parse(clientRecord?.team_names||'{}')}catch{}
+ return [...new Set([owner,...teamEmails].filter(Boolean))].map(email=>({email,name:email.toLowerCase()===owner.toLowerCase()?(clientRecord?.client_name||email):(names[email]||email)}));
+}
+function getTasksState(){try{const p=JSON.parse(clientRecord?.manual_tasks||'{}');return{items:Array.isArray(p.items)?p.items:[],dismissed:Array.isArray(p.dismissed)?p.dismissed:[],projects:Array.isArray(p.projects)?p.projects:[]}}catch{return{items:[],dismissed:[],projects:[]}}}
+function parseCallLog(raw){
+ if(Array.isArray(raw))return raw;const s=String(raw||'').trim();if(!s)return[];
+ try{const a=JSON.parse(s);return Array.isArray(a)?a:[]}catch{}
+ const out=[];for(const part of s.split(/\]\s*\[/)){try{const a=JSON.parse((part.startsWith('[')?'':'[')+part+(part.endsWith(']')?'':']'));if(Array.isArray(a))out.push(...a)}catch{}}
+ return out.sort((a,b)=>(Date.parse(b.at||b.date||'')||0)-(Date.parse(a.at||a.date||'')||0));
+}
+let _ecomOrderPhones=null;
+const _ecomPhoneKey=p=>String(p||'').replace(/\D/g,'').slice(-10);
+function leadHasEcomOrder(l){if(!_ecomOrderPhones)return false;const k=_ecomPhoneKey(l.Phone);return k.length>=7&&_ecomOrderPhones.has(k)}
+function isWonLead(l){return l.Stage==='won'||l.Stage==='converted'||(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')||leadHasEcomOrder(l)}
+function isLostLead(l){return l.Stage==='lost'}
+function personalKind(l){const t=String(l?.Tags||'').split(',').map(x=>x.trim().toLowerCase());return t.includes('staff')?'Staff':t.includes('personal')?'Personal':''}
+function timeAgo(iso){const m=Math.floor((Date.now()-new Date(iso).getTime())/60000);if(!(m>=1))return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';return Math.floor(h/24)+'d ago'}
+function showToast(t){toast(t)}
+// The Arena's "Report →" / "Set a weekly team goal →" links call these.
+function navigate(page){openCrm(page)}
+function renderReportsSubPage(){}
+
+let leadsAt=0,leadsLoading=null,crmScripts=null,meLoaded=false;
+function loadScript(src){return new Promise((ok,no)=>{const t=document.createElement('script');t.src=src;t.onload=ok;t.onerror=no;document.head.appendChild(t)})}
+// Same ?v= as dashboard.html's <script> tags — sw.js serves scripts cache-first by URL.
+function ensureCrmScripts(){return crmScripts||(crmScripts=Promise.all([loadScript('call-score.js?v=8'),loadScript('staff-performance.js?v=1')])
+ // staff-performance.js brings its own renderStaffPerformanceAll (dashboard containers); use ours.
+ .then(()=>{window.renderStaffPerformanceAll=renderTeam}).catch(e=>{crmScripts=null;throw e}))}
+async function fetchLeadRows(){
+ const url=extra=>`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})&sort=-Date&${extra}`;
+ // Columns the dashboard has seen on this browser (dashboard.html _slimLeadFields); otherwise learn
+ // them from one full row. NocoDB's fields param is a whitelist.
+ let cols=[];try{cols=JSON.parse(localStorage.getItem('lv_lead_cols')||'[]')}catch{}
+ if(!Array.isArray(cols)||!cols.length){const one=await api(url('limit=1').slice(WORKER.length));cols=Object.keys(one.list?.[0]||{})}
+ cols=cols.filter(c=>c!=='ConvHistory');
+ const fields=cols.length?'&fields='+encodeURIComponent(cols.join(',')):'';
+ try{return (await api(url('limit=2000'+fields).slice(WORKER.length))).list||[]}
+ catch(e){if(!fields)throw e;return (await api(url('limit=2000').slice(WORKER.length))).list||[]}
+}
+async function loadEcomOrderPhones(){
+ if(!(clientRecord.industry==='ecommerce'||clientRecord.ecom_enabled==='Yes')){_ecomOrderPhones=null;return}
+ try{const d=await api('/ecom/order-phones');_ecomOrderPhones=new Set(Object.keys(d.phones||{}).map(_ecomPhoneKey).filter(k=>k.length>=7))}catch{}
+}
+async function mtgLoadArenaEvents(){
+ try{const d=await api('/meetings/points?days=40');window._mtgPoints=d.weights||null;
+  window._mtgArenaEvents=(d.events||[]).map(e=>({by:String(e.by||'').toLowerCase(),ms:e.ms,kind:e.kind,pts:e.pts,leadId:e.lead_id}));window._mtgArenaSig=JSON.stringify(d.events||[])}catch{}
+}
+function loadLeads(force){
+ if(leadsLoading)return leadsLoading;
+ if(!meLoaded)return Promise.resolve(); // runs again once /session/me is back (boot)
+ leadsLoading=(async()=>{
+  try{
+   const [rows]=await Promise.all([fetchLeadRows(),loadEcomOrderPhones(),mtgLoadArenaEvents(),ensureCrmScripts().catch(()=>{})]);
+   // Personal chats and staff (dashboard.html markLeadPersonal) aren't leads: kept out of every list
+   // and count here, like the dashboard does.
+   allLeads=rows.filter(l=>!personalKind(l));leadsAt=Date.now();
+   try{localStorage.setItem(leadsKey,JSON.stringify(rows.filter(leadVisibilityFilter()).slice(0,LEAD_PAGE).map(slimForCache)))}catch{}
+   renderTeam();renderAttention();renderLeads();checkCallReturn();if(force)toast('Leads updated');
+  }catch(e){if(force||cur==='leads')toast('Could not load leads — check your connection')}
+  finally{leadsLoading=null}
+ })();
+ return leadsLoading;
+}
+// 🏆 Weekly Arena (whole team's leads, like the dashboard) + Staff Performance (a teammate without
+// full access sees only their own leads — dashboard.html withHomeScope).
+function renderTeam(){
+ if(typeof csRenderHomeArena==='function'){try{csRenderHomeArena()}catch(e){}}
+ if(typeof renderStaffPerformance==='function'){
+  const all=allLeads;
+  try{if(myEmail&&!seesAllLeads())allLeads=all.filter(l=>sameEmail(l.Owner,myEmail));renderStaffPerformance($id('homeStaffPerf'));$id('spCard').classList.remove('hidden')}catch(e){}
+  finally{allLeads=all}
+ }
+ try{localStorage.setItem(teamKey,JSON.stringify({arena:$id('homeArena').style.display==='none'?'':$id('homeArena').innerHTML,sp:$id('spCard').classList.contains('hidden')?'':$id('homeStaffPerf').innerHTML}))}catch{}
+}
+
+// ── Leads tab: the leads this person may see (same rule as the dashboard's Leads page) ─────────
+const LEAD_PAGE=60;let leadShown=LEAD_PAGE,leadFilter='all';
+const leadsKey=`lv_m_leads_${clientId}`,teamKey=`lv_m_team_${clientId}`,attnKey=`lv_m_attn_${clientId}`;
+const slimForCache=l=>({Id:l.Id,Name:l.Name,Phone:l.Phone,Stage:l.Stage,Score:l.Score,Date:l.Date,Owner:l.Owner,ReminderDate:l.ReminderDate,ConversationID:l.ConversationID,Channel:l.Channel,Tags:l.Tags,OptOut:l.OptOut,_called:parseCallLog(l.CallLog).length,_last:lastCall(l)});
+const leadCalls=l=>l._called??parseCallLog(l.CallLog).length;
+// CallLog is newest-first (dashboard.html appendCallLog unshifts).
+function lastCall(l){if(l._last!==undefined)return l._last;const c=parseCallLog(l.CallLog)[0];return c?{outcome:c.outcome||'',at:c.at||c.date||''}:null}
+// Unanswered = same rule as Staff Performance's "Not responding": open, and the latest call was
+// No Answer / Voicemail, or the lead is tagged "No Answer".
+const NO_ANSWER=new Set(['No Answer','Voicemail']);
+const isOpenLead=l=>!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes'&&l.HandoverOutcome!=='Spam';
+const isUnanswered=l=>isOpenLead(l)&&(NO_ANSWER.has(lastCall(l)?.outcome)||String(l.Tags||'').split(',').some(t=>t.trim().toLowerCase()==='no answer'));
+const isNotCalled=l=>isOpenLead(l)&&!leadCalls(l);
+const followDue=l=>!!l.ReminderDate&&String(l.ReminderDate).slice(0,10)<=new Date().toISOString().slice(0,10)&&isOpenLead(l);
+const LEAD_FILTERS=[['all','All'],['mine','Mine'],['new','🆕 Not called'],['unans','📵 Unanswered'],['hot','🔥 Hot'],['due','⏰ Follow-up due'],['won','✅ Won']];
+function leadMatch(f){return l=>f==='mine'?sameEmail(l.Owner,myEmail):f==='new'?isNotCalled(l):f==='unans'?isUnanswered(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
+function setLeadFilter(f){leadFilter=f;leadShown=LEAD_PAGE;$id('leadList').scrollTop=0;renderLeads()}
+function leadRefId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0}
+const leadTag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':isUnanswered(l)?'<span class="tagl hot">📵 No answer</span>':l.Stage?`<span class="tagl st">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';
+// One lead row (Leads tab and Home's Prime attention). when: the right-hand time, default arrival.
+function leadRowHtml(l,when){const name=l.Name||l.Phone||'Unknown';return `<div class="lead" data-id="${esc(l.Id)}"><span class="av" style="${avStyle(name)}">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div class="info" data-act="open"><span class="r1" style="display:flex;gap:8px;align-items:center;margin-bottom:3px"><span class="nm" style="flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l.Score==='Hot'?'🔥 ':''}${esc(name)}</span><span class="tm" style="font-size:12px;color:var(--muted);white-space:nowrap">${esc(when!==undefined?when:(l.Date?timeAgo(l.Date):''))}</span></span><span style="display:flex;gap:6px;align-items:center;min-width:0"><span style="flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.Phone||'')}${leadCalls(l)?` · 📞 ${leadCalls(l)}`:''}</span>${leadTag(l)}</span></div><div class="acts">${l.ConversationID?'<button data-act="chat" title="Open chat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg></button>':''}${l.Phone?'<button class="call" data-act="call" title="Call (logs the call in the CRM)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg></button>':''}</div></div>`}
+function renderLeads(){
+ const el=$id('leadList');if(!el)return;
+ let base=allLeads.length?allLeads.filter(leadVisibilityFilter()):(()=>{try{return JSON.parse(localStorage.getItem(leadsKey)||'[]')}catch{return[]}})();
+ const counts=Object.fromEntries(LEAD_FILTERS.map(([k])=>[k,base.filter(leadMatch(k)).length]));
+ $id('leadChips').innerHTML=LEAD_FILTERS.filter(([k])=>k!=='mine'||myEmail).map(([k,t])=>`<button class="chip${leadFilter===k?' on':''}" onclick="setLeadFilter('${k}')">${t}${k!=='all'&&counts[k]?`<span class="n">${counts[k]}</span>`:''}</button>`).join('');
+ const q=($id('leadSearch')?.value||'').trim().toLowerCase(),qd=q.replace(/\D/g,''),qid=leadRefId(q);
+ let list=base.filter(leadMatch(leadFilter));
+ if(q)list=list.filter(l=>String(l.Name||'').toLowerCase().includes(q)||(qd.length>=3&&String(l.Phone||'').replace(/\D/g,'').includes(qd))||(qid&&Number(l.Id)===qid));
+ if(!list.length){el.innerHTML=`<div class="empty">${allLeads.length||base.length?'No leads match.':'Loading leads…'}</div>`;return}
+ el.innerHTML=list.slice(0,leadShown).map(l=>leadRowHtml(l)).join('')
+  +(list.length>leadShown?`<button class="more-btn" onclick="leadShown+=LEAD_PAGE;renderLeads()">Show more (${list.length-leadShown})</button>`:'');
+}
+function leadAct(e){
+ const row=e.target.closest('.lead'),act=e.target.closest('[data-act]')?.dataset.act;if(!row||!act)return;
+ const l=findLead(row.dataset.id);if(!l)return;
+ if(act==='open')openLeadSheet(l);
+ else if(act==='call')startCall(l);
+ else if(act==='chat')chatLead(l);
+}
+$id('leadList').addEventListener('click',leadAct);
+$id('attn').addEventListener('click',leadAct); // on the card: a cached paint replaces #attnList
+
+// ── Lead card, calls and chat — all inside this app ────────────────────────────────────────
+// Calls are recorded exactly like the dashboard's Log Call (appendCallLog): the newest entry goes
+// first in the lead's CallLog, with who called, when, the outcome and how long since the dial —
+// the Weekly Arena, Staff Performance and Prime attention all count from that log.
+function findLead(id){
+ id=String(id);let l=allLeads.find(x=>String(x.Id)===id);
+ if(!l){try{l=JSON.parse(localStorage.getItem(leadsKey)||'[]').find(x=>String(x.Id)===id)}catch{}}
+ return l||null;
+}
+const leadsUrl=()=>`/nocodb/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`;
+const telOf=l=>{const d=String(l.Phone||'').replace(/[^0-9]/g,'');return d?'+'+d:''};
+function sheetOpen(){return !$id('leadSheet').classList.contains('hidden')||!$id('callSheet').classList.contains('hidden')}
+function showSheet(id){
+ if(!sheetOpen())history.pushState({...(history.state||{}),lvSheet:1},'');
+ ['leadSheet','callSheet'].forEach(x=>$id(x).classList.toggle('hidden',x!==id));$id('sheetBg').classList.remove('hidden');
+}
+// fromPop: Back already removed the history entry.
+function closeSheets(fromPop){
+ if(!sheetOpen())return;
+ ['leadSheet','callSheet'].forEach(x=>$id(x).classList.add('hidden'));$id('sheetBg').classList.add('hidden');
+ if(!fromPop&&history.state?.lvSheet){skipPop=true;history.back()}
+}
+function chatLead(l){
+ closeSheets();
+ if(l.ConversationID)openChats({leadId:String(l.Id),channel:String(l.Channel||'').toLowerCase()==='instagram'?'instagram':'whatsapp'});
+ else{const d=String(l.Phone||'').replace(/[^0-9]/g,'');if(d)window.open('https://wa.me/'+d,'_blank');else toast('No phone number on this lead')}
+}
+const OUTCOME_ICON={'Answered':'✅','No Answer':'📵','Voicemail':'📬','Callback Requested':'🔁','Moved to WhatsApp':'💬'};
+const DETAIL_FIELDS=[['Stage','Stage'],['Score','Score'],['Owner','Owner'],['Source','Source'],['LeadSource','Source'],['Campaign','Campaign'],['Email','Email'],['City','City'],['Location','Location'],['Product','Product'],['Interest','Interest'],['Budget','Budget'],['DealValue','Deal value'],['Notes','Notes']];
+function fmtWhen(v){const d=new Date(v||0);return v&&!isNaN(d)?d.toLocaleString([],{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):''}
+function openLeadSheet(l){
+ const name=l.Name||l.Phone||'Unknown',calls=parseCallLog(l.CallLog),ref=Number(l.Id)>0?'LD-'+String(l.Id).padStart(5,'0'):'';
+ const owner=l.Owner?(getTeamMembers().find(m=>sameEmail(m.email,l.Owner))?.name||l.Owner):'Unassigned';
+ const seen=new Set(),rows=DETAIL_FIELDS.filter(([k,label])=>{const v=l[k];if(v===undefined||v===null||String(v).trim()===''||seen.has(label))return false;seen.add(label);return true})
+  .map(([k,label])=>`<div class="kv"><span>${esc(label)}</span><b>${esc(k==='Owner'?owner:k==='Stage'?String(l[k]).replace(/_/g,' '):String(l[k]))}</b></div>`).join('');
+ const rem=l.ReminderDate?String(l.ReminderDate).slice(0,16):'';
+ $id('leadSheet').innerHTML=`<div class="grab"></div>
+  <div class="ls-head"><span class="av" style="${avStyle(name)}">${esc((String(name).trim()[0]||'?').toUpperCase())}</span><div style="min-width:0"><h2>${l.Score==='Hot'?'🔥 ':''}${esc(name)}</h2><small>${esc(l.Phone||'')}${ref?' · '+ref:''}</small></div><button class="icon ls-x" title="Close" onclick="closeSheets()">✕</button></div>
+  <div class="ls-tags">${leadTag(l)}${l.Date?`<span class="tagl">Arrived ${esc(timeAgo(l.Date))}</span>`:''}${calls.length?`<span class="tagl">📞 ${calls.length} call${calls.length>1?'s':''}</span>`:''}${!l.Owner?'<span class="tagl new">Unassigned</span>':''}</div>
+  <div class="ls-acts">
+   <button class="call" onclick="startCall(findLead('${esc(l.Id)}'))" ${telOf(l)?'':'disabled'}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg>Call</button>
+   <button onclick="chatLead(findLead('${esc(l.Id)}'))"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg>${l.ConversationID?'Chat':'WhatsApp'}</button>
+   <button class="log" onclick="openCallSheet('${esc(l.Id)}',0)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Log call</button>
+  </div>
+  <div class="ls-sec">Details</div>${rows||'<div class="kv"><span>No details yet</span><b></b></div>'}
+  <div class="kv"><span>Follow-up</span><input type="datetime-local" value="${esc(rem)}" onchange="setReminder('${esc(l.Id)}',this.value)"></div>
+  <div class="ls-sec">Calls</div><div class="calls">${calls.length?calls.slice(0,20).map(c=>`<div class="c"><i>${OUTCOME_ICON[c.outcome]||'📞'}</i><div><b>${esc(c.outcome||'Call')}</b>${c.duration?` · ${esc(c.duration)} min`:''}<small>${esc(fmtWhen(c.at||c.date))}${c.by?' · '+esc(getTeamMembers().find(m=>sameEmail(m.email,c.by))?.name||c.by):''}</small>${c.notes?`<small>${esc(c.notes)}</small>`:''}</div></div>`).join(''):'<div class="kv"><span>No calls yet</span><b></b></div>'}</div>
+  <div class="ls-sec">Not a sales lead?</div>
+  <div class="ls-acts" style="grid-template-columns:1fr 1fr"><button class="log" onclick="markPersonal('${esc(l.Id)}','Personal')">👤 Personal chat</button><button class="log" onclick="markPersonal('${esc(l.Id)}','Staff')">🧑‍💼 Staff</button></div>
+  <button class="ls-full" onclick="location.href='dashboard.html?full=1&lead=${encodeURIComponent(l.Id)}'">Open in the full CRM (edit, stage, meetings…)</button>`;
+ showSheet('leadSheet');$id('leadSheet').scrollTop=0;
+}
+// Same as the dashboard's ⋯ → "Personal chat / Staff — not a lead": a Personal/Staff tag plus
+// OptOut=Yes (the bot stops replying), and the contact leaves every lead list and count.
+async function markPersonal(id,kind){
+ const l=findLead(id);if(!l||!confirm(`Mark ${l.Name||'this contact'} as ${kind.toLowerCase()}? They won't count as a lead and the bot won't reply to them. Undo from Leads → Personal & staff in the full CRM.`))return;
+ const tags=String(l.Tags||'').split(',').map(t=>t.trim()).filter(t=>t&&!/^(personal|staff)$/i.test(t)).concat(kind).join(', ');
+ try{await apiSend(leadsUrl(),'PATCH',{Id:l.Id,Tags:tags,OptOut:'Yes'})}catch(e){toast('Not saved: '+e.message);return}
+ l.Tags=tags;l.OptOut='Yes';allLeads=allLeads.filter(x=>x!==l);
+ try{localStorage.setItem(leadsKey,JSON.stringify(JSON.parse(localStorage.getItem(leadsKey)||'[]').filter(x=>String(x.Id)!==String(id))))}catch{}
+ closeSheets();toast(`${kind==='Staff'?'🧑‍💼':'👤'} Marked as ${kind.toLowerCase()} — not a lead`);renderTeam();renderAttention();renderLeads();
+}
+async function setReminder(id,v){
+ const l=findLead(id);if(!l)return;
+ try{await apiSend(leadsUrl(),'PATCH',{Id:l.Id,ReminderDate:v||null});l.ReminderDate=v||null;toast(v?'⏰ Follow-up set':'Follow-up cleared');renderAttention();renderLeads()}catch(e){toast('Not saved: '+e.message)}
+}
+// First action on an unassigned lead makes it yours — same as the dashboard's claimLeadIfUnowned
+// (re-reads Owner first so two people can't both claim it; leaves the same note in the chat history).
+async function claimIfUnowned(l,activity){
+ if(!myEmail||l.Owner)return;
+ try{
+  const fresh=await api(`${leadsUrl()}/${l.Id}?fields=Id,Owner,ConvHistory`);
+  if(fresh?.Owner){l.Owner=fresh.Owner;if(!sameEmail(fresh.Owner,myEmail))toast('This lead was just picked up by '+fresh.Owner);return}
+  let hist=[];try{hist=JSON.parse(fresh?.ConvHistory||'[]')}catch{}if(!Array.isArray(hist))hist=[];
+  hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity}`,ts:new Date().toISOString()});
+  await apiSend(leadsUrl(),'PATCH',{Id:l.Id,Owner:myEmail,ConvHistory:JSON.stringify(hist.slice(-40))});
+  l.Owner=myEmail;
+ }catch(e){}
+}
+// Dial: remember the call (survives the phone app or Android reloading this page), hand the number
+// to the dialer, and ask for the outcome when the person comes back.
+const callKey=()=>`lv_m_call_${clientId}`;
+function startCall(l){
+ if(!l)return;const tel=telOf(l);if(!tel){toast('No phone number on this lead');return}
+ try{localStorage.setItem(callKey(),JSON.stringify({id:String(l.Id),start:Date.now()}))}catch{}
+ claimIfUnowned(l,'Call');
+ location.href='tel:'+tel;
+}
+function pendingCall(){try{const c=JSON.parse(localStorage.getItem(callKey())||'null');if(c&&Date.now()-c.start<3*3600e3)return c;localStorage.removeItem(callKey())}catch{}return null}
+let callOutcome='',callStart=0,callLeadId='';
+function openCallSheet(id,start){
+ const l=findLead(id);if(!l)return;callLeadId=String(id);callStart=start||0;callOutcome='';
+ const mins=start?Math.max(0,Math.round((Date.now()-start)/60000)):'';
+ $id('callSheet').innerHTML=`<div class="grab"></div>
+  <div class="ls-head"><span class="av" style="${avStyle(l.Name||l.Phone)}">${esc((String(l.Name||l.Phone||'?').trim()[0]||'?').toUpperCase())}</span><div style="min-width:0"><h2>How did the call go?</h2><small>${esc(l.Name||'')} · ${esc(l.Phone||'')}</small></div><button class="icon ls-x" title="Close" onclick="dismissCall()">✕</button></div>
+  <div class="oc">${['Answered','No Answer','Voicemail','Callback Requested'].map(o=>`<button data-o="${o}" onclick="pickOutcome(this)">${OUTCOME_ICON[o]} ${o==='Callback Requested'?'Call back':o}</button>`).join('')}</div>
+  <div class="kv" style="border:0"><span>Duration (minutes)</span><input id="csDur" type="number" min="0" inputmode="numeric" style="width:90px" value="${mins}"></div>
+  <textarea class="cs-notes" id="csNotes" placeholder="Notes (optional)"></textarea>
+  <button class="cs-save" id="csSave" disabled onclick="saveCall()">Save call</button>`;
+ showSheet('callSheet');
+}
+function pickOutcome(b){callOutcome=b.dataset.o;document.querySelectorAll('#callSheet .oc button').forEach(x=>x.classList.toggle('on',x===b));$id('csSave').disabled=false}
+function dismissCall(){try{localStorage.removeItem(callKey())}catch{}closeSheets()}
+let savingCall=false;
+async function saveCall(){
+ const l=findLead(callLeadId);if(!l||!callOutcome||savingCall)return;savingCall=true;$id('csSave').disabled=true;
+ const entry={outcome:callOutcome,duration:$id('csDur').value||'',notes:$id('csNotes').value.trim(),date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail,...(callStart?{src:'dial',secs:Math.max(0,Math.round((Date.now()-callStart)/1000))}:{src:'manual'})};
+ try{
+  await claimIfUnowned(l,'Call log');
+  let calls;try{calls=parseCallLog((await api(`${leadsUrl()}/${l.Id}?fields=CallLog`))?.CallLog)}catch{calls=parseCallLog(l.CallLog)}
+  calls.unshift(entry);const log=JSON.stringify(calls);
+  await apiSend(leadsUrl(),'PATCH',{Id:l.Id,CallLog:log});
+  l.CallLog=log;delete l._called;delete l._last;
+  try{localStorage.removeItem(callKey())}catch{}
+  closeSheets();toast('Call saved ✓');
+  // Same follow-ups as the dashboard's Log Call.
+  if(callOutcome==='No Answer')noAnswerFollowUp(l);
+  if(callOutcome==='Callback Requested'){const in2h=new Date(Date.now()+2*3600e3).toISOString().slice(0,16);setReminder(l.Id,in2h)}
+  renderTeam();renderAttention();renderLeads();
+ }catch(e){toast('Call not saved — check your connection and try again');$id('csSave').disabled=false}
+ finally{savingCall=false}
+}
+async function noAnswerFollowUp(l){
+ const phone=String(l.Phone||'').replace(/[^0-9]/g,'');if(!phone)return;
+ const name=String(l.Name||'there').split(' ')[0];
+ try{await apiSend('/wa/send','POST',{phone,text:`Hi ${name}, we tried reaching you just now but couldn't connect. We'll try again soon — or feel free to call us back anytime! 😊`,inbox_id:l.InboxId||undefined});toast('💬 WhatsApp follow-up sent')}
+ catch(e){toast('WhatsApp follow-up not sent: '+e.message)}
+}
+// Back from the dialer (or the page reloaded meanwhile): ask how it went.
+function checkCallReturn(){const c=pendingCall();if(c&&!sheetOpen()&&findLead(c.id))openCallSheet(c.id,c.start)}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(checkCallReturn,400)});
+
+// ── Home → ⚡ Prime attention: leads nobody has called yet and calls that weren't answered ────
+// The leads this person may see (Leads-tab rule). Not called: hot first, then newest — speed to
+// lead matters most. Unanswered: hot first, then the longest since that last try.
+let attnTab='new';
+function attnLists(){
+ const base=allLeads.filter(leadVisibilityFilter()),hot=l=>l.Score==='Hot'?1:0,t=v=>Date.parse(v||'')||0;
+ return {new:base.filter(isNotCalled).sort((a,b)=>hot(b)-hot(a)||t(b.Date)-t(a.Date)),
+  unans:base.filter(isUnanswered).sort((a,b)=>hot(b)-hot(a)||t(lastCall(a)?.at)-t(lastCall(b)?.at))};
+}
+function setAttnTab(k){attnTab=k;renderAttention()}
+function renderAttention(){
+ if(!allLeads.length)return;
+ const L=attnLists(),list=L[attnTab],card=$id('attn');
+ card.classList.remove('hidden');
+ $id('attnNew').textContent=L.new.length;$id('attnUnans').textContent=L.unans.length;
+ document.querySelectorAll('#attn .seg button').forEach(b=>b.classList.toggle('on',b.dataset.k===attnTab));
+ $id('attnList').innerHTML=list.length?list.slice(0,5).map(l=>leadRowHtml(l,attnTab==='unans'&&lastCall(l)?.at?'tried '+timeAgo(lastCall(l).at):undefined)).join('')
+  +(list.length>5?`<button class="more-btn" onclick="leadFilter='${attnTab}';leadShown=LEAD_PAGE;go('leads')">See all ${list.length}</button>`:'')
+  :`<div class="empty">${attnTab==='new'?'Every lead has been called 🎉':'No unanswered calls waiting 🎉'}</div>`;
+ try{localStorage.setItem(attnKey,card.innerHTML)}catch{}
+}
+
+// ── Home: counts + recent chats, painted from this phone's last copy first ────────────────────
+function fmtTime(ts){const d=new Date(ts||0);if(!ts||isNaN(d))return'';const n=new Date();if(d.toDateString()===n.toDateString())return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'Yesterday';return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
+function paintCounts(c){
+ if(!c)return;
+ $('cUnread').textContent=c.unread??0;$('cNeeds').textContent=c.needs??0;$('cMine').textContent=c.mine??0;$('cUnassigned').textContent=c.unassigned??0;
+ const dot=$('chatDot'),n=Number(c.unread)||0;dot.textContent=n>99?'99+':n;dot.classList.toggle('hidden',!n);
+}
+// Avatar tints: dark blue / dark green family, picked from the name so a contact keeps its colour.
+const AV_TINTS=[['#ECF0F8','#0B2545'],['#E7F4EE','#065F46'],['#E3E9F7','#1E3A8A'],['#DDF1E8','#047857']];
+function avStyle(name){let h=0;for(const c of String(name||''))h=(h*31+c.charCodeAt(0))>>>0;const [bg,fg]=AV_TINTS[h%AV_TINTS.length];return `background:${bg};color:${fg}`}
+function paintRecent(rows){
+ const el=$('recent');
+ if(!rows)return;
+ if(!rows.length){el.innerHTML='<div class="empty">No chats yet.</div>';return}
+ el.innerHTML=rows.map(r=>{const name=r.name||r.phone||'Unknown',un=Number(r.unread_count)||0;return `<button class="row${un?' unread':''}" data-id="${esc(r.lead_id)}" data-ch="${esc(r.channel||'whatsapp')}"><span class="av" style="${avStyle(name)}">${esc((name.trim()[0]||'?').toUpperCase())}</span><span class="info"><span class="r1"><span class="nm">${esc(name)}</span><span class="tm">${esc(fmtTime(r.last_message_at))}</span></span><span class="r2"><span class="pv">${r.last_message_dir==='out'?'✓✓ ':''}${esc(r.last_message_preview||'')}</span>${un?`<span class="bdg">${un>99?'99+':un}</span>`:''}</span></span></button>`}).join('');
+}
+$('recent').addEventListener('click',e=>{const b=e.target.closest('.row');if(b)openChats({leadId:b.dataset.id,channel:b.dataset.ch==='instagram'?'instagram':'whatsapp'})});
+function paintHello(name,biz){
+ const h=new Date().getHours(),part=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+ $('hello').innerHTML=`${part}<b>${esc(name||'Welcome back')}</b>`;$('biz').textContent=biz||'';
+}
+let cache={};try{cache=JSON.parse(localStorage.getItem(homeKey)||'{}')||{}}catch{}
+function saveCache(){try{localStorage.setItem(homeKey,JSON.stringify(cache))}catch{}}
+let homeAt=0;
+async function loadCounts(){try{cache.counts=await api('/chats/v2/counts');paintCounts(cache.counts);saveCache()}catch{}}
+async function loadHome(force){
+ if(!force&&Date.now()-homeAt<20000)return;homeAt=Date.now();
+ const [c,l]=await Promise.allSettled([api('/chats/v2/counts'),api('/chats/v2/list?'+new URLSearchParams({view:'all',channel:'all',limit:'8',sort:'newest'}))]);
+ if(c.status==='fulfilled'){cache.counts=c.value;paintCounts(c.value)}
+ if(l.status==='fulfilled'){cache.rows=(l.value.rows||[]).slice(0,8);paintRecent(cache.rows)}
+ else if(!cache.rows)$('recent').innerHTML='<div class="empty">Could not load recent chats. <button style="color:var(--wa-dark);font-weight:600" onclick="openChats()">Open Chats</button></div>';
+ if(c.status==='rejected'&&l.status==='rejected'&&force)toast('No connection — showing the last saved view');
+ else if(force)toast('Updated');
+ saveCache();
+}
+async function loadMe(){
+ try{const me=await api('/session/me');const c=me.client||{};
+  // Same sliding refresh the dashboard does (resumeSession): keep the reissued token.
+  if(me.session_token){sessionToken=me.session_token;try{localStorage.setItem('lv_session',sessionToken)}catch{}}
+  myEmail=String(me.email||'').trim().toLowerCase();clientRecord=c;meLoaded=true;
+  try{if(myEmail)localStorage.setItem('lv_me_email',myEmail)}catch{}
+  const mine=getTeamMembers().find(m=>sameEmail(m.email,myEmail));
+  cache.me={name:(mine&&!sameEmail(mine.email,c.authentik_email)?mine.name:'')||myEmail.split('@')[0],biz:c.client_name||c.business_name||''};paintHello(cache.me.name,cache.me.biz);saveCache();
+  return true}catch{return false}}
+
+// Boot: paint the cached view instantly, then refresh. Chats loads quietly in the background
+// once Home is up, so tapping the Chats tab opens straight into the list.
+paintHello(cache.me?.name,cache.me?.biz||(()=>{try{return localStorage.getItem('lv_cached_name')||''}catch{return''}})());
+paintCounts(cache.counts);paintRecent(cache.rows);
+try{const a=localStorage.getItem(attnKey);if(a){$id('attn').innerHTML=a;$id('attn').classList.remove('hidden')}}catch{}
+try{const t=JSON.parse(localStorage.getItem(teamKey)||'null');if(t?.arena){$id('homeArena').innerHTML=t.arena;$id('homeArena').style.display=''}if(t?.sp){$id('homeStaffPerf').innerHTML=t.sp;$id('spCard').classList.remove('hidden')}}catch{}
+const startTab=['chats','leads','more'].includes(location.hash.slice(1))?location.hash.slice(1):'home';
+history.replaceState(startTab==='home'?null:{lvTab:startTab},'',startTab==='home'?location.pathname:'#'+startTab);
+if(clientId&&sessionToken){
+ render(startTab);
+ loadMe().then(ok=>{if(ok)loadLeads()});
+ const idle=window.requestIdleCallback||(f=>setTimeout(f,1200));idle(()=>ensureChats(),{timeout:2500});
+ setInterval(()=>{if(!document.hidden&&cur==='home')loadHome()},60000);
+ setInterval(()=>{if(!document.hidden&&(cur==='home'||cur==='leads'))loadLeads()},180000);
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cur==='home')loadHome()});
+}
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>

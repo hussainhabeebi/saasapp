@@ -9,6 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  engineIsPersonalContact,
   driveFolderId,
   driveParseFolderImageIds,
   ecomPhotoshootMatchProduct,
@@ -1686,5 +1687,19 @@ describe('Ecom product photoshoot folder', () => {
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+});
+
+describe('engineIsPersonalContact — personal chats / staff are not leads', () => {
+  test('a "Personal" or "Staff" tag marks the contact, in any case and position', () => {
+    assert.equal(engineIsPersonalContact({ Tags: 'Personal' }), true);
+    assert.equal(engineIsPersonalContact({ Tags: 'Hot, staff' }), true);
+    assert.equal(engineIsPersonalContact({ Tags: ' STAFF ,Callback' }), true);
+  });
+  test('ordinary tags, a similar word, or no lead at all do not', () => {
+    assert.equal(engineIsPersonalContact({ Tags: 'Hot, Callback' }), false);
+    assert.equal(engineIsPersonalContact({ Tags: 'Personal loan' }), false);
+    assert.equal(engineIsPersonalContact({ Tags: '' }), false);
+    assert.equal(engineIsPersonalContact(null), false);
   });
 });
