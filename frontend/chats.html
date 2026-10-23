@@ -23,6 +23,8 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .pill{border:1px solid #d1d7db;border-radius:18px;background:#fff;color:#54656f;padding:5px 11px;font-size:12px;white-space:nowrap}.pill.active{background:#e7fce9;color:#008069;border-color:#c6f0d2}.pill .n{margin-left:3px;font-size:11px}
 .list{flex:1 1 0;overflow-y:auto;overflow-x:hidden;min-height:0;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}.contact{display:flex;gap:12px;padding:0 12px;min-height:72px;align-items:center;cursor:pointer}.contact:hover{background:#f5f6f6}.contact.active{background:#f0f2f5}.contact .info{min-width:0;flex:1;border-bottom:1px solid #f0f2f5;padding:13px 0}.row1,.row2{display:flex;align-items:center;gap:7px}.row1{margin-bottom:4px}.name{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.time{font-size:12px;color:var(--muted);white-space:nowrap}.preview{font-size:13.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.preview .draft{color:#06cf9c}.unread .name{font-weight:650}.unread .time{color:var(--wa);font-weight:600}.badge{min-width:19px;height:19px;border-radius:12px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}.pin{font-size:12px;color:#8696a0}.handover{width:8px;height:8px;border-radius:50%;background:#e5484d;box-shadow:0 0 0 2px #fff;position:absolute;right:1px;top:1px}.avatar-wrap{position:relative;flex:none}
 .empty-list{padding:52px 20px;text-align:center;color:var(--muted)}
+/* The attachment overlay is also .preview (grey background) — keep it off the list row's preview text. */
+.contact .preview{background:transparent}
 .main{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--paper)}.empty-main{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);background:#f7f9fa;border-bottom:6px solid var(--wa)}.empty-main .box{max-width:430px;padding:30px}.empty-main .big{font-size:56px;margin-bottom:16px;opacity:.5}.empty-main h2{font-weight:400;color:#41525d;margin:0 0 8px}.empty-main p{line-height:1.55;font-size:14px}
 .chat-top{border-bottom:1px solid #ddd}.back{display:none}.chat-meta{min-width:0;flex:1;cursor:pointer}.chat-name{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-actions{display:flex;align-items:center;gap:2px;position:relative}.menu{position:absolute;right:4px;top:48px;z-index:20;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.18);border-radius:6px;min-width:220px;padding:7px 0}.menu button{display:block;width:100%;border:0;background:#fff;text-align:left;padding:11px 18px;color:var(--ink)}.menu button:hover{background:#f5f6f6}.menu .dash-item{color:#008069;font-weight:650;border-top:1px solid var(--line)}
 .thread{flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding:14px 7% 18px;background-color:var(--paper);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='%23888' stroke-opacity='.08' stroke-width='1'%3E%3Ccircle cx='22' cy='28' r='8'/%3E%3Cpath d='M65 16l15 16-21 5zM22 92q13-18 29 0q9 14-5 20q-17 6-24-20zM95 80h25v17H95z'/%3E%3C/g%3E%3C/svg%3E")}
@@ -153,6 +155,31 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
  .dd input{height:42px;font-size:15px}
 }
 @media(max-width:1100px) and (min-width:701px){.hdr-ctl .t{display:none}}
+/* skin=m — opened inside the phone app (m.html): its theme of white, black text, dark green and
+   dark blue. Variables first, then the few places that use a fixed WhatsApp colour. */
+html.skin-m{--wa:#065F46;--wa-dark:#065F46;--wa-soft:#DCEFE6;--paper:#F5F7FA;--ink:#0B0B0C;--muted:#6B7280;--line:#ECEEF2;--header:#fff;--incoming:#fff}
+html.skin-m body{background:#fff}
+.skin-m .side-top{height:64px;background:#fff}.skin-m .side-title{font-size:28px;font-weight:800;letter-spacing:-.02em}
+.skin-m .brand-avatar{border-radius:11px;background:linear-gradient(135deg,#0B2545,#065F46);width:36px;height:36px}
+.skin-m .icon-btn{color:#0B0B0C}
+.skin-m .search-wrap{border-bottom:0;padding:4px 16px 8px}.skin-m .searchbox{height:46px;border-radius:16px;background:#F4F6F8}
+.skin-m .pill{border:0;background:#F4F6F8;color:#0B0B0C;font-weight:600;padding:7px 13px;border-radius:14px;font-size:12.5px}.skin-m .pill.active{background:#0B2545;color:#fff}
+.skin-m .filter-row,.skin-m .seg-row{border-bottom-color:#ECEEF2}
+.skin-m .contact .name{font-weight:600}.skin-m .unread .name{font-weight:800}.skin-m .unread .time{color:#065F46}
+.skin-m .avatar{border-radius:16px;background:#ECF0F8;color:#0B2545;font-weight:800}
+.skin-m .contact.active{background:#F4F6F8}
+.skin-m .chat-top{background:#fff;border-bottom:1px solid #ECEEF2}
+.skin-m .chat-actions .call-btn{background:#065F46;color:#fff;border-radius:14px}
+.skin-m .hdr-pill,.skin-m .hdr-btn{border-color:#ECEEF2;background:#F4F6F8;color:#0B0B0C;font-weight:600}
+.skin-m .split button:first-child,.skin-m .split button:last-child{background:#0B2545;border-color:#0B2545}
+.skin-m .bubble.out{background:#DCEFE6}.skin-m .bubble.tail.out::before{background:#DCEFE6}
+.skin-m .bubble a{color:#1E3A8A}.skin-m .checks{color:#1E3A8A}.skin-m .who{color:#1E3A8A}
+.skin-m .composer,.skin-m .composer-mode,.skin-m .reply-preview{background:#fff}.skin-m .composer{border-top:1px solid #ECEEF2}
+.skin-m .input-wrap{background:#F4F6F8;border-radius:22px}
+.skin-m .mode-btn.active{background:#E7F4EE;color:#065F46;font-weight:700}
+.skin-m .day span{background:#fff;color:#6B7280;border-radius:10px}
+.skin-m .bulk-bar{background:#E7F4EE;border-bottom-color:#CDE8DA}
+.skin-m .toast{background:#0B2545;border-radius:14px}
 </style>
 </head>
 <body>
@@ -187,6 +214,7 @@ const sessionToken=params.get('token')||'';
 // lead card on top of the chat. See chats.js for the dashboard half of this postMessage channel.
 const embedded=params.get('embed')==='1'&&window.parent!==window;
 if(embedded)document.documentElement.classList.add('embedded');
+if(params.get('skin')==='m')document.documentElement.classList.add('skin-m');
 function toParent(type,data={}){if(!embedded)return;try{window.parent.postMessage({source:'lv-chats',type,...data},location.protocol==='file:'?'*':location.origin)}catch{}}
 let leads=[],histCache={},current=null,channel='whatsapp',filter='all',meEmail='',clientRecord={};
 // Composer state for the open conversation. The thread and composer are separate DOM regions so a
