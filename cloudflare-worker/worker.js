@@ -15841,7 +15841,7 @@ async function engineGeminiGenerateWithFallback(env, c, systemText, userText, op
    provider accepts audio. See SETUP.md "AI Models (bring your own key)". */
 export const AI_PROVIDERS={
   anthropic:{label:'Claude (Anthropic)', format:'anthropic', base:'https://api.anthropic.com/v1',
-    models:['claude-opus-5-5','claude-opus-5','claude-sonnet-5','claude-haiku-4-5','claude-fable-5-1'], default_model:'claude-opus-5-5'},
+    models:['claude-opus-5-5','claude-opus-5','claude-sonnet-5','claude-haiku-5-5','claude-haiku-4-5','claude-fable-5-1'], default_model:'claude-opus-5-5'},
   openai:{label:'ChatGPT (OpenAI)', format:'openai', base:'https://api.openai.com/v1', models:[], default_model:''},
   gemini:{label:'Google Gemini (own key)', format:'gemini', base:'https://generativelanguage.googleapis.com/v1beta',
     models:['gemini-2.5-flash','gemini-2.5-pro'], default_model:'gemini-2.5-flash'},
@@ -15894,11 +15894,14 @@ export async function aiDecryptSecret(env, stored){
 // Current Claude models (Opus 5.x, Sonnet 5, Fable, Opus/Sonnet 4.6+) reject `temperature`, and
 // most think before answering — thinking counts against max_tokens, so the engine's short WhatsApp
 // budgets (120–300 tokens) are raised to leave room; reply length is steered by the prompts.
-// `effort` isn't accepted by Haiku 4.5 or older models, so it is only sent where supported.
+// `effort` isn't accepted by Haiku 4.5 or older models, so it is only sent where supported
+// (Haiku 5.5 does accept it).
 function aiAnthropicBody(model, systemText, userText, opts){
   const body={model, max_tokens:Math.max(2048, (opts.maxOutputTokens||300)*4), messages:[{role:'user', content:userText}]};
   if(systemText) body.system=systemText;
   if(/^claude-(opus|sonnet|fable|mythos)-(5|4-[678])/.test(model)) body.output_config={effort:'low'};
+  // Haiku 5.5 thinks by default at effort medium; low keeps short WhatsApp replies fast and cheap.
+  else if(/^claude-haiku-5/.test(model)) body.output_config={effort:'low'};
   return body;
 }
 function aiOpenAiBody(provider, model, systemText, userText, opts){

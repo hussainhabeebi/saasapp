@@ -2704,7 +2704,8 @@ disabled one, takes exactly the same code path as before.
 
 **Providers:**
 - **Claude (Anthropic):** `claude-opus-5-5` is the default and newest; also `claude-opus-5`,
-  `claude-sonnet-5`, `claude-haiku-4-5` and `claude-fable-5-1`.
+  `claude-sonnet-5`, `claude-haiku-5-5` (the cheapest and fastest, with light thinking), `claude-haiku-4-5`
+  and `claude-fable-5-1`.
 - **ChatGPT (OpenAI).**
 - **Google Gemini:** the client's own key, not the shared one.
 - **OpenRouter, Groq, DeepSeek, Mistral.**

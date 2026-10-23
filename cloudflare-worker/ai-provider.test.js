@@ -87,6 +87,16 @@ describe('aiProviderCall request shapes', ()=>{
     assert.equal(calls.at(-1).body.fallbacks, 'default');
     assert.equal(calls.at(-1).init.headers['anthropic-beta'], 'server-side-fallback-2026-07-01');
   });
+  test('Claude Haiku 5.5 is listed and gets low effort, no temperature, no refusal fallback', async()=>{
+    assert.ok(AI_PROVIDERS.anthropic.models.includes('claude-haiku-5-5'));
+    stubFetch(()=>({json:{content:[{type:'text', text:'ok'}]}}));
+    const r=await aiProviderCall({provider:'anthropic', model:'claude-haiku-5-5', apiKey:'k'}, 'sys', 'x', {maxOutputTokens:300, temperature:0.5});
+    assert.deepEqual(r, {ok:true, text:'ok'});
+    assert.deepEqual(calls[0].body.output_config, {effort:'low'});
+    assert.equal(calls[0].body.temperature, undefined);
+    assert.equal(calls[0].body.fallbacks, undefined);
+    assert.equal(calls[0].init.headers['anthropic-beta'], undefined);
+  });
   test('Claude refusal is reported as a failure', async()=>{
     stubFetch(()=>({json:{content:[], stop_reason:'refusal', stop_details:{category:'cyber'}}}));
     const r=await aiProviderCall({provider:'anthropic', model:'claude-sonnet-5', apiKey:'k'}, '', 'x');
