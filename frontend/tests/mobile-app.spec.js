@@ -64,6 +64,27 @@ test.describe('phone', () => {
     await expect(page.locator('#tabHome')).toBeVisible();
   });
 
+  test('Back closes a menu sheet open inside Chats instead of leaving the Chats tab', async ({ page }) => {
+    await routes(page);
+    await page.goto(mUrl);
+    await page.evaluate(() => { localStorage.setItem('lv_cid', '48'); localStorage.setItem('lv_session', 't'); });
+    await page.goto(mUrl + '#chats');
+    const frame = page.frameLocator('#chatsFrame');
+    await expect(frame.locator('#list .contact').first()).toBeVisible();
+    const chats = page.frames().find((f) => f.url().includes('chats.html'));
+    // Chats tells the app a sheet opened (it does this from syncBackdrop), and counts close requests.
+    await chats.evaluate(() => {
+      window.__closes = 0;
+      addEventListener('message', (e) => { if (e.data?.source === 'lv-dashboard' && e.data.close) window.__closes++; });
+      parent.postMessage({ source: 'lv-chats', type: 'sheet', open: true }, '*');
+    });
+    await expect.poll(() => page.evaluate(() => history.state?.lvChatSheet)).toBe(1);
+    await page.goBack();
+    await expect.poll(() => chats.evaluate(() => window.__closes)).toBe(1);
+    await expect(page.locator('#tabChats')).toBeVisible();
+    await expect(page.locator('#nav')).toBeVisible();
+  });
+
   test('More opens CRM pages in the full dashboard', async ({ page }) => {
     await routes(page);
     await page.goto(mUrl);

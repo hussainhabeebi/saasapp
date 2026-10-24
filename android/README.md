@@ -63,7 +63,12 @@ fingerprint.
 Until the secrets exist the workflow still builds, with a throwaway key, and names the file
 `leadvyne-TEST-…apk`: it installs but shows an address bar. Don't hand that one out.
 
-### Publishing on Google Play later
+### Publishing on Google Play
+
+Every build also produces `leadvyne-v1.0.N.aab` (Android App Bundle) next to the APK — Play only
+accepts bundles for new apps. Upload it in Play Console → Testing or Production → Create release.
+It's signed with this repo's key, which Play treats as the *upload key*. The app targets Android 16
+(API 36, `targetSdkVersion` in `app/build.gradle`); raise it when Play asks for a newer one.
 
 Play re-signs apps with its own key. Add Play's "App signing key certificate" SHA-256 (Play Console
 → Setup → App integrity) as a second entry in `assetlinks.json` — keep the current one.
