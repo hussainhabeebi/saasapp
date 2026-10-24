@@ -8,7 +8,7 @@ import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNum
 import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
-import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel} from './meta-ads-report.js';
+import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -22945,6 +22945,7 @@ export function engineLeadAdClick(body){
   if(String(ref.ctwa_clid||'').trim()) out.CtwaClid=String(ref.ctwa_clid).trim().slice(0,500);
   return Object.keys(out).length?out:null;
 }
+function engineAdCodeField(text){ const c=marAdCode(text); return c?{AdCode:'#'+c.toUpperCase()}:{}; }
 export function engineLeadAdSource(body, firstText, channel='whatsapp'){
   const ref=engineReferral(body);
   if(ref && (ref.source_id||ref.source_url||ref.headline||ref.ctwa_clid)){
@@ -22952,9 +22953,12 @@ export function engineLeadAdSource(body, firstText, channel='whatsapp'){
     const ig=/instagram/i.test(String(ref.source_url||''))||channel==='instagram';
     return {Source:post?(ig?'Instagram post':'Facebook post'):'Click-to-WhatsApp ad', LeadSource:post?(ig?'Instagram post':'Facebook post'):'Click-to-WhatsApp ad',
       AdName:String(ref.headline||ref.body||'').trim().slice(0,200), AdCampaign:ref.source_id?`Ad ID ${String(ref.source_id).slice(0,60)}`:'',
-      AdSourceUrl:String(ref.source_url||'').trim().slice(0,500), ...(engineLeadAdClick(body)||{})};
+      AdSourceUrl:String(ref.source_url||'').trim().slice(0,500), ...(engineLeadAdClick(body)||{}), ...engineAdCodeField(firstText)};
   }
   const t=String(firstText||'').trim();
+  // No referral, but the ad's pre-filled message carried its code ("… #K26") — Reports → Ads ROI
+  // ties the chat to the ad whose name in Ads Manager has the same code.
+  if(marAdCode(t)) return {Source:'Click-to-WhatsApp ad', LeadSource:'Click-to-WhatsApp ad (ad code)', ...engineAdCodeField(t)};
   if(ENGINE_CTWA_PREFILL_RE.test(t)) return {Source:'Click-to-WhatsApp ad', LeadSource:'Click-to-WhatsApp ad (prefilled message)'};
   return {Source:channel==='instagram'?'Instagram':'WhatsApp'};
 }
