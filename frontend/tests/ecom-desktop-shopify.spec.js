@@ -148,7 +148,8 @@ test.describe('mobile', () => {
     await expect(page.locator('#tabProducts')).toHaveClass(/active/);
     await expect(page.locator('#tabHome')).not.toHaveClass(/active/);
     const visible = await page.locator('#tabs > *:visible').evaluateAll(els => els.map(e => e.dataset.tab));
-    expect(visible.slice(0, 7)).toEqual(['products', 'categories', 'promotions', 'testimonials', 'orders', 'shopify', 'settings']);
+    // The original tabs keep their order; 📲 WhatsApp Shop (a new feature, not a redesign) sits after Orders.
+    expect(visible.slice(0, 8)).toEqual(['products', 'categories', 'promotions', 'testimonials', 'orders', 'washop', 'shopify', 'settings']);
     await expect(page.locator('#hdrStore')).toBeHidden();
     await page.waitForTimeout(300);
     expect(calls.some(c => c.path.startsWith('/ecom/shopify/'))).toBe(false);

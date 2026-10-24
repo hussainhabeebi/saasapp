@@ -1299,6 +1299,34 @@ natively — the "Order Delivered" notification is best-effort and won't fire fo
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
 
+### 📲 WhatsApp Shop (`cloudflare-worker/wa-commerce.js`, Ecom → WhatsApp Shop)
+Customers browse the catalog, add to cart and order inside WhatsApp, on top of the client's own Ecom
+Products/Orders (= the Shopify catalog and orders for a Shopify-connected store). Five steps on the page:
+1. **Catalog** — paste the Meta catalog ID (Commerce Manager → Add catalog → Ecommerce). "Link to my
+   WhatsApp" calls `POST /{waba}/product_catalogs` and `POST /{phone_id}/whatsapp_commerce_settings`
+   (catalog visible, cart on).
+2. **Sync** — every active product goes to the catalog via the Catalog Batch API (`items_batch`,
+   retailer_id `lv_<Ecom product Id>`); inactive ones are removed; products missing a price, photo or
+   name are listed back to the merchant. Re-synced daily by the 02:00 cron. If the WhatsApp token lacks
+   `catalog_management`, paste a System User token under Advanced (`wa_shop_catalog_token`, never returned).
+3. **Cart orders** — needs the **relay**: Chatwoot drops WhatsApp `order` payloads (same gap as Native
+   Forms, chatwoot/chatwoot#13970). Turning it on sets a per-WABA `override_callback_uri` to
+   `/wa/shop/webhook/<client>`; every request is forwarded byte-for-byte to the Chatwoot WhatsApp
+   webhook first (default `{chatwoot_base}/webhooks/whatsapp/+<number>`, overridable under Advanced),
+   502 on a failed forward so Meta retries, then carts become Ecom orders (`taken_by=whatsapp_cart`,
+   status pending, idempotent on the message id via D1 `wa_shop_events`). Turning it off removes the
+   override. Cart processing needs `META_APP_SECRET` to verify signatures (embedded-signup numbers).
+4. **Payment** — Cash on delivery; WhatsApp Pay (India, `order_details` "Review and pay" through the
+   Razorpay/PayU/… configuration named in WhatsApp Manager → Payments — the payment status webhook
+   marks the order processing); or Shopify checkout (a `/cart/<variant>:<qty>` link; Shopify's order
+   syncs back by webhook, so no Ecom order is created for the cart).
+5. **Share** — the AI assistant answers "show me your collection / what do you sell" with a WhatsApp
+   product list (≤30 products, ≤10 category sections; a named category narrows it) instead of photos,
+   and leaves a private note in Chatwoot; staff can send it from the page.
+Routes: session-authed `GET /ecom/wa-shop/status`, `POST /ecom/wa-shop/{config,connect,sync,carts,send}`.
+Built from Meta's published docs, not yet verified against a live Meta account — test one real cart and
+one WhatsApp Pay payment end to end before relying on it.
+
 ### Store workspace for ecommerce clients (`frontend/commerce-view.js`, desktop only)
 Ecommerce-industry clients get a store-admin shell on desktop (≥768px), same layering as the travel
 workspace (`travel-view.js`): a left sidebar — Home · Orders · Products (Categories) · Customers ·
