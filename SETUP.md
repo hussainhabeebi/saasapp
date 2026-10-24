@@ -1139,6 +1139,9 @@ plainly rather than showing a WhatsApp button that would just fail against a non
    API's one-time login link (`/platform/api/v1/users/{chatwoot_user_id}/login`) so the client
    lands in Chatwoot already signed in (they were never shown the random password step 1
    generated), then they click Settings → Integrations → Shopify → Connect themselves.
+   **Not needed for Shopify clients any more** — the Worker's own Shopify app connection
+   ("Shopify module" below, Ecommerce → 🛍️ Shopify) is the one way to connect a store; this
+   Chatwoot-side integration only adds order context inside a Chatwoot conversation.
 
 **Status view**: `GET /channels/status` reads the client's real inbox list straight from
 Chatwoot (`GET /api/v1/accounts/{id}/inboxes`), not just the local CLIENTS columns — the
@@ -1156,9 +1159,29 @@ on it for production onboarding.
 A separate connection from item 4 above — Chatwoot's Shopify integration only shows order
 context inside a conversation. This one lets the Worker itself read a client's Shopify store
 (order/fulfillment/checkout webhooks → WhatsApp templates straight through Meta's Graph API).
-Connect, notification-template setup and the send log all live on one page now —
-**Settings → Integrations** (`dashboard.html`) — instead of the connect step being there and the
-notification setup living in a separate Ecommerce-module tab.
+**Everything Shopify lives on one page: Ecommerce → 🛍️ Shopify** (`ecom.html`) — connect (the
+Shopify app's OAuth only; nothing is pasted by hand), the switches below, notification templates
+and the send log. Settings → Integrations in `dashboard.html` only shows the status and a "Manage
+in Ecommerce → Shopify" button.
+
+**Switches** (stored in `shopify_notify_config.settings`, read server-side by `shopifySettings()`
+in `shopify-sync.js`; a missing key means on, which is how every store behaved before them):
+- `notify` — WhatsApp order updates (`sendShopifyNotification` returns early when off).
+- `ecom_orders` — copy Shopify orders into the shared Ecom Orders table (`syncShopifyOrderToEcom`).
+  The Shopify Orders page (`shopify_orders`) always syncs.
+- `auto_links` — fill each Ecom product's `shopify_product_url` by SKU (below).
+- `low_stock` — the Shopify Stock low-stock threshold, shared by the whole team (was per browser).
+
+**Product links by SKU:** every product sync (`products/*` webhooks and Sync now) matches Ecom
+products to active Shopify variants by SKU (case-insensitive) and writes
+`https://{shop}/products/{handle}` (plus `?variant=` for multi-variant products) into
+`shopify_product_url` — the field every bot/order-link path already reads. Only links in that
+`https://{shop}/products/` form are ever changed or cleared (a draft/deleted product clears its
+link); a link typed for another store is left alone. Writes are mirrored into D1 and drop the KV
+product cache. In Edit Product the field is read-only while Shopify manages it.
+
+**Store link:** on connect, Settings → Order Link (`external_store_link`) is filled from the
+store's primary domain (`/shop.json`) when it's still blank.
 
 **One-time Shopify Partners setup:**
 1. Create an app in [partners.shopify.com](https://partners.shopify.com) (Custom or Public
@@ -1174,7 +1197,8 @@ notification setup living in a separate Ecommerce-module tab.
 **New CLIENTS columns** (add alongside the Channels-module ones): `shopify_shop_domain`,
 `shopify_access_token`, `shopify_connected_at`, `shopify_notify_config` (Long text, JSON — same
 shape as `ecom_wa_templates`: `{config:{received,paid,shipped,delivered,abandoned}, templates:[...]}`),
-`shopify_notify_log` (Long text, JSON array, capped at the last 30 entries).
+`shopify_notify_log` (Long text, JSON array, capped at the last 30 entries). `shopify_notify_config`
+also carries `settings` (the Shopify page's switches, above).
 
 **NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
 `checkout_token`, `phone`, `customer_name`, `cart_summary`, `total`, `currency`, `recovery_url`,
@@ -1207,14 +1231,14 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
    `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`, plus the
    Shopify Orders/Stock topics listed under "Shopify Orders + Shopify Stock" below) pointing at `/shopify/webhook`,
    writes `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back
-   into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`). This is the "automatic
-   webhook" — Settings → Integrations → Shopify shows the endpoint URL for reference/debugging
-   once connected, but there's nothing to paste into Shopify by hand; the OAuth callback registers
-   it directly via Shopify's Admin API. **Stores connected before `orders/paid` was added** won't
-   have that webhook registered — disconnect and reconnect (Settings → Integrations → Shopify) to
-   pick it up; reconnecting re-runs the full webhook registration step.
-3. **Notifications** — set up per-event WhatsApp templates right below the connect card on the
-   same **Settings → Integrations** page (`GET /ecom/wa-templates` pulls approved templates
+   into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`), which forwards straight
+   into Ecommerce → 🛍️ Shopify; that page runs the first Sync now. Nothing to paste into Shopify
+   by hand — the callback registers the webhooks via the Admin API, and Sync now registers any a
+   store is missing. **Reconnecting the same store is allowed without disconnecting** (`oauth/start`
+   only refuses a *different* store) — that's the "Grant access" / "Reconnect" button on the
+   Shopify page for stores missing a newer scope or whose token was revoked.
+3. **Notifications** — set up per-event WhatsApp templates on the same **Ecommerce → 🛍️ Shopify**
+   page (`GET /ecom/wa-templates` pulls approved templates
    straight from Meta's Graph API — no n8n
    hop, unlike the existing Order Delivery Notifications section which still uses the
    `leadvyne-ecom-wa-templates` n8n webhook). `POST /shopify/webhook` verifies each webhook's
@@ -1251,13 +1275,13 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
 **Known limitation**: Shopify only reports a fulfillment as `delivered` for carriers it tracks
 natively — the "Order Delivered" notification is best-effort and won't fire for every order.
 
-**Disconnect**: `POST /shopify/disconnect` (Settings → Integrations) clears the stored
+**Disconnect**: `POST /shopify/disconnect` (Ecommerce → 🛍️ Shopify) clears the stored
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
 
 ### Shopify Orders + Shopify Stock (`cloudflare-worker/shopify-sync.js`, `ecom.html` desktop)
 Two desktop-only pages in the Ecommerce module's sidebar (under **Shopify**), shown only when the
-client has Shopify connected in Settings → Integrations. The phone layout is unchanged — these nav
+client has Shopify connected (Ecommerce → 🛍️ Shopify). The phone layout is unchanged — these nav
 entries (and the desktop **Home** overview) are hidden below 768px and nothing is fetched there.
 
 - **Shopify Orders** — every Shopify order with payment status (paid / pending / refunded…) and
@@ -1265,7 +1289,8 @@ entries (and the desktop **Home** overview) are hidden below 768px and nothing i
   search, 7/30/90-day KPIs, CSV export and an order drawer (items, totals, tracking, customer,
   WhatsApp link, "Open in Shopify").
 - **Shopify Stock** — one row per variant: price, SKU, type/vendor/status, `available` summed over
-  every location, stock value, low/out-of-stock views (threshold set per browser, default 5).
+  every location, stock value, low/out-of-stock views (threshold shared via the Shopify page's
+  `low_stock` setting, default 5).
 
 **Tables (auto-provisioned, nothing to create):** `shopify_orders` and `shopify_inventory`, created
 in the clients table's base on first use, like `shopify_checkouts`. Rows carry `client_id` + `shop`,
@@ -1278,8 +1303,8 @@ orders table — `syncShopifyOrderToEcom` keeps feeding the regular Orders page 
 payloads never overwrite newer rows (`updated_at` guard). The pages refresh once a minute while open.
 
 **Scopes:** `SHOPIFY_SCOPES` now also asks for `read_products,read_inventory`. Stores connected
-before this keep syncing orders; the Stock page shows a banner telling them to Disconnect →
-Connect again (Settings → Integrations) to grant stock access. **Sync now** (`POST
+before this keep syncing orders; the Stock and Shopify pages show a **Grant access** button that
+re-runs OAuth for the same store (no disconnect). **Sync now** (`POST
 /ecom/shopify/resync`, rate-limited to 6/hour) backfills the last 90 days of orders and the whole
 catalog, and registers any of the webhooks above the store is missing.
 

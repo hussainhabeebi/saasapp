@@ -1,7 +1,7 @@
 // Shopify Orders / Stock modules — payload mapping, out-of-order guard, inventory totals, paging.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shopifyOrderRow, shopifyIsStale, shopifyMergeFulfillment, shopifyInventoryRows, shopifyLevelsSummary, shopifyNextPageInfo, shopifySyncOnWebhook } from './shopify-sync.js';
+import { shopifyOrderRow, shopifyIsStale, shopifyMergeFulfillment, shopifyInventoryRows, shopifyLevelsSummary, shopifyNextPageInfo, shopifySyncOnWebhook, shopifySettings, shopifyProductLinkPatches } from './shopify-sync.js';
 
 const SHOP = 'demo.myshopify.com';
 
@@ -102,4 +102,41 @@ test('order webhook creates the row, a stale retry is skipped', async () => {
   await shopifySyncOnWebhook({}, deps, c, 'orders/updated', { id: 5001, name: '#1001', updated_at: '2026-10-20T10:00:00Z', financial_status: 'pending' });
   assert.equal(calls.filter(([m, , body]) => m === 'PATCH' && body.length).length, 0);
   assert.equal(calls.filter(([m]) => m !== 'GET').length, writesBefore);
+});
+
+test('Shopify page settings default to on and read from shopify_notify_config', () => {
+  assert.deepEqual(shopifySettings({}), { notify: true, ecom_orders: true, auto_links: true, low_stock: 5 });
+  assert.deepEqual(shopifySettings({ shopify_notify_config: 'not json' }).notify, true);
+  const s = shopifySettings({ shopify_notify_config: JSON.stringify({ config: {}, settings: { notify: false, low_stock: 2 } }) });
+  assert.equal(s.notify, false);
+  assert.equal(s.low_stock, 2);
+  assert.equal(s.auto_links, true);
+});
+
+test('product links are filled by SKU, only ever replacing links this module wrote', () => {
+  const inv = [
+    { shopify_product_id: '1', shopify_variant_id: '101', sku: 'K-M', handle: 'kurta', product_status: 'active' },
+    { shopify_product_id: '1', shopify_variant_id: '102', sku: 'K-L', handle: 'kurta', product_status: 'active' },
+    { shopify_product_id: '2', shopify_variant_id: '201', sku: 'S-1', handle: 'saree', product_status: 'active' },
+    { shopify_product_id: '3', shopify_variant_id: '301', sku: 'D-1', handle: 'draft-thing', product_status: 'draft' },
+  ];
+  const products = [
+    { Id: 1, sku: 'k-m', shopify_product_url: '' },
+    { Id: 2, sku: 'S-1', shopify_product_url: 'https://demo.myshopify.com/products/old-saree' },
+    { Id: 3, sku: 'K-L', shopify_product_url: 'https://amazon.in/dp/X' },
+    { Id: 4, sku: 'D-1', shopify_product_url: 'https://demo.myshopify.com/products/draft-thing' },
+    { Id: 5, sku: '', shopify_product_url: '' },
+    { Id: 6, sku: 'NOPE', shopify_product_url: '' },
+  ];
+  assert.deepEqual(shopifyProductLinkPatches(SHOP, products, inv), [
+    { Id: 1, shopify_product_url: 'https://demo.myshopify.com/products/kurta?variant=101' },
+    { Id: 2, shopify_product_url: 'https://demo.myshopify.com/products/saree' },
+    { Id: 4, shopify_product_url: '' },
+  ]);
+  // A webhook only touches its own product's SKUs.
+  assert.deepEqual(shopifyProductLinkPatches(SHOP, products, inv, ['S-1']), [
+    { Id: 2, shopify_product_url: 'https://demo.myshopify.com/products/saree' },
+  ]);
+  // products/delete: the SKUs are gone from Shopify, so their links are cleared.
+  assert.deepEqual(shopifyProductLinkPatches(SHOP, products, [], ['D-1', 'K-L']), [{ Id: 4, shopify_product_url: '' }]);
 });

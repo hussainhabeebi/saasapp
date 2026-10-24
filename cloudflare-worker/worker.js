@@ -3,7 +3,7 @@ import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
-import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS} from './shopify-sync.js';
+import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyProductLinkPatches} from './shopify-sync.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel} from './meta-ads-report.js';
@@ -6616,7 +6616,9 @@ async function handleShopifyOauthStart(request, env){
   if(!isValidShopDomain(shop)) return json({error:'Enter your store as yourstore.myshopify.com'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
-  if(c.shopify_shop_domain && c.shopify_access_token) return json({error:'A Shopify store is already connected for this client. Disconnect it first to switch stores.'}, 400);
+  // Reconnecting the same store is allowed — that's how a store connected before a scope existed
+  // grants it (ecom.html "Grant access"), and how a revoked token gets replaced.
+  if(c.shopify_shop_domain && c.shopify_access_token && c.shopify_shop_domain!==shop) return json({error:'A different Shopify store is already connected for this client. Disconnect it first to switch stores.'}, 400);
 
   const state=await signOauthState(env, payload.cid);
   const redirectUri=`${env.WORKER_BASE_URL}/shopify/oauth/callback`;
@@ -6660,7 +6662,17 @@ async function handleShopifyOauthCallback(request, env){
     shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
   ));
 
-  await patchClientFields(env, statePayload.cid, {shopify_shop_domain:shop, shopify_access_token:access_token, shopify_connected_at:new Date().toISOString()});
+  const fields={shopify_shop_domain:shop, shopify_access_token:access_token, shopify_connected_at:new Date().toISOString()};
+  // Settings → Order Link is filled from the store's own primary domain when it's still blank, so a
+  // Shopify client never has to type their store URL in a second place.
+  const c=await getClientById(env, statePayload.cid);
+  if(c && !(c.external_store_link||'').trim()){
+    const shopR=await shopifyFetch(env, shop, access_token, '/shop.json').catch(()=>null);
+    const domain=shopR?.ok?(await shopR.json().catch(()=>({})))?.shop?.domain:'';
+    fields.external_store_link=`https://${domain||shop}`;
+  }
+  await patchClientFields(env, statePayload.cid, fields);
+  // The dashboard forwards ?shopify=connected into Ecom → 🛍️ Shopify, which runs the first sync.
   return Response.redirect(`${appBase}?client=${statePayload.cid}&shopify=connected`, 302);
 }
 
@@ -6986,6 +6998,7 @@ async function handleGcalSyncTask(request, env){
 // even for a skipped/failed send. `kind` indexes into shopify_notify_config.config; `vars`
 // supplies the values available for that event's template variable mapping.
 async function sendShopifyNotification(env, c, kind, vars, logMeta){
+  if(shopifySettings(c).notify===false) return; // Ecom → Shopify → "WhatsApp notifications" off
   let stored={}; try{ stored=JSON.parse(c.shopify_notify_config||'{}'); }catch(e){}
   const cfg=stored?.config?.[kind];
   let log=[]; try{ log=JSON.parse(c.shopify_notify_log||'[]'); }catch(e){}
@@ -7061,6 +7074,7 @@ async function findEcomOrderByShopifyId(env, tableId, clientId, shopifyOrderId){
 // orders table resolvable at all (ecomResolveTable falls back to the shared default, so in
 // practice this only skips if that default table id itself is ever cleared).
 async function syncShopifyOrderToEcom(env, c, order, status){
+  if(shopifySettings(c).ecom_orders===false) return; // Ecom → Shopify → "Add Shopify orders to Orders" off
   const tableId=await ecomResolveTable(env, c.Id, 'orders');
   if(!tableId||!order?.id) return;
   const fields={
@@ -7089,6 +7103,42 @@ async function syncShopifyOrderToEcom(env, c, order, status){
     const data=await r.json().catch(()=>({}));
     await reportOpsError(env, 'syncShopifyOrderToEcom', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId:c.Id, shopifyOrderId:fields.shopify_order_id, tableId});
   }
+}
+
+// Writes the Shopify product links shopify-sync.js worked out from the synced catalog
+// (shopifyProductLinkPatches) onto the client's Ecom products, the same field every bot/order-link
+// path already reads (buildOrderLink, engineSendShopifyTier2 …). Mirrored into D1 and the KV
+// product cache dropped, like any product save. A webhook only looks up its own product's SKUs.
+async function shopifyLinkEcomProducts(env, c, inventoryRows, scopeSkus){
+  if(shopifySettings(c).auto_links===false) return 0;
+  const tableId=await ecomResolveTable(env, c.Id, 'products');
+  if(!tableId) return 0;
+  const skus=scopeSkus?[...new Set(scopeSkus.map(s=>String(s||'').trim()).filter(Boolean))]:null;
+  if(skus&&!skus.length) return 0;
+  let where=`(client_id,eq,${c.Id})`;
+  // SKUs with NocoDB filter syntax characters in them fall back to listing every product.
+  if(skus&&skus.length<=25&&skus.every(s=>/^[\w .\-\/]+$/.test(s))) where+=`~and(${skus.map(s=>`(sku,eq,${s})`).join('~or')})`;
+  const products=[];
+  for(let offset=0; offset<5000; offset+=1000){
+    const qs=new URLSearchParams({where, fields:'Id,sku,shopify_product_url', limit:'1000', offset:String(offset)});
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    products.push(...list);
+    if(list.length<1000) break;
+  }
+  const patches=shopifyProductLinkPatches(c.shopify_shop_domain, products, inventoryRows, skus);
+  for(let i=0; i<patches.length; i+=100){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:patches.slice(i, i+100)});
+    if(!r.ok){ const data=await r.json().catch(()=>({})); throw new Error(`NocoDB PATCH ${r.status}: ${data?.msg||data?.error||''}`); }
+  }
+  if(!patches.length) return 0;
+  if(env.DB){
+    const now=new Date().toISOString();
+    await env.DB.batch(patches.map(p=>env.DB.prepare(`UPDATE ecom_products_mirror SET shopify_product_url=?, updated_at=? WHERE client_id=? AND nocodb_id=?`).bind(p.shopify_product_url, now, Number(c.Id), Number(p.Id)))).catch(e=>console.error('[shopifyLinkEcomProducts] D1 mirror', e.message));
+  }
+  await kvDelEcomProducts(env, c.Id);
+  return patches.length;
 }
 
 // Ecommerce Analytics — Reports page's "🛍️ Ecommerce" tab (and reused by handleReportsProducts
@@ -33669,6 +33719,7 @@ const SHOPIFY_SYNC_DEPS={
   json, ncFetch, getClientById, ncTableMeta, reportOpsError,
   clientsTable:CLIENTS_TABLE, apiVersion:SHOPIFY_API_VERSION,
   webhookUri:env=>`${env.WORKER_BASE_URL}/shopify/webhook`,
+  linkEcomProducts:(env, c, rows, scopeSkus)=>shopifyLinkEcomProducts(env, c, rows, scopeSkus),
 };
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,

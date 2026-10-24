@@ -11,9 +11,12 @@
 // also registers any webhook a store connected before this module is missing. Every row carries
 // `shop` so data from a previously connected store never shows after switching stores.
 //
+// Every product sync also fills each Ecom product's Shopify link by SKU (shopifyProductLinkPatches,
+// applied by deps.linkEcomProducts), so nobody pastes product URLs by hand.
+//
 // This file imports nothing from worker.js; worker.js passes helpers in as `deps`
 // (SHOPIFY_SYNC_DEPS): { json, ncFetch, getClientById, ncTableMeta, clientsTable, apiVersion,
-//   reportOpsError, webhookUri(env) }
+//   reportOpsError, webhookUri(env), linkEcomProducts(env, c, inventoryRows, scopeSkus) }
 
 export const SHOPIFY_SYNC_WEBHOOK_TOPICS={
   read_orders:['orders/create','orders/updated','orders/paid','orders/cancelled','orders/fulfilled','fulfillments/create','fulfillments/update'],
@@ -41,6 +44,15 @@ const INVENTORY_COLUMNS=[
   ['handle','SingleLineText'],['image_url','LongText'],['available','Number'],['tracked','SingleLineText'],
   ['levels_json','LongText'],['updated_at','SingleLineText'],
 ];
+
+// The Shopify page's switches (ecom.html → 🛍️ Shopify) live in shopify_notify_config.settings,
+// next to the notification templates, so that one page saves everything through one field.
+// A missing key keeps the behaviour from before these switches existed: everything on.
+export const SHOPIFY_SETTINGS_DEFAULTS={notify:true, ecom_orders:true, auto_links:true, low_stock:5};
+export function shopifySettings(c){
+  let stored=null; try{ stored=JSON.parse(c?.shopify_notify_config||'{}')?.settings; }catch(e){}
+  return {...SHOPIFY_SETTINGS_DEFAULTS, ...(stored&&typeof stored==='object'?stored:{})};
+}
 
 const _tableIds={};
 async function ensureTable(env, deps, title, columns){
@@ -151,6 +163,35 @@ export function shopifyLevelsSummary(levels, inventoryItemId){
   return {available:Object.values(byLocation).reduce((s, n)=>s+n, 0), levels_json:JSON.stringify(byLocation)};
 }
 
+// Ecom product → Shopify product page, matched on SKU against synced inventory rows. Only links
+// this module writes (https://{shop}/products/…) are ever changed or cleared; a link typed for a
+// product sold somewhere else is left alone. `scopeSkus` limits a webhook's run to the SKUs of the
+// product it carried; null (a full resync) checks every product.
+export function shopifyProductLinkPatches(shop, ecomProducts, inventoryRows, scopeSkus=null){
+  const prefix=`https://${shop}/products/`;
+  const key=s=>String(s||'').trim().toLowerCase();
+  const variantsPerProduct={};
+  (inventoryRows||[]).forEach(r=>{ variantsPerProduct[r.shopify_product_id]=(variantsPerProduct[r.shopify_product_id]||0)+1; });
+  const urlBySku=new Map();
+  (inventoryRows||[]).forEach(r=>{
+    const k=key(r.sku);
+    if(!k||!r.handle||r.product_status!=='active'||urlBySku.has(k)) return;
+    const variant=variantsPerProduct[r.shopify_product_id]>1?`?variant=${r.shopify_variant_id}`:'';
+    urlBySku.set(k, prefix+encodeURIComponent(r.handle)+variant);
+  });
+  const scope=scopeSkus?new Set(scopeSkus.map(key).filter(Boolean)):null;
+  const patches=[];
+  (ecomProducts||[]).forEach(p=>{
+    const k=key(p.sku);
+    if(!k||(scope&&!scope.has(k))) return;
+    const current=String(p.shopify_product_url||'').trim();
+    if(current&&!current.startsWith(prefix)) return;
+    const next=urlBySku.get(k)||'';
+    if(next!==current) patches.push({Id:p.Id, shopify_product_url:next});
+  });
+  return patches;
+}
+
 // Shopify REST pagination: Link: <https://…?page_info=abc&limit=250>; rel="next"
 export function shopifyNextPageInfo(linkHeader){
   const m=String(linkHeader||'').split(',').find(part=>/rel="next"/.test(part));
@@ -208,6 +249,13 @@ async function upsertOrders(env, deps, c, orders){
   return creates.length+updates.length;
 }
 
+// Linking is best-effort: a failure there never fails the stock sync itself.
+async function linkProducts(env, deps, c, rows, scopeSkus){
+  if(!deps.linkEcomProducts) return 0;
+  try{ return await deps.linkEcomProducts(env, c, rows, scopeSkus); }
+  catch(e){ await deps.reportOpsError(env, 'shopify product links', e, {clientId:c.Id}); return 0; }
+}
+
 async function upsertProducts(env, deps, c, products, {replaceAll=false}={}){
   const tableId=await inventoryTable(env, deps);
   const shop=c.shopify_shop_domain;
@@ -226,7 +274,8 @@ async function upsertProducts(env, deps, c, products, {replaceAll=false}={}){
   await bulkWrite(env, deps, tableId, 'POST', creates);
   await bulkWrite(env, deps, tableId, 'PATCH', updates);
   await bulkWrite(env, deps, tableId, 'DELETE', deletes);
-  return rows.length;
+  const linked=await linkProducts(env, deps, c, rows, replaceAll?null:rows.map(r=>r.sku));
+  return {variants:rows.length, linked};
 }
 
 async function shopifyGet(env, deps, c, path){
@@ -255,8 +304,9 @@ export async function shopifySyncOnWebhook(env, deps, c, topic, data){
       await upsertProducts(env, deps, c, [data]);
     }else if(topic==='products/delete'){
       const tableId=await inventoryTable(env, deps);
-      const rows=await listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(shopify_product_id,eq,${data.id})`, 'Id');
+      const rows=await listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(shopify_product_id,eq,${data.id})`, 'Id,sku');
       await bulkWrite(env, deps, tableId, 'DELETE', rows.map(r=>({Id:r.Id})));
+      await linkProducts(env, deps, c, [], rows.map(r=>r.sku));
     }else if(topic==='inventory_levels/update'){
       // The payload has one location's level; re-read every location so `available` stays a true total.
       const tableId=await inventoryTable(env, deps);
@@ -339,7 +389,7 @@ async function handleResync(request, env, deps){
     }).catch(()=>{})
   ));
 
-  const out={ok:true, orders:0, variants:0, missing_scopes:[]};
+  const out={ok:true, orders:0, variants:0, linked:0, missing_scopes:[]};
   try{
     if(scopes.has('read_orders')){
       const since=new Date(Date.now()-90*86400000).toISOString();
@@ -348,7 +398,7 @@ async function handleResync(request, env, deps){
     }else out.missing_scopes.push('read_orders');
     if(scopes.has('read_products')){
       const {items, status}=await fetchPaged(env, deps, c, '/products.json?limit=250', 'products', 8);
-      if(status===200) out.variants=await upsertProducts(env, deps, c, items, {replaceAll:true});
+      if(status===200) Object.assign(out, await upsertProducts(env, deps, c, items, {replaceAll:true}));
     }else out.missing_scopes.push('read_products');
     if(!scopes.has('read_inventory')) out.missing_scopes.push('read_inventory');
   }catch(e){

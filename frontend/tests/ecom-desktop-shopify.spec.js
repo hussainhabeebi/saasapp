@@ -154,3 +154,84 @@ test.describe('mobile', () => {
     expect(calls.some(c => c.path.startsWith('/ecom/shopify/'))).toBe(false);
   });
 });
+
+// The one Shopify page: Ecom → 🛍️ Shopify (connect via the Shopify app, switches, templates, log).
+async function bootPage(page, { shopify = true, scopes = { orders: true, products: true, inventory: true }, query = '', notifyConfig = '' } = {}) {
+  const calls = [];
+  await page.addInitScript(() => { try { localStorage.setItem('lv_session', 'sess-token'); } catch (e) {} });
+  await page.route('**/*', async (route) => {
+    const req = route.request();
+    const url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.startsWith(WORKER)) {
+      const u = new URL(url);
+      calls.push({ path: u.pathname, method: req.method(), body: req.postData(), auth: req.headers().authorization || '' });
+      if (u.pathname === '/ecom/client' && req.method() === 'GET') return route.fulfill({ json: {
+        Id: 7, client_name: 'Kochi Looms', ecom_table_ids: JSON.stringify({ orders: 'o', products: 'p' }),
+        external_store_link: 'https://kochilooms.in', shopify_connected_at: '2026-10-01T10:00:00Z',
+        shopify_notify_log: JSON.stringify([{ ts: '2026-10-20T10:00:00Z', event: 'received', order: '#1001', phone: '+9199', status: 'sent', detail: 'wamid' }]),
+        ...(notifyConfig ? { shopify_notify_config: notifyConfig } : {}),
+        ...(shopify ? { shopify_shop_domain: 'kochi.myshopify.com' } : {}),
+      } });
+      if (u.pathname === '/ecom/shopify/status') return route.fulfill({ json: { connected: true, shop: 'kochi.myshopify.com', scopes } });
+      if (u.pathname === '/ecom/shopify/resync') return route.fulfill({ json: { ok: true, orders: 3, variants: 4, linked: 2 } });
+      if (u.pathname === '/shopify/oauth/start') return route.fulfill({ json: { ok: true, url: 'about:blank#shopify-authorize' } });
+      return route.fulfill({ json: { list: [] } });
+    }
+    return route.abort();
+  });
+  await page.goto(ecomUrl + query, { waitUntil: 'domcontentloaded' });
+  return calls;
+}
+
+test.describe('Shopify page', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('connected: status, switches, shared low-stock threshold and the log in one place', async ({ page }) => {
+    const calls = await bootPage(page, { query: '&tab=shopify', notifyConfig: JSON.stringify({ config: {}, settings: { ecom_orders: false, low_stock: 3 } }) });
+    await expect(page.locator('#tabShopify')).toHaveClass(/active/);
+    await expect(page.locator('#spShop')).toHaveText('kochi.myshopify.com');
+    await expect(page.locator('#spScopes')).toHaveText('✓ Orders · ✓ Products · ✓ Inventory');
+    await expect(page.locator('#spGrantBtn')).toBeHidden();
+    await expect(page.locator('#spSetNotify')).toBeChecked();
+    await expect(page.locator('#spSetEcomOrders')).not.toBeChecked();
+    await expect(page.locator('#spSetLowStock')).toHaveValue('3');
+    await expect(page.locator('#shopLowThreshold')).toHaveValue('3');
+    await expect(page.locator('#spStoreLinkNote')).toContainText('https://kochilooms.in');
+    await expect(page.locator('#spLogTbody')).toContainText('#1001');
+    await expect(page.locator('#spTplBlocks .s-lbl')).toHaveCount(5);
+    await page.locator('label:has(#spSetNotify)').click();
+    await expect.poll(() => calls.filter(c => c.path === '/ecom/client' && c.method === 'PATCH').length).toBe(1);
+    const saved = JSON.parse(JSON.parse(calls.find(c => c.method === 'PATCH').body).shopify_notify_config);
+    expect(saved.settings).toEqual({ notify: false, ecom_orders: false, auto_links: true, low_stock: 3 });
+    if (SHOT) await page.screenshot({ path: `${SHOT}/shopify-page.png`, fullPage: true });
+  });
+
+  test('missing permission: Grant access reconnects the same store, no disconnect', async ({ page }) => {
+    const calls = await bootPage(page, { query: '&tab=shopify', scopes: { orders: true, products: false, inventory: false } });
+    await expect(page.locator('#spBanner')).toContainText('One more permission needed');
+    await expect(page.locator('#spGrantBtn')).toBeVisible();
+    await page.locator('#spGrantBtn').click();
+    await expect.poll(() => calls.find(c => c.path === '/shopify/oauth/start')).toBeTruthy();
+    const start = calls.find(c => c.path === '/shopify/oauth/start');
+    expect(JSON.parse(start.body)).toEqual({ shop: 'kochi.myshopify.com' });
+    expect(start.auth).toBe('Bearer sess-token');
+  });
+
+  test('not connected: connect with the store name only', async ({ page }) => {
+    const calls = await bootPage(page, { shopify: false, query: '&tab=shopify' });
+    await expect(page.locator('#spNotConnected')).toBeVisible();
+    await expect(page.locator('#spConfigured')).toBeHidden();
+    await page.locator('#spDomain').fill('KochiLooms');
+    await page.locator('#spConnectBtn').click();
+    await expect.poll(() => calls.find(c => c.path === '/shopify/oauth/start')).toBeTruthy();
+    expect(JSON.parse(calls.find(c => c.path === '/shopify/oauth/start').body)).toEqual({ shop: 'kochilooms.myshopify.com' });
+  });
+
+  test('back from Shopify: lands on the Shopify page and runs the first sync', async ({ page }) => {
+    const calls = await bootPage(page, { query: '&embed=1&tab=shopify&shopify=connected' });
+    await expect(page.locator('#tabShopify')).toHaveClass(/active/);
+    await expect.poll(() => calls.some(c => c.path === '/ecom/shopify/resync' && c.method === 'POST')).toBe(true);
+    await expect(page.locator('#shopResyncBtn3')).toContainText('2 links');
+  });
+});
