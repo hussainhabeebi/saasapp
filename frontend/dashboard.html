@@ -6159,7 +6159,7 @@ function showApp(){
   const shopifyParam=params.get('shopify');
   const gscParam=params.get('gsc');
   const gcalParam=params.get('gcal');
-  let landingPage=(typeof isTravelView==='function'&&isTravelView())?'travelhome':(typeof isCommerceView==='function'&&isCommerceView())?'storehome':'home';
+  let landingPage=(typeof isTravelView==='function'&&isTravelView())?'travelhome':'home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')) landingPage='integrations';
@@ -7002,16 +7002,17 @@ async function kbDrop(e,stage){
 // sidebar (commerce-view.js). First load picks it via ?tab=; after that the frame is told by
 // postMessage so it doesn't reload. In the store workspace the frame hides its own sidebar
 // (&shell=commerce) because the dashboard's sidebar drives it.
-function renderEcommerce(sub){
+// action='new' also opens that screen's "+ Add …" form (Add product / Create order).
+function renderEcommerce(sub,action){
   const frame=$id('ecommerceFrame');
   if(!frame) return;
   if(!frame.getAttribute('src')){
     const shell=(typeof isCommerceView==='function'&&isCommerceView())?'&shell=commerce':'';
-    frame.src=`ecom.html?client=${clientId}&embed=1${shell}${sub?'&tab='+encodeURIComponent(sub):''}`;
+    frame.src=`ecom.html?client=${clientId}&embed=1${shell}${sub?'&tab='+encodeURIComponent(sub):''}${action==='new'?'&action=new':''}`;
   } else if(sub){
     // Same origin, so call it directly once loaded; the message covers a frame still loading.
-    try{ if(typeof frame.contentWindow?.showTab==='function'){ frame.contentWindow.showTab(sub); return; } }catch(e){}
-    frame.contentWindow?.postMessage({type:'ecom:goto',tab:sub},location.protocol==='file:'?'*':location.origin);
+    try{ if(typeof frame.contentWindow?.ecomGoto==='function'){ frame.contentWindow.ecomGoto(sub,action); return; } }catch(e){}
+    frame.contentWindow?.postMessage({type:'ecom:goto',tab:sub,action},location.protocol==='file:'?'*':location.origin);
   }
 }
 
@@ -23619,7 +23620,7 @@ async function deleteHospBooking(id){
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=5"></script>
 <script src="travel-view.js?v=7"></script>
-<script src="commerce-view.js?v=1"></script>
+<script src="commerce-view.js?v=2"></script>
 <script src="staff-performance.js?v=1"></script>
 <script src="ads-report.js?v=2"></script>
 <script>
