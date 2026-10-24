@@ -33,7 +33,14 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .nav-signin:hover{border-color:var(--green);background:var(--green-soft)}
 .nav-cta{background:var(--green);color:#fff;border:none;border-radius:9px;padding:10px 20px;font-family:var(--disp);font-weight:600;font-size:14px;cursor:pointer;transition:background .15s;text-decoration:none;display:inline-block}
 .nav-cta:hover{background:var(--green-light)}
-@media(max-width:520px){.nav-link{display:none}}
+@media(max-width:520px){
+  .nav-link{display:none}
+  nav{padding:11px 16px}
+  .brand{font-size:18px}
+  .brand img{height:22px;width:22px}
+  .nav-signin{padding:7px 11px;font-size:12px;border-radius:8px}
+  .nav-cta{padding:8px 14px;font-size:12px;border-radius:8px}
+}
 
 /* ── HERO ── */
 .hero{min-height:100vh;background:var(--dark);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:100px 24px 80px;position:relative;overflow:hidden}
@@ -44,7 +51,10 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .hero-orb.o3{width:260px;height:260px;background:#2DD4BF;top:35%;right:8%;animation-delay:-13s}
 @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-24px) scale(1.1)}}
 .hero-grid{position:absolute;inset:0;z-index:0;background-image:radial-gradient(rgba(15,31,26,.06) 1px, transparent 1px);background-size:30px 30px;-webkit-mask-image:radial-gradient(ellipse 65% 55% at 50% 38%, #000 40%, transparent 100%);mask-image:radial-gradient(ellipse 65% 55% at 50% 38%, #000 40%, transparent 100%);pointer-events:none}
-.hero-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center}
+.hero-content{position:relative;z-index:2;display:flex;align-items:center;justify-content:center;gap:56px;width:100%;max-width:1120px}
+.hero-text{display:flex;flex-direction:column;align-items:center;text-align:center;flex:1;min-width:0}
+.hero-visual{flex-shrink:0}
+@media(max-width:920px){.hero-content{flex-direction:column;gap:40px}}
 .hero-badge{display:inline-flex;align-items:center;gap:8px;background:var(--green-soft);border:1px solid rgba(13,156,147,.25);border-radius:99px;padding:7px 16px;font-size:12px;font-weight:600;color:var(--green);letter-spacing:.06em;text-transform:uppercase;margin-bottom:32px}
 .hero-badge .dot{width:7px;height:7px;background:var(--green);border-radius:50%;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
@@ -73,6 +83,27 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:fl
 .bub .label{font-size:10px;color:var(--green);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
 @media(max-width:640px){.bubbles{display:none}}
+
+/* ── PHONE MOCKUP ── */
+.hero-phone{width:230px;background:#0f172a;border-radius:30px;border:4px solid #1e293b;box-shadow:0 48px 96px rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.05),inset 0 0 0 1px rgba(255,255,255,.03);overflow:hidden;animation:phoneFloat 6s ease-in-out infinite}
+@keyframes phoneFloat{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-10px) rotate(1deg)}}
+.ph-status{background:#0f172a;height:22px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:9px;color:rgba(255,255,255,.4)}
+.ph-bar{background:#0D9C93;padding:9px 12px;display:flex;align-items:center;gap:8px}
+.ph-av{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex-shrink:0}
+.ph-name{font-size:12px;font-weight:600;color:#fff;line-height:1.15}
+.ph-online{font-size:9.5px;color:rgba(255,255,255,.8);display:flex;align-items:center;gap:3px}
+.ph-online::before{content:"";width:5px;height:5px;background:#4ade80;border-radius:50%;display:inline-block}
+.ph-msgs{padding:8px 7px;display:flex;flex-direction:column;gap:4px;min-height:250px;background:#0b1320;overflow:hidden}
+.pm{max-width:84%;padding:6px 9px;border-radius:12px;font-size:10.5px;line-height:1.45;opacity:0;animation:pmPop .35s ease forwards;font-family:var(--body)}
+.pm.in{background:#1e293b;color:#cbd5e1;border-bottom-left-radius:3px;align-self:flex-start}
+.pm.out{background:#0D9C93;color:#fff;border-bottom-right-radius:3px;align-self:flex-end}
+.pm.hi{background:linear-gradient(135deg,#0D9C93,#3DD9C8);font-weight:600;border-bottom-right-radius:3px;align-self:flex-end}
+@keyframes pmPop{from{opacity:0;transform:translateY(6px) scale(.96)}to{opacity:1;transform:none}}
+.ph-typing{padding:6px 7px;display:none;align-items:center;gap:3px;background:#0b1320}
+.ph-typing.show{display:flex}
+.t-dot{width:4px;height:4px;border-radius:50%;background:#3DD9C8;animation:tdot 1.2s ease-in-out infinite}
+.t-dot:nth-child(2){animation-delay:.2s}.t-dot:nth-child(3){animation-delay:.4s}
+@keyframes tdot{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-3px);opacity:1}}
 
 /* ── STATS ── */
 .stats{background:var(--dark2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:44px 24px;display:flex;justify-content:center;gap:0;flex-wrap:wrap}
@@ -308,35 +339,36 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
   <div class="hero-orb o3"></div>
   <div class="hero-grid"></div>
   <div class="hero-content">
-    <div class="hero-badge"><span class="dot"></span>Join 1,000+ businesses converting more leads with AI</div>
-    <h1>Turn Every <span class="rotate-text-wrap"><span class="rotate-text" id="rotateWord">WhatsApp Chat</span></span><br>Into a Paying <span class="accent">Customer</span>.</h1>
-    <p class="hero-sub">Leadvyne captures, qualifies, and follows up on every lead — WhatsApp, website, email, and more — automatically, then hands off to your team at exactly the right moment. Built to convert, not just chat.</p>
-    <div class="hero-actions" style="flex-direction:column;align-items:center;gap:12px">
-      <form class="signup-form" id="heroSignupForm" onsubmit="handleSignupSubmit(event,'hero')">
-        <input type="email" class="signup-input" placeholder="Enter your work email" required autocomplete="email">
-        <button type="submit" class="btn-primary" id="heroSignupBtn" style="padding:15px 28px">Start Free Trial →</button>
-      </form>
-      <div class="signup-msg" id="heroSignupMsg"></div>
-      <a href="#features" style="font-size:14px;color:var(--muted);text-decoration:none;font-weight:600">See how it works ↓</a>
-    </div>
-    <div class="hero-trust">
-      <span>🆓 Free to start</span>
-      <span>🔒 No credit card needed</span>
-      <span>⚡ Live in 60 seconds</span>
-    </div>
-
-    <div class="bubbles">
-      <div class="bub">
-        <div class="label">Lead qualified</div>
-        Budget: ₹50L · Ready to buy
+    <div class="hero-text">
+      <div class="hero-badge"><span class="dot"></span>Join 1,000+ businesses converting more leads with AI</div>
+      <h1>Turn Every <span class="rotate-text-wrap"><span class="rotate-text" id="rotateWord">WhatsApp Chat</span></span><br>Into a Paying <span class="accent">Customer</span>.</h1>
+      <p class="hero-sub">Leadvyne captures, qualifies, and follows up on every lead — WhatsApp, website, email, and more — automatically, then hands off to your team at exactly the right moment. Built to convert, not just chat.</p>
+      <div class="hero-actions" style="flex-direction:column;align-items:center;gap:12px">
+        <form class="signup-form" id="heroSignupForm" onsubmit="handleSignupSubmit(event,'hero')">
+          <input type="email" class="signup-input" placeholder="Enter your work email" required autocomplete="email">
+          <button type="submit" class="btn-primary" id="heroSignupBtn" style="padding:15px 28px">Start Free Trial →</button>
+        </form>
+        <div class="signup-msg" id="heroSignupMsg"></div>
+        <a href="#features" style="font-size:14px;color:var(--muted);text-decoration:none;font-weight:600">See how it works ↓</a>
       </div>
-      <div class="bub b2">
-        <div class="label">Quote sent</div>
-        Package: AED 2,500 · PDF delivered
+      <div class="hero-trust">
+        <span>🆓 Free to start</span>
+        <span>🔒 No credit card needed</span>
+        <span>⚡ Live in 60 seconds</span>
       </div>
-      <div class="bub b3">
-        <div class="label">Handover triggered</div>
-        Agent notified ✓
+    </div>
+    <div class="hero-visual">
+      <div class="hero-phone">
+        <div class="ph-status"><span>9:41</span><span style="display:flex;gap:4px;align-items:center">▶▶ ⬛</span></div>
+        <div class="ph-bar">
+          <div class="ph-av">LV</div>
+          <div>
+            <div class="ph-name">Leadvyne AI</div>
+            <div class="ph-online">Online</div>
+          </div>
+        </div>
+        <div class="ph-msgs" id="phMsgs"></div>
+        <div class="ph-typing" id="phTyping"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div>
       </div>
     </div>
   </div>
@@ -533,18 +565,6 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
       <p>Feed real lead quality back into Meta's Conversions API so campaigns learn to optimize for leads that actually convert — plus automated budget-shift, fatigue checks, and lookalike audiences.</p>
     </div>
 
-    <div class="feat-cat">🎬 Marketing Studio</div>
-    <div class="feat">
-      <div class="feat-icon">🎞️</div>
-      <h3>AI Video Editor</h3>
-      <p>Turn a long video into a captioned, auto-cropped short — AI transcription, scene detection, AI voiceover, AI B-roll, and animated templates for Reels/Shorts/Status.</p>
-    </div>
-    <div class="feat">
-      <div class="feat-icon">🖼️</div>
-      <h3>Image & Content Studio</h3>
-      <p>AI image generation, background removal, restyling, and an AI-generated social content calendar built straight from your own customer data.</p>
-    </div>
-
     <div class="feat-cat">🛒 Commerce & Finance</div>
     <div class="feat">
       <div class="feat-icon">🛍️</div>
@@ -694,16 +714,14 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
     </div>
 
     <div class="price-card">
-      <div class="price-name">Marketing Pro</div>
-      <div class="price-desc">Agencies and brands running content and ads at scale.</div>
+      <div class="price-name">Enterprise</div>
+      <div class="price-desc">Larger teams that need more users, channels and priority support.</div>
       <div class="price-amt">₹6,999<span class="per">/mo</span></div>
       <div class="price-limits"><span>👤 up to 15 users</span><span>🔌 10 channels</span></div>
       <ul class="price-feat-list">
         <li>Everything in Business Intelligence</li>
-        <li>Marketing Studio — AI video editor</li>
-        <li>Image & Content Studio</li>
         <li>Meta Ads Automation & CAPI</li>
-        <li>Priority render queue</li>
+        <li>Priority support</li>
       </ul>
       <a href="https://app.leadvyne.com/dashboard.html?signup=1&plan=marketing_pro" class="price-cta">Get Started</a>
     </div>
@@ -712,7 +730,7 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
   <div class="compare-wrap">
     <table class="compare-table">
       <thead>
-        <tr><th>Compare plans</th><th>Basic</th><th>Standard</th><th>Business Intelligence</th><th>Marketing Pro</th></tr>
+        <tr><th>Compare plans</th><th>Basic</th><th>Standard</th><th>Business Intelligence</th><th>Enterprise</th></tr>
       </thead>
       <tbody>
         <tr><td>Users</td><td>1</td><td>3</td><td>8</td><td>15</td></tr>
@@ -727,8 +745,6 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
         <tr><td>Shopify, Ecommerce & SaaS Ops</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
         <tr><td>All industry modules (Real Estate, Recruitment, Hospitality, B2B, Travel)</td><td class="no">—</td><td>1 module</td><td class="yes">✓</td><td class="yes">✓</td></tr>
         <tr><td>Voice AI replies</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-        <tr><td>Marketing Studio (AI video editor)</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td></tr>
-        <tr><td>Image & Content Studio</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td></tr>
         <tr><td>Meta Ads Automation & CAPI</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td></tr>
       </tbody>
     </table>
@@ -894,5 +910,37 @@ function handleSignupSubmit(e, formId){
 }
 </script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
+<script>
+(function(){
+  const msgs=[
+    {dir:'in',  text:'Hi! Interested in your premium package 👋'},
+    {dir:'out', text:'Hi! I\'m Leadvyne AI. Tell me more about what you need.'},
+    {dir:'in',  text:'Budget around ₹50L, looking to invest now'},
+    {dir:'out', text:'Perfect! That matches our premium plan. 🎯'},
+    {dir:'out', hi:true, text:'Lead Score: 94/100 · Budget ✓ · Timeline ✓'},
+    {dir:'out', text:'Connecting you with Sarah from our team now! ✅'},
+  ];
+  const container=document.getElementById('phMsgs');
+  const typing=document.getElementById('phTyping');
+  if(!container||!typing) return;
+  let idx=0;
+  function next(){
+    if(idx>=msgs.length){ setTimeout(()=>{container.innerHTML='';idx=0;next();},3200); return; }
+    const m=msgs[idx++];
+    if(m.dir==='out') typing.classList.add('show');
+    const delay=m.dir==='out'?700:300;
+    setTimeout(()=>{
+      typing.classList.remove('show');
+      const d=document.createElement('div');
+      d.className='pm '+(m.hi?'hi':m.dir);
+      d.textContent=m.text;
+      container.appendChild(d);
+      container.scrollTop=container.scrollHeight;
+      setTimeout(next,1100);
+    }, delay);
+  }
+  setTimeout(next,900);
+})();
+</script>
 </body>
 </html>

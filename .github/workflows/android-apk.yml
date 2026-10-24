@@ -1,0 +1,95 @@
+name: Android app (APK)
+
+# Builds the Leadvyne Android app — a Trusted Web Activity (android/, see android/README.md) that
+# opens https://app.leadvyne.com/m.html full-screen. Nothing here touches the website or the Worker;
+# it only produces the app files: an APK to share and install directly, and an Android App Bundle
+# (.aab) to upload to Google Play (Play accepts only bundles for new apps). Download them from this
+# run's "leadvyne-apk" artifact, or from the GitHub Release that builds on main create (push or
+# "Run workflow"). Both are signed with the same key — for Play that is the upload key.
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - name: Signing key
+        id: key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "LV_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "official=true" >> "$GITHUB_OUTPUT"
+          else
+            # No key in the repo secrets yet: still build (proves the project compiles), with a
+            # throwaway key. That APK installs, but shows a browser address bar, since
+            # assetlinks.json doesn't vouch for its key — and it can't be updated by the real one.
+            echo "::warning::ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets are not set — building a TEST APK with a throwaway key (see android/README.md)."
+            PW=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.keystore" -storetype PKCS12 -alias leadvyne -keyalg RSA -keysize 2048 -validity 30 -storepass "$PW" -keypass "$PW" -dname "CN=Leadvyne test"
+            echo "::add-mask::$PW"
+            echo "LV_KEYSTORE_PASSWORD=$PW" >> "$GITHUB_ENV"
+            echo "official=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "LV_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "LV_VERSION_CODE=${{ github.run_number }}" >> "$GITHUB_ENV"
+      - name: Build
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease bundleRelease
+      - name: Check signature and Digital Asset Links
+        id: check
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK" | tee certs.txt
+          FP=$(grep -m1 'SHA-256 digest' certs.txt | awk '{print $NF}' | tr 'a-f' 'A-F' | sed 's/../&:/g;s/:$//')
+          echo "APK certificate SHA-256: $FP"
+          if grep -q "$FP" frontend/.well-known/assetlinks.json; then
+            echo "assetlinks.json lists this key — the app opens full-screen, no address bar."
+          else
+            echo "::warning::frontend/.well-known/assetlinks.json does not list $FP — the app will show an address bar."
+          fi
+          NAME=leadvyne-${{ steps.key.outputs.official == 'true' && 'v1.0' || 'TEST-v1.0' }}.${{ github.run_number }}
+          cp "$APK" "$NAME.apk"
+          # The Play bundle: signed with the same (upload) key — jarsigner checks it.
+          AAB=android/app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify "$AAB" | tail -1
+          cp "$AAB" "$NAME.aab"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leadvyne-apk
+          path: |
+            ${{ steps.check.outputs.name }}.apk
+            ${{ steps.check.outputs.name }}.aab
+          retention-days: 30
+      # Pushes to main and "Run workflow" on main both publish — the first official build usually
+      # comes from a manual run right after the keystore secrets are added.
+      - name: GitHub Release (main, official key only)
+        if: github.ref == 'refs/heads/main' && steps.key.outputs.official == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "android-v1.0.${{ github.run_number }}" "${{ steps.check.outputs.name }}.apk" "${{ steps.check.outputs.name }}.aab" \
+            --title "Leadvyne Android app 1.0.${{ github.run_number }}" \
+            --notes "APK: open it on an Android phone and allow installing from this source. AAB: upload to Google Play Console (Production / Testing → Create release). Opens app.leadvyne.com/m.html full-screen." \
+            --target "${{ github.sha }}"
