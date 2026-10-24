@@ -87,6 +87,24 @@ test('Call dials from the app, then the outcome is saved to CallLog like the das
   expect(await page.evaluate(() => localStorage.getItem('lv_m_call_48'))).toBeNull();
 });
 
+test('Call from inside the lead card still asks how it went on return, so the lead leaves "Not called"', async ({ page }) => {
+  const { patches } = await open(page, { owner: 'sales@x.test' });
+  await page.locator('#attn .lead', { hasText: 'Sahilath' }).locator('.info').click();
+  await expect(page.locator('#leadSheet')).toBeVisible();
+  // The card's Call button, minus the tel: hop the test browser can't make.
+  await page.evaluate(() => { localStorage.setItem('lv_m_call_48', JSON.stringify({ id: '11', start: Date.now() - 60000 })); });
+  // Back from the dialer with the card still open.
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const sheet = page.locator('#callSheet');
+  await expect(sheet).toBeVisible();
+  await expect(page.locator('#leadSheet')).toBeHidden();
+  await sheet.getByRole('button', { name: /Answered/ }).click();
+  await sheet.getByRole('button', { name: 'Save call' }).click();
+  await expect.poll(() => patches.find((p) => p.CallLog)).toBeTruthy();
+  expect(JSON.parse(patches.find((p) => p.CallLog).CallLog)[0]).toMatchObject({ outcome: 'Answered', src: 'dial' });
+  await expect(page.locator('#attnNew')).toHaveText('0');
+});
+
 test('Call on a lead row starts the in-app call flow instead of opening the dashboard', async ({ page }) => {
   await open(page);
   // Stop the actual tel: navigation; check what was asked for.
