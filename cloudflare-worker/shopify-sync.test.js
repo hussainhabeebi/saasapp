@@ -1,7 +1,7 @@
 // Shopify Orders / Stock modules — payload mapping, out-of-order guard, inventory totals, paging.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shopifyOrderRow, shopifyIsStale, shopifyMergeFulfillment, shopifyInventoryRows, shopifyLevelsSummary, shopifyNextPageInfo, shopifySyncOnWebhook, shopifySettings, shopifyProductLinkPatches } from './shopify-sync.js';
+import { shopifyOrderRow, shopifyIsStale, shopifyMergeFulfillment, shopifyInventoryRows, shopifyLevelsSummary, shopifyNextPageInfo, shopifySyncOnWebhook, shopifySettings, shopifyEcomProductFields, shopifyEcomProductPlan, shopifyEcomOrderStatus, shopifyEcomNextStatus, shopifyEcomOrderFields, shopifyEcomOrderPlan, shopifyStockFromVariants, shopifyHtmlToText, SHOPIFY_UNTRACKED_STOCK } from './shopify-sync.js';
 
 const SHOP = 'demo.myshopify.com';
 
@@ -95,6 +95,8 @@ test('order webhook creates the row, a stale retry is skipped', async () => {
       return { ok: true, json: async () => ({}) };
     },
   };
+  const ecomOrders = [];
+  deps.syncEcomOrders = async (env, c, orders) => { ecomOrders.push(...orders.map(o => o.id)); };
   const c = { Id: 42, shopify_shop_domain: SHOP, shopify_access_token: 'tok' };
   await shopifySyncOnWebhook({}, deps, c, 'orders/create', { id: 5001, name: '#1001', updated_at: '2026-10-20T11:00:00Z', financial_status: 'paid' });
   assert.equal(stored.shopify_order_id, '5001');
@@ -102,41 +104,121 @@ test('order webhook creates the row, a stale retry is skipped', async () => {
   await shopifySyncOnWebhook({}, deps, c, 'orders/updated', { id: 5001, name: '#1001', updated_at: '2026-10-20T10:00:00Z', financial_status: 'pending' });
   assert.equal(calls.filter(([m, , body]) => m === 'PATCH' && body.length).length, 0);
   assert.equal(calls.filter(([m]) => m !== 'GET').length, writesBefore);
+  // Copied into Ecom Orders once — the stale retry isn't.
+  assert.deepEqual(ecomOrders, [5001]);
 });
 
 test('Shopify page settings default to on and read from shopify_notify_config', () => {
-  assert.deepEqual(shopifySettings({}), { notify: true, ecom_orders: true, auto_links: true, low_stock: 5 });
-  assert.deepEqual(shopifySettings({ shopify_notify_config: 'not json' }).notify, true);
+  assert.deepEqual(shopifySettings({}), { notify: true, low_stock: 5 });
+  assert.equal(shopifySettings({ shopify_notify_config: 'not json' }).notify, true);
   const s = shopifySettings({ shopify_notify_config: JSON.stringify({ config: {}, settings: { notify: false, low_stock: 2 } }) });
   assert.equal(s.notify, false);
   assert.equal(s.low_stock, 2);
-  assert.equal(s.auto_links, true);
 });
 
-test('product links are filled by SKU, only ever replacing links this module wrote', () => {
-  const inv = [
-    { shopify_product_id: '1', shopify_variant_id: '101', sku: 'K-M', handle: 'kurta', product_status: 'active' },
-    { shopify_product_id: '1', shopify_variant_id: '102', sku: 'K-L', handle: 'kurta', product_status: 'active' },
-    { shopify_product_id: '2', shopify_variant_id: '201', sku: 'S-1', handle: 'saree', product_status: 'active' },
-    { shopify_product_id: '3', shopify_variant_id: '301', sku: 'D-1', handle: 'draft-thing', product_status: 'draft' },
+const KURTA = {
+  id: 1, title: 'Kurta', handle: 'kurta', status: 'active', product_type: 'Apparel', vendor: 'Own',
+  body_html: '<p>Soft <b>cotton</b> &amp; linen</p><ul><li>Hand wash</li></ul>',
+  options: [{ name: 'Size', values: ['M', 'L'] }, { name: 'Color', values: ['Blue'] }],
+  variants: [
+    { id: 101, title: 'M / Blue', sku: 'K-M', price: '649.00', inventory_management: 'shopify', inventory_quantity: 2 },
+    { id: 102, title: 'L / Blue', sku: 'K-L', price: '599.00', inventory_management: 'shopify', inventory_quantity: -1 },
+  ],
+  images: [{ src: 'https://cdn/k1.jpg' }, { src: 'https://cdn/k2.jpg' }],
+};
+
+test('a Shopify product maps to one Ecom product', () => {
+  const f = shopifyEcomProductFields(SHOP, KURTA);
+  assert.equal(f.name, 'Kurta');
+  assert.equal(f.sku, 'K-M');
+  assert.equal(f.price, 599);
+  assert.equal(f.stock, 2); // oversold variant counts as 0
+  assert.equal(f.status, 'active');
+  assert.equal(f.shopify_product_id, '1');
+  assert.equal(f.shopify_product_url, 'https://demo.myshopify.com/products/kurta');
+  assert.equal(f.size, 'M, L');
+  assert.equal(f.color, 'Blue');
+  assert.equal(f.variant, 'M / Blue, L / Blue');
+  assert.equal(f.category, 'Apparel');
+  assert.equal(f.brand, 'Own');
+  assert.equal(f.description, 'Soft cotton & linen\n• Hand wash');
+  assert.equal(f.image_url, 'https://cdn/k1.jpg');
+  assert.equal(f.image_url_2, 'https://cdn/k2.jpg');
+  assert.equal('image_url_3' in f, false); // a photo added in Ecom stays
+  const draft = shopifyEcomProductFields(SHOP, { ...KURTA, status: 'draft' });
+  assert.equal(draft.status, 'inactive');
+  assert.equal(draft.shopify_product_url, '');
+});
+
+test('stock: tracked variants are summed, any untracked one means always available', () => {
+  assert.equal(shopifyStockFromVariants([{ tracked: true, available: 3 }, { tracked: true, available: 4 }]), 7);
+  assert.equal(shopifyStockFromVariants([{ tracked: true, available: 0 }, { tracked: false, available: 0 }]), SHOPIFY_UNTRACKED_STOCK);
+  assert.equal(shopifyStockFromVariants([]), 0);
+  assert.equal(shopifyHtmlToText('a<br>b&nbsp;c'), 'a\nb c');
+});
+
+test('product plan: update linked, adopt by SKU, create new, skip new drafts, deactivate what left Shopify', () => {
+  const saree = { id: 2, title: 'Saree', handle: 'saree', status: 'active', variants: [{ id: 201, sku: 'S-1', price: '2500', inventory_management: null }] };
+  const draft = { id: 3, title: 'Draft', handle: 'draft', status: 'draft', variants: [{ id: 301, sku: 'D-1', price: '10' }] };
+  const shawl = { id: 4, title: 'Shawl', handle: 'shawl', status: 'active', variants: [{ id: 401, sku: 'SH-1', price: '900', inventory_management: 'shopify', inventory_quantity: 5 }] };
+  const existing = [
+    { Id: 10, shopify_product_id: '1', name: 'Old kurta', sku: 'K-M', price: 649, stock: 2, status: 'active' },
+    { Id: 11, sku: 's-1', name: 'Saree (hand made)', status: 'active', audio_url: 'https://a' },
+    { Id: 12, shopify_product_id: '9', name: 'Gone', status: 'active' },
+    { Id: 13, sku: 'X', name: 'Not on Shopify', status: 'active' },
   ];
-  const products = [
-    { Id: 1, sku: 'k-m', shopify_product_url: '' },
-    { Id: 2, sku: 'S-1', shopify_product_url: 'https://demo.myshopify.com/products/old-saree' },
-    { Id: 3, sku: 'K-L', shopify_product_url: 'https://amazon.in/dp/X' },
-    { Id: 4, sku: 'D-1', shopify_product_url: 'https://demo.myshopify.com/products/draft-thing' },
-    { Id: 5, sku: '', shopify_product_url: '' },
-    { Id: 6, sku: 'NOPE', shopify_product_url: '' },
-  ];
-  assert.deepEqual(shopifyProductLinkPatches(SHOP, products, inv), [
-    { Id: 1, shopify_product_url: 'https://demo.myshopify.com/products/kurta?variant=101' },
-    { Id: 2, shopify_product_url: 'https://demo.myshopify.com/products/saree' },
-    { Id: 4, shopify_product_url: '' },
-  ]);
-  // A webhook only touches its own product's SKUs.
-  assert.deepEqual(shopifyProductLinkPatches(SHOP, products, inv, ['S-1']), [
-    { Id: 2, shopify_product_url: 'https://demo.myshopify.com/products/saree' },
-  ]);
-  // products/delete: the SKUs are gone from Shopify, so their links are cleared.
-  assert.deepEqual(shopifyProductLinkPatches(SHOP, products, [], ['D-1', 'K-L']), [{ Id: 4, shopify_product_url: '' }]);
+  const { creates, updates } = shopifyEcomProductPlan(SHOP, existing, [KURTA, saree, draft, shawl], { replaceAll: true });
+  assert.deepEqual(creates.map(c => c.name), ['Shawl']);
+  assert.equal(creates[0].stock, 5);
+  assert.deepEqual(updates.map(u => u.Id), [10, 11, 12]);
+  assert.equal(updates[0].name, 'Kurta');
+  assert.equal(updates[1].shopify_product_id, '2');
+  assert.equal(updates[1].stock, SHOPIFY_UNTRACKED_STOCK);
+  assert.equal('audio_url' in updates[1], false);
+  assert.deepEqual(updates[2], { Id: 12, status: 'inactive' });
+  // A webhook (no replaceAll) never deactivates other products; unchanged rows aren't rewritten.
+  const same = { Id: 10, ...shopifyEcomProductFields(SHOP, KURTA) };
+  assert.deepEqual(shopifyEcomProductPlan(SHOP, [same, existing[2]], [KURTA]), { creates: [], updates: [] });
+  // products/delete
+  assert.deepEqual(shopifyEcomProductPlan(SHOP, existing, [], { deletedIds: [9] }).updates, [{ Id: 12, status: 'inactive' }]);
+});
+
+test('order status follows Shopify and never moves backwards', () => {
+  assert.equal(shopifyEcomOrderStatus({ financial_status: 'pending' }), 'received');
+  assert.equal(shopifyEcomOrderStatus({ financial_status: 'paid' }), 'processing');
+  assert.equal(shopifyEcomOrderStatus({ financial_status: 'paid', fulfillment_status: 'partial' }), 'shipped');
+  assert.equal(shopifyEcomOrderStatus({ fulfillments: [{ shipment_status: 'delivered' }] }), 'delivered');
+  assert.equal(shopifyEcomOrderStatus({ fulfillments: [{ shipment_status: 'delivered' }, { shipment_status: 'in_transit' }] }), 'shipped');
+  assert.equal(shopifyEcomOrderStatus({ financial_status: 'paid', cancelled_at: '2026-10-20' }), 'cancelled');
+  assert.equal(shopifyEcomOrderStatus({ financial_status: 'refunded' }), 'cancelled');
+  assert.equal(shopifyEcomNextStatus('delivered', 'shipped'), 'delivered');
+  assert.equal(shopifyEcomNextStatus('received', 'processing'), 'processing');
+  assert.equal(shopifyEcomNextStatus('shipped', 'cancelled'), 'cancelled');
+  assert.equal(shopifyEcomNextStatus('cancelled', 'processing'), 'cancelled');
+  assert.equal(shopifyEcomNextStatus('', 'received'), 'received');
+  assert.equal(shopifyEcomNextStatus('on hold', 'processing'), 'processing');
+});
+
+test('a Shopify order maps to an Ecom order row', () => {
+  const f = shopifyEcomOrderFields(42, { id: 5001, name: '#1001', created_at: '2026-10-20T10:00:00Z', financial_status: 'paid', total_price: '1299.00', currency: 'INR',
+    customer: { first_name: 'Asha', last_name: 'K' }, shipping_address: { phone: '+9199', address1: '1 MG Rd', city: 'Kochi', country: 'India' },
+    line_items: [{ title: 'Kurta', quantity: 2, price: '599.50', sku: 'K-M' }] });
+  assert.deepEqual({ ...f, line_items_json: JSON.parse(f.line_items_json) }, {
+    client_id: '42', shopify_order_id: '5001', status: 'processing', order_id: '#1001', customer_name: 'Asha K', customer_phone: '+9199',
+    order_date: '2026-10-20', items: '2x Kurta', line_items_json: [{ title: 'Kurta', quantity: 2, price: 599.5, sku: 'K-M' }],
+    total: 1299, currency: 'INR', delivery_address: '1 MG Rd, Kochi, India',
+  });
+  assert.equal(shopifyEcomOrderFields(42, { id: 1 }, 'shipped').status, 'shipped');
+});
+
+test('order plan writes only new or changed orders', () => {
+  const o = { id: 5001, name: '#1001', created_at: '2026-10-20T10:00:00Z', financial_status: 'paid', total_price: '1299.00', line_items: [] };
+  const row = { Id: 7, ...shopifyEcomOrderFields(42, o), total: '1299.00' };
+  assert.deepEqual(shopifyEcomOrderPlan(42, [row], [o]), { creates: [], updates: [] });
+  const shipped = { ...o, fulfillment_status: 'fulfilled' };
+  assert.equal(shopifyEcomOrderPlan(42, [row], [shipped]).updates[0].status, 'shipped');
+  // Staff marked it delivered by hand: a later "paid" sync changes nothing.
+  assert.deepEqual(shopifyEcomOrderPlan(42, [{ ...row, status: 'delivered' }], [o]).updates, []);
+  const fresh = shopifyEcomOrderPlan(42, [], [o, { ...o }]);
+  assert.equal(fresh.creates.length, 1);
 });

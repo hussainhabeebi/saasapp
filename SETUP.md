@@ -1164,21 +1164,36 @@ Shopify app's OAuth only; nothing is pasted by hand), the switches below, notifi
 and the send log. Settings → Integrations in `dashboard.html` only shows the status and a "Manage
 in Ecommerce → Shopify" button.
 
-**Switches** (stored in `shopify_notify_config.settings`, read server-side by `shopifySettings()`
-in `shopify-sync.js`; a missing key means on, which is how every store behaved before them):
-- `notify` — WhatsApp order updates (`sendShopifyNotification` returns early when off).
-- `ecom_orders` — copy Shopify orders into the shared Ecom Orders table (`syncShopifyOrderToEcom`).
-  The Shopify Orders page (`shopify_orders`) always syncs.
-- `auto_links` — fill each Ecom product's `shopify_product_url` by SKU (below).
-- `low_stock` — the Shopify Stock low-stock threshold, shared by the whole team (was per browser).
+**Settings** (stored in `shopify_notify_config.settings`, read server-side by `shopifySettings()`
+in `shopify-sync.js`; a missing key keeps the default):
+- `notify` (default on) — WhatsApp order updates (`sendShopifyNotification` returns early when off).
+- `low_stock` (default 5) — the Shopify Stock low-stock threshold, shared by the whole team.
 
-**Product links by SKU:** every product sync (`products/*` webhooks and Sync now) matches Ecom
-products to active Shopify variants by SKU (case-insensitive) and writes
-`https://{shop}/products/{handle}` (plus `?variant=` for multi-variant products) into
-`shopify_product_url` — the field every bot/order-link path already reads. Only links in that
-`https://{shop}/products/` form are ever changed or cleared (a draft/deleted product clears its
-link); a link typed for another store is left alone. Writes are mirrored into D1 and drop the KV
-product cache. In Edit Product the field is read-only while Shopify manages it.
+**Shopify products and orders are ordinary Ecom Products and Orders** — always, for every
+connected client, so the Products/Orders pages, Reports, the storefront and the WhatsApp bot treat
+them exactly like ones added by hand. `shopify-sync.js` hands every product/order payload
+(webhooks and Sync now) to `worker.js` (`shopifySyncEcomProducts` / `shopifySyncEcomStock` /
+`shopifySyncEcomOrders`); the field mapping is pure and tested in `shopify-sync.js`.
+- **Products** — one Ecom product per Shopify product (`shopifyEcomProductFields`), keyed by a
+  self-provisioned `shopify_product_id` column. Shopify owns name, SKU (first variant's), price
+  (lowest variant), stock (tracked variants summed; any untracked variant → 999, "always
+  available"), status (non-active → `inactive`) and `shopify_product_url` (the bot's order link).
+  Description (HTML → text), category (product type), brand (vendor), colours/sizes (from the
+  Color/Size options), variant names and up to 5 photos are written only when Shopify has them, so
+  anything added in Ecom on top (extra photos, audio, style fields) is kept. First sync adopts a
+  hand-made product with a matching SKU instead of duplicating it; new drafts aren't imported;
+  products deleted in Shopify (or gone at a resync) become `inactive`, never deleted. Unchanged
+  products aren't rewritten. Every write is mirrored to D1, drops the KV product cache and
+  re-indexes the bot's product memory (a resync indexes up to 60; the nightly backfill does the
+  rest). `inventory_levels/update` updates the product's stock. In ecom.html these rows carry a
+  "🛍️ Shopify" badge, stock is read-only, and Edit Product says which fields come from Shopify.
+- **Orders** — `orders/*` webhooks, fulfillment webhooks and Sync now (last 90 days, so history
+  shows too) upsert into the Ecom Orders table, matched on `shopify_order_id`. Status comes from
+  the order (`shopifyEcomOrderStatus`: cancelled/refunded → `cancelled`, all fulfillments delivered
+  → `delivered`, any fulfillment → `shipped`, paid → `processing`, else `received`) and never moves
+  backwards (`shopifyEcomNextStatus`), so a manual "delivered" in Ecom sticks. Only new or changed
+  orders are written (`shopifyEcomOrderPlan`). `shopify_order_id` and `line_items_json` columns
+  are created on the orders table automatically.
 
 **Store link:** on connect, Settings → Order Link (`external_store_link`) is filled from the
 store's primary domain (`/shop.json`) when it's still blank.
@@ -1209,12 +1224,12 @@ resolved id for the life of the Worker isolate. Nothing to create by hand or pas
 constant — this used to require creating the table manually in NocoDB and pasting its id into a
 `SHOPIFY_CHECKOUTS_TABLE` constant (same pattern as `EMAIL_CAMPAIGNS_TABLE`); that step is gone.
 
-**New Ecommerce Orders column** `shopify_order_id` (Single line text) — add this to whatever
-table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
+**Ecommerce Orders column** `shopify_order_id` (Single line text) — now created automatically
+(`ensureEcomShopifyOrderFields`) on whatever table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
 override), alongside the existing `ORDER_FIELDS` columns (`order_id`, `customer_name`,
 `customer_phone`, `order_date`, `items`, `total`, `currency`, `status`, `delivery_address`,
 `notes` — see `ecom.html`). Every Shopify order webhook now also upserts a row into this same
-table via `syncShopifyOrderToEcom()`, matched on `shopify_order_id` (Shopify's own numeric order
+table via `shopifySyncEcomOrders()`, matched on `shopify_order_id` (Shopify's own numeric order
 id, stable even if the merchant edits the order name) — so a Shopify order shows up in the
 Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp notification.
 `status` tracks the lifecycle: `received` (order created) → `processing` (paid) → `shipped`
@@ -1295,7 +1310,7 @@ entries (and the desktop **Home** overview) are hidden below 768px and nothing i
 **Tables (auto-provisioned, nothing to create):** `shopify_orders` and `shopify_inventory`, created
 in the clients table's base on first use, like `shopify_checkouts`. Rows carry `client_id` + `shop`,
 so switching stores never shows the old store's data. These are separate from the shared Ecom
-orders table — `syncShopifyOrderToEcom` keeps feeding the regular Orders page exactly as before.
+orders table — `shopifySyncEcomOrders` keeps feeding the regular Orders page too.
 
 **Sync:** webhooks keep both tables live — `orders/create|updated|paid|cancelled|fulfilled`,
 `fulfillments/create|update` (tracking), `products/create|update|delete`, and
@@ -4572,7 +4587,7 @@ not be fine for anything billing-accuracy-sensitive (nothing here is).
 **Bug fixed**: this originally required Shopify specifically connected (`shopify_shop_domain`) to
 show anything at all — a client using only the built-in storefront checkout (`onshope.com`,
 `handleEcomPublicOrder`) got an empty "connect Shopify" wall despite having real orders sitting in
-the exact same Ecommerce Orders table `syncShopifyOrderToEcom` (Shopify) and
+the exact same Ecommerce Orders table `shopifySyncEcomOrders` (Shopify) and
 `handleEcomPublicOrder` (built-in storefront) both write to. Every order source lands in the same
 table, so the report now only gates on **whether an orders table resolves at all**
 (`has_orders_table` — i.e. the Ecommerce module is set up), never on Shopify specifically.
@@ -4581,7 +4596,7 @@ auto-sync those orders too" nudge shown *alongside* the real data, not a wall in
 - **Revenue trend/order count/AOV** come from the Ecommerce Orders table's `total` field (always
   present on any order regardless of source, cancelled orders excluded) — no new schema needed.
 - **Top products** prefer a new `line_items_json` column on that same orders table (Long text,
-  JSON array of `{title, quantity, price, sku}`), populated by `syncShopifyOrderToEcom()`
+  JSON array of `{title, quantity, price, sku}`), populated by `shopifySyncEcomOrders()`
   (Shopify-synced orders only — the built-in storefront's `handleEcomPublicOrder` only ever
   creates one line per order and doesn't populate it) alongside the pre-existing flattened `items`
   text column (kept unchanged — `items` is what `ecom.html`'s own Orders table already renders,

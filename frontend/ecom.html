@@ -764,17 +764,10 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <div id="spConfigured" style="display:none">
     <div class="card">
       <div class="card-title">What runs automatically</div>
+      <div class="s-hint" style="margin:0 0 12px;line-height:1.6">Your Shopify products and orders are part of this module — they show up in <b>Products</b> and <b>Orders</b> (and Reports, the storefront and the WhatsApp bot) like any you add here, and stay in sync with Shopify. Shopify is the source of truth for a product's name, SKU, price, stock, status and order link; anything you add on top here (extra photos, audio, style details) is kept.</div>
       <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
         <div class="toggle-text"><strong>WhatsApp order updates</strong><small>Send the templates below when an order is placed, paid, shipped, delivered or a cart is abandoned.</small></div>
         <span class="toggle-wrap"><input type="checkbox" id="spSetNotify" onchange="saveShopSetting('notify', this.checked)"><span class="toggle-slider"></span></span>
-      </label>
-      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
-        <div class="toggle-text"><strong>Add Shopify orders to Orders</strong><small>Copy each Shopify order into this module's Orders list and Reports. Shopify Orders always stays in sync.</small></div>
-        <span class="toggle-wrap"><input type="checkbox" id="spSetEcomOrders" onchange="saveShopSetting('ecom_orders', this.checked)"><span class="toggle-slider"></span></span>
-      </label>
-      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
-        <div class="toggle-text"><strong>Link products by SKU</strong><small>Products whose SKU matches a Shopify variant get its product page as their order link — the bot shares it in chat. Links you set for other stores are never touched.</small></div>
-        <span class="toggle-wrap"><input type="checkbox" id="spSetAutoLinks" onchange="saveShopSetting('auto_links', this.checked)"><span class="toggle-slider"></span></span>
       </label>
       <div class="s-row" style="align-items:center">
         <span class="s-lbl" style="margin:0">Low stock at ≤</span>
@@ -1814,14 +1807,14 @@ function renderProductsTable() {
       <tr>
         <td><input type="checkbox" class="row-check" onchange="toggleProductSelect(${p.Id}, this.checked)" ${selectedProductIds.has(p.Id)?'checked':''}></td>
         <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
-        <td><strong>${esc(p.name||p.title||'—')}</strong></td>
+        <td><strong>${esc(p.name||p.title||'—')}</strong>${p.shopify_product_id ? ' <span class="muted-s" title="Synced from Shopify">🛍️ Shopify</span>' : ''}</td>
         <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
         <td>${esc(p.category||'—')}</td>
         <td>${esc(PRODUCT_STYLE_LABELS[p.style] || PRODUCT_STYLE_LABELS.fashion_garments)}</td>
         <td>${esc(p.color||'—')}</td>
         <td>${esc(p.size||'—')}</td>
         <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
-        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" onchange="updateProductStock(${p.Id}, this.value)"></td>
+        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" ${p.shopify_product_id ? 'readonly title="Stock comes from Shopify"' : `onchange="updateProductStock(${p.Id}, this.value)"`}></td>
         <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
         <td><div class="row-actions">
           <button class="icon-btn" onclick="copyProductLink(${p.Id})" title="Copy this product's link">🔗</button>
@@ -1926,7 +1919,7 @@ function openAddProductModal() {
   document.getElementById('pmStatus').value = 'active';
   document.getElementById('pmStyle').value = 'fashion_garments';
   onProductStyleChange();
-  renderProductShopifyLink('');
+  renderProductShopifyLink(null);
   document.getElementById('productModalTitle').textContent = 'Add Product';
   document.getElementById('productModalSaveBtn').textContent = 'Save Product';
   document.getElementById('productModalMsg').textContent = '';
@@ -1965,7 +1958,7 @@ function openEditProductModal(id) {
   document.getElementById('pmSetIncludes').value = p.set_includes || '';
   document.getElementById('pmAccentColors').value = p.accent_colors || '';
   document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
-  renderProductShopifyLink(p.shopify_product_url || '');
+  renderProductShopifyLink(p);
   document.getElementById('pmProductLink').value = p.product_link || '';
   document.getElementById('pmPrice').value = p.price ?? '';
   document.getElementById('pmCurrency').value = p.currency || 'INR';
@@ -4513,7 +4506,7 @@ window.addEventListener('resize', () => { clearTimeout(window._homeResize); wind
 // the dashboard session), the switches, notification templates and their log. Templates, their
 // variable mapping and the switches all save into shopify_notify_config ({config, templates,
 // settings}); the Worker reads settings via shopify-sync.js shopifySettings (same defaults).
-const SHOP_SETTING_DEFAULTS = { notify: true, ecom_orders: true, auto_links: true, low_stock: 5 };
+const SHOP_SETTING_DEFAULTS = { notify: true, low_stock: 5 };
 const SHOP_TPL_KINDS = [
   { key: 'received', label: 'Order Received' }, { key: 'paid', label: 'Payment Received' },
   { key: 'shipped', label: 'Order Shipped' }, { key: 'delivered', label: 'Order Delivered' },
@@ -4557,8 +4550,6 @@ function renderShopifyPage() {
   g('spSince').textContent = since && !isNaN(since) ? ` · since ${since.toLocaleDateString()}` : '';
   g('spAdminLink').href = shopAdminUrl('');
   g('spSetNotify').checked = shopifySettings.notify !== false;
-  g('spSetEcomOrders').checked = shopifySettings.ecom_orders !== false;
-  g('spSetAutoLinks').checked = shopifySettings.auto_links !== false;
   g('spSetLowStock').value = shopLowThreshold();
   const storeLink = (clientRecord.external_store_link || '').trim();
   g('spStoreLinkNote').innerHTML = storeLink
@@ -4736,16 +4727,14 @@ async function saveShopifyTemplates() {
   catch (e) { showMsg('spTplSaveMsg', 'Error: ' + e.message, 6000); }
 }
 
-// Edit Product: the Shopify link is Shopify's to fill (by SKU); a hand-typed one stays editable
-// so it can be cleared.
-function renderProductShopifyLink(url) {
-  const input = document.getElementById('pmShopifyUrl'), hint = document.getElementById('pmShopifyUrlHint');
-  const auto = !url || url.startsWith(`https://${shopDomain()}/products/`);
-  const linking = shopifySettings.auto_links !== false;
-  input.readOnly = auto && linking;
-  hint.textContent = !auto ? 'Set by hand. Clear it to let Shopify link this product by SKU.'
-    : linking ? 'Filled automatically from Shopify when this product\'s SKU matches a Shopify variant.'
-    : 'Turn on "Link products by SKU" in the Shopify tab to fill this automatically.';
+// Edit Product: a product synced from Shopify (shopify_product_id) takes its name, SKU, price,
+// stock, status and order link from Shopify — say so, and keep the link read-only.
+function renderProductShopifyLink(p) {
+  const synced = !!(p && p.shopify_product_id);
+  document.getElementById('pmShopifyUrl').readOnly = synced;
+  document.getElementById('pmShopifyUrlHint').textContent = synced
+    ? 'Synced from Shopify — name, SKU, price, stock, status and this link update from your store. Edit those in Shopify; extra photos, audio and style details you add here are kept.'
+    : 'Only for products not synced from Shopify.';
 }
 
 // ── SHOPIFY (shared) ──
@@ -4825,7 +4814,8 @@ async function resyncShopify(btn) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     await Promise.all([loadShopOrders(), loadShopStock(), loadShopStatus()]);
-    btns.forEach(b => { b.textContent = `✓ ${d.orders} orders · ${d.variants} variants${d.linked ? ` · ${d.linked} links` : ''}`; });
+    btns.forEach(b => { b.textContent = `✓ ${d.orders} orders · ${d.variants} variants${d.products ? ` · ${d.products} products updated` : ''}`; });
+    loadProducts(); loadOrders();
   } catch (e) {
     btns.forEach(b => { b.textContent = '↻ Sync now'; });
     alert('Shopify sync failed: ' + e.message);

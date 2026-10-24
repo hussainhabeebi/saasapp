@@ -174,8 +174,12 @@ async function bootPage(page, { shopify = true, scopes = { orders: true, product
         ...(shopify ? { shopify_shop_domain: 'kochi.myshopify.com' } : {}),
       } });
       if (u.pathname === '/ecom/shopify/status') return route.fulfill({ json: { connected: true, shop: 'kochi.myshopify.com', scopes } });
-      if (u.pathname === '/ecom/shopify/resync') return route.fulfill({ json: { ok: true, orders: 3, variants: 4, linked: 2 } });
+      if (u.pathname === '/ecom/shopify/resync') return route.fulfill({ json: { ok: true, orders: 3, variants: 4, products: 2 } });
       if (u.pathname === '/shopify/oauth/start') return route.fulfill({ json: { ok: true, url: 'about:blank#shopify-authorize' } });
+      if (u.pathname === '/ecom/products') return route.fulfill({ json: { list: [
+        { Id: 1, name: 'Kurta', sku: 'K-M', price: 599, stock: 2, status: 'active', shopify_product_id: '1', shopify_product_url: 'https://kochi.myshopify.com/products/kurta' },
+        { Id: 2, name: 'Hand-made bag', sku: 'B-1', price: 300, stock: 4, status: 'active' },
+      ] } });
       return route.fulfill({ json: { list: [] } });
     }
     return route.abort();
@@ -188,13 +192,12 @@ test.describe('Shopify page', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test('connected: status, switches, shared low-stock threshold and the log in one place', async ({ page }) => {
-    const calls = await bootPage(page, { query: '&tab=shopify', notifyConfig: JSON.stringify({ config: {}, settings: { ecom_orders: false, low_stock: 3 } }) });
+    const calls = await bootPage(page, { query: '&tab=shopify', notifyConfig: JSON.stringify({ config: {}, settings: { low_stock: 3 } }) });
     await expect(page.locator('#tabShopify')).toHaveClass(/active/);
     await expect(page.locator('#spShop')).toHaveText('kochi.myshopify.com');
     await expect(page.locator('#spScopes')).toHaveText('✓ Orders · ✓ Products · ✓ Inventory');
     await expect(page.locator('#spGrantBtn')).toBeHidden();
     await expect(page.locator('#spSetNotify')).toBeChecked();
-    await expect(page.locator('#spSetEcomOrders')).not.toBeChecked();
     await expect(page.locator('#spSetLowStock')).toHaveValue('3');
     await expect(page.locator('#shopLowThreshold')).toHaveValue('3');
     await expect(page.locator('#spStoreLinkNote')).toContainText('https://kochilooms.in');
@@ -203,7 +206,7 @@ test.describe('Shopify page', () => {
     await page.locator('label:has(#spSetNotify)').click();
     await expect.poll(() => calls.filter(c => c.path === '/ecom/client' && c.method === 'PATCH').length).toBe(1);
     const saved = JSON.parse(JSON.parse(calls.find(c => c.method === 'PATCH').body).shopify_notify_config);
-    expect(saved.settings).toEqual({ notify: false, ecom_orders: false, auto_links: true, low_stock: 3 });
+    expect(saved.settings).toEqual({ notify: false, low_stock: 3 });
     if (SHOT) await page.screenshot({ path: `${SHOT}/shopify-page.png`, fullPage: true });
   });
 
@@ -232,6 +235,21 @@ test.describe('Shopify page', () => {
     const calls = await bootPage(page, { query: '&embed=1&tab=shopify&shopify=connected' });
     await expect(page.locator('#tabShopify')).toHaveClass(/active/);
     await expect.poll(() => calls.some(c => c.path === '/ecom/shopify/resync' && c.method === 'POST')).toBe(true);
-    await expect(page.locator('#shopResyncBtn3')).toContainText('2 links');
+    await expect(page.locator('#shopResyncBtn3')).toContainText('2 products updated');
+  });
+});
+
+test.describe('Shopify products in Products', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('synced products are marked and their Shopify fields are read-only', async ({ page }) => {
+    await bootPage(page);
+    await page.locator('.tab[data-tab="products"]').click();
+    await expect(page.locator('#productsTbody tr', { hasText: 'Kurta' })).toContainText('🛍️ Shopify');
+    await expect(page.locator('#productsTbody tr', { hasText: 'Hand-made bag' })).not.toContainText('🛍️ Shopify');
+    await expect(page.locator('#productsTbody tr', { hasText: 'Kurta' }).locator('.stock-input')).toHaveJSProperty('readOnly', true);
+    await page.locator('#productsTbody tr', { hasText: 'Kurta' }).locator('button[title="Edit product"]').click();
+    await expect(page.locator('#pmShopifyUrl')).toHaveJSProperty('readOnly', true);
+    await expect(page.locator('#pmShopifyUrlHint')).toContainText('Synced from Shopify');
   });
 });
