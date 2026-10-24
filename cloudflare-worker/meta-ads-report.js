@@ -29,6 +29,7 @@ const H=3600000, D=24*H;
 export const MAR_BACKFILL_DAYS=90;
 export const MAR_DAILY_DAYS=3;
 export const MAR_MANUAL_DAYS=30;
+export const MAR_HOURLY_DAYS=30; // hourly rows kept for time-window attribution (Reports → Ads ROI)
 const MAR_STALE_MS=6*H;        // the report re-syncs on open when the last good sync is older than this
 const MAR_RETRY_MS=10*60000;   // ...but not more often than this after a failure
 const MAR_PER_TICK=3;          // accounts handled per 15-minute cron tick
@@ -109,27 +110,40 @@ export function marInsightRow(r, currency){
 // Where a lead says it came from. isAd: any sign it came from a Meta ad (ids, click id, lead form,
 // or a Source/LeadSource that names an ad). Older click-to-WhatsApp leads only kept the ad id inside
 // AdCampaign ("Ad ID 1202…") — read it back from there.
+// An ad code typed into a click-to-WhatsApp ad's pre-filled message — "Hi, I want the Kerala offer
+// #K26" — and the same "#K26" in the ad's (or ad set's / campaign's) name in Ads Manager ties the chat
+// to that ad even when Meta's referral never reaches us. 2–12 letters/digits with at least one
+// letter, so "#1" or a price isn't taken for a code. Lower-cased.
+export function marAdCode(text){
+  const m=String(text||'').match(/(?:^|[^\w#])#([a-z0-9]{2,12})(?![\w])/i);
+  return m && /[a-z]/i.test(m[1]) ? m[1].toLowerCase() : '';
+}
 export function marLeadAdRef(lead){
   const camp=String(lead?.AdCampaign||'').trim();
   const legacyId=(camp.match(/^Ad ID (\d{5,25})$/)||[])[1]||'';
   const adId=String(lead?.AdId||'').trim()||legacyId;
   const campaignId=String(lead?.CampaignId||'').trim();
   const src=`${lead?.LeadSource||''} ${lead?.Source||''}`;
-  const isAd=!!(adId||campaignId||String(lead?.CtwaClid||'').trim()||String(lead?.MetaLeadgenId||'').trim()
+  const adCode=String(lead?.AdCode||'').trim().toLowerCase().replace(/^#/,'');
+  const isAd=!!(adId||campaignId||adCode||String(lead?.CtwaClid||'').trim()||String(lead?.MetaLeadgenId||'').trim()
     ||/lead ad|lead form|click-to-whatsapp|\b(meta|facebook|instagram|fb|ig) ads?\b/i.test(src));
-  return {isAd, adId, campaignId, campaignName:legacyId?'':camp, adName:String(lead?.AdName||'').trim()};
+  return {isAd, adId, campaignId, adCode, campaignName:legacyId?'':camp, adName:String(lead?.AdName||'').trim()};
 }
 // ads: synced ad rows ({ad_id, adset_id, campaign_id, campaign_name}). Returns a lookup used by marMatchLead.
 export function marAdIndex(ads){
-  const byAd=new Map(), byCampaign=new Map(), byCampaignName=new Map();
+  const byAd=new Map(), byCampaign=new Map(), byCampaignName=new Map(), byCode=new Map();
   for(const a of ads||[]){
     if(a.ad_id) byAd.set(String(a.ad_id), a);
+    for(const code of new Set([a.ad_name, a.adset_name, a.campaign_name].map(marAdCode).filter(Boolean))){
+      if(!byCode.has(code)) byCode.set(code, []);
+      byCode.get(code).push(a);
+    }
     if(a.campaign_id){
       byCampaign.set(String(a.campaign_id), a);
       const n=String(a.campaign_name||'').trim().toLowerCase(); if(n && !byCampaignName.has(n)) byCampaignName.set(n, String(a.campaign_id));
     }
   }
-  return {byAd, byCampaign, byCampaignName};
+  return {byAd, byCampaign, byCampaignName, byCode};
 }
 // → null (not an ad lead) | {campaign_id, adset_id, ad_id} — ids are '' when an ad lead can't be
 // matched to synced spend (shown as "Ad leads not matched to a campaign").
@@ -139,6 +153,12 @@ export function marMatchLead(lead, index){
   const ad=ref.adId&&index.byAd.get(ref.adId);
   if(ad) return {campaign_id:String(ad.campaign_id||''), adset_id:String(ad.adset_id||''), ad_id:String(ad.ad_id)};
   if(ref.campaignId && index.byCampaign.has(ref.campaignId)) return {campaign_id:ref.campaignId, adset_id:'', ad_id:''};
+  // An ad code: the one ad carrying it, else the campaign (or ad set) all its ads share.
+  const coded=ref.adCode && index.byCode?.get(ref.adCode);
+  if(coded?.length){
+    const one=k=>new Set(coded.map(a=>String(a[k]||''))).size===1;
+    return {campaign_id:one('campaign_id')?String(coded[0].campaign_id||''):'', adset_id:one('adset_id')?String(coded[0].adset_id||''):'', ad_id:coded.length===1?String(coded[0].ad_id):''};
+  }
   const byName=ref.campaignName && index.byCampaignName.get(ref.campaignName.toLowerCase());
   if(byName) return {campaign_id:byName, adset_id:'', ad_id:''};
   return {campaign_id:'', adset_id:'', ad_id:''};
@@ -234,6 +254,10 @@ export async function marEnsureSchema(env){
       env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_report_sends (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, kind TEXT NOT NULL, day TEXT NOT NULL, recipient TEXT, status TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL)`),
       env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meta_ads_report_sends_client ON meta_ads_report_sends(client_id, day)`),
       env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_expense_posts (client_id INTEGER NOT NULL, month TEXT NOT NULL, expense_id INTEGER, amount REAL NOT NULL DEFAULT 0, currency TEXT, status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id, month))`),
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_hourly (client_id INTEGER NOT NULL, day TEXT NOT NULL, hour INTEGER NOT NULL, ad_id TEXT NOT NULL, spend REAL NOT NULL DEFAULT 0, meta_leads INTEGER NOT NULL DEFAULT 0, meta_chats INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (client_id, day, hour, ad_id))`),
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_ads (client_id INTEGER NOT NULL, ad_id TEXT NOT NULL, ad_name TEXT, adset_id TEXT, adset_name TEXT, campaign_id TEXT, campaign_name TEXT, status TEXT, adset_status TEXT, campaign_status TEXT, headline TEXT, body TEXT, updated_at TEXT, PRIMARY KEY (client_id, ad_id))`),
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, at TEXT NOT NULL, day TEXT NOT NULL, ad_id TEXT, ad_name TEXT, campaign_name TEXT, kind TEXT NOT NULL, detail TEXT)`),
+      env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meta_ads_changes_client ON meta_ads_changes(client_id, day)`),
     ]);
     _schemaOk=true;
   }catch(e){ console.error('[ads-report] schema', e.message); }
@@ -304,15 +328,97 @@ export async function marSync(env, c, {days=MAR_DAILY_DAYS}={}){
           json_extract(j.value,'$.meta_leads'), json_extract(j.value,'$.meta_chats'), json_extract(j.value,'$.currency'), ? FROM json_each(?) j`).bind(cid, now, JSON.stringify(rows.slice(i, i+200))));
     }
     await env.DB.batch(stmts);
+    // Extras for "which ads ran when" and time-window attribution. Each is best-effort: a failure
+    // here keeps the day totals above and is reported as a warning, not a failed sync.
+    const warnings=[];
+    const hourSince=marAddDays(until, -(Math.max(1, Math.min(MAR_HOURLY_DAYS, days))-1));
+    const hourly=await marSyncHourly(env, c, token, cid, hourSince, until).catch(e=>{ warnings.push('Hourly breakdown: '+e.message); return null; });
+    const ads=await marSyncAds(env, c, token, cid, until).catch(e=>{ warnings.push('Ad details: '+e.message); return null; });
     const st=await getState(env, cid);
     await patchState(env, cid, {last_ok_at:now, last_error:null, currency, tz_offset_min:tzMin, account_name:String(acct.data.name||'').slice(0,200),
       backfilled_from:!st?.backfilled_from||since<st.backfilled_from?since:st.backfilled_from});
-    return {ok:true, rows:rows.length, since, until, currency};
+    return {ok:true, rows:rows.length, since, until, currency, hourly_rows:hourly?.rows??null, ads:ads?.ads??null, changes:ads?.changes??null, warnings};
   }catch(e){
     await patchState(env, cid, {last_error:String(e.message||e).slice(0,500)});
     return {ok:false, error:String(e.message||e)};
   }
 }
+// Meta's hourly breakdown ("00:00:00 - 00:59:59", account timezone) → meta_ads_hourly, so a lead
+// can be matched to the ads that were actually running in the hour it arrived.
+export function marHourOf(v){ const m=String(v||'').match(/^(\d{1,2}):/); const h=m?Number(m[1]):NaN; return h>=0&&h<24?h:null; }
+async function marSyncHourly(env, c, token, cid, since, until){
+  const qs=new URLSearchParams({level:'ad', time_increment:'1', limit:'500', breakdowns:'hourly_stats_aggregated_by_advertiser_time_zone',
+    fields:'ad_id,spend,actions', time_range:JSON.stringify({since, until})});
+  let url=`${GRAPH}/${acctPath(c)}/insights?${qs}&access_token=${token}`;
+  const rows=[];
+  for(let page=0; url && page<80; page++){
+    const res=await graphGet(url);
+    if(!res.ok) throw graphErr(res, 'Meta rejected the hourly request');
+    for(const r of res.data?.data||[]){
+      const hour=marHourOf(r.hourly_stats_aggregated_by_advertiser_time_zone);
+      const row={day:String(r.date_start||'').slice(0,10), hour, ad_id:String(r.ad_id||''), spend:Math.round((Number(r.spend)||0)*100)/100,
+        meta_leads:marActionCount(r.actions, LEAD_ACTIONS), meta_chats:marActionCount(r.actions, CHAT_ACTIONS)};
+      if(row.day && row.ad_id && hour!=null && (row.spend>0||row.meta_leads||row.meta_chats)) rows.push(row);
+    }
+    url=res.data?.paging?.next||'';
+  }
+  const stmts=[env.DB.prepare(`DELETE FROM meta_ads_hourly WHERE client_id=? AND day>=? AND day<=?`).bind(cid, since, until),
+    env.DB.prepare(`DELETE FROM meta_ads_hourly WHERE client_id=? AND day<?`).bind(cid, marAddDays(until, -MAR_HOURLY_DAYS-7))];
+  for(let i=0; i<rows.length; i+=300){
+    stmts.push(env.DB.prepare(`INSERT OR REPLACE INTO meta_ads_hourly (client_id, day, hour, ad_id, spend, meta_leads, meta_chats)
+      SELECT ?, json_extract(j.value,'$.day'), json_extract(j.value,'$.hour'), json_extract(j.value,'$.ad_id'), json_extract(j.value,'$.spend'),
+        json_extract(j.value,'$.meta_leads'), json_extract(j.value,'$.meta_chats') FROM json_each(?) j`).bind(cid, JSON.stringify(rows.slice(i, i+300))));
+  }
+  await env.DB.batch(stmts);
+  return {rows:rows.length};
+}
+// Every ad's current status, ad set / campaign, headline and text → meta_ads_ads. A status that
+// changed since the last sync (or a new ad) goes to meta_ads_changes — "what changed" in the report.
+export function marAdRow(a){
+  const cr=a.creative||{};
+  return {ad_id:String(a.id||''), ad_name:String(a.name||'').slice(0,300),
+    adset_id:String(a.adset?.id||a.adset_id||''), adset_name:String(a.adset?.name||'').slice(0,300),
+    campaign_id:String(a.campaign?.id||a.campaign_id||''), campaign_name:String(a.campaign?.name||'').slice(0,300),
+    status:String(a.effective_status||'').toUpperCase(), adset_status:String(a.adset?.effective_status||'').toUpperCase(), campaign_status:String(a.campaign?.effective_status||'').toUpperCase(),
+    headline:String(cr.title||'').slice(0,300), body:String(cr.body||'').slice(0,1000)};
+}
+async function marSyncAds(env, c, token, cid, today){
+  const qs=new URLSearchParams({limit:'200', fields:'id,name,effective_status,adset{id,name,effective_status},campaign{id,name,effective_status},creative{title,body}'});
+  let url=`${GRAPH}/${acctPath(c)}/ads?${qs}&access_token=${token}`;
+  const ads=[];
+  for(let page=0; url && page<25; page++){
+    const res=await graphGet(url);
+    if(!res.ok) throw graphErr(res, 'Meta rejected the ads list');
+    for(const a of res.data?.data||[]){ const row=marAdRow(a); if(row.ad_id) ads.push(row); }
+    url=res.data?.paging?.next||'';
+  }
+  const {results:prev}=await env.DB.prepare(`SELECT ad_id, status FROM meta_ads_ads WHERE client_id=?`).bind(cid).all();
+  const before=new Map((prev||[]).map(r=>[String(r.ad_id), String(r.status||'')]));
+  const now=new Date().toISOString();
+  const changes=[];
+  if(before.size) for(const a of ads){
+    const was=before.get(a.ad_id);
+    if(was===undefined) changes.push({ad:a, kind:'new', detail:`New ad (${marStatusLabel(a.status)})`});
+    else if(was!==a.status) changes.push({ad:a, kind:'status', detail:`${marStatusLabel(was)} → ${marStatusLabel(a.status)}`});
+  }
+  const stmts=[];
+  for(let i=0; i<ads.length; i+=150){
+    stmts.push(env.DB.prepare(`INSERT OR REPLACE INTO meta_ads_ads (client_id, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, status, adset_status, campaign_status, headline, body, updated_at)
+      SELECT ?, json_extract(j.value,'$.ad_id'), json_extract(j.value,'$.ad_name'), json_extract(j.value,'$.adset_id'), json_extract(j.value,'$.adset_name'),
+        json_extract(j.value,'$.campaign_id'), json_extract(j.value,'$.campaign_name'), json_extract(j.value,'$.status'), json_extract(j.value,'$.adset_status'),
+        json_extract(j.value,'$.campaign_status'), json_extract(j.value,'$.headline'), json_extract(j.value,'$.body'), ? FROM json_each(?) j`).bind(cid, now, JSON.stringify(ads.slice(i, i+150))));
+  }
+  for(const ch of changes) stmts.push(env.DB.prepare(`INSERT INTO meta_ads_changes (client_id, at, day, ad_id, ad_name, campaign_name, kind, detail) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(cid, now, today, ch.ad.ad_id, ch.ad.ad_name, ch.ad.campaign_name, ch.kind, ch.detail));
+  if(stmts.length) await env.DB.batch(stmts);
+  return {ads:ads.length, changes:changes.length};
+}
+export function marStatusLabel(s){
+  const m={ACTIVE:'Active', PAUSED:'Paused', CAMPAIGN_PAUSED:'Campaign paused', ADSET_PAUSED:'Ad set paused', PENDING_REVIEW:'In review', IN_PROCESS:'Processing',
+    DISAPPROVED:'Rejected', WITH_ISSUES:'With issues', ARCHIVED:'Archived', DELETED:'Deleted', PREAPPROVED:'Pre-approved', PENDING_BILLING_INFO:'Billing info needed'};
+  return m[String(s||'').toUpperCase()]||String(s||'Unknown');
+}
+
 // Sync when the data is stale — first use backfills MAR_BACKFILL_DAYS.
 async function syncIfStale(env, c, st){
   if(!marConnected(c)) return null;
@@ -333,18 +439,45 @@ export async function marReportData(env, cid, from, to){
   const {results:days}=await env.DB.prepare(`SELECT day, SUM(spend) spend, SUM(meta_leads) meta_leads, SUM(meta_chats) meta_chats FROM meta_ads_daily WHERE client_id=? AND day>=? AND day<=? GROUP BY day ORDER BY day`)
     .bind(Number(cid), from, to).all();
   const r2=n=>Math.round((Number(n)||0)*100)/100;
+  // Per ad per day (timeline, fatigue, day shares) and per ad per hour (time-window attribution).
+  const {results:adDays}=await env.DB.prepare(`SELECT day, ad_id, spend, meta_leads, meta_chats FROM meta_ads_daily WHERE client_id=? AND day>=? AND day<=? AND (spend>0 OR meta_leads>0 OR meta_chats>0) ORDER BY day`)
+    .bind(Number(cid), from, to).all();
+  const {results:hours}=await env.DB.prepare(`SELECT day, hour, ad_id, spend, meta_leads, meta_chats FROM meta_ads_hourly WHERE client_id=? AND day>=? AND day<=?`)
+    .bind(Number(cid), from, to).all();
+  const hourlyFrom=(await env.DB.prepare(`SELECT MIN(day) d FROM meta_ads_hourly WHERE client_id=?`).bind(Number(cid)).first())?.d||'';
+  const {results:meta}=await env.DB.prepare(`SELECT ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, status, adset_status, campaign_status, headline, body FROM meta_ads_ads WHERE client_id=?`).bind(Number(cid)).all();
+  const {results:changes}=await env.DB.prepare(`SELECT at, day, ad_id, ad_name, campaign_name, kind, detail FROM meta_ads_changes WHERE client_id=? AND day>=? AND day<=? ORDER BY at DESC LIMIT 200`)
+    .bind(Number(cid), from, to).all();
+  const metaById=new Map((meta||[]).map(m=>[String(m.ad_id), m]));
   return {
-    ads:(ads||[]).map(a=>({...a, spend:r2(a.spend), impressions:Number(a.impressions)||0, clicks:Number(a.clicks)||0, meta_leads:Number(a.meta_leads)||0, meta_chats:Number(a.meta_chats)||0})),
+    ads:(ads||[]).map(a=>{ const m=metaById.get(String(a.ad_id))||{};
+      return {...a, spend:r2(a.spend), impressions:Number(a.impressions)||0, clicks:Number(a.clicks)||0, meta_leads:Number(a.meta_leads)||0, meta_chats:Number(a.meta_chats)||0,
+        status:m.status||'', adset_status:m.adset_status||'', campaign_status:m.campaign_status||'', headline:m.headline||'', body:m.body||''}; }),
     days:(days||[]).map(d=>({day:d.day, spend:r2(d.spend), meta_leads:Number(d.meta_leads)||0, meta_chats:Number(d.meta_chats)||0})),
+    ad_days:(adDays||[]).map(d=>({day:d.day, ad_id:String(d.ad_id), spend:r2(d.spend), meta_leads:Number(d.meta_leads)||0, meta_chats:Number(d.meta_chats)||0})),
+    hours:(hours||[]).map(h=>({day:h.day, hour:Number(h.hour), ad_id:String(h.ad_id), spend:r2(h.spend), meta_leads:Number(h.meta_leads)||0, meta_chats:Number(h.meta_chats)||0})),
+    hourly_from:hourlyFrom,
+    changes:changes||[],
   };
+}
+// Each lead's first customer message (Chats' D1 lead_messages) for leads whose first message falls
+// in [fromIso, toIso] — matched against ad codes ("#K26") and ad headlines in the dashboard.
+export async function marFirstMessages(env, cid, fromIso, toIso){
+  const {results}=await env.DB.prepare(`SELECT m.lead_id, m.content FROM lead_messages m
+      JOIN (SELECT lead_id, MIN(ts) t FROM lead_messages WHERE client_id=? AND role='user' GROUP BY lead_id HAVING MIN(ts)>=? AND MIN(ts)<=?) f
+        ON f.lead_id=m.lead_id AND m.ts=f.t
+      WHERE m.client_id=? AND m.role='user' LIMIT 20000`).bind(Number(cid), fromIso, toIso, Number(cid)).all();
+  const out={};
+  for(const r of results||[]) if(!(r.lead_id in out)) out[r.lead_id]=String(r.content||'').slice(0,300);
+  return out;
 }
 
 /* ── Leads for the summary (server side) ── */
-const LEAD_FIELDS='Id,CreatedAt,Date,ClosedAt,Score,Stage,Owner,AdId,CampaignId,AdCampaign,AdName,LeadSource,Source,MetaLeadgenId,CtwaClid,HandoverOutcome,DealValue,DealCurrency';
+const LEAD_FIELDS='Id,CreatedAt,Date,ClosedAt,Score,Stage,Owner,AdId,AdCode,CampaignId,AdCampaign,AdName,LeadSource,Source,MetaLeadgenId,CtwaClid,HandoverOutcome,DealValue,DealCurrency';
 // Newest leads first until they're older than `sinceMs` (max 2,000). A sale closed on the day on a
 // lead older than that window isn't counted in the daily message (the dashboard report counts it).
 export async function marRecentLeads(env, deps, cid, sinceMs){
-  await deps.ensureLeadsColumns?.(env, ['AdId','CampaignId','CtwaClid','ClosedAt']).catch(()=>{});
+  await deps.ensureLeadsColumns?.(env, ['AdId','AdCode','CampaignId','CtwaClid','ClosedAt']).catch(()=>{});
   const where=encodeURIComponent(`(ClientId,eq,${cid})`);
   const out=[]; let fields=`&fields=${LEAD_FIELDS}`;
   for(let page=0; page<10; page++){
@@ -363,7 +496,7 @@ export async function marRecentLeads(env, deps, cid, sinceMs){
 async function buildSummary(env, deps, c, st, day){
   const cid=Number(c.Id), tzMin=Number(st?.tz_offset_min)||0;
   const {results:ads}=await env.DB.prepare(`SELECT * FROM meta_ads_daily WHERE client_id=? AND day=?`).bind(cid, day).all();
-  const {results:all}=await env.DB.prepare(`SELECT ad_id, MAX(adset_id) adset_id, MAX(campaign_id) campaign_id, MAX(campaign_name) campaign_name FROM meta_ads_daily WHERE client_id=? GROUP BY ad_id`).bind(cid).all();
+  const {results:all}=await env.DB.prepare(`SELECT ad_id, MAX(ad_name) ad_name, MAX(adset_id) adset_id, MAX(adset_name) adset_name, MAX(campaign_id) campaign_id, MAX(campaign_name) campaign_name FROM meta_ads_daily WHERE client_id=? GROUP BY ad_id`).bind(cid).all();
   const sinceMs=Date.parse(marAddDays(day, -8)+'T00:00:00Z');
   const leads=await marRecentLeads(env, deps, cid, sinceMs);
   return marDaySummary({day, ads:ads||[], leads, index:marAdIndex(all||[]), tzMin, currency:st?.currency||'', cfg:marSettings(st?.config_json), syncError:st?.last_error||''});
@@ -516,12 +649,20 @@ export async function marHandleRoute(request, env, deps, url){
     if(from>to) [from, to]=[to, from];
     return json({...stateOut(st), from, to, ...await marReportData(env, cid, from, to)});
   }
+  if(path==='/first-messages' && method==='GET'){
+    const from=url.searchParams.get('from')||'', to=url.searchParams.get('to')||'';
+    if(!DAY_RE.test(from)||!DAY_RE.test(to)) return json({error:'from and to (YYYY-MM-DD) required'}, 400);
+    // A day of slack each side: lead timestamps are UTC, the range is the viewer's own days.
+    const fromIso=marAddDays(from, -1)+'T00:00:00Z', toIso=marAddDays(to, 1)+'T23:59:59Z';
+    try{ return json({messages:await marFirstMessages(env, cid, fromIso, toIso)}); }
+    catch(e){ return json({messages:{}, error:'Chat history not available'}); }
+  }
   if(path==='/sync' && method==='POST'){
     const st=await ensureState(env, cid);
     if(!marConnected(c)) return json({error:'Add your Ad Account ID and token in Settings → Integrations → Meta Ads first.'}, 400);
     const res=await marSync(env, c, {days:st?.backfilled_from?MAR_MANUAL_DAYS:MAR_BACKFILL_DAYS});
     if(!res.ok) return json({error:res.error, ...stateOut(await getState(env, cid))}, 502);
-    return json({ok:true, rows:res.rows, since:res.since, until:res.until, ...stateOut(await getState(env, cid))});
+    return json({ok:true, rows:res.rows, since:res.since, until:res.until, hourly_rows:res.hourly_rows, ads:res.ads, changes:res.changes, warnings:res.warnings||[], ...stateOut(await getState(env, cid))});
   }
   if(path==='/settings' && method==='GET'){
     const st=await ensureState(env, cid);

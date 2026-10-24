@@ -4495,7 +4495,23 @@ edited in Meta Ads Manager. This tab covers what Ads Manager can't see: what hap
    deletes is never recreated (`meta_ads_expense_posts.status='deleted'`). GST on Meta's invoice
    isn't split out.
 
-Routes (session-gated, `/meta/ads-report/*`): `GET data`, `POST sync`, `GET|POST settings` (POST is
+**Which ads ran when, and matching leads with no ad id** (`migrations/0120_meta_ads_running.sql`):
+each sync also stores Meta's hourly results per ad for the last 30 days (`meta_ads_hourly`), every
+ad's status / ad set / campaign / headline / text (`meta_ads_ads`) and any new ad or status change
+since the last sync (`meta_ads_changes`). The dashboard (`adsAttribute`) then matches every lead by
+the strongest method: exact (ad id, form, campaign) → **ad code** (`#K26` in the ad's pre-filled
+message and in its name in Ads Manager; the bot stores it as `AdCode`) → **message match** (first
+message vs the headline of ads live that day; `GET first-messages` from D1 `lead_messages`) →
+**time-window share** (a chat with no ad id is split across the click-to-WhatsApp ads with
+conversations in the hour it arrived — the day when that hour has none — in proportion to Meta's
+counts, never more leads than conversations Meta counted; a lead whose source says "ad" always
+counts). Numbers show "exact + estimated", estimates can be switched off, and every leads number opens
+the leads behind it with how each was matched. Also on the tab: ads running in the period (status,
+first/last day, days live, timeline strip), what changed, day by day, creative leaderboard (cost per
+sale, fatigue = cost per result +40% in the ad's later days), hour × weekday heatmap, and ▲/▼ against
+the previous period of the same length.
+
+Routes (session-gated, `/meta/ads-report/*`): `GET data`, `GET first-messages`, `POST sync`, `GET|POST settings` (POST is
 owner only), `POST test-summary`, `POST accounting/post`, `GET capi`. Settings live in D1
 `meta_ads_report_state.config_json`, not on the CLIENTS row.
 
