@@ -237,6 +237,33 @@ body.cv-shell{--bg:#F2F5F3;--ink:#0C1E16;--muted:#637870;--accent:#0D9C93;--acce
 body.cv-shell .save-btn{background:var(--accent)}
 body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent)}
 
+
+/* WHATSAPP SHOP */
+.ws-hero{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;background:linear-gradient(135deg,#0B8F6A,#12B886);color:#fff;border-radius:var(--r);padding:20px 22px;margin-bottom:14px}
+.ws-title{font-family:var(--disp);font-size:20px;font-weight:700}
+.ws-sub{font-size:13.5px;opacity:.92;margin-top:4px;max-width:620px}
+.ws-state{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;white-space:nowrap}
+.ws-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.ws-banner{background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;border-radius:12px;padding:12px 14px;font-size:13px;margin-bottom:14px}
+.ws-step{display:flex;gap:14px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:12px;box-shadow:var(--shadow)}
+.ws-num{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ws-step.ok .ws-num{background:#DCFCE7;color:#166534}
+.ws-body{flex:1;min-width:0}
+.ws-h{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ws-done{font-size:11.5px;font-weight:600;color:#166534;background:#DCFCE7;border-radius:20px;padding:2px 9px}
+.ws-done:empty{display:none}
+.ws-p{font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:6px}
+.ws-p a{color:var(--accent-ink);font-weight:600}
+.ws-adv{margin-top:10px;font-size:12.5px}
+.ws-adv summary{cursor:pointer;color:var(--muted);font-weight:600}
+.ws-pay{display:grid;gap:8px;margin:8px 0}
+.ws-opt{display:flex;gap:10px;align-items:flex-start;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}
+.ws-opt:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.ws-opt b{display:block;font-size:13.5px}
+.ws-opt small{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+.ws-skip{font-size:12.5px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:10px 12px;margin-top:10px}
+.ws-skip li{margin-left:18px}
+
 /* Page header */
 .ph{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .ph h1{font-family:var(--disp);font-size:22px;font-weight:700;letter-spacing:-.01em}
@@ -368,6 +395,7 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
   <button class="tab" data-tab="testimonials" onclick="showTab('testimonials')">🌟 Testimonials</button>
   <div class="nav-label">Sales</div>
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
+  <button class="tab" data-tab="washop" onclick="showTab('washop')">📲 WhatsApp Shop</button>
   <div class="nav-label">Shopify</div>
   <button class="tab desk-only shop-only" data-tab="shop-orders" onclick="showTab('shop-orders')">🛒 Shopify Orders <span class="nav-count" id="navShopOrdersCount" style="display:none"></span></button>
   <button class="tab desk-only shop-only" data-tab="shop-stock" onclick="showTab('shop-stock')">📊 Shopify Stock <span class="nav-count" id="navShopStockCount" style="display:none"></span></button>
@@ -812,6 +840,104 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
         <tbody id="spLogTbody"><tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr></tbody>
       </table></div>
     </div>
+  </div>
+</div>
+
+<!-- WHATSAPP SHOP TAB — customers browse the catalog, add to cart and pay without leaving
+     WhatsApp. Five plain steps; the Worker side is cloudflare-worker/wa-commerce.js. -->
+<div id="tabWashop" class="page">
+  <div class="ws-hero">
+    <div>
+      <div class="ws-title">📲 Sell inside WhatsApp</div>
+      <div class="ws-sub">Customers see your products as tappable cards, add them to a cart and order — without leaving the chat.</div>
+    </div>
+    <span class="ws-state" id="wsState">Checking…</span>
+  </div>
+  <div class="ws-stats" id="wsStats"></div>
+  <div class="ws-banner" id="wsBanner" style="display:none"></div>
+
+  <div class="ws-step" id="wsStep1">
+    <div class="ws-num">1</div>
+    <div class="ws-body">
+      <div class="ws-h">Connect your product catalog <span class="ws-done" id="wsDone1"></span></div>
+      <div class="ws-p">WhatsApp shows products from a free <b>Meta catalog</b>. Open <a href="https://business.facebook.com/commerce" target="_blank" rel="noopener">Commerce Manager</a> → <b>Add catalog</b> → <b>Ecommerce</b>, then copy its ID (the long number) here.</div>
+      <div class="s-row">
+        <input class="s-input" id="wsCatalogId" placeholder="Catalog ID, e.g. 1234567890123456" style="max-width:320px">
+        <button class="save-btn" onclick="wsConnect(this)">Link to my WhatsApp</button>
+        <span class="save-msg" id="wsMsg1"></span>
+      </div>
+      <details class="ws-adv"><summary>Advanced: catalog access token</summary>
+        <div class="ws-p">Only needed if syncing says the token lacks <i>catalog_management</i>. Create a System User token in Meta Business Settings with that permission and paste it here — it's stored securely and never shown again.</div>
+        <div class="s-row"><input class="s-input" id="wsCatalogToken" type="password" placeholder="EAAG…" style="max-width:320px"><button class="save-btn sec" onclick="wsSaveToken(this)">Save token</button><span class="save-msg" id="wsMsgTok"></span></div>
+      </details>
+    </div>
+  </div>
+
+  <div class="ws-step" id="wsStep2">
+    <div class="ws-num">2</div>
+    <div class="ws-body">
+      <div class="ws-h">Put your products in it <span class="ws-done" id="wsDone2"></span></div>
+      <div class="ws-p">Sends every active product — name, price, photos and stock — to the catalog. It re-syncs automatically every day; press again after big changes.</div>
+      <div class="s-row"><button class="save-btn" onclick="wsSync(this)">🔄 Sync products now</button><span class="save-msg" id="wsMsg2"></span></div>
+      <div id="wsSkipped"></div>
+    </div>
+  </div>
+
+  <div class="ws-step" id="wsStep3">
+    <div class="ws-num">3</div>
+    <div class="ws-body">
+      <div class="ws-h">Let customers order in the chat <span class="ws-done" id="wsDone3"></span></div>
+      <div class="ws-p">When a customer taps <b>Place order</b>, Leadvyne turns their cart into an order on your Orders page and replies with the total. Your chats, inbox and AI assistant keep working exactly as now.</div>
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:8px">
+        <div class="toggle-text"><strong>Receive WhatsApp cart orders</strong><small>Routes this number's WhatsApp updates through Leadvyne, which passes every message on to your inbox unchanged.</small></div>
+        <div class="toggle-wrap"><input type="checkbox" id="wsCarts" onchange="wsToggleCarts(this)"><span class="toggle-slider"></span></div>
+      </label>
+      <span class="save-msg" id="wsMsg3"></span>
+      <details class="ws-adv"><summary>Advanced: inbox webhook address</summary>
+        <div class="ws-p">Messages are passed on to this address (your Chatwoot WhatsApp inbox). Change it only if your inbox shows a different webhook URL.</div>
+        <div class="s-row"><input class="s-input" id="wsChatwootUrl" style="max-width:460px"><button class="save-btn sec" onclick="wsSaveConfig({chatwoot_webhook_url:document.getElementById('wsChatwootUrl').value}, 'wsMsg3')">Save</button></div>
+      </details>
+    </div>
+  </div>
+
+  <div class="ws-step" id="wsStep4">
+    <div class="ws-num">4</div>
+    <div class="ws-body">
+      <div class="ws-h">How customers pay</div>
+      <div class="ws-pay">
+        <label class="ws-opt"><input type="radio" name="wsPay" value="cod" onchange="wsPayChanged()"><span><b>💵 Cash on delivery</b><small>We confirm the order and ask for the delivery address.</small></span></label>
+        <label class="ws-opt"><input type="radio" name="wsPay" value="whatsapp_pay" onchange="wsPayChanged()"><span><b>💳 Pay in WhatsApp (UPI / cards)</b><small>A “Review and pay” button inside the chat. India only — set up under WhatsApp Manager → Payments.</small></span></label>
+        <label class="ws-opt" id="wsPayShopifyOpt"><input type="radio" name="wsPay" value="shopify_checkout" onchange="wsPayChanged()"><span><b>🛍️ Shopify checkout</b><small>The cart opens in your Shopify checkout; the order syncs back here.</small></span></label>
+      </div>
+      <div class="s-row" id="wsPayCfg" style="display:none">
+        <select class="s-input" id="wsGateway" style="max-width:160px"><option value="razorpay">Razorpay</option><option value="payu">PayU</option><option value="billdesk">BillDesk</option><option value="zaakpay">Zaakpay</option></select>
+        <input class="s-input" id="wsPayConfig" placeholder="Payment configuration name" style="max-width:260px">
+      </div>
+      <div class="s-row"><button class="save-btn" onclick="wsSavePayment(this)">Save payment option</button><span class="save-msg" id="wsMsg4"></span></div>
+    </div>
+  </div>
+
+  <div class="ws-step" id="wsStep5">
+    <div class="ws-num">5</div>
+    <div class="ws-body">
+      <div class="ws-h">Share the catalog</div>
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
+        <div class="toggle-text"><strong>AI assistant sends the catalog</strong><small>When a customer asks “show me your collection” or “what do you sell”, they get the tappable catalog (or just the category they named).</small></div>
+        <div class="toggle-wrap"><input type="checkbox" id="wsSendInChat" onchange="wsSaveConfig({send_in_chat:this.checked}, 'wsMsg5')"><span class="toggle-slider"></span></div>
+      </label>
+      <div class="ws-p">Or send it yourself:</div>
+      <div class="s-row">
+        <input class="s-input" id="wsSendPhone" placeholder="Customer WhatsApp number, e.g. 919876543210" style="max-width:280px">
+        <select class="s-input" id="wsSendCat" style="max-width:200px"><option value="">Whole catalog</option></select>
+        <button class="save-btn" onclick="wsSend(this)">Send catalog</button>
+        <span class="save-msg" id="wsMsg5"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="wsRecentCard" style="display:none">
+    <div class="card-title">Recent WhatsApp carts</div>
+    <div class="tbl-wrap"><table><thead><tr><th>When</th><th>Order</th><th>Customer</th><th>Total</th></tr></thead><tbody id="wsRecent"></tbody></table></div>
   </div>
 </div>
 
@@ -1776,6 +1902,8 @@ function showTab(name) {
   if (name === 'shopify') { renderShopifyPage(); if (shopDomain() && !shopStatus) loadShopStatus(); }
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
   document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
+  document.getElementById('tabWashop').classList.toggle('active', name === 'washop');
+  if (name === 'washop') loadWaShop();
   if (name === 'flow' && !_flowLoaded) loadFlow();
   if (isEmbedded) { try { parent.postMessage({ source: 'lv-ecom', type: 'ecom:tab', tab: name }, location.protocol === 'file:' ? '*' : location.origin); } catch (e) {} }
 }
@@ -4371,6 +4499,100 @@ function escAttr(str) {
 }
 
 // Auto-login: skip gate, init immediately
+// ── WHATSAPP SHOP ──────────────────────────────────
+// Session-authed (/ecom/wa-shop/*) — these change what the WhatsApp number does, so unlike the
+// rest of this page they need the dashboard sign-in.
+let wsStatus = null;
+function wsHeaders() { return { 'Content-Type': 'application/json', ...(ecomSessionToken ? { Authorization: 'Bearer ' + ecomSessionToken } : {}) }; }
+async function wsCall(path, body) {
+  const r = await fetch(`${WORKER_BASE}/ecom/wa-shop/${path}`, body === undefined ? { headers: wsHeaders() } : { method: 'POST', headers: wsHeaders(), body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+async function loadWaShop() {
+  if (!ecomSessionToken) {
+    document.getElementById('wsState').textContent = 'Sign in needed';
+    const b = document.getElementById('wsBanner'); b.style.display = ''; b.textContent = 'Open Ecommerce from your Leadvyne dashboard (signed in) to set up the WhatsApp Shop.';
+    return;
+  }
+  try { wsStatus = await wsCall('status'); } catch (e) {
+    const b = document.getElementById('wsBanner'); b.style.display = ''; b.textContent = 'Couldn’t load WhatsApp Shop: ' + e.message; return;
+  }
+  renderWaShop();
+}
+function renderWaShop() {
+  const s = wsStatus, cfg = s.config;
+  const linked = !!cfg.linked_at, synced = !!cfg.synced_at, live = linked && synced;
+  document.getElementById('wsState').textContent = live ? (cfg.carts ? '● Live — taking orders' : '● Catalog live') : 'Setup needed';
+  const b = document.getElementById('wsBanner');
+  if (!s.whatsapp) { b.style.display = ''; b.innerHTML = 'Connect your WhatsApp number first — <b>Settings → Channels</b> in the dashboard.'; } else b.style.display = 'none';
+  const cur = '₹';
+  document.getElementById('wsStats').innerHTML = [
+    ['Products in catalog', synced ? cfg.synced_count : '—'],
+    ['WhatsApp carts (30 days)', s.stats.carts],
+    ['Cart value (30 days)', cur + Number(s.stats.revenue || 0).toLocaleString('en-IN')],
+    ['Paid in WhatsApp', s.stats.paid],
+  ].map(([l, v]) => `<div class="stat"><div class="stat-val">${esc(String(v))}</div><div class="stat-lbl">${esc(l)}</div></div>`).join('');
+  document.getElementById('wsCatalogId').value = cfg.catalog_id || '';
+  document.getElementById('wsCatalogToken').placeholder = s.has_catalog_token ? 'Saved — paste a new one to replace' : 'EAAG…';
+  document.getElementById('wsDone1').textContent = linked ? '✓ Linked' : '';
+  document.getElementById('wsDone2').textContent = synced ? `✓ ${cfg.synced_count} products · ${new Date(cfg.synced_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : '';
+  document.getElementById('wsDone3').textContent = cfg.carts ? '✓ On' : '';
+  ['wsStep1', 'wsStep2', 'wsStep3'].forEach((id, i) => document.getElementById(id).classList.toggle('ok', [linked, synced, cfg.carts][i]));
+  document.getElementById('wsSkipped').innerHTML = (cfg.skipped || []).length
+    ? `<div class="ws-skip"><b>${cfg.skipped.length} product${cfg.skipped.length === 1 ? '' : 's'} couldn't go in the catalog</b> — add the missing detail on the Products page:<ul>${cfg.skipped.slice(0, 8).map(x => `<li>${esc(x.name)} — ${esc(x.reason)}</li>`).join('')}</ul></div>` : '';
+  document.getElementById('wsCarts').checked = !!cfg.carts;
+  document.getElementById('wsChatwootUrl').value = cfg.chatwoot_webhook_url || s.chatwoot_target || '';
+  document.getElementById('wsPayShopifyOpt').style.display = s.shopify ? '' : 'none';
+  document.querySelectorAll('input[name="wsPay"]').forEach(r => { r.checked = r.value === cfg.payment_mode; });
+  document.getElementById('wsGateway').value = cfg.gateway || 'razorpay';
+  document.getElementById('wsPayConfig').value = cfg.payment_config || '';
+  wsPayChanged();
+  document.getElementById('wsSendInChat').checked = cfg.send_in_chat !== false;
+  const cats = [...new Set((allProducts || []).map(p => p.category).filter(Boolean))].sort();
+  document.getElementById('wsSendCat').innerHTML = '<option value="">Whole catalog</option>' + cats.map(c => `<option>${esc(c)}</option>`).join('');
+  const recent = s.stats.recent || [];
+  document.getElementById('wsRecentCard').style.display = recent.length ? '' : 'none';
+  document.getElementById('wsRecent').innerHTML = recent.map(r => `<tr><td>${esc(new Date(r.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }))}</td><td><b>${esc(r.order_ref || '')}</b></td><td>${esc(r.phone || '')}</td><td>${esc(cur + Number(r.total || 0).toLocaleString('en-IN'))}</td></tr>`).join('');
+}
+function wsPayChanged() {
+  const v = document.querySelector('input[name="wsPay"]:checked')?.value;
+  document.getElementById('wsPayCfg').style.display = v === 'whatsapp_pay' ? '' : 'none';
+}
+async function wsRun(btn, msgId, fn, okText) {
+  if (btn) btn.disabled = true;
+  try { const d = await fn(); showMsg(msgId, typeof okText === 'function' ? okText(d) : okText, 6000); await loadWaShop(); return d; }
+  catch (e) { showMsg(msgId, '⚠ ' + e.message, 9000); }
+  finally { if (btn) btn.disabled = false; }
+}
+function wsSaveConfig(body, msgId) { return wsRun(null, msgId, () => wsCall('config', body), '✓ Saved'); }
+function wsConnect(btn) {
+  return wsRun(btn, 'wsMsg1', async () => { await wsCall('config', { catalog_id: document.getElementById('wsCatalogId').value }); return wsCall('connect', {}); }, '✓ Catalog linked and cart switched on');
+}
+function wsSaveToken(btn) {
+  const v = document.getElementById('wsCatalogToken').value.trim();
+  if (!v) { showMsg('wsMsgTok', 'Paste the token first'); return; }
+  return wsRun(btn, 'wsMsgTok', () => wsCall('config', { catalog_token: v }), () => { document.getElementById('wsCatalogToken').value = ''; return '✓ Token saved'; });
+}
+function wsSync(btn) {
+  return wsRun(btn, 'wsMsg2', () => wsCall('sync', {}), d => `✓ ${d.synced} products sent${d.removed ? `, ${d.removed} removed` : ''} — Meta takes a few minutes to show them`);
+}
+function wsToggleCarts(el) {
+  const on = el.checked;
+  if (on && !confirm('Turn on WhatsApp cart orders?\n\nYour WhatsApp updates will pass through Leadvyne on their way to your inbox. If anything looks wrong, switch this off to go straight back.')) { el.checked = false; return; }
+  return wsRun(el, 'wsMsg3', () => wsCall('carts', { enable: on }), on ? '✓ Cart orders are on' : '✓ Cart orders are off').then(r => { if (!r) el.checked = !on; });
+}
+function wsSavePayment(btn) {
+  const mode = document.querySelector('input[name="wsPay"]:checked')?.value || 'cod';
+  const body = { payment_mode: mode };
+  if (mode === 'whatsapp_pay') { body.gateway = document.getElementById('wsGateway').value; body.payment_config = document.getElementById('wsPayConfig').value; }
+  return wsRun(btn, 'wsMsg4', () => wsCall('config', body), '✓ Payment option saved');
+}
+function wsSend(btn) {
+  return wsRun(btn, 'wsMsg5', () => wsCall('send', { phone: document.getElementById('wsSendPhone').value, category: document.getElementById('wsSendCat').value }), d => `✓ Sent ${d.count} products`);
+}
+
 // ── DESKTOP: HOME + SHOPIFY ORDERS / STOCK ───────────────────────
 // Desktop-only (≥768px): the nav entries for these pages are hidden on phones, and nothing here
 // fetches anything unless isDesktop(), so the mobile page behaves exactly as before.

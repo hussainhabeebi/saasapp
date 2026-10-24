@@ -5,6 +5,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan,shopifyFlowVariants,shopifyFlowOrders} from './shopify-sync.js';
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
+import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode} from './meta-ads-report.js';
@@ -25573,7 +25574,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // action menu for everything else — non-English questions (e.g. Malayalam) got the menu
     // instead of an answer. Now all unhandled turns get an AI reply.
     if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
-      const gallery=await engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userText, state, replyLang).catch(e=>{ reportOpsError(env, 'engineMaybeSendEcomGallery', e, {clientId, convId}); return null; });
+      // 🛍️ WhatsApp Shop: a "show me your collection" ask gets the tappable WhatsApp catalog.
+      const shopLine=c[WA_SHOP_CONFIG_FIELD]?await waShopMaybeSendCatalog(env, WA_SHOP_DEPS, c, {phone, convId, inboxId:state.inboxId, text:userText,
+        categories:[...new Set((await ecomListActiveProducts(env, clientId).catch(()=>[])||[]).map(p=>p.category).filter(Boolean))]}).catch(e=>{ reportOpsError(env, 'waShopMaybeSendCatalog', e, {clientId, convId}); return null; }):null;
+      const gallery=shopLine?{text:shopLine, quickReplies:null}:await engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userText, state, replyLang).catch(e=>{ reportOpsError(env, 'engineMaybeSendEcomGallery', e, {clientId, convId}); return null; });
       if(gallery){
         sentText=gallery.text; routing.reply=gallery.text; routing.next=state.stage;
         routing.quickReplies=gallery.quickReplies; if(gallery.media) routing.media=gallery.media;
@@ -34053,6 +34057,24 @@ const SHOPIFY_SYNC_DEPS={
   syncEcomStock:(env, c, pid, stock)=>shopifySyncEcomStock(env, c, pid, stock),
   syncEcomOrders:(env, c, orders, status)=>shopifySyncEcomOrders(env, c, orders, status),
 };
+// 🛍️ WhatsApp Shop (wa-commerce.js): catalog sync, product lists in chat, cart orders and WhatsApp Pay.
+const WA_SHOP_DEPS={
+  json, requireSession, getClientById, ncFetch, patchClientFields, ensureClientColumns, reportOpsError,
+  ecomResolveTable, ecomListClientRows, ecomListActiveProducts, resolveMetaCredentials,
+  verifyMetaWebhookSignature, hmacSignB64, shopifyFetch, resolveImageUrl:engineResolveDirectImageUrl,
+  ensureEcomOrderFields:async(env, tableId)=>{ await ensureEcomShopifyOrderFields(env, tableId); await ensureEcomOrderTakenByFields(env, tableId); },
+  sendChatwootNote:(env, c, convId, text)=>hospitalityProPrivateNote(c, convId, text),
+};
+// Daily: keep each WhatsApp Shop catalog's prices, stock and photos in step with Ecom Products.
+async function runWaShopDailySyncForAllClients(env){
+  for(let page=0; page<50; page++){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${page*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    for(const c of rows) if(c[WA_SHOP_CONFIG_FIELD]) await waShopDailySync(env, WA_SHOP_DEPS, c);
+    if(rows.length<200) break;
+  }
+}
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
   // A label added in Chats that marks a purchase → Purchase to Meta (capiPurchaseFromLabels).
@@ -38152,6 +38174,7 @@ export default {
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
       else if(url.pathname.startsWith('/ecom/shopify/') && (res=await shopifySyncHandleRoute(request, env, SHOPIFY_SYNC_DEPS, url))){ /* Shopify Orders / Stock — shopify-sync.js */ }
+      else if((url.pathname.startsWith('/ecom/wa-shop/')||url.pathname.startsWith('/wa/shop/')) && (res=await waShopHandleRoute(request, env, WA_SHOP_DEPS, url, ctx))){ /* 🛍️ WhatsApp Shop — wa-commerce.js */ }
       else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
       else if(url.pathname==='/ecom/order-phones' && request.method==='GET'){ res=await handleEcomOrderPhones(request, env); }
       else if(url.pathname==='/billing/usage' && request.method==='GET'){ res=await handleBillingUsage(request, env); }
@@ -38520,7 +38543,7 @@ export default {
   // other three are matched explicitly).
   async scheduled(event, env, ctx){
     if(event.cron==='0 2 * * *'){
-      ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env));
+      ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runWaShopDailySyncForAllClients(env).catch(e=>reportOpsError(env, 'wa shop daily sync', e))); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env));
       // Financial Planning — monthly generation self-gates internally on the 1st of the month
       // (see its own comment); the reminder sweep runs every day this tick fires.
       ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env));

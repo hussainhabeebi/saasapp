@@ -22,7 +22,7 @@
 const CV_ECOM_PAGES={
   cvorders:'orders', cvproducts:'products', cvcategories:'categories', cvpromotions:'promotions',
   cvtestimonials:'testimonials', cvshoporders:'shop-orders', cvshopstock:'shop-stock', cvshopify:'shopify',
-  cvstoresettings:'settings', cvflow:'flow',
+  cvstoresettings:'settings', cvflow:'flow', cvwashop:'washop',
 };
 Object.keys(CV_ECOM_PAGES).forEach(p=>{ PAGE_HOST[p]='ecommerce'; });
 const CV_TAB_TO_PAGE=Object.fromEntries(Object.entries(CV_ECOM_PAGES).map(([p,t])=>[t,p]));
@@ -40,6 +40,7 @@ const CV_NAV=[
     ['cvproducts','📦','Products',{hint:'What you sell: photos, prices and stock'}],
     ['cvcategories','🏷️','Categories',{under:'cvproducts'}],
     ['leads','👥','Customers',{hint:'Everyone who has chatted with or bought from you'}],
+    ['cvwashop','📲','WhatsApp shop',{hint:'Customers browse, add to cart and order inside WhatsApp'}],
     ['chats','💬','Chats',{badge:'dnChatBadge',hint:'Your WhatsApp and website conversations'}],
     ['humandeals','🙋','Needs a human',{badge:'dnHdBadge',hint:'Customers the AI assistant handed over to your team'}],
   ]},
@@ -468,6 +469,7 @@ function cvChannel(o){
   if(o.shopify_order_id) return 'Shopify';
   const t=String(o.taken_by||'').toLowerCase();
   if(t==='ai_bot') return 'WhatsApp AI bot';
+  if(t==='whatsapp_cart') return 'WhatsApp shop (cart)';
   if(t==='store_page') return 'Store page';
   if(t) return 'Team (manual)';
   return 'Other / imported';
