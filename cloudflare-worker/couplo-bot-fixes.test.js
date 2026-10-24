@@ -64,6 +64,13 @@ test('8. the ad click keeps Meta\'s ad id and click id; posts and non-ad chats h
   assert.equal(engineLeadAdClick({ content_attributes: { referral: { source_id: 'not-an-id' } } }), null);
 });
 
+test('8. an ad code in the first message marks the chat as from that ad', () => {
+  assert.deepEqual(engineLeadAdSource({}, 'Hi, I want the Kerala offer #K26'), { Source: 'Click-to-WhatsApp ad', LeadSource: 'Click-to-WhatsApp ad (ad code)', AdCode: '#K26' });
+  const ad = { content_attributes: { referral: { source_type: 'ad', source_id: '120208877665544', headline: 'Kerala' } } };
+  assert.equal(engineLeadAdSource(ad, 'Details please #k26').AdCode, '#K26');
+  assert.deepEqual(engineLeadAdSource({}, 'Is #1 size available? Price 999'), { Source: 'WhatsApp' });
+});
+
 test('8. backfill guess for older leads', () => {
   const hist = (t) => JSON.stringify([{ role: 'user', content: t }, { role: 'assistant', content: 'Hi' }]);
   assert.equal(engineLeadSourceGuess({ ConvHistory: hist('Hello! Can I get more info on this?') }), 'Click-to-WhatsApp ad');

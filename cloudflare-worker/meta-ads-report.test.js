@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import {
   marSettings, marActionCount, marInsightRow, marLeadAdRef, marAdIndex, marMatchLead, marLeadArrivedMs, marDay, marAddDays,
-  marDaySummary, marSummaryText, marTemplateParams, marSync, marPostExpenses, marRunDue, marHandleRoute, MAR_DEFAULTS,
+  marDaySummary, marSummaryText, marTemplateParams, marSync, marPostExpenses, marRunDue, marHandleRoute, MAR_DEFAULTS, marAdCode, marHourOf,
 } from './meta-ads-report.js';
 
 function d1(db){
@@ -25,7 +25,7 @@ function d1(db){
 }
 function freshDb(){
   const db=new DatabaseSync(':memory:');
-  for(const f of ['0003_meta_capi_log.sql','0028_accounting_expenses.sql','0118_meta_ads_report.sql'])
+  for(const f of ['0003_meta_capi_log.sql','0028_accounting_expenses.sql','0076_lead_messages.sql','0118_meta_ads_report.sql','0120_meta_ads_running.sql'])
     db.exec(readFileSync(new URL('./migrations/'+f, import.meta.url), 'utf8'));
   db.exec('ALTER TABLE accounting_expenses ADD COLUMN supplier_id INTEGER');
   return db;
@@ -34,7 +34,7 @@ const json=(body, status=200)=>new Response(JSON.stringify(body), {status, heade
 
 describe('attribution rules', ()=>{
   test('a lead names its ad by id, legacy "Ad ID …", campaign id or name; non-ad leads are not ad leads', ()=>{
-    assert.deepEqual(marLeadAdRef({AdId:'111', CtwaClid:'c'}), {isAd:true, adId:'111', campaignId:'', campaignName:'', adName:''});
+    assert.deepEqual(marLeadAdRef({AdId:'111', CtwaClid:'c'}), {isAd:true, adId:'111', campaignId:'', adCode:'', campaignName:'', adName:''});
     assert.equal(marLeadAdRef({AdCampaign:'Ad ID 120200001'}).adId, '120200001');
     assert.equal(marLeadAdRef({AdCampaign:'Ad ID 120200001'}).campaignName, '');
     assert.equal(marLeadAdRef({LeadSource:'Facebook Lead Ad', AdCampaign:'Goa Sept'}).campaignName, 'Goa Sept');
@@ -50,6 +50,21 @@ describe('attribution rules', ()=>{
     assert.deepEqual(marMatchLead({LeadSource:'Instagram Lead Ad', AdCampaign:'kerala honeymoon'}, index), {campaign_id:'C1', adset_id:'', ad_id:''});
     assert.deepEqual(marMatchLead({AdId:'999'}, index), {campaign_id:'', adset_id:'', ad_id:''});
     assert.equal(marMatchLead({Source:'WhatsApp'}, index), null);
+  });
+  test('ad codes: in a lead\'s message or AdCode, matched to the ad whose name carries it', ()=>{
+    assert.equal(marAdCode('Hi I want the offer #K26 please'), 'k26');
+    assert.equal(marAdCode('#BABY1'), 'baby1');
+    assert.equal(marAdCode('Size #1 price #999'), '');
+    assert.equal(marAdCode('mail me a#b.com'), '');
+    const index=marAdIndex([{ad_id:'A1', ad_name:'Reel #K26', adset_id:'S1', campaign_id:'C1', campaign_name:'Kerala'}, {ad_id:'A2', ad_name:'Story', adset_id:'S2', campaign_id:'C2', campaign_name:'Goa #G1'}, {ad_id:'A3', ad_name:'Reel', adset_id:'S3', campaign_id:'C2', campaign_name:'Goa #G1'}]);
+    assert.deepEqual(marMatchLead({AdCode:'#K26'}, index), {campaign_id:'C1', adset_id:'S1', ad_id:'A1'});
+    assert.deepEqual(marMatchLead({AdCode:'g1'}, index), {campaign_id:'C2', adset_id:'', ad_id:''}, 'a campaign code: the campaign, ad unknown');
+    assert.deepEqual(marMatchLead({AdCode:'#ZZ9'}, index), {campaign_id:'', adset_id:'', ad_id:''});
+  });
+  test('Meta hour labels', ()=>{
+    assert.equal(marHourOf('19:00:00 - 19:59:59'), 19);
+    assert.equal(marHourOf('00:00:00 - 00:59:59'), 0);
+    assert.equal(marHourOf('bad'), null);
   });
   test('arrival uses NocoDB CreatedAt (the bot rewrites Date every turn); days in the account timezone', ()=>{
     assert.equal(marLeadArrivedMs({CreatedAt:'2026-10-20 20:00:00+00:00', Date:'2026-10-21T09:00:00Z'}), Date.parse('2026-10-20T20:00:00Z'));
@@ -132,6 +147,10 @@ describe('sync, routes, cron, accounting (D1)', ()=>{
     onExpenseCreated:async()=>{},
     reportOpsError:async(env, what, e)=>{ throw e; },
   };
+  let adsList=[
+    {id:'A1', name:'Reel 3 #K26', effective_status:'ACTIVE', adset:{id:'S1', name:'Couples 25-40', effective_status:'ACTIVE'}, campaign:{id:'C1', name:'Kerala', effective_status:'ACTIVE'}, creative:{title:'Kerala honeymoon 3N/4D', body:'Houseboat + Munnar'}},
+    {id:'A2', name:'Promo', effective_status:'ACTIVE', adset:{id:'S2', name:'UAE', effective_status:'ACTIVE'}, campaign:{id:'C2', name:'Dubai', effective_status:'ACTIVE'}, creative:{title:'Dubai visa', body:''}},
+  ];
   const insights=(day)=>({data:[
     {date_start:day, ad_id:'A1', ad_name:'Reel 3', adset_id:'S1', adset_name:'Couples 25-40', campaign_id:'C1', campaign_name:'Kerala', spend:'1000', impressions:'5000', clicks:'80', actions:[{action_type:'lead', value:'4'}], account_currency:'INR'},
     {date_start:day, ad_id:'A2', ad_name:'Promo', adset_id:'S2', adset_name:'UAE', campaign_id:'C2', campaign_name:'Dubai', spend:'900', impressions:'4000', clicks:'10', actions:[], account_currency:'INR'},
@@ -145,6 +164,15 @@ describe('sync, routes, cron, accounting (D1)', ()=>{
       if(url.endsWith('/messages')){ sent.push(JSON.parse(init.body)); return json({messages:[{id:'wamid.1'}]}); }
       graphCalls.push(url);
       if(url.includes('/act_555?')) return json({name:'Acme Ads', currency:'INR', timezone_offset_hours_utc:5.5});
+      if(url.includes('/act_555/insights?') && url.includes('breakdowns=hourly')){
+        const range=JSON.parse(new URL(url).searchParams.get('time_range'));
+        return json({data:[
+          {date_start:range.until, ad_id:'A1', spend:'200', actions:[{action_type:'lead', value:'1'}], hourly_stats_aggregated_by_advertiser_time_zone:'19:00:00 - 19:59:59'},
+          {date_start:range.until, ad_id:'A2', spend:'50', actions:[{action_type:'onsite_conversion.messaging_conversation_started_7d', value:'2'}], hourly_stats_aggregated_by_advertiser_time_zone:'07:00:00 - 07:59:59'},
+          {date_start:range.until, ad_id:'A2', spend:'0', actions:[], hourly_stats_aggregated_by_advertiser_time_zone:'03:00:00 - 03:59:59'},
+        ]});
+      }
+      if(url.includes('/act_555/ads?')) return json({data:adsList});
       if(url.includes('/act_555/insights?')){
         const range=JSON.parse(new URL(url).searchParams.get('time_range'));
         if(url.includes('after=P2')) return json(insights(range.since));
@@ -201,7 +229,40 @@ describe('sync, routes, cron, accounting (D1)', ()=>{
     // A narrower range keeps every ad (for matching leads) with zero spend.
     const one=await (await req(`/meta/ads-report/data?from=${res.to}&to=${res.to}`)).json();
     assert.equal(one.ads.find(a=>a.ad_id==='A1').spend, 1000);
-    assert.equal(graphCalls.filter(u=>u.includes('/insights')).length, 2, 'fresh data is not re-synced (one sync = 2 pages)');
+    assert.equal(graphCalls.filter(u=>u.includes('/insights')&&!u.includes('breakdowns=hourly')).length, 2, 'fresh data is not re-synced (one sync = 2 pages)');
+  });
+
+  test('sync keeps hourly rows and ad details; a status change since the last sync is logged', async ()=>{
+    const r=await marSync(env, client, {days:90});
+    assert.equal(r.ok, true);
+    assert.equal(r.hourly_rows, 2, 'zero rows are dropped');
+    assert.equal(r.ads, 2);
+    assert.equal(r.changes, 0, 'the first sync logs nothing');
+    const hrs=db.prepare('SELECT hour, ad_id, meta_leads, meta_chats FROM meta_ads_hourly ORDER BY hour').all().map(x=>({...x}));
+    assert.deepEqual(hrs, [{hour:7, ad_id:'A2', meta_leads:0, meta_chats:2}, {hour:19, ad_id:'A1', meta_leads:1, meta_chats:0}]);
+    adsList[1]={...adsList[1], effective_status:'PAUSED'};
+    adsList.push({id:'A3', name:'New reel', effective_status:'PENDING_REVIEW', adset:{id:'S1', name:'Couples 25-40'}, campaign:{id:'C1', name:'Kerala'}});
+    const r2=await marSync(env, client, {days:3});
+    assert.equal(r2.changes, 2);
+    const res=await (await req(`/meta/ads-report/data?from=${marAddDays(r.until, -2)}&to=${r.until}`)).json();
+    assert.deepEqual(res.changes.map(c=>[c.ad_id, c.detail]).sort(), [['A2', 'Active → Paused'], ['A3', 'New ad (In review)']]);
+    const a1=res.ads.find(a=>a.ad_id==='A1');
+    assert.deepEqual([a1.status, a1.headline, a1.body], ['ACTIVE', 'Kerala honeymoon 3N/4D', 'Houseboat + Munnar']);
+    assert.equal(res.hours.length, 2);
+    assert.equal(res.hourly_from, r.until);
+    assert.ok(res.ad_days.every(d=>d.spend>0||d.meta_leads||d.meta_chats));
+  });
+
+  test('GET /first-messages: each lead\'s first customer message in the range', async ()=>{
+    const ins=db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, ts) VALUES (?,?,?,?,?)`);
+    ins.run(1, 7, 'assistant', 'Welcome!', '2026-10-20T09:59:00Z');
+    ins.run(1, 7, 'user', 'Hi, Kerala offer #K26', '2026-10-20T10:00:00Z');
+    ins.run(1, 7, 'user', 'price?', '2026-10-20T10:05:00Z');
+    ins.run(2, 7, 'user', 'old chat', '2026-09-01T10:00:00Z');
+    ins.run(2, 7, 'user', 'back again', '2026-10-20T11:00:00Z');
+    ins.run(3, 99, 'user', 'other account', '2026-10-20T10:00:00Z');
+    const res=await (await req('/meta/ads-report/first-messages?from=2026-10-20&to=2026-10-20')).json();
+    assert.deepEqual(res.messages, {1:'Hi, Kerala offer #K26'});
   });
 
   test('settings: owner only; accounting needs the Accounting module', async ()=>{
