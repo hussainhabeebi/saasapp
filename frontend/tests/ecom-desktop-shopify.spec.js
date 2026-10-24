@@ -155,6 +155,25 @@ test.describe('mobile', () => {
   });
 });
 
+const NOTIFY = {
+  stats: { sent: 3, delivered: 2, read: 1, failed: 1, waiting: 1 },
+  chatwoot: { ready: true, base: 'https://cw.test', account: '1', inbox: '5' },
+  notify_on: true,
+  templates: [
+    { kind: 'received', label: 'Order received', name: 'order_received_leadvyne', lang: 'en_US', auto: true, status: 'APPROVED', preset: 'Hi {{1}}…' },
+    { kind: 'paid', label: 'Payment received', name: '', status: '', preset: 'Hi {{1}}, we have received your payment…' },
+    { kind: 'shipped', label: 'Order shipped', name: '', status: '', preset: 'Hi {{1}}, your order {{2}} has shipped!' },
+    { kind: 'delivered', label: 'Order delivered', name: '', status: '', preset: '…' },
+    { kind: 'abandoned', label: 'Abandoned cart', name: '', status: '', preset: '…' },
+  ],
+  rows: [
+    { id: 4, kind: 'received', order_name: '#1004', customer_name: 'Asha K', phone: '919876543210', template_name: 'order_received_leadvyne', status: 'read', detail: '', conv_id: '77', created_at: new Date().toISOString(), content: 'Hi Asha, thanks for your order #1004!' },
+    { id: 3, kind: 'received', order_name: '#1003', customer_name: 'Ravi', phone: '919000000000', template_name: 'order_received_leadvyne', status: 'failed', detail: '131026: Message undeliverable', conv_id: '78', created_at: new Date().toISOString() },
+    { id: 2, kind: 'received', order_name: '#1002', customer_name: 'Zara', phone: '', template_name: 'order_received_leadvyne', status: 'skipped', detail: 'No customer phone on this order', conv_id: '', created_at: new Date().toISOString() },
+    { id: 1, kind: 'received', order_name: '#1001', customer_name: 'Mini', phone: '918000000000', template_name: 'order_received_leadvyne', status: 'delivered', detail: '', conv_id: '79', created_at: new Date().toISOString() },
+  ],
+};
+
 // The one Shopify page: Ecom → 🛍️ Shopify (connect via the Shopify app, switches, templates, log).
 async function bootPage(page, { shopify = true, scopes = { orders: true, products: true, inventory: true }, query = '', notifyConfig = '' } = {}) {
   const calls = [];
@@ -176,6 +195,9 @@ async function bootPage(page, { shopify = true, scopes = { orders: true, product
       if (u.pathname === '/ecom/shopify/status') return route.fulfill({ json: { connected: true, shop: 'kochi.myshopify.com', scopes } });
       if (u.pathname === '/ecom/shopify/resync') return route.fulfill({ json: { ok: true, orders: 3, variants: 4, products: 2 } });
       if (u.pathname === '/shopify/oauth/start') return route.fulfill({ json: { ok: true, url: 'about:blank#shopify-authorize' } });
+      if (u.pathname === '/ecom/shopify/notifications') return route.fulfill({ json: NOTIFY });
+      if (u.pathname === '/ecom/shopify/notifications/setup') return route.fulfill({ json: { ok: true, name: 'order_shipped_leadvyne', created: true } });
+      if (u.pathname === '/ecom/shopify/notifications/retry') return route.fulfill({ json: { ok: true, status: 'sent' } });
       if (u.pathname === '/ecom/products') return route.fulfill({ json: { list: [
         { Id: 1, name: 'Kurta', sku: 'K-M', price: 599, stock: 2, status: 'active', shopify_product_id: '1', shopify_product_url: 'https://kochi.myshopify.com/products/kurta' },
         { Id: 2, name: 'Hand-made bag', sku: 'B-1', price: 300, stock: 4, status: 'active' },
@@ -201,7 +223,6 @@ test.describe('Shopify page', () => {
     await expect(page.locator('#spSetLowStock')).toHaveValue('3');
     await expect(page.locator('#shopLowThreshold')).toHaveValue('3');
     await expect(page.locator('#spStoreLinkNote')).toContainText('https://kochilooms.in');
-    await expect(page.locator('#spLogTbody')).toContainText('#1001');
     await expect(page.locator('#spTplBlocks .s-lbl')).toHaveCount(5);
     await page.locator('label:has(#spSetNotify)').click();
     await expect.poll(() => calls.filter(c => c.path === '/ecom/client' && c.method === 'PATCH').length).toBe(1);
@@ -251,5 +272,31 @@ test.describe('Shopify products in Products', () => {
     await page.locator('#productsTbody tr', { hasText: 'Kurta' }).locator('button[title="Edit product"]').click();
     await expect(page.locator('#pmShopifyUrl')).toHaveJSProperty('readOnly', true);
     await expect(page.locator('#pmShopifyUrlHint')).toContainText('Synced from Shopify');
+  });
+});
+
+test.describe('Notifications tab', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('every order notification with delivery status, reasons, chat links, retry and template setup', async ({ page }) => {
+    const calls = await bootPage(page);
+    await expect(page.locator('#navShopNotifyCount')).toHaveText('1'); // one failed
+    await page.locator('.tab[data-tab="shop-notify"]').click();
+    await expect.poll(() => calls.some(c => c.path === '/ecom/shopify/notifications' && c.auth === 'Bearer sess-token')).toBe(true);
+    await expect(page.locator('#snTbody tr')).toHaveCount(4);
+    await expect(page.locator('#snKpis')).toContainText('Delivered');
+    await expect(page.locator('#snTbody tr', { hasText: '#1004' })).toContainText('Read');
+    await expect(page.locator('#snTbody tr', { hasText: '#1004' }).locator('a', { hasText: 'Open chat' })).toHaveAttribute('href', 'https://cw.test/app/accounts/1/conversations/77');
+    await expect(page.locator('#snTbody tr', { hasText: '#1003' })).toContainText('131026: Message undeliverable');
+    await expect(page.locator('#snTbody tr', { hasText: '#1002' })).toContainText('No customer phone');
+    await page.locator('#snViews .view', { hasText: 'Failed' }).click();
+    await expect(page.locator('#snTbody tr')).toHaveCount(1);
+    await page.locator('#snTbody tr', { hasText: '#1003' }).locator('button', { hasText: 'Retry' }).click();
+    await expect.poll(() => calls.find(c => c.path === '/ecom/shopify/notifications/retry')?.body).toBe(JSON.stringify({ id: 3 }));
+    await expect(page.locator('#snTemplates')).toContainText('order_received_leadvyne · auto');
+    await expect(page.locator('#snTemplates .sn-tpl', { hasText: 'Order received' })).toContainText('Approved');
+    await page.locator('#snSetup_shipped').click();
+    await expect.poll(() => calls.find(c => c.path === '/ecom/shopify/notifications/setup')?.body).toBe(JSON.stringify({ kind: 'shipped' }));
+    if (SHOT) await page.screenshot({ path: `${SHOT}/notifications.png`, fullPage: true });
   });
 });

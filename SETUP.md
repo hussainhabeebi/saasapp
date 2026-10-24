@@ -1346,6 +1346,32 @@ catalog, and registers any of the webhooks above the store is missing.
 **Routes** (client_id-keyed like the rest of `/ecom/*`): `GET /ecom/shopify/status`,
 `GET /ecom/shopify/orders`, `GET /ecom/shopify/stock`, `POST /ecom/shopify/resync`.
 
+### Shopify order notifications (`cloudflare-worker/shopify-notify.js`, Ecom → 🔔 Notifications)
+Shopify events send the customer an approved WhatsApp template **through Chatwoot only** (never
+straight to Meta), so each notification lands in the customer's Chatwoot conversation.
+
+- **New orders, automatically:** `orders/create` sends the **Order received** template. Its
+  template (`order_received_leadvyne` — "Hi {{1}}, thanks for your order {{2}}! Total: {{3}}.
+  Items: {{4}}…", variables customer name / order # / total / items) is created on Meta and mapped
+  automatically — on connecting Shopify, on the first order, or from Notifications. Creation needs
+  the WhatsApp channel's Meta credentials (Chatwoot can't create templates); Chatwoot is then asked
+  to sync. A template Meta already has is adopted. Until Meta approves it, sends are logged as
+  *Waiting approval* and can be retried.
+- **Other events** (paid, shipped, delivered, abandoned cart) use the template chosen in Ecom →
+  Shopify, or **✨ Set up automatically** in Notifications (same presets, `SHOPIFY_TEMPLATE_PRESETS`).
+- **Conversation:** the customer's Chatwoot contact and WhatsApp conversation (in
+  `chatwoot_inbox_id`) is found by phone, or created (contact → contact inbox → conversation) for a
+  buyer who never messaged the store. Phones without a country code take the order's country.
+- **Tracking:** every attempt is a row in D1 `shopify_notify_sends` (migration 0120, also
+  self-created): sent / delivered / read / failed / waiting approval / skipped, with the reason.
+  One send per order + event — Shopify webhook retries never send twice. Delivery status comes
+  from the Chatwoot message (Meta's delivered / read / failed, with its error) — refreshed on
+  opening Notifications or ↻ Refresh status. **Retry** re-sends a failed / waiting / skipped one.
+- **Notifications tab** (desktop, Shopify connected; dashboard session required since rows carry
+  phone numbers): 7-day KPIs, template status per event, filters, Open chat (Chatwoot) links.
+  Routes: `GET /ecom/shopify/notifications[?refresh=1]`, `POST …/setup {kind}`, `POST …/retry {id}`.
+- The old `shopify_notify_log` client field is no longer written.
+
 ### Shopify-style guided shopping chat (`cloudflare-worker/shopify-flow.js`)
 For Ecom clients on **Settings → Bot Behavior → Ecom Communication Style → Shopify / general
 store**, the WhatsApp bot runs a button-led shopping flow. It's on by default for that style;

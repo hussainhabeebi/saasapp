@@ -21,7 +21,7 @@
 // Sidebar entries that are really an ecom.html sub-page inside #pageEcommerce.
 const CV_ECOM_PAGES={
   cvorders:'orders', cvproducts:'products', cvcategories:'categories', cvpromotions:'promotions',
-  cvtestimonials:'testimonials', cvshoporders:'shop-orders', cvshopstock:'shop-stock', cvshopify:'shopify',
+  cvtestimonials:'testimonials', cvshoporders:'shop-orders', cvshopstock:'shop-stock', cvshopnotify:'shop-notify', cvshopify:'shopify',
   cvstoresettings:'settings', cvflow:'flow',
 };
 Object.keys(CV_ECOM_PAGES).forEach(p=>{ PAGE_HOST[p]='ecommerce'; });
@@ -52,6 +52,7 @@ const CV_NAV=[
   {group:'shopify',label:'Shopify',icon:'🛍️',items:[
     ['cvshoporders','🛒','Shopify orders'],
     ['cvshopstock','📊','Shopify stock'],
+    ['cvshopnotify','🔔','Notifications'],
     ['cvshopify','🔌','Shopify settings'],
   ]},
   {group:'insights',label:'Insights',icon:'📈',items:[
@@ -94,7 +95,7 @@ function cvBabyCare(){ try{ return JSON.parse(clientRecord?.bot_config||'{}')?.e
 function cvCanSee(page){
   if(page==='home'||page==='storehome'||page==='__classic'||page==='__projects') return true;
   if(CV_ECOM_PAGES[page]){
-    if((page==='cvshoporders'||page==='cvshopstock')&&!cvShopifyOn()) return false;
+    if((page==='cvshoporders'||page==='cvshopstock'||page==='cvshopnotify')&&!cvShopifyOn()) return false;
     if(page==='cvflow'&&!cvBabyCare()) return false;
     page='ecommerce';
   }
