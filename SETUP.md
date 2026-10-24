@@ -1346,6 +1346,39 @@ catalog, and registers any of the webhooks above the store is missing.
 **Routes** (client_id-keyed like the rest of `/ecom/*`): `GET /ecom/shopify/status`,
 `GET /ecom/shopify/orders`, `GET /ecom/shopify/stock`, `POST /ecom/shopify/resync`.
 
+### Shopify-style guided shopping chat (`cloudflare-worker/shopify-flow.js`)
+For Ecom clients on **Settings → Bot Behavior → Ecom Communication Style → Shopify / general
+store**, the WhatsApp bot runs a button-led shopping flow. It's on by default for that style;
+**Guided shopping chat** on the same card switches it off (`bot_config.shopify_flow_enabled=false`).
+Works with or without a connected Shopify store: with one, sizes carry per-size stock and the
+checkout link opens the exact variant.
+
+1. **Menu** — "hi"/"menu"/a first message that's just a greeting → "👋 Welcome to *Store*!" with the
+   in-stock categories (most products first, up to 9) + **📦 Track my order**.
+2. **Category** → up to 6 product photos (name · price) + a product picker (in-stock only).
+3. **Product** → photo with name, price, short description and "Sizes in stock", then a size
+   picker. Sizes come from the synced Shopify variants (`shopify_inventory`, matched by handle;
+   sold-out sizes left out), else the product's Size field. One size (or none) → straight to step 4.
+4. **Size** (tapped or typed) → "Great choice 👌" + **Buy now** link — a Shopify cart permalink
+   (`https://{shop}/cart/{variant}:1`) that opens checkout with that size, else the product's own
+   link — then [More from category] [Track my order] [Main menu]. A sold-out size says so and
+   re-offers the ones left.
+5. **Track my order** (button or "where is my order") → the latest orders for this WhatsApp
+   number (last 10 digits) with status and tracking (`shopify_orders`, or Ecom Orders without
+   Shopify); none found → asks for the order number. An order number only ever shows an order
+   whose phone matches the customer's — never someone else's.
+
+**Questions in between:** anything that isn't a flow step (e.g. "is it cotton?", "COD
+available?") goes to the normal AI answer — told to stay short and leave navigation to the
+buttons — and then `engineShopifyFlowResume` sends the prompt for where the customer was as a
+**second message**: the size picker for the product in view (or the one the AI path just matched
+by name), the category's product picker, the order-number ask, or the main menu.
+
+Mechanics: button values are `SHOP_MENU|TRACK|CAT:<name>|PROD:<id>|SIZE:<variant>`; position is
+kept in `Stage` (`shop_menu`/`shop_category`/`shop_product`/`shop_track`) + the `OrderCollect`
+seed (`{category, productId}`). Only `SHOP_*` taps skip intent classification. Flow turns skip the
+keyword-triggered extras (category media, promo, photoshoot) since the step already sent its own.
+
 ## Hospitality module (`frontend/dashboard.html` — 🏨 Hospitality tab; houseboats/hotels/tourism stays)
 A new industry (`hospitality`) plus an independently-toggleable module (`hospitality_enabled`,
 Settings → 🧩 Modules — same pattern as Travel Agency/Recruit/Appointments/B2B: industry selection

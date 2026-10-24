@@ -2715,6 +2715,11 @@ const ROLES = {
               <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
               <span class="save-msg" id="saveEcomCommunicationStyleMsg"></span>
             </div>
+            <!-- Shopify / general store: button-led shopping chat (worker.js engineShopifyFlowTurn). -->
+            <label id="shopifyFlowRow" style="display:none;margin-top:12px;gap:10px;align-items:flex-start;cursor:pointer">
+              <input type="checkbox" id="cfgShopifyFlowEnabled" style="margin-top:3px">
+              <span><b>Guided shopping chat</b><br><span class="s-note" style="margin:0">Welcome menu with your categories and 📦 Track my order → product photos → sizes in stock → checkout link for the exact size. Questions in between are answered first; the next step's buttons follow as a second message. Order tracking only ever shows the customer's own orders (matched on their WhatsApp number).</span></span>
+            </label>
           </div>
         </div>
 
@@ -12673,6 +12678,8 @@ function populateSettings(){
   try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   $id('ecomCommunicationStyleCard').style.display=(clientRecord.ecom_enabled==='Yes')?'block':'none';
   $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
+  $id('cfgShopifyFlowEnabled').checked=ecomBotConfig.shopify_flow_enabled!==false;
+  renderShopifyFlowRow();
   $id('eduCommunicationStyleCard').style.display=clientRecord.industry==='education'?'block':'none';
   $id('cfgEduCommunicationStyle').value=ecomBotConfig.edu_communication_style||'';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
@@ -13822,12 +13829,18 @@ $id('saveQuickReplyButtons').addEventListener('click',async()=>{
   botConfig.quick_reply_buttons_enabled=$id('cfgQuickReplyButtons').value!=='No';
   await saveField('saveQuickReplyButtons','saveQuickReplyButtonsMsg',{bot_config:JSON.stringify(botConfig)});
 });
+// The guided-chat switch only applies to the Shopify / general store style.
+function renderShopifyFlowRow(){
+  $id('shopifyFlowRow').style.display=$id('cfgEcomCommunicationStyle').value==='shopify'?'flex':'none';
+}
+$id('cfgEcomCommunicationStyle').addEventListener('change',renderShopifyFlowRow);
 $id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
   let botConfig={};
   try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   const selected=$id('cfgEcomCommunicationStyle').value;
   if(selected) botConfig.ecom_communication_style=selected;
   else delete botConfig.ecom_communication_style;
+  if(selected==='shopify') botConfig.shopify_flow_enabled=$id('cfgShopifyFlowEnabled').checked;
   await saveField('saveEcomCommunicationStyle','saveEcomCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveEduCommunicationStyle').addEventListener('click',async()=>{
