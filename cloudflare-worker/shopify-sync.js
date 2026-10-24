@@ -3,7 +3,7 @@
 // they're needed (same convention as worker.js getShopifyCheckoutsTableId):
 //   shopify_orders     one row per Shopify order — the full Shopify view (payment + fulfillment
 //                      status, line items, tracking), separate from the shared Ecom orders table
-//                      that worker.js syncShopifyOrderToEcom keeps feeding as before.
+//                      that worker.js shopifySyncEcomOrders also feeds.
 //   shopify_inventory  one row per product variant — price, SKU and stock available summed over
 //                      every location.
 // Kept in step by Shopify webhooks (orders/*, fulfillments/*, products/*, inventory_levels/update,
@@ -11,9 +11,16 @@
 // also registers any webhook a store connected before this module is missing. Every row carries
 // `shop` so data from a previously connected store never shows after switching stores.
 //
+// A Shopify-connected client's catalog and orders are also ordinary Ecom Products and Orders (the
+// module's own tables), so the bot, storefront, Orders page and Reports treat them exactly like
+// ones added by hand: every product/order sync hands the Shopify payloads to worker.js
+// (deps.syncEcomProducts / syncEcomStock / syncEcomOrders), which writes them using the pure
+// mappers below (shopifyEcomProductPlan, shopifyEcomOrderFields, shopifyEcomNextStatus).
+//
 // This file imports nothing from worker.js; worker.js passes helpers in as `deps`
 // (SHOPIFY_SYNC_DEPS): { json, ncFetch, getClientById, ncTableMeta, clientsTable, apiVersion,
-//   reportOpsError, webhookUri(env) }
+//   reportOpsError, webhookUri(env), syncEcomProducts(env, c, products, {replaceAll, deletedIds}),
+//   syncEcomStock(env, c, shopifyProductId, stock), syncEcomOrders(env, c, orders, status?) }
 
 export const SHOPIFY_SYNC_WEBHOOK_TOPICS={
   read_orders:['orders/create','orders/updated','orders/paid','orders/cancelled','orders/fulfilled','fulfillments/create','fulfillments/update'],
@@ -41,6 +48,15 @@ const INVENTORY_COLUMNS=[
   ['handle','SingleLineText'],['image_url','LongText'],['available','Number'],['tracked','SingleLineText'],
   ['levels_json','LongText'],['updated_at','SingleLineText'],
 ];
+
+// The Shopify page's switches (ecom.html → 🛍️ Shopify) live in shopify_notify_config.settings,
+// next to the notification templates, so that one page saves everything through one field.
+// A missing key keeps the behaviour from before these switches existed: everything on.
+export const SHOPIFY_SETTINGS_DEFAULTS={notify:true, low_stock:5};
+export function shopifySettings(c){
+  let stored=null; try{ stored=JSON.parse(c?.shopify_notify_config||'{}')?.settings; }catch(e){}
+  return {...SHOPIFY_SETTINGS_DEFAULTS, ...(stored&&typeof stored==='object'?stored:{})};
+}
 
 const _tableIds={};
 async function ensureTable(env, deps, title, columns){
@@ -151,6 +167,134 @@ export function shopifyLevelsSummary(levels, inventoryItemId){
   return {available:Object.values(byLocation).reduce((s, n)=>s+n, 0), levels_json:JSON.stringify(byLocation)};
 }
 
+// ── Shopify → Ecom Products / Orders (pure, exported for tests) ──────────────────────────────
+const skuKey=v=>String(v||'').trim().toLowerCase();
+// NocoDB hands numbers back as "599.00" or 599 — compare those as numbers, everything else as text.
+const sameValue=(a, b)=>{
+  const x=String(a??''), y=String(b??'');
+  if(x===y) return true;
+  return x!==''&&y!==''&&Number.isFinite(Number(x))&&Number(x)===Number(y);
+};
+// Shopify doesn't count stock for untracked variants (always sellable) — shown as plenty in stock.
+export const SHOPIFY_UNTRACKED_STOCK=999;
+export function shopifyStockFromVariants(variants){
+  const list=variants||[];
+  if(!list.length) return 0;
+  if(list.some(v=>!v.tracked)) return SHOPIFY_UNTRACKED_STOCK;
+  return list.reduce((s, v)=>s+Math.max(0, num(v.available)), 0);
+}
+
+export function shopifyHtmlToText(html){
+  return String(html||'')
+    .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h\d)>/gi, '\n').replace(/<li[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    .replace(/[ \t]+/g, ' ').replace(/ *\n\s*/g, '\n').trim();
+}
+
+// One Shopify product → one Ecom product. Shopify owns name, SKU, price, stock, status and the order
+// link; description/category/brand/colours/sizes/photos are only written when Shopify has them, so
+// anything a merchant added in Ecom on top (extra photos, audio, style fields …) stays.
+export function shopifyEcomProductFields(shop, p){
+  const variants=p?.variants||[];
+  const optionValues=re=>{ const o=(p?.options||[]).find(o=>re.test(String(o.name||''))); return (o?.values||[]).filter(Boolean).join(', '); };
+  const images=(p?.images||[]).map(i=>i?.src).filter(Boolean);
+  if(!images.length && p?.image?.src) images.push(p.image.src);
+  const prices=variants.map(v=>num(v.price)).filter(n=>n>0);
+  const active=(p?.status||'active')==='active';
+  const f={
+    name:p?.title||'', sku:(variants.find(v=>v.sku)?.sku)||'',
+    price:prices.length?Math.min(...prices):0,
+    stock:shopifyStockFromVariants(variants.map(v=>({tracked:!!v.inventory_management, available:v.inventory_quantity}))),
+    status:active?'active':'inactive',
+    shopify_product_id:idStr(p?.id),
+    shopify_product_url:active&&p?.handle?`https://${shop}/products/${p.handle}`:'',
+  };
+  const optional={
+    description:shopifyHtmlToText(p?.body_html).slice(0, 3000), category:p?.product_type||'', brand:p?.vendor||'',
+    color:optionValues(/^colou?r$/i), size:optionValues(/^size$/i),
+    variant:variants.length>1?variants.map(v=>v.title).filter(t=>t&&t!=='Default Title').join(', '):'',
+    image_url:images[0], image_url_2:images[1], image_url_3:images[2], image_url_4:images[3], image_url_5:images[4],
+  };
+  Object.entries(optional).forEach(([k, v])=>{ if(v) f[k]=v; });
+  return f;
+}
+
+// Matches Shopify products to the client's Ecom products: by shopify_product_id, else (first sync)
+// adopts a hand-made product with the same SKU instead of duplicating it. New drafts aren't
+// imported. A full resync (replaceAll) or products/delete (deletedIds) marks products that left
+// Shopify inactive — never deleted, so past orders keep pointing at them.
+export function shopifyEcomProductPlan(shop, existing, products, {replaceAll=false, deletedIds=[]}={}){
+  const byPid=new Map(), bySku=new Map();
+  (existing||[]).forEach(e=>{
+    if(e.shopify_product_id) byPid.set(String(e.shopify_product_id), e);
+    else{ const k=skuKey(e.sku); if(k&&!bySku.has(k)) bySku.set(k, e); }
+  });
+  const creates=[], updates=[], seen=new Set();
+  (products||[]).forEach(p=>{
+    const fields=shopifyEcomProductFields(shop, p);
+    let e=byPid.get(String(p.id));
+    if(!e) e=(p.variants||[]).map(v=>bySku.get(skuKey(v.sku))).find(m=>m&&!seen.has(m.Id));
+    if(e){
+      seen.add(e.Id);
+      if(Object.keys(fields).some(k=>!sameValue(e[k], fields[k]))) updates.push({Id:e.Id, ...fields});
+    }else if(fields.status==='active') creates.push(fields);
+  });
+  const gone=new Set((deletedIds||[]).map(String));
+  const deactivate=(existing||[]).filter(e=>e.shopify_product_id&&!seen.has(e.Id)&&e.status!=='inactive'&&(replaceAll||gone.has(String(e.shopify_product_id))))
+    .map(e=>({Id:e.Id, status:'inactive'}));
+  return {creates, updates:updates.concat(deactivate)};
+}
+
+// Shopify order → Ecom Orders status. Cancelled/refunded → cancelled; then delivered (every
+// fulfillment delivered) → shipped → processing (paid) → received.
+export function shopifyEcomOrderStatus(o){
+  if(o?.cancelled_at||o?.financial_status==='refunded'||o?.financial_status==='voided') return 'cancelled';
+  const f=o?.fulfillments||[];
+  if(f.length&&f.every(x=>x.shipment_status==='delivered')) return 'delivered';
+  if(f.length||['fulfilled','partial'].includes(o?.fulfillment_status)) return 'shipped';
+  if(['paid','partially_paid','partially_refunded'].includes(o?.financial_status)) return 'processing';
+  return 'received';
+}
+// Webhooks arrive out of order and staff may move an order forward in Ecom by hand (e.g. delivered
+// for a carrier Shopify doesn't track) — a sync never moves it backwards. Cancelled always wins.
+const ORDER_STATUS_RANK={pending:0, received:1, processing:2, shipped:3, delivered:4};
+export function shopifyEcomNextStatus(current, incoming){
+  if(incoming==='cancelled'||!current) return incoming;
+  if(current==='cancelled') return current;
+  const a=ORDER_STATUS_RANK[current], b=ORDER_STATUS_RANK[incoming];
+  return a!==undefined&&b!==undefined&&a>b?current:incoming;
+}
+// Shopify orders → Ecom Orders creates/updates. Only orders that actually changed are written, so a
+// resync doesn't rewrite 90 days of history (or wake the Orders table's own status webhook).
+export function shopifyEcomOrderPlan(clientId, existing, orders, status){
+  const byId=new Map((existing||[]).filter(e=>e.shopify_order_id).map(e=>[String(e.shopify_order_id), e]));
+  const creates=[], updates=[];
+  (orders||[]).filter(o=>o?.id).forEach(o=>{
+    const fields=shopifyEcomOrderFields(clientId, o, status);
+    const e=byId.get(fields.shopify_order_id);
+    if(!e){ creates.push(fields); byId.set(fields.shopify_order_id, {...fields}); return; }
+    fields.status=shopifyEcomNextStatus(e.status, fields.status);
+    if(Object.keys(fields).some(k=>!sameValue(e[k], fields[k]))) updates.push({Id:e.Id, ...fields});
+  });
+  return {creates, updates};
+}
+export function shopifyEcomOrderFields(clientId, o, status){
+  const addr=o?.shipping_address||{};
+  return {
+    client_id:String(clientId), shopify_order_id:idStr(o?.id), status:status||shopifyEcomOrderStatus(o),
+    order_id:o?.name||('#'+(o?.order_number||o?.id)),
+    customer_name:personName(o?.customer)||personName(addr),
+    customer_phone:o?.phone||addr.phone||o?.customer?.phone||'',
+    order_date:(o?.created_at||'').slice(0, 10),
+    items:(o?.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
+    // Structured alongside `items` for Reports' top products (per-line price/qty/sku).
+    line_items_json:JSON.stringify((o?.line_items||[]).map(li=>({title:li.title||'', quantity:num(li.quantity), price:num(li.price), sku:li.sku||''}))),
+    total:num(o?.total_price), currency:o?.currency||'',
+    delivery_address:[addr.address1, addr.city, addr.country].filter(Boolean).join(', '),
+  };
+}
+
 // Shopify REST pagination: Link: <https://…?page_info=abc&limit=250>; rel="next"
 export function shopifyNextPageInfo(linkHeader){
   const m=String(linkHeader||'').split(',').find(part=>/rel="next"/.test(part));
@@ -208,6 +352,12 @@ async function upsertOrders(env, deps, c, orders){
   return creates.length+updates.length;
 }
 
+// The Ecom-side copy is best-effort: a failure there never fails the Shopify-side sync itself.
+async function toEcom(env, deps, c, what, fn){
+  try{ return await fn(); }
+  catch(e){ await deps.reportOpsError(env, `shopify → Ecom ${what}`, e, {clientId:c.Id}); return null; }
+}
+
 async function upsertProducts(env, deps, c, products, {replaceAll=false}={}){
   const tableId=await inventoryTable(env, deps);
   const shop=c.shopify_shop_domain;
@@ -226,7 +376,8 @@ async function upsertProducts(env, deps, c, products, {replaceAll=false}={}){
   await bulkWrite(env, deps, tableId, 'POST', creates);
   await bulkWrite(env, deps, tableId, 'PATCH', updates);
   await bulkWrite(env, deps, tableId, 'DELETE', deletes);
-  return rows.length;
+  const ecom=deps.syncEcomProducts?await toEcom(env, deps, c, 'products', ()=>deps.syncEcomProducts(env, c, products, {replaceAll})):null;
+  return {variants:rows.length, products:ecom?.created+ecom?.updated||0};
 }
 
 async function shopifyGet(env, deps, c, path){
@@ -245,7 +396,8 @@ async function grantedScopes(env, deps, c){
 export async function shopifySyncOnWebhook(env, deps, c, topic, data){
   try{
     if(String(topic).startsWith('orders/')){
-      await upsertOrders(env, deps, c, [data]);
+      // A stale (older) payload writes nothing here, so it isn't copied to Ecom Orders either.
+      if(await upsertOrders(env, deps, c, [data]) && deps.syncEcomOrders) await toEcom(env, deps, c, 'orders', ()=>deps.syncEcomOrders(env, c, [data]));
     }else if(topic==='fulfillments/create'||topic==='fulfillments/update'){
       const tableId=await ordersTable(env, deps);
       const r=await deps.ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`${scopeWhere(c.Id, c.shopify_shop_domain)}~and(shopify_order_id,eq,${data.order_id})`)}&limit=1&fields=Id,fulfillments_json`);
@@ -257,15 +409,22 @@ export async function shopifySyncOnWebhook(env, deps, c, topic, data){
       const tableId=await inventoryTable(env, deps);
       const rows=await listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(shopify_product_id,eq,${data.id})`, 'Id');
       await bulkWrite(env, deps, tableId, 'DELETE', rows.map(r=>({Id:r.Id})));
+      if(deps.syncEcomProducts) await toEcom(env, deps, c, 'products', ()=>deps.syncEcomProducts(env, c, [], {deletedIds:[data.id]}));
     }else if(topic==='inventory_levels/update'){
       // The payload has one location's level; re-read every location so `available` stays a true total.
       const tableId=await inventoryTable(env, deps);
-      const rows=await listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(inventory_item_id,eq,${data.inventory_item_id})`, 'Id');
+      const rows=await listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(inventory_item_id,eq,${data.inventory_item_id})`, 'Id,shopify_product_id');
       if(!rows.length) return;
       const lr=await shopifyGet(env, deps, c, `/inventory_levels.json?inventory_item_ids=${data.inventory_item_id}&limit=250`);
       const levels=lr.ok?((await lr.json().catch(()=>({})))?.inventory_levels||[]):[data];
       const sum=shopifyLevelsSummary(levels, data.inventory_item_id);
       await bulkWrite(env, deps, tableId, 'PATCH', rows.map(r=>({Id:r.Id, ...sum, updated_at:data.updated_at||new Date().toISOString()})));
+      // The Ecom product's stock is the total over all of that product's variants.
+      const pid=rows[0].shopify_product_id;
+      if(pid&&deps.syncEcomStock){
+        const variants=await listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(shopify_product_id,eq,${pid})`, 'available,tracked');
+        await toEcom(env, deps, c, 'stock', ()=>deps.syncEcomStock(env, c, pid, shopifyStockFromVariants(variants.map(v=>({tracked:v.tracked==='Yes', available:v.available})))));
+      }
     }
   }catch(e){ await deps.reportOpsError(env, `shopifySyncOnWebhook ${topic}`, e, {clientId:c.Id}); }
 }
@@ -339,16 +498,18 @@ async function handleResync(request, env, deps){
     }).catch(()=>{})
   ));
 
-  const out={ok:true, orders:0, variants:0, missing_scopes:[]};
+  const out={ok:true, orders:0, variants:0, products:0, missing_scopes:[]};
   try{
     if(scopes.has('read_orders')){
       const since=new Date(Date.now()-90*86400000).toISOString();
       const {items}=await fetchPaged(env, deps, c, `/orders.json?status=any&limit=250&updated_at_min=${encodeURIComponent(since)}`, 'orders', 4);
       out.orders=await upsertOrders(env, deps, c, items);
+      // Order history into Ecom Orders too, so Orders and Reports include past Shopify orders.
+      if(deps.syncEcomOrders) await toEcom(env, deps, c, 'orders', ()=>deps.syncEcomOrders(env, c, items));
     }else out.missing_scopes.push('read_orders');
     if(scopes.has('read_products')){
       const {items, status}=await fetchPaged(env, deps, c, '/products.json?limit=250', 'products', 8);
-      if(status===200) out.variants=await upsertProducts(env, deps, c, items, {replaceAll:true});
+      if(status===200) Object.assign(out, await upsertProducts(env, deps, c, items, {replaceAll:true}));
     }else out.missing_scopes.push('read_products');
     if(!scopes.has('read_inventory')) out.missing_scopes.push('read_inventory');
   }catch(e){

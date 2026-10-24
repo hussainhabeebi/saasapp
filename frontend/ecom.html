@@ -300,6 +300,7 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
 .sthumb{width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--line);background:var(--accent-soft);display:block}
 
 /* Banner */
+#tabShopify .card{margin-bottom:14px}
 .banner{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #FCD34D;background:#FFFBEB;color:#78350F;font-size:13px;margin-bottom:16px}
 .banner b{display:block;margin-bottom:2px}
 .banner a{color:#92400E;font-weight:600}
@@ -740,16 +741,76 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
   </div>
 </div>
 
-<!-- SHOPIFY TAB — connecting and configuring notifications now both live on one page,
-     Settings → Integrations in the main dashboard. This tab just points there. -->
+<!-- SHOPIFY TAB — the one place for everything Shopify: connect (the Shopify app's OAuth only,
+     nothing pasted by hand), what syncs, WhatsApp notification templates and their send log.
+     dashboard.html's Settings → Integrations only links here. -->
 <div id="tabShopify" class="page">
   <div class="card">
-    <div class="card-title">Shopify</div>
-    <div id="shopifyNotConnected" style="display:none">
-      <div class="s-hint">No Shopify store connected yet. Connect it — and set up which WhatsApp template sends for each event — all on one page now: <a href="https://app.leadvyne.com/dashboard.html?client=" id="shopifyConnectLink" style="color:var(--accent-ink);font-weight:600">open Settings → Integrations</a>.</div>
+    <div class="card-title-row"><div class="card-title">🛍️ Shopify store</div><span class="live-dot off" id="spLive" style="display:none"></span></div>
+    <div id="spBanner"></div>
+    <div id="spNotConnected" style="display:none">
+      <div class="s-hint" style="margin:0 0 10px">Connect your store with the Shopify app — one click, approve, done. Orders, stock, product links and WhatsApp updates all set themselves up.</div>
+      <div class="s-row">
+        <input class="s-input" id="spDomain" type="text" placeholder="yourstore (or yourstore.myshopify.com)" style="max-width:320px;margin-bottom:0" onkeydown="if(event.key==='Enter')connectShopify()">
+        <button class="save-btn" id="spConnectBtn" onclick="connectShopify()">Connect Shopify</button>
+        <span class="save-msg" id="spConnectMsg"></span>
+      </div>
     </div>
-    <div id="shopifyConnected" style="display:none">
-      <div class="s-note">✅ Connected — <b id="shopifyDomainDisplay"></b>. Notification templates and the send log now live in <a href="https://app.leadvyne.com/dashboard.html?client=" id="shopifyManageLink" style="color:var(--accent-ink);font-weight:600">Settings → Integrations</a>.</div>
+    <div id="spConnected" style="display:none">
+      <div class="s-hint" style="margin:0 0 6px">Connected to <b id="spShop"></b><span id="spSince"></span></div>
+      <div class="s-hint" id="spScopes" style="margin:0 0 10px"></div>
+      <div class="s-row">
+        <button class="save-btn" id="shopResyncBtn3" onclick="resyncShopify(this)">↻ Sync now</button>
+        <button class="save-btn sec" id="spGrantBtn" style="display:none" onclick="connectShopify(shopDomain())">🔑 Grant access</button>
+        <a class="save-btn sec" id="spAdminLink" target="_blank" rel="noopener" style="text-decoration:none">Open Shopify admin ↗</a>
+        <button class="save-btn" style="background:var(--muted)" onclick="disconnectShopify()">Disconnect</button>
+        <span class="save-msg" id="spConnectedMsg"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="spConfigured" style="display:none">
+    <div class="card">
+      <div class="card-title">What runs automatically</div>
+      <div class="s-hint" style="margin:0 0 12px;line-height:1.6">Your Shopify products and orders are part of this module — they show up in <b>Products</b> and <b>Orders</b> (and Reports, the storefront and the WhatsApp bot) like any you add here, and stay in sync with Shopify. Shopify is the source of truth for a product's name, SKU, price, stock, status and order link; anything you add on top here (extra photos, audio, style details) is kept.</div>
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
+        <div class="toggle-text"><strong>WhatsApp order updates</strong><small>Send the templates below when an order is placed, paid, shipped, delivered or a cart is abandoned.</small></div>
+        <span class="toggle-wrap"><input type="checkbox" id="spSetNotify" onchange="saveShopSetting('notify', this.checked)"><span class="toggle-slider"></span></span>
+      </label>
+      <div class="s-row" style="align-items:center">
+        <span class="s-lbl" style="margin:0">Low stock at ≤</span>
+        <input class="s-input" id="spSetLowStock" type="number" min="0" style="width:90px;margin-bottom:0" onchange="saveShopSetting('low_stock', Math.max(0, Number(this.value) || 0))">
+        <span class="s-hint" style="margin:0">units — used by Shopify Stock and Home for everyone on your team.</span>
+      </div>
+      <div class="s-hint" style="margin-top:12px" id="spStoreLinkNote"></div>
+      <span class="save-msg" id="spSettingsMsg"></span>
+    </div>
+
+    <div class="card">
+      <div class="card-title">WhatsApp notifications</div>
+      <div class="s-hint" style="margin:0 0 10px">Sent from your connected WhatsApp Business number. Pick an approved template for each event — or create one in a click.</div>
+      <div class="s-row">
+        <button class="save-btn sec" onclick="loadShopifyTemplates()">🔍 Load my WhatsApp templates</button>
+        <span class="save-msg" id="spTplMsg"></span>
+      </div>
+      <div id="spTplBlocks"></div>
+      <div class="s-row">
+        <button class="save-btn" onclick="saveShopifyTemplates()">Save templates</button>
+        <span class="save-msg" id="spTplSaveMsg"></span>
+      </div>
+      <div class="s-hint" style="margin-top:12px;line-height:1.6">
+        Order placed → <em>Order Received</em> · Marked paid → <em>Payment Received</em> · Tracking added → <em>Order Shipped</em> ·
+        Carrier reports delivered → <em>Order Delivered</em> (only carriers Shopify tracks) · Checkout left 60+ min → <em>Abandoned Cart</em>.
+        <b>⚡ Meta library</b> templates need no review wait; <b>✨ Suggested</b> ones are usually approved within a few hours and come pre-mapped.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Notification log</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Time</th><th>Event</th><th>Order</th><th>Phone</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody id="spLogTbody"><tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr></tbody>
+      </table></div>
     </div>
   </div>
 </div>
@@ -1304,7 +1365,7 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
         <input class="s-input" id="pmPhotoshootFolder" type="url" placeholder="https://drive.google.com/drive/folders/...">
         <div class="s-hint">Google Drive folder with this product's photoshoot images, shared as "Anyone with the link can view". When a customer mentions this product's name, 5 random images from the folder are sent in addition to the product images above.</div>
       </div>
-      <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
+      <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="Linked automatically when this SKU matches a Shopify variant"><div class="s-hint" id="pmShopifyUrlHint"></div></div>
       <div class="s-sec">
         <span class="s-lbl">Product Link (optional)</span>
         <input class="s-input" id="pmProductLink" type="url" placeholder="https://instagram.com/p/... or any product page">
@@ -1616,8 +1677,6 @@ const WA_VARS = [
 let waTemplates = [];
 let waTemplateConfig = { received: null, shipped: null, delivered: null };
 
-// Shopify notification-template setup + send log moved to dashboard.html (Settings →
-// Integrations) — see the comment on the Shopify tab markup above.
 
 // ── INIT ──────────────────────────────────────────
 async function init() {
@@ -1675,22 +1734,20 @@ async function init() {
   loadPromotions();
   loadTestimonials();
   loadOrders();
+
+  // ?tab=shopify (dashboard → Integrations link) and ?shopify=connected|error (back from Shopify's
+  // OAuth screen via the dashboard): land on the Shopify page; a fresh connect runs the first sync.
+  const shopifyParam = params.get('shopify');
+  if (params.get('tab') === 'shopify' || shopifyParam) showTab('shopify');
+  if (shopifyParam === 'connected' && shopDomain()) resyncShopify();
+  else if (shopifyParam === 'error') document.getElementById('spConnectMsg').textContent = params.get('msg') || 'Shopify connection failed';
 }
 
 function renderShopifyConnection() {
-  const connected = !!clientRecord.shopify_shop_domain;
-  document.getElementById('shopifyNotConnected').style.display = connected ? 'none' : 'block';
-  document.getElementById('shopifyConnected').style.display = connected ? 'block' : 'none';
-  const integrationsUrl = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
-  if (connected) {
-    document.getElementById('shopifyDomainDisplay').textContent = clientRecord.shopify_shop_domain;
-    document.getElementById('shopifyManageLink').href = integrationsUrl;
-  } else {
-    document.getElementById('shopifyConnectLink').href = integrationsUrl;
-  }
-  // Per-product Shopify link only makes sense once Shopify is actually connected — hidden
-  // otherwise so it doesn't imply a feature that isn't wired up yet.
-  document.getElementById('pmShopifyUrlWrap').style.display = connected ? '' : 'none';
+  // The Shopify Product Link is filled from Shopify by SKU (Shopify tab → "Link products by SKU").
+  // Only shown once a store is connected.
+  document.getElementById('pmShopifyUrlWrap').style.display = clientRecord.shopify_shop_domain ? '' : 'none';
+  renderShopifyPage();
 }
 
 function onProductStyleChange() {
@@ -1716,6 +1773,7 @@ function showTab(name) {
   document.getElementById('tabTestimonials').classList.toggle('active', name === 'testimonials');
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
+  if (name === 'shopify') { renderShopifyPage(); if (shopDomain() && !shopStatus) loadShopStatus(); }
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
   document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
   if (name === 'flow' && !_flowLoaded) loadFlow();
@@ -1762,14 +1820,14 @@ function renderProductsTable() {
       <tr>
         <td><input type="checkbox" class="row-check" onchange="toggleProductSelect(${p.Id}, this.checked)" ${selectedProductIds.has(p.Id)?'checked':''}></td>
         <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
-        <td><strong>${esc(p.name||p.title||'—')}</strong></td>
+        <td><strong>${esc(p.name||p.title||'—')}</strong>${p.shopify_product_id ? ' <span class="muted-s" title="Synced from Shopify">🛍️ Shopify</span>' : ''}</td>
         <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
         <td>${esc(p.category||'—')}</td>
         <td>${esc(PRODUCT_STYLE_LABELS[p.style] || PRODUCT_STYLE_LABELS.fashion_garments)}</td>
         <td>${esc(p.color||'—')}</td>
         <td>${esc(p.size||'—')}</td>
         <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
-        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" onchange="updateProductStock(${p.Id}, this.value)"></td>
+        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" ${p.shopify_product_id ? 'readonly title="Stock comes from Shopify"' : `onchange="updateProductStock(${p.Id}, this.value)"`}></td>
         <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
         <td><div class="row-actions">
           <button class="icon-btn" onclick="copyProductLink(${p.Id})" title="Copy this product's link">🔗</button>
@@ -1874,6 +1932,7 @@ function openAddProductModal() {
   document.getElementById('pmStatus').value = 'active';
   document.getElementById('pmStyle').value = 'fashion_garments';
   onProductStyleChange();
+  renderProductShopifyLink(null);
   document.getElementById('productModalTitle').textContent = 'Add Product';
   document.getElementById('productModalSaveBtn').textContent = 'Save Product';
   document.getElementById('productModalMsg').textContent = '';
@@ -1912,6 +1971,7 @@ function openEditProductModal(id) {
   document.getElementById('pmSetIncludes').value = p.set_includes || '';
   document.getElementById('pmAccentColors').value = p.accent_colors || '';
   document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
+  renderProductShopifyLink(p);
   document.getElementById('pmProductLink').value = p.product_link || '';
   document.getElementById('pmPrice').value = p.price ?? '';
   document.getElementById('pmCurrency').value = p.currency || 'INR';
@@ -4454,6 +4514,242 @@ function renderHome() {
 }
 window.addEventListener('resize', () => { clearTimeout(window._homeResize); window._homeResize = setTimeout(renderHome, 150); });
 
+// ── SHOPIFY PAGE (🛍️ Shopify tab) ──
+// The one place for Shopify: connect through the Shopify app (OAuth — /shopify/oauth/start needs
+// the dashboard session), the switches, notification templates and their log. Templates, their
+// variable mapping and the switches all save into shopify_notify_config ({config, templates,
+// settings}); the Worker reads settings via shopify-sync.js shopifySettings (same defaults).
+const SHOP_SETTING_DEFAULTS = { notify: true, low_stock: 5 };
+const SHOP_TPL_KINDS = [
+  { key: 'received', label: 'Order Received' }, { key: 'paid', label: 'Payment Received' },
+  { key: 'shipped', label: 'Order Shipped' }, { key: 'delivered', label: 'Order Delivered' },
+  { key: 'abandoned', label: 'Abandoned Cart' },
+];
+const SHOP_TPL_LIBRARY_KINDS = ['received', 'paid', 'shipped'];
+const SHOP_TPL_VARS = [
+  { key: 'customer_name', label: 'Customer Name' }, { key: 'order_number', label: 'Order Number' },
+  { key: 'total', label: 'Order/Cart Total' }, { key: 'items', label: 'Items' },
+  { key: 'tracking_number', label: 'Tracking Number' }, { key: 'tracking_url', label: 'Tracking URL' },
+  { key: 'checkout_url', label: 'Cart Recovery URL' }, { key: 'review_link', label: 'Review Link' },
+  { key: 'store_name', label: 'Store Name' },
+];
+let shopifyNotifyConfig = {};
+let shopifyTemplates = [];
+let shopifySettings = { ...SHOP_SETTING_DEFAULTS };
+
+function readShopifyStored() {
+  let st = {}; try { st = JSON.parse(clientRecord.shopify_notify_config || '{}') || {}; } catch (e) {}
+  shopifyNotifyConfig = { received: null, paid: null, shipped: null, delivered: null, abandoned: null, ...(st.config || {}) };
+  shopifyTemplates = Array.isArray(st.templates) ? st.templates : [];
+  shopifySettings = { ...SHOP_SETTING_DEFAULTS, ...(st.settings && typeof st.settings === 'object' ? st.settings : {}) };
+}
+async function saveShopifyStored() {
+  const value = JSON.stringify({ config: shopifyNotifyConfig, templates: shopifyTemplates, settings: shopifySettings });
+  await patchClient({ shopify_notify_config: value });
+  clientRecord.shopify_notify_config = value;
+}
+
+function renderShopifyPage() {
+  readShopifyStored();
+  const g = id => document.getElementById(id);
+  const on = !!shopDomain();
+  g('spNotConnected').style.display = on ? 'none' : 'block';
+  g('spConnected').style.display = on ? 'block' : 'none';
+  g('spConfigured').style.display = on ? 'block' : 'none';
+  g('spLive').style.display = on ? '' : 'none';
+  if (!on) { g('spBanner').innerHTML = ''; return; }
+  g('spShop').textContent = shopDomain();
+  const since = clientRecord.shopify_connected_at ? new Date(clientRecord.shopify_connected_at) : null;
+  g('spSince').textContent = since && !isNaN(since) ? ` · since ${since.toLocaleDateString()}` : '';
+  g('spAdminLink').href = shopAdminUrl('');
+  g('spSetNotify').checked = shopifySettings.notify !== false;
+  g('spSetLowStock').value = shopLowThreshold();
+  const storeLink = (clientRecord.external_store_link || '').trim();
+  g('spStoreLinkNote').innerHTML = storeLink
+    ? `Store link the bot shares for your catalogue: <a href="${escAttr(storeLink)}" target="_blank" rel="noopener">${esc(storeLink)}</a> — filled from Shopify when you connected.`
+    : '';
+  renderShopifyAccess();
+  renderShopifyTplBlocks();
+  renderShopifyLog();
+}
+
+// Permissions line + the Grant access / Reconnect button, from /ecom/shopify/status.
+function renderShopifyAccess() {
+  const g = id => document.getElementById(id);
+  if (!shopDomain()) return;
+  const s = shopStatus, grant = g('spGrantBtn'), live = g('spLive');
+  let text = 'Checking access…', banner = '', grantLabel = '';
+  if (s && s.connected && !s.scopes) {
+    text = '';
+    banner = `<div class="banner"><span>⚠️</span><div><b>Shopify isn't answering this connection.</b>The app may have been uninstalled or its access revoked — reconnect to resume syncing.</div></div>`;
+    grantLabel = '🔄 Reconnect';
+  } else if (s && s.scopes) {
+    const sc = s.scopes;
+    text = [['Orders', sc.orders], ['Products', sc.products], ['Inventory', sc.inventory]].map(([n, ok]) => `${ok ? '✓' : '✗'} ${n}`).join(' · ');
+    if (!(sc.orders && sc.products && sc.inventory)) {
+      banner = `<div class="banner"><span>🔑</span><div><b>One more permission needed.</b>Your store was connected before every feature existed. Grant access — one approval in Shopify, nothing to disconnect.</div></div>`;
+      grantLabel = '🔑 Grant access';
+    }
+  }
+  g('spScopes').textContent = text;
+  g('spBanner').innerHTML = banner;
+  grant.style.display = grantLabel ? '' : 'none';
+  if (grantLabel) grant.textContent = grantLabel;
+  const off = !!banner;
+  live.classList.toggle('off', off);
+  live.textContent = s ? (off ? 'Sync paused' : 'Live sync') : 'Checking…';
+}
+
+async function connectShopify(shopArg) {
+  const msg = document.getElementById(shopArg ? 'spConnectedMsg' : 'spConnectMsg');
+  let shop = String(shopArg || document.getElementById('spDomain').value || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (shop && !shop.endsWith('.myshopify.com')) shop += '.myshopify.com';
+  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop)) { msg.textContent = 'Enter your store name, e.g. yourstore'; return; }
+  if (!ecomSessionToken) { msg.textContent = 'Sign in to the dashboard first, then connect from here.'; return; }
+  msg.textContent = 'Opening Shopify…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/shopify/oauth/start`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ecomSessionToken }, body: JSON.stringify({ shop }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.url) { msg.textContent = d.error || 'Could not start the Shopify connection'; return; }
+    // Shopify's approve screen won't render inside the dashboard's iframe, so leave the page.
+    (window.top || window).location.href = d.url;
+  } catch (e) { msg.textContent = 'Error: ' + e.message; }
+}
+
+async function disconnectShopify() {
+  if (!confirm('Disconnect Shopify? Syncing and WhatsApp order updates stop until you connect again.')) return;
+  const msg = document.getElementById('spConnectedMsg');
+  msg.textContent = 'Disconnecting…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/shopify/disconnect`, { method: 'POST', headers: { Authorization: 'Bearer ' + ecomSessionToken } });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.textContent = d.error || 'Could not disconnect'; return; }
+    msg.textContent = '';
+    clientRecord.shopify_shop_domain = '';
+    clientRecord.shopify_connected_at = '';
+    shopStatus = null; shopOrders = null; shopStock = null;
+    document.body.classList.remove('shopify-on');
+    renderShopifyConnection();
+    showTab('shopify');
+  } catch (e) { msg.textContent = 'Error: ' + e.message; }
+}
+
+async function saveShopSetting(key, value) {
+  const prev = shopifySettings[key];
+  shopifySettings[key] = value;
+  if (key === 'low_stock') { document.getElementById('shopLowThreshold').value = value; renderShopStock(); renderHome(); }
+  try {
+    await saveShopifyStored();
+    showMsg('spSettingsMsg', 'Saved ✓');
+  } catch (e) {
+    shopifySettings[key] = prev;
+    renderShopifyPage();
+    showMsg('spSettingsMsg', 'Error: ' + e.message, 6000);
+  }
+}
+
+function renderShopifyLog() {
+  const tbody = document.getElementById('spLogTbody');
+  let log = []; try { log = JSON.parse(clientRecord.shopify_notify_log || '[]'); } catch (e) {}
+  if (!Array.isArray(log) || !log.length) { tbody.innerHTML = '<tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr>'; return; }
+  const badge = s => s === 'sent' ? '✅ sent' : s === 'failed' ? '❌ failed' : '⏭ skipped';
+  tbody.innerHTML = log.slice().reverse().map(e => `<tr>
+    <td>${esc(new Date(e.ts).toLocaleString())}</td><td>${esc(e.event || '')}</td><td>${esc(e.order || '—')}</td>
+    <td>${esc(e.phone || '—')}</td><td>${badge(e.status)}</td><td>${esc(e.detail || '')}</td></tr>`).join('');
+}
+
+async function loadShopifyTemplates() {
+  showMsg('spTplMsg', 'Loading…', 10000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates?client_id=${encodeURIComponent(clientId)}`);
+    const d = await r.json();
+    if (d.error) { showMsg('spTplMsg', d.error, 6000); return; }
+    shopifyTemplates = d.data || d.templates || [];
+    renderShopifyTplBlocks();
+    showMsg('spTplMsg', shopifyTemplates.length ? `Found ${shopifyTemplates.length} templates ✓` : 'No templates yet — create one below.');
+  } catch (e) { showMsg('spTplMsg', 'Error: ' + e.message, 6000); }
+}
+
+function renderShopifyTplBlocks() {
+  const box = document.getElementById('spTplBlocks');
+  box.innerHTML = SHOP_TPL_KINDS.map(({ key, label }) => {
+    const cfg = shopifyNotifyConfig[key] || {};
+    const list = shopifyTemplates.slice();
+    if (cfg.name && !list.some(t => t.name === cfg.name && t.language === cfg.lang)) list.unshift({ name: cfg.name, language: cfg.lang || 'en', status: 'saved' });
+    const options = ['<option value="">— None (off) —</option>'].concat(list.map(t =>
+      `<option value="${escAttr(t.name + '|' + t.language)}" ${cfg.name === t.name && cfg.lang === t.language ? 'selected' : ''}>${esc(t.name)} (${esc(t.language)})${t.status ? ' — ' + esc(t.status) : ''}</option>`));
+    return `<div style="margin-top:14px"><span class="s-lbl">${esc(label)}</span>
+      <div class="s-row" style="margin-bottom:8px">
+        <select class="s-input" style="margin-bottom:0;max-width:360px" onchange="onShopifyTplSelect('${key}', this.value)">${options.join('')}</select>
+        ${SHOP_TPL_LIBRARY_KINDS.includes(key) ? `<button class="save-btn sec" id="spLib_${key}" onclick="createShopifyTemplate('${key}', 'library')">⚡ Meta library</button>` : ''}
+        <button class="save-btn sec" id="spPreset_${key}" onclick="createShopifyTemplate('${key}', 'preset')">✨ Suggested</button>
+      </div>
+      <div class="colmap-grid" id="spParams_${key}"></div></div>`;
+  }).join('');
+  SHOP_TPL_KINDS.forEach(({ key }) => {
+    const cfg = shopifyNotifyConfig[key];
+    const t = cfg && shopifyTemplates.find(tt => tt.name === cfg.name && tt.language === cfg.lang);
+    if (t) renderShopifyParamMap(key, t, cfg.params || []);
+  });
+}
+
+function onShopifyTplSelect(kind, value) {
+  if (!value) { shopifyNotifyConfig[kind] = null; document.getElementById(`spParams_${kind}`).innerHTML = ''; return; }
+  const [name, language] = value.split('|');
+  shopifyNotifyConfig[kind] = { name, lang: language, params: [] };
+  const t = shopifyTemplates.find(tt => tt.name === name && tt.language === language);
+  if (t) renderShopifyParamMap(kind, t, []);
+}
+
+function renderShopifyParamMap(kind, template, savedParams) {
+  const el = document.getElementById(`spParams_${kind}`);
+  const varCount = template.var_count || (template.components || []).find(c => c.type === 'BODY')?.text?.match(/\{\{\d+\}\}/g)?.length || 0;
+  if (!varCount) { el.innerHTML = '<div class="s-hint">This template has no variables.</div>'; return; }
+  const rows = [];
+  for (let i = 0; i < varCount; i++) {
+    const val = savedParams[i] || '';
+    const options = ['<option value="">— Skip —</option>'].concat(SHOP_TPL_VARS.map(v => `<option value="${v.key}" ${v.key === val ? 'selected' : ''}>${v.label}</option>`));
+    rows.push(`<div class="colmap-field"><label>Variable {{${i + 1}}}</label><select onchange="shopifyNotifyConfig['${kind}'].params[${i}]=this.value">${options.join('')}</select></div>`);
+  }
+  el.innerHTML = rows.join('');
+  shopifyNotifyConfig[kind].params = savedParams.length ? savedParams : new Array(varCount).fill('');
+}
+
+async function createShopifyTemplate(kind, source) {
+  const btn = document.getElementById(source === 'library' ? `spLib_${kind}` : `spPreset_${kind}`);
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/wa-templates/${source === 'library' ? 'create-from-library' : 'create-preset'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, kind }),
+    });
+    const d = await r.json();
+    if (d.error) { showMsg('spTplMsg', d.error, 8000); return; }
+    shopifyNotifyConfig[kind] = { name: d.name, lang: d.language, params: source === 'library' ? [] : (d.params || []) };
+    await saveShopifyStored();
+    await loadShopifyTemplates();
+    showMsg('spTplMsg', source === 'library'
+      ? `Created "${d.name}" from Meta's library (${d.status}). Map each {{}} below, then Save.`
+      : `Submitted "${d.name}" to Meta — usually approved within a few hours, then it sends automatically.`, 10000);
+  } catch (e) { showMsg('spTplMsg', 'Error: ' + e.message, 6000); }
+  finally { btn.disabled = false; btn.textContent = original; }
+}
+
+async function saveShopifyTemplates() {
+  try { await saveShopifyStored(); showMsg('spTplSaveMsg', 'Saved ✓'); }
+  catch (e) { showMsg('spTplSaveMsg', 'Error: ' + e.message, 6000); }
+}
+
+// Edit Product: a product synced from Shopify (shopify_product_id) takes its name, SKU, price,
+// stock, status and order link from Shopify — say so, and keep the link read-only.
+function renderProductShopifyLink(p) {
+  const synced = !!(p && p.shopify_product_id);
+  document.getElementById('pmShopifyUrl').readOnly = synced;
+  document.getElementById('pmShopifyUrlHint').textContent = synced
+    ? 'Synced from Shopify — name, SKU, price, stock, status and this link update from your store. Edit those in Shopify; extra photos, audio and style details you add here are kept.'
+    : 'Only for products not synced from Shopify.';
+}
+
 // ── SHOPIFY (shared) ──
 let shopStatus = null;
 let shopOrders = null;   // null = not loaded yet
@@ -4461,9 +4757,16 @@ let shopStock = null;
 let shopOrderView = 'all';
 let shopStockView = 'all';
 let shopLoadedAt = { orders: 0, stock: 0 };
-const SHOP_LOW_KEY = 'lv_shopify_low_stock';
-function shopLowThreshold() { try { const v = localStorage.getItem(SHOP_LOW_KEY); return v === null || v === '' ? 5 : Math.max(0, Number(v) || 0); } catch (e) { return 5; } }
-function onShopLowThresholdChange(v) { try { localStorage.setItem(SHOP_LOW_KEY, String(Math.max(0, Number(v) || 0))); } catch (e) {} renderShopStock(); renderHome(); }
+// Shared with the whole team: stored in shopify_notify_config.settings (see the Shopify page below).
+function shopLowThreshold() { return Math.max(0, Number(shopifySettings.low_stock) || 0); }
+let _shopLowSaveTimer = null;
+function onShopLowThresholdChange(v) {
+  shopifySettings.low_stock = Math.max(0, Number(v) || 0);
+  document.getElementById('spSetLowStock').value = shopifySettings.low_stock;
+  renderShopStock(); renderHome();
+  clearTimeout(_shopLowSaveTimer);
+  _shopLowSaveTimer = setTimeout(() => saveShopifyStored().catch(() => {}), 800);
+}
 function shopDomain() { return clientRecord?.shopify_shop_domain || ''; }
 function shopAdminUrl(path) { return `https://${shopDomain()}/admin${path || ''}`; }
 
@@ -4477,7 +4780,7 @@ function initShopifyModules() {
   document.getElementById('shopOrdersShop').textContent = shopDomain();
   document.getElementById('shopStockShop').textContent = shopDomain();
   document.getElementById('shopLowThreshold').value = shopLowThreshold();
-  if (!isDesktop()) return;
+  if (!isDesktop()) return; // phones load Shopify status when the Shopify tab is opened (showTab)
   loadShopStatus();
   loadShopOrders();
   loadShopStock();
@@ -4498,14 +4801,14 @@ async function loadShopStatus() {
   renderShopBanners();
 }
 function renderShopBanners() {
-  const integrationsUrl = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
   const s = shopStatus;
   let ordersB = '', stockB = '';
   if (s && s.connected && !s.scopes) {
-    ordersB = stockB = `<div class="banner"><span>⚠️</span><div><b>Shopify isn't responding to this connection.</b>The app may have been uninstalled or its access revoked. <a href="${escAttr(integrationsUrl)}" target="_top">Reconnect in Settings → Integrations</a>.</div></div>`;
+    ordersB = stockB = `<div class="banner"><span>⚠️</span><div><b>Shopify isn't responding to this connection.</b>The app may have been uninstalled or its access revoked. <a href="#" onclick="showTab('shopify');return false">Reconnect in the Shopify tab</a>.</div></div>`;
   } else if (s && s.scopes && !(s.scopes.products && s.scopes.inventory)) {
-    stockB = `<div class="banner"><span>🔑</span><div><b>Stock sync needs one more permission.</b>Your store was connected before stock sync existed, so Leadvyne can't read products and inventory yet. In <a href="${escAttr(integrationsUrl)}" target="_top">Settings → Integrations</a> click Disconnect, then Connect Shopify again and approve — orders keep syncing meanwhile.</div></div>`;
+    stockB = `<div class="banner"><span>🔑</span><div><b>Stock sync needs one more permission.</b>Your store was connected before stock sync existed. <a href="#" onclick="connectShopify(shopDomain());return false">Grant access</a> — one approval in Shopify, orders keep syncing meanwhile.</div></div>`;
   }
+  renderShopifyAccess();
   document.getElementById('shopOrdersBanner').innerHTML = ordersB;
   document.getElementById('shopStockBanner').innerHTML = stockB;
   ['shopOrdersLive', 'shopStockLive', 'homeShopifyLive'].forEach(id => {
@@ -4517,14 +4820,15 @@ function renderShopBanners() {
 }
 
 async function resyncShopify(btn) {
-  const btns = [document.getElementById('shopResyncBtn1'), document.getElementById('shopResyncBtn2')];
+  const btns = ['shopResyncBtn1', 'shopResyncBtn2', 'shopResyncBtn3'].map(id => document.getElementById(id));
   btns.forEach(b => { b.disabled = true; b.textContent = '↻ Syncing…'; });
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/shopify/resync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
     await Promise.all([loadShopOrders(), loadShopStock(), loadShopStatus()]);
-    btns.forEach(b => { b.textContent = `✓ ${d.orders} orders · ${d.variants} variants`; });
+    btns.forEach(b => { b.textContent = `✓ ${d.orders} orders · ${d.variants} variants${d.products ? ` · ${d.products} products updated` : ''}`; });
+    loadProducts(); loadOrders();
   } catch (e) {
     btns.forEach(b => { b.textContent = '↻ Sync now'; });
     alert('Shopify sync failed: ' + e.message);

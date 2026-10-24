@@ -3,7 +3,7 @@ import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
-import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS} from './shopify-sync.js';
+import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan} from './shopify-sync.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel} from './meta-ads-report.js';
@@ -6616,7 +6616,9 @@ async function handleShopifyOauthStart(request, env){
   if(!isValidShopDomain(shop)) return json({error:'Enter your store as yourstore.myshopify.com'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
-  if(c.shopify_shop_domain && c.shopify_access_token) return json({error:'A Shopify store is already connected for this client. Disconnect it first to switch stores.'}, 400);
+  // Reconnecting the same store is allowed — that's how a store connected before a scope existed
+  // grants it (ecom.html "Grant access"), and how a revoked token gets replaced.
+  if(c.shopify_shop_domain && c.shopify_access_token && c.shopify_shop_domain!==shop) return json({error:'A different Shopify store is already connected for this client. Disconnect it first to switch stores.'}, 400);
 
   const state=await signOauthState(env, payload.cid);
   const redirectUri=`${env.WORKER_BASE_URL}/shopify/oauth/callback`;
@@ -6660,7 +6662,17 @@ async function handleShopifyOauthCallback(request, env){
     shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
   ));
 
-  await patchClientFields(env, statePayload.cid, {shopify_shop_domain:shop, shopify_access_token:access_token, shopify_connected_at:new Date().toISOString()});
+  const fields={shopify_shop_domain:shop, shopify_access_token:access_token, shopify_connected_at:new Date().toISOString()};
+  // Settings → Order Link is filled from the store's own primary domain when it's still blank, so a
+  // Shopify client never has to type their store URL in a second place.
+  const c=await getClientById(env, statePayload.cid);
+  if(c && !(c.external_store_link||'').trim()){
+    const shopR=await shopifyFetch(env, shop, access_token, '/shop.json').catch(()=>null);
+    const domain=shopR?.ok?(await shopR.json().catch(()=>({})))?.shop?.domain:'';
+    fields.external_store_link=`https://${domain||shop}`;
+  }
+  await patchClientFields(env, statePayload.cid, fields);
+  // The dashboard forwards ?shopify=connected into Ecom → 🛍️ Shopify, which runs the first sync.
   return Response.redirect(`${appBase}?client=${statePayload.cid}&shopify=connected`, 302);
 }
 
@@ -6986,6 +6998,7 @@ async function handleGcalSyncTask(request, env){
 // even for a skipped/failed send. `kind` indexes into shopify_notify_config.config; `vars`
 // supplies the values available for that event's template variable mapping.
 async function sendShopifyNotification(env, c, kind, vars, logMeta){
+  if(shopifySettings(c).notify===false) return; // Ecom → Shopify → "WhatsApp notifications" off
   let stored={}; try{ stored=JSON.parse(c.shopify_notify_config||'{}'); }catch(e){}
   const cfg=stored?.config?.[kind];
   let log=[]; try{ log=JSON.parse(c.shopify_notify_log||'[]'); }catch(e){}
@@ -7044,64 +7057,120 @@ async function markShopifyCheckoutCompleted(env, clientId, token){
   if(existing) await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:existing.Id, completed:'Yes'}});
 }
 
-async function findEcomOrderByShopifyId(env, tableId, clientId, shopifyOrderId){
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(shopify_order_id,eq,${shopifyOrderId})&limit=1`);
-  if(!r.ok) return null;
-  const data=await r.json().catch(()=>({}));
-  return data?.list?.[0]||null;
+// ── Shopify → the Ecom module's own Orders / Products ──────────────────────────────────────
+// A Shopify-connected client's orders and catalog are ordinary Ecom Orders and Products, so the
+// Orders page, Reports, bot and storefront treat them exactly like ones added by hand. Called from
+// shopify-sync.js (webhooks + Sync now) through SHOPIFY_SYNC_DEPS; the field mapping lives there.
+
+// Every row of this client's Ecom table (paged), optionally just some fields.
+async function ecomListClientRows(env, tableId, clientId, where, fields){
+  const out=[];
+  for(let offset=0; offset<10000; offset+=1000){
+    const qs=new URLSearchParams({where:`(client_id,eq,${clientId})${where||''}`, limit:'1000', offset:String(offset)});
+    if(fields) qs.set('fields', fields);
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    out.push(...list);
+    if(list.length<1000) break;
+  }
+  return out;
+}
+async function ecomBulkWrite(env, tableId, method, rows){
+  const saved=[];
+  for(let i=0; i<rows.length; i+=100){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method, body:rows.slice(i, i+100)});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(`NocoDB ${method} ${r.status}: ${data?.msg||data?.error||''}`);
+    if(Array.isArray(data)) saved.push(...data);
+  }
+  return saved;
 }
 
-// Mirrors upsertShopifyCheckout's find-then-patch-or-create pattern, keeping the client's own
-// Ecommerce module Orders page (ecom.html — ORDER_FIELDS there is the authoritative column list
-// this must match) in sync with Shopify's order lifecycle, not just the WhatsApp notifications
-// sendShopifyNotification fires. Matched on `shopify_order_id` (Shopify's own numeric order id,
-// stable across every webhook for that order) rather than `order_id`/name, which a merchant could
-// edit in Shopify after the fact. Requires a `shopify_order_id` column on the orders table (both
-// the shared default and any client's own — see SETUP.md); silently no-ops if the client has no
-// orders table resolvable at all (ecomResolveTable falls back to the shared default, so in
-// practice this only skips if that default table id itself is ever cleared).
-async function syncShopifyOrderToEcom(env, c, order, status){
-  const tableId=await ecomResolveTable(env, c.Id, 'orders');
-  if(!tableId||!order?.id) return;
-  const fields={
-    client_id:c.Id, shopify_order_id:String(order.id), status,
-    order_id:order.name||('#'+(order.order_number||order.id)),
-    customer_name:[order.customer?.first_name, order.customer?.last_name].filter(Boolean).join(' '),
-    customer_phone:order.phone||order.shipping_address?.phone||order.customer?.phone||'',
-    order_date:(order.created_at||'').slice(0,10),
-    items:(order.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
-    // Structured alongside the flattened `items` text above rather than replacing it — `items` is
-    // what ecom.html's Orders table already renders. This is purely additive, for the Reports
-    // page's Shopify top-products breakdown (handleShopifyAnalytics below), which needs real
-    // per-line price/qty/sku that the flattened string doesn't carry. Requires a `line_items_json`
-    // column (Long text) on the orders table, same "add this column" pattern as shopify_order_id —
-    // see SETUP.md. Orders synced before this column existed have no line_items_json, so
-    // per-product analytics only cover orders from here on; an accepted reporting-only gap.
-    line_items_json:JSON.stringify((order.line_items||[]).map(li=>({title:li.title||'', quantity:Number(li.quantity)||0, price:Number(li.price)||0, sku:li.sku||''}))),
-    total:order.total_price||0, currency:order.currency||'',
-    delivery_address:[order.shipping_address?.address1, order.shipping_address?.city, order.shipping_address?.country].filter(Boolean).join(', '),
-  };
-  const existing=await findEcomOrderByShopifyId(env, tableId, c.Id, fields.shopify_order_id);
-  const r=existing
-    ? await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}})
-    : await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:fields});
-  if(!r.ok){
-    const data=await r.json().catch(()=>({}));
-    await reportOpsError(env, 'syncShopifyOrderToEcom', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId:c.Id, shopifyOrderId:fields.shopify_order_id, tableId});
+// The orders table predates Shopify, so its two Shopify columns are created on first use.
+const _ecomShopifyOrderFieldsEnsured=new Set();
+async function ensureEcomShopifyOrderFields(env, tableId){
+  if(_ecomShopifyOrderFieldsEnsured.has(tableId)) return;
+  const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
+  if(!r.ok) return;
+  const names=new Set(((await r.json().catch(()=>({})))?.list||[]).map(f=>f.title));
+  let ok=true;
+  for(const [title, uidt] of [['shopify_order_id','SingleLineText'], ['line_items_json','LongText']]){
+    if(names.has(title)) continue;
+    const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt}});
+    if(!cr.ok) ok=false;
   }
+  if(ok) _ecomShopifyOrderFieldsEnsured.add(tableId);
+}
+
+// Upserts Shopify orders into Ecom Orders, matched on shopify_order_id (stable, unlike the order
+// name a merchant can edit). `status` forces one; otherwise it's derived from the order. Never
+// moves an order's status backwards (shopifyEcomNextStatus).
+async function shopifySyncEcomOrders(env, c, orders, status){
+  const list=(orders||[]).filter(o=>o?.id);
+  if(!list.length) return 0;
+  const tableId=await ecomResolveTable(env, c.Id, 'orders');
+  if(!tableId) return 0;
+  await ensureEcomShopifyOrderFields(env, tableId);
+  const existing=await ecomListClientRows(env, tableId, c.Id, list.length===1?`~and(shopify_order_id,eq,${list[0].id})`:'');
+  const {creates, updates}=shopifyEcomOrderPlan(c.Id, existing, list, status);
+  await ecomBulkWrite(env, tableId, 'POST', creates);
+  await ecomBulkWrite(env, tableId, 'PATCH', updates);
+  return creates.length+updates.length;
+}
+
+// Upserts Shopify products into Ecom Products (shopifyEcomProductPlan decides creates/updates/
+// deactivations), then does what any product save does: D1 mirror, KV cache drop and the bot's
+// product memory (inline for a webhook; a resync indexes up to 60, the nightly backfill the rest).
+async function shopifySyncEcomProducts(env, c, products, opts={}){
+  const tableId=await ecomResolveTable(env, c.Id, 'products');
+  if(!tableId) return {created:0, updated:0};
+  await ensureEcomProductStyleFields(env, tableId);
+  // A webhook for an already-imported product only needs its own row; anything else (first sight
+  // of a product, a resync) needs the whole catalog to match SKUs and find what left Shopify.
+  const single=opts.replaceAll?'':products.length===1?String(products[0].id):(!products.length&&opts.deletedIds?.length===1?String(opts.deletedIds[0]):'');
+  let existing=single?await ecomListClientRows(env, tableId, c.Id, `~and(shopify_product_id,eq,${single})`):[];
+  if(!existing.length) existing=await ecomListClientRows(env, tableId, c.Id);
+  const {creates, updates}=shopifyEcomProductPlan(c.shopify_shop_domain, existing, products, opts);
+  if(!creates.length&&!updates.length) return {created:0, updated:0};
+  let currency='INR';
+  if(creates.length){
+    const r=await shopifyFetch(env, c.shopify_shop_domain, c.shopify_access_token, '/shop.json').catch(()=>null);
+    currency=(r?.ok?(await r.json().catch(()=>({})))?.shop?.currency:'')||currency;
+  }
+  const created=await ecomBulkWrite(env, tableId, 'POST', creates.map(f=>({...f, client_id:String(c.Id), currency})));
+  await ecomBulkWrite(env, tableId, 'PATCH', updates);
+  const byId=new Map(existing.map(e=>[e.Id, e]));
+  const saved=[...updates.map(u=>({...byId.get(u.Id), ...u})), ...creates.map((f, i)=>({...f, currency, Id:created[i]?.Id}))].filter(p=>p.Id);
+  await ecomMirrorProductsToD1(env, c.Id, saved);
+  await kvDelEcomProducts(env, c.Id);
+  for(const p of saved.filter(p=>p.status!=='inactive').slice(0, 60)) await engineMemoryIndexProduct(env, c.Id, p).catch(()=>{});
+  return {created:creates.length, updated:updates.length};
+}
+
+// inventory_levels/update: one product's stock total changed.
+async function shopifySyncEcomStock(env, c, shopifyProductId, stock){
+  const tableId=await ecomResolveTable(env, c.Id, 'products');
+  if(!tableId) return;
+  const rows=await ecomListClientRows(env, tableId, c.Id, `~and(shopify_product_id,eq,${shopifyProductId})`);
+  const changed=rows.filter(r=>Number(r.stock)!==stock);
+  if(!changed.length) return;
+  await ecomBulkWrite(env, tableId, 'PATCH', changed.map(r=>({Id:r.Id, stock})));
+  await ecomMirrorProductsToD1(env, c.Id, changed.map(r=>({...r, stock})));
+  await kvDelEcomProducts(env, c.Id);
 }
 
 // Ecommerce Analytics — Reports page's "🛍️ Ecommerce" tab (and reused by handleReportsProducts
 // below for its top-products section, so that route doesn't re-scan the same orders table
 // twice). Despite the function name (kept for the route/call-site history — see SETUP.md), this
 // is NOT Shopify-specific: it reads the same orders table every order lands in regardless of
-// source — Shopify-synced (syncShopifyOrderToEcom), the built-in storefront checkout
+// source — Shopify-synced (shopifySyncEcomOrders), the built-in storefront checkout
 // (handleEcomPublicOrder/onshope.com), or manual entry — so a client using only the built-in
 // storefront sees real revenue/product data here too, not an empty "connect Shopify" prompt.
 // `shopify_connected` is returned purely as an informational flag for an optional "auto-sync your
 // Shopify store too" nudge, never a gate on showing the report itself. Revenue trend/AOV/order
 // count come from the orders table's `total` (always present, any order, any source). Top
-// products prefer the structured `line_items_json` (see syncShopifyOrderToEcom above, Shopify-only
+// products prefer the structured `line_items_json` (see shopifySyncEcomOrders above, Shopify-only
 // — the built-in storefront's `handleEcomPublicOrder` doesn't populate it since it only ever
 // creates one line per order) and fall back to best-effort parsing the flattened `items` text
 // ("2x Product Name" lines, populated by every order source) — quantity-only in that fallback,
@@ -7915,7 +7984,6 @@ async function handleShopifyWebhook(request, env){
       store_name:c.client_name||''
     }, {phone, order:data.name||''});
     await markShopifyCheckoutCompleted(env, c.Id, data.checkout_token||data.cart_token);
-    await syncShopifyOrderToEcom(env, c, data, 'received');
   }
   else if(topic==='orders/paid'){
     const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
@@ -7924,11 +7992,8 @@ async function handleShopifyWebhook(request, env){
       total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
       store_name:c.client_name||''
     }, {phone, order:data.name||''});
-    await syncShopifyOrderToEcom(env, c, data, 'processing');
   }
-  else if(topic==='orders/cancelled'){
-    await syncShopifyOrderToEcom(env, c, data, 'cancelled');
-  }
+  // orders/* also land in Ecom Orders — via shopifySyncOnWebhook below.
   else if(topic==='fulfillments/create'){
     const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
     const order=await orderR.json().catch(()=>null);
@@ -7937,7 +8002,8 @@ async function handleShopifyWebhook(request, env){
       customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
       tracking_number:data.tracking_number||'', tracking_url:(data.tracking_urls||[])[0]||'', store_name:c.client_name||''
     }, {phone, order:order?.order?.name||''});
-    if(order?.order) await syncShopifyOrderToEcom(env, c, order.order, 'shipped');
+    // A fulfillment isn't an orders/* event, so the order (now carrying it) is synced here.
+    if(order?.order) await shopifySyncEcomOrders(env, c, [order.order]).catch(e=>reportOpsError(env, 'shopifySyncEcomOrders', e, {clientId:c.Id}));
   }
   else if(topic==='fulfillments/update'){
     // Shopify only reports 'delivered' when the carrier is one it tracks natively — best-effort,
@@ -7950,7 +8016,7 @@ async function handleShopifyWebhook(request, env){
         customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
         review_link:c.review_link||'', store_name:c.client_name||''
       }, {phone, order:order?.order?.name||''});
-      if(order?.order) await syncShopifyOrderToEcom(env, c, order.order, 'delivered');
+      if(order?.order) await shopifySyncEcomOrders(env, c, [order.order]).catch(e=>reportOpsError(env, 'shopifySyncEcomOrders', e, {clientId:c.Id}));
     }
   }
   else if(topic==='checkouts/create'||topic==='checkouts/update'){
@@ -8809,7 +8875,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
+const ECOM_STYLE_FIELD_TITLES=['shopify_product_id','style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -9193,6 +9259,24 @@ async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
       await upsert();
     }
   }catch(e){ console.error('[ecomMirrorProductToD1] failed for client', clientId, 'nocodb id', nocodbId, ':', e.message); }
+}
+
+// Same upsert for many products in one D1 batch (Shopify catalog sync) — one query per product
+// would run into the per-invocation query limit on a large catalog.
+async function ecomMirrorProductsToD1(env, clientId, products){
+  if(!env.DB || !clientId || !products.length) return;
+  const now=new Date().toISOString();
+  const cols=['client_id','nocodb_id', ...ECOM_MIRROR_COLUMNS, 'created_at','updated_at'];
+  const updateSet=ECOM_MIRROR_COLUMNS.map(k=>`${k}=excluded.${k}`).concat('updated_at=excluded.updated_at').join(', ');
+  const sql=`INSERT INTO ecom_products_mirror (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')}) ON CONFLICT(client_id, nocodb_id) DO UPDATE SET ${updateSet}`;
+  try{
+    for(let i=0; i<products.length; i+=50){
+      await env.DB.batch(products.slice(i, i+50).map(p=>env.DB.prepare(sql).bind(Number(clientId), Number(p.Id), ...ECOM_MIRROR_COLUMNS.map(k=>p[k]??null), now, now)));
+    }
+  }catch(e){
+    // migrations/0099 not applied yet — the single-row path adds the missing column and retries.
+    for(const p of products) await ecomMirrorProductToD1(env, clientId, p.Id, p);
+  }
 }
 
 // NocoDB can return 200 on a PATCH while silently ignoring a field it doesn't like the value for
@@ -33669,6 +33753,9 @@ const SHOPIFY_SYNC_DEPS={
   json, ncFetch, getClientById, ncTableMeta, reportOpsError,
   clientsTable:CLIENTS_TABLE, apiVersion:SHOPIFY_API_VERSION,
   webhookUri:env=>`${env.WORKER_BASE_URL}/shopify/webhook`,
+  syncEcomProducts:(env, c, products, opts)=>shopifySyncEcomProducts(env, c, products, opts),
+  syncEcomStock:(env, c, pid, stock)=>shopifySyncEcomStock(env, c, pid, stock),
+  syncEcomOrders:(env, c, orders, status)=>shopifySyncEcomOrders(env, c, orders, status),
 };
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
