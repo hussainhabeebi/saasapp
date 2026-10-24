@@ -23085,6 +23085,22 @@ export function engineV2FollowStaffLanguage(history, userText, detectedLang){
   return staffLang;
 }
 
+// Session language: the language of the customer's last 3 messages (this one and the 2 before
+// it), not this message alone. A button tap ("Train", "Flight") or a short Latin-script reply in a
+// chat the customer has been writing in Arabic/Malayalam/etc. would otherwise flip the reply to
+// English. Only a language the characters prove (engineScriptLang) can take over, and only when it
+// holds at least 2 of the 3 messages; a message written in a script of its own always wins, so a
+// customer who switches language is followed straight away. Returns null to keep detectedLang.
+export function engineSessionLanguage(history, userText, detectedLang){
+  if(engineScriptLang(userText)) return null;
+  const prev=[...(history||[])].filter(m=>m?.role==='user' && typeof m.content==='string').slice(-2).map(m=>m.content);
+  const langOf=t=>engineScriptLang(t)||(/[A-Za-z]/.test(t)?'en':null);
+  const votes={};
+  for(const l of [...prev.map(langOf), detectedLang||langOf(String(userText||''))]) if(l) votes[l]=(votes[l]||0)+1;
+  const top=Object.keys(votes).find(l=>votes[l]>=2 && ENGINE_SCRIPT_LANGS.some(([code])=>code===l));
+  return top && top!==detectedLang ? top : null;
+}
+
 // Promise detection (#6): a cheap filter before spending an LLM call on a staff message.
 export function engineLooksLikeStaffPromise(text){
   return /\b(i'?ll|i will|we'?ll|we will|will (call|send|share|update|confirm|check|arrange|deliver)|tomorrow|tonight|by (today|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at \d{1,2}(:\d{2})?\s*(am|pm)?|within \d+|guarantee|promise)\b/i.test(String(text||''));
@@ -24036,6 +24052,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const staffLang=engineV2FollowStaffLanguage(state.activeHistory, userText, cls.customerLanguage);
       if(staffLang) cls.customerLanguage=staffLang;
     }
+    const sessionLang=engineSessionLanguage(state.activeHistory, userText, cls.customerLanguage);
+    if(sessionLang) cls.customerLanguage=sessionLang;
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
     Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text, body.id||body.message?.id));
