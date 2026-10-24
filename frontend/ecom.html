@@ -301,6 +301,9 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
 
 /* Banner */
 #tabShopify .card{margin-bottom:14px}
+.sn-tpls{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.sn-tpl{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.sn-tpl b{font-size:13px}.sn-tpl code{font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-all}
 .banner{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #FCD34D;background:#FFFBEB;color:#78350F;font-size:13px;margin-bottom:16px}
 .banner b{display:block;margin-bottom:2px}
 .banner a{color:#92400E;font-weight:600}
@@ -371,6 +374,7 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
   <div class="nav-label">Shopify</div>
   <button class="tab desk-only shop-only" data-tab="shop-orders" onclick="showTab('shop-orders')">🛒 Shopify Orders <span class="nav-count" id="navShopOrdersCount" style="display:none"></span></button>
   <button class="tab desk-only shop-only" data-tab="shop-stock" onclick="showTab('shop-stock')">📊 Shopify Stock <span class="nav-count" id="navShopStockCount" style="display:none"></span></button>
+  <button class="tab desk-only shop-only" data-tab="shop-notify" onclick="showTab('shop-notify')">🔔 Notifications <span class="nav-count" id="navShopNotifyCount" style="display:none"></span></button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <div class="nav-label">Configure</div>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
@@ -741,6 +745,45 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
   </div>
 </div>
 
+<!-- NOTIFICATIONS (desktop, Shopify connected) — every WhatsApp order notification sent through
+     Chatwoot (worker shopify-notify.js): delivery status, reason for anything skipped, retry. -->
+<div id="tabShopNotify" class="page">
+  <div class="ph">
+    <div>
+      <h1>Order notifications</h1>
+      <div class="ph-sub"><span class="live-dot" id="snLive">Sending</span><span>WhatsApp templates sent through Chatwoot</span><span id="snUpdated"></span></div>
+    </div>
+    <div class="ph-actions">
+      <button class="link-btn" id="snRefreshBtn" onclick="loadShopNotify(true)" title="Re-check delivered / read / failed from Chatwoot">↻ Refresh status</button>
+      <button class="save-btn" onclick="showTab('shopify')">Templates &amp; settings</button>
+    </div>
+  </div>
+  <div id="snBanner"></div>
+  <div class="kpis" id="snKpis"></div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-title">Templates</div>
+    <div id="snTemplates" class="sn-tpls"></div>
+  </div>
+  <div class="idx">
+    <div class="views" id="snViews"></div>
+    <div class="toolbar">
+      <input class="search-input" id="snSearch" type="text" placeholder="🔍 Search order #, customer, phone…" oninput="renderShopNotify()">
+      <select class="tsel" id="snKind" onchange="renderShopNotify()">
+        <option value="">All events</option>
+        <option value="received">Order received</option><option value="paid">Payment received</option>
+        <option value="shipped">Order shipped</option><option value="delivered">Order delivered</option><option value="abandoned">Abandoned cart</option>
+      </select>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Event</th><th>Order</th><th>Customer</th><th>Template</th><th>Status</th><th>Detail</th><th></th></tr></thead>
+        <tbody id="snTbody"><tr class="loading-row nohover"><td colspan="8"><span class="spinner"></span>Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="idx-foot"><span id="snFoot"></span><span>New Shopify orders notify the customer automatically. Each order and event is sent once, even if Shopify repeats a webhook.</span></div>
+  </div>
+</div>
+
 <!-- SHOPIFY TAB — the one place for everything Shopify: connect (the Shopify app's OAuth only,
      nothing pasted by hand), what syncs, WhatsApp notification templates and their send log.
      dashboard.html's Settings → Integrations only links here. -->
@@ -788,7 +831,7 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
 
     <div class="card">
       <div class="card-title">WhatsApp notifications</div>
-      <div class="s-hint" style="margin:0 0 10px">Sent from your connected WhatsApp Business number. Pick an approved template for each event — or create one in a click.</div>
+      <div class="s-hint" style="margin:0 0 10px">Sent through Chatwoot from your WhatsApp inbox, into each customer's chat. <b>Order received</b> is set up for you automatically; pick or create a template for the other events. Every send is tracked in <a href="#" onclick="showTab('shop-notify');return false">🔔 Notifications</a>.</div>
       <div class="s-row">
         <button class="save-btn sec" onclick="loadShopifyTemplates()">🔍 Load my WhatsApp templates</button>
         <span class="save-msg" id="spTplMsg"></span>
@@ -805,13 +848,6 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-title">Notification log</div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th>Time</th><th>Event</th><th>Order</th><th>Phone</th><th>Status</th><th>Detail</th></tr></thead>
-        <tbody id="spLogTbody"><tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr></tbody>
-      </table></div>
-    </div>
   </div>
 </div>
 
@@ -1764,6 +1800,8 @@ function showTab(name) {
   document.getElementById('tabHome').classList.toggle('active', name === 'home');
   document.getElementById('tabShopOrders').classList.toggle('active', name === 'shop-orders');
   document.getElementById('tabShopStock').classList.toggle('active', name === 'shop-stock');
+  document.getElementById('tabShopNotify').classList.toggle('active', name === 'shop-notify');
+  if (name === 'shop-notify') loadShopNotify(true);
   if (name === 'home') renderHome();
   if (name === 'shop-orders') { if (shopOrders === null) loadShopOrders(); else renderShopOrders(); }
   if (name === 'shop-stock') { if (shopStock === null) loadShopStock(); else renderShopStock(); }
@@ -4570,7 +4608,6 @@ function renderShopifyPage() {
     : '';
   renderShopifyAccess();
   renderShopifyTplBlocks();
-  renderShopifyLog();
 }
 
 // Permissions line + the Grant access / Reconnect button, from /ecom/shopify/status.
@@ -4646,16 +4683,6 @@ async function saveShopSetting(key, value) {
     renderShopifyPage();
     showMsg('spSettingsMsg', 'Error: ' + e.message, 6000);
   }
-}
-
-function renderShopifyLog() {
-  const tbody = document.getElementById('spLogTbody');
-  let log = []; try { log = JSON.parse(clientRecord.shopify_notify_log || '[]'); } catch (e) {}
-  if (!Array.isArray(log) || !log.length) { tbody.innerHTML = '<tr><td colspan="6" class="loading-row">No notifications sent yet.</td></tr>'; return; }
-  const badge = s => s === 'sent' ? '✅ sent' : s === 'failed' ? '❌ failed' : '⏭ skipped';
-  tbody.innerHTML = log.slice().reverse().map(e => `<tr>
-    <td>${esc(new Date(e.ts).toLocaleString())}</td><td>${esc(e.event || '')}</td><td>${esc(e.order || '—')}</td>
-    <td>${esc(e.phone || '—')}</td><td>${badge(e.status)}</td><td>${esc(e.detail || '')}</td></tr>`).join('');
 }
 
 async function loadShopifyTemplates() {
@@ -4750,6 +4777,120 @@ function renderProductShopifyLink(p) {
     : 'Only for products not synced from Shopify.';
 }
 
+// ── NOTIFICATIONS (🔔 tab) ──
+// Rows from GET /ecom/shopify/notifications (worker shopify-notify.js) — needs the dashboard
+// session, since they carry customer phone numbers. ?refresh=1 re-checks delivery in Chatwoot.
+let shopNotify = null;
+let shopNotifyView = 'all';
+const SN_STATUS = {
+  sent: ['info', 'Sent'], delivered: ['ok', 'Delivered'], read: ['ok', 'Read'],
+  failed: ['bad', 'Failed'], pending: ['warn', 'Waiting approval'], skipped: ['mute', 'Skipped'],
+};
+const SN_KIND = { received: 'Order received', paid: 'Payment received', shipped: 'Order shipped', delivered: 'Order delivered', abandoned: 'Abandoned cart' };
+const SN_VIEWS = [['all', 'All'], ['delivered', 'Delivered'], ['sent', 'Sent'], ['failed', 'Failed'], ['waiting', 'Waiting / skipped']];
+function snInView(r, v) {
+  if (v === 'all') return true;
+  if (v === 'delivered') return r.status === 'delivered' || r.status === 'read';
+  if (v === 'waiting') return r.status === 'pending' || r.status === 'skipped';
+  return r.status === v;
+}
+async function loadShopNotify(refresh) {
+  const tbody = document.getElementById('snTbody');
+  if (!ecomSessionToken) { document.getElementById('snBanner').innerHTML = '<div class="banner"><span>🔒</span><div><b>Sign in to the dashboard to see notifications.</b>They include customer phone numbers, so they open from your Leadvyne login.</div></div>'; tbody.innerHTML = ''; return; }
+  const btn = document.getElementById('snRefreshBtn');
+  if (refresh) { btn.disabled = true; btn.textContent = '↻ Checking…'; }
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/notifications${refresh ? '?refresh=1' : ''}`, { headers: { Authorization: 'Bearer ' + ecomSessionToken } });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    shopNotify = d;
+    document.getElementById('snUpdated').textContent = ` · checked ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  } catch (e) {
+    if (!shopNotify) tbody.innerHTML = `<tr class="nohover"><td colspan="8" class="loading-row">Couldn't load notifications: ${esc(e.message)}</td></tr>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '↻ Refresh status';
+  }
+  renderShopNotify();
+}
+function setShopNotifyView(v) { shopNotifyView = v; renderShopNotify(); }
+function renderShopNotify() {
+  const d = shopNotify;
+  if (!d) return;
+  const st = d.stats || {};
+  const banners = [];
+  if (!d.chatwoot?.ready) banners.push('<div class="banner"><span>💬</span><div><b>Chatwoot WhatsApp inbox isn\'t connected.</b>Notifications are sent through Chatwoot — connect WhatsApp in Settings → Channels.</div></div>');
+  if (d.notify_on === false) banners.push(`<div class="banner"><span>⏸️</span><div><b>WhatsApp order updates are switched off.</b><a href="#" onclick="showTab('shopify');return false">Turn them on</a> in the Shopify tab.</div></div>`);
+  document.getElementById('snBanner').innerHTML = banners.join('');
+  const live = document.getElementById('snLive');
+  const on = d.chatwoot?.ready && d.notify_on !== false;
+  live.classList.toggle('off', !on); live.textContent = on ? 'Sending' : 'Paused';
+  document.getElementById('snKpis').innerHTML = [
+    kpiHtml({ label: 'Sent · 7 days', value: (st.sent || 0).toLocaleString(), onclick: "setShopNotifyView('all')" }),
+    kpiHtml({ label: 'Delivered', value: (st.delivered || 0).toLocaleString(), foot: `${st.read || 0} read`, onclick: "setShopNotifyView('delivered')" }),
+    kpiHtml({ label: 'Failed', value: (st.failed || 0).toLocaleString(), tone: st.failed ? 'bad' : '', onclick: "setShopNotifyView('failed')" }),
+    kpiHtml({ label: 'Waiting / skipped', value: (st.waiting || 0).toLocaleString(), tone: st.waiting ? 'warn' : '', onclick: "setShopNotifyView('waiting')" }),
+  ].join('');
+  const tplPill = (s) => s === 'APPROVED' ? '<span class="pill ok">Approved</span>' : s === 'REJECTED' ? '<span class="pill bad">Rejected</span>'
+    : s === 'SYNCING' ? '<span class="pill info">Syncing with Chatwoot</span>' : s ? `<span class="pill warn">${esc(s.charAt(0) + s.slice(1).toLowerCase())}</span>` : '<span class="pill mute">Not set up</span>';
+  document.getElementById('snTemplates').innerHTML = (d.templates || []).map(t => `<div class="sn-tpl">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>${esc(t.label)}</b>${tplPill(t.status)}</div>
+      ${t.name ? `<code>${esc(t.name)}${t.auto ? ' · auto' : ''}</code>` : `<span class="muted-s">${esc(t.preset)}</span>`}
+      ${t.name ? '' : `<button class="save-btn sec" id="snSetup_${t.kind}" onclick="setupShopNotify('${t.kind}')">✨ Set up automatically</button>`}
+    </div>`).join('');
+  const rows = d.rows || [];
+  const kind = document.getElementById('snKind').value;
+  const q = document.getElementById('snSearch').value.trim().toLowerCase();
+  const base = rows.filter(r => (!kind || r.kind === kind) && (!q || [r.order_name, r.customer_name, r.phone, r.template_name].join(' ').toLowerCase().includes(q)));
+  document.getElementById('snViews').innerHTML = SN_VIEWS.map(([k, l]) =>
+    `<button class="view${shopNotifyView === k ? ' active' : ''}" onclick="setShopNotifyView('${k}')">${l}<span class="vc">${base.filter(r => snInView(r, k)).length}</span></button>`).join('');
+  const list = base.filter(r => snInView(r, shopNotifyView));
+  const chatUrl = (r) => d.chatwoot?.base && r.conv_id ? `${d.chatwoot.base}/app/accounts/${d.chatwoot.account}/conversations/${r.conv_id}` : '';
+  document.getElementById('snTbody').innerHTML = list.length ? list.map(r => {
+    const [tone, label] = SN_STATUS[r.status] || ['mute', r.status];
+    const url = chatUrl(r);
+    const canRetry = ['failed', 'pending', 'skipped'].includes(r.status);
+    return `<tr class="nohover" title="${escAttr(r.content || '')}">
+      <td>${esc(new Date(r.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }))}</td>
+      <td>${esc(SN_KIND[r.kind] || r.kind)}</td>
+      <td class="o-name">${esc(r.order_name || '—')}</td>
+      <td>${esc(r.customer_name || '—')}<div class="muted-s">${r.phone ? '+' + esc(r.phone) : ''}</div></td>
+      <td class="muted-s">${esc(r.template_name || '—')}</td>
+      <td><span class="pill ${tone}">${label}</span></td>
+      <td class="muted-s" style="max-width:280px">${esc(r.detail || '')}</td>
+      <td style="white-space:nowrap">${url ? `<a class="link-btn" href="${escAttr(url)}" target="_blank" rel="noopener">Open chat ↗</a>` : ''}${canRetry ? ` <button class="link-btn" onclick="retryShopNotify(${Number(r.id)}, this)">↻ Retry</button>` : ''}</td>
+    </tr>`;
+  }).join('') : `<tr class="nohover"><td colspan="8" class="loading-row">${rows.length ? 'Nothing matches these filters.' : 'No notifications yet — the next Shopify order will appear here.'}</td></tr>`;
+  document.getElementById('snFoot').textContent = `${list.length} of ${rows.length} notification${rows.length === 1 ? '' : 's'}`;
+  const attention = (st.failed || 0) + rows.filter(r => r.status === 'pending').length;
+  const nav = document.getElementById('navShopNotifyCount');
+  nav.style.display = attention ? '' : 'none'; nav.textContent = attention;
+}
+async function setupShopNotify(kind) {
+  const btn = document.getElementById('snSetup_' + kind);
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/notifications/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ecomSessionToken }, body: JSON.stringify({ kind }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    const cr = await fetch(`${WORKER_BASE}/ecom/client?client_id=${encodeURIComponent(clientId)}`).then(x => x.json()).catch(() => null);
+    if (cr && !cr.error) clientRecord.shopify_notify_config = cr.shopify_notify_config;
+    readShopifyStored();
+    await loadShopNotify(false);
+  } catch (e) {
+    alert('Could not set up the template: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Set up automatically'; }
+  }
+}
+async function retryShopNotify(id, btn) {
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/notifications/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ecomSessionToken }, body: JSON.stringify({ id }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  } catch (e) { alert('Retry failed: ' + e.message); }
+  await loadShopNotify(false);
+}
+
 // ── SHOPIFY (shared) ──
 let shopStatus = null;
 let shopOrders = null;   // null = not loaded yet
@@ -4784,6 +4925,7 @@ function initShopifyModules() {
   loadShopStatus();
   loadShopOrders();
   loadShopStock();
+  if (ecomSessionToken) loadShopNotify(false); // nav badge: failed / waiting sends
   // Webhooks update the tables server-side; refresh whichever Shopify view is open once a minute.
   setInterval(() => {
     if (document.visibilityState !== 'visible') return;

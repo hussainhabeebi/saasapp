@@ -4,6 +4,7 @@ import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan,shopifyFlowVariants,shopifyFlowOrders} from './shopify-sync.js';
+import {shopifyNotifyHandleRoute,shopifySendNotification,shopifyEnsureNotifyTemplate,SHOPIFY_TEMPLATE_PRESETS} from './shopify-notify.js';
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
@@ -6673,6 +6674,9 @@ async function handleShopifyOauthCallback(request, env){
     fields.external_store_link=`https://${domain||shop}`;
   }
   await patchClientFields(env, statePayload.cid, fields);
+  // The Order Received template is created right away, so the first order already gets its
+  // WhatsApp notification (through Chatwoot) once Meta approves it — shopify-notify.js.
+  if(c) await shopifyEnsureNotifyTemplate(env, SHOPIFY_NOTIFY_DEPS, {...c, ...fields}, 'received').catch(e=>reportOpsError(env, 'shopify order template', e, {clientId:statePayload.cid}));
   // The dashboard forwards ?shopify=connected into Ecom → 🛍️ Shopify, which runs the first sync.
   return Response.redirect(`${appBase}?client=${statePayload.cid}&shopify=connected`, 302);
 }
@@ -6993,36 +6997,26 @@ async function handleGcalSyncTask(request, env){
   return json({ok:true, gcal_event_id:gcalEventId});
 }
 
-// Fires a WhatsApp template straight through Meta's Graph API (same shape as
-// handleWaSendTemplate above) and records the attempt in shopify_notify_log regardless of
-// outcome, so the Shopify card (dashboard.html, Settings → Integrations) has something to show
-// even for a skipped/failed send. `kind` indexes into shopify_notify_config.config; `vars`
-// supplies the values available for that event's template variable mapping.
+// One Shopify event's WhatsApp template to the customer — always through Chatwoot, every attempt
+// logged for Ecom → 🔔 Notifications (shopify-notify.js). `kind` indexes into
+// shopify_notify_config.config; `vars` fills that template's variable mapping.
 async function sendShopifyNotification(env, c, kind, vars, logMeta){
-  if(shopifySettings(c).notify===false) return; // Ecom → Shopify → "WhatsApp notifications" off
-  let stored={}; try{ stored=JSON.parse(c.shopify_notify_config||'{}'); }catch(e){}
-  const cfg=stored?.config?.[kind];
-  let log=[]; try{ log=JSON.parse(c.shopify_notify_log||'[]'); }catch(e){}
-  const entry={ts:new Date().toISOString(), event:kind, order:logMeta.order||'', phone:logMeta.phone||''};
+  return shopifySendNotification(env, SHOPIFY_NOTIFY_DEPS, c, kind, vars, logMeta);
+}
 
-  if(!cfg?.name){ entry.status='skipped'; entry.detail='Not configured'; }
-  else if(!c.wa_phone_id||!c.wa_token){ entry.status='skipped'; entry.detail='WhatsApp not connected'; }
-  else if(!logMeta.phone){ entry.status='skipped'; entry.detail='No customer phone on this order'; }
-  else{
-    const params=cfg.params||[];
-    const components=params.length ? [{type:'body', parameters:params.map(key=>({type:'text', text:String((key&&vars[key])||'')}))}] : [];
-    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({messaging_product:'whatsapp', to:logMeta.phone, type:'template', template:{name:cfg.name, language:{code:cfg.lang||'en'}, components}})
-    });
-    const data=await r.json().catch(()=>({}));
-    entry.status=r.ok?'sent':'failed';
-    entry.detail=r.ok?(data?.messages?.[0]?.id||'sent'):(data?.error?.message||'HTTP '+r.status);
-    if(r.ok) await logWaTemplateSend(env, c.Id, 'shopify', {template:cfg.name, phone:logMeta.phone});
-  }
-  log.push(entry);
-  if(log.length>30) log=log.slice(-30); // ~last 30 events is plenty for the log view, not an audit trail
-  await patchClientFields(env, c.Id, {shopify_notify_log:JSON.stringify(log)});
+// Template variable values + recipient for one Shopify order's notification.
+function shopifyOrderNotifyArgs(c, o, extra={}){
+  const first=o?.customer?.first_name||o?.shipping_address?.first_name||o?.billing_address?.first_name||'';
+  const last=o?.customer?.last_name||o?.shipping_address?.last_name||'';
+  return {
+    vars:{customer_name:first, order_number:String(o?.name||o?.order_number||''),
+      total:shopFlowMoney(o?.total_price, o?.currency)||String(o?.total_price||''),
+      items:(o?.line_items||[]).map(li=>`${li.quantity}x ${li.title}${li.variant_title?` (${li.variant_title})`:''}`).join(', '),
+      store_name:c.client_name||'', ...extra},
+    meta:{phone:o?.phone||o?.shipping_address?.phone||o?.customer?.phone||o?.billing_address?.phone||'',
+      order:o?.name||'', ref:String(o?.id||''), customer:[first, last].filter(Boolean).join(' '),
+      country:o?.shipping_address?.country_code||o?.billing_address?.country_code||''},
+  };
 }
 
 async function findShopifyCheckoutRow(env, clientId, token){
@@ -7966,7 +7960,7 @@ async function handleEcomOrderPhones(request, env){
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
 // Reads the raw body first and verifies before touching it as JSON (order matters: the HMAC is
 // computed over the exact bytes Shopify sent).
-async function handleShopifyWebhook(request, env){
+async function handleShopifyWebhook(request, env, ctx){
   const rawBody=await request.text();
   if(!await verifyShopifyWebhookHmac(env, rawBody, request.headers.get('X-Shopify-Hmac-Sha256'))) return json({error:'Invalid signature'}, 401);
   const shop=request.headers.get('X-Shopify-Shop-Domain');
@@ -7976,33 +7970,33 @@ async function handleShopifyWebhook(request, env){
   // keep retrying; there's no client row left to act on.
   if(!c) return json({ok:true});
   let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  // Shopify wants a reply within ~5s and a new order now also opens/uses the customer's Chatwoot
+  // conversation for its notification — acknowledge first, do the work after (sends are deduped
+  // per order + event, so a retry Shopify makes anyway never notifies twice).
+  const work=shopifyWebhookWork(env, c, shop, topic, data).catch(e=>reportOpsError(env, `shopify webhook ${topic}`, e, {clientId:c.Id}));
+  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true}); }
+  await work;
+  return json({ok:true});
+}
 
+async function shopifyWebhookWork(env, c, shop, topic, data){
   if(topic==='orders/create'){
-    const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
-    await sendShopifyNotification(env, c, 'received', {
-      customer_name:data.customer?.first_name||'', order_number:String(data.name||data.order_number||''),
-      total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
-      store_name:c.client_name||''
-    }, {phone, order:data.name||''});
+    const {vars, meta}=shopifyOrderNotifyArgs(c, data);
+    await sendShopifyNotification(env, c, 'received', vars, meta);
     await markShopifyCheckoutCompleted(env, c.Id, data.checkout_token||data.cart_token);
   }
   else if(topic==='orders/paid'){
-    const phone=data.phone||data.shipping_address?.phone||data.customer?.phone||'';
-    await sendShopifyNotification(env, c, 'paid', {
-      customer_name:data.customer?.first_name||'', order_number:String(data.name||data.order_number||''),
-      total:data.total_price||'', items:(data.line_items||[]).map(li=>`${li.quantity}x ${li.title}`).join(', '),
-      store_name:c.client_name||''
-    }, {phone, order:data.name||''});
+    const {vars, meta}=shopifyOrderNotifyArgs(c, data);
+    await sendShopifyNotification(env, c, 'paid', vars, meta);
   }
   // orders/* also land in Ecom Orders — via shopifySyncOnWebhook below.
   else if(topic==='fulfillments/create'){
     const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
     const order=await orderR.json().catch(()=>null);
-    const phone=order?.order?.phone||order?.order?.shipping_address?.phone||'';
-    await sendShopifyNotification(env, c, 'shipped', {
-      customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
-      tracking_number:data.tracking_number||'', tracking_url:(data.tracking_urls||[])[0]||'', store_name:c.client_name||''
-    }, {phone, order:order?.order?.name||''});
+    if(order?.order){
+      const {vars, meta}=shopifyOrderNotifyArgs(c, order.order, {tracking_number:data.tracking_number||'', tracking_url:data.tracking_url||(data.tracking_urls||[])[0]||''});
+      await sendShopifyNotification(env, c, 'shipped', vars, meta);
+    }
     // A fulfillment isn't an orders/* event, so the order (now carrying it) is synced here.
     if(order?.order) await shopifySyncEcomOrders(env, c, [order.order]).catch(e=>reportOpsError(env, 'shopifySyncEcomOrders', e, {clientId:c.Id}));
   }
@@ -8012,11 +8006,10 @@ async function handleShopifyWebhook(request, env){
     if(data.shipment_status==='delivered'){
       const orderR=await shopifyFetch(env, shop, c.shopify_access_token, `/orders/${data.order_id}.json`);
       const order=await orderR.json().catch(()=>null);
-      const phone=order?.order?.phone||order?.order?.shipping_address?.phone||'';
-      await sendShopifyNotification(env, c, 'delivered', {
-        customer_name:order?.order?.customer?.first_name||'', order_number:String(order?.order?.name||''),
-        review_link:c.review_link||'', store_name:c.client_name||''
-      }, {phone, order:order?.order?.name||''});
+      if(order?.order){
+        const {vars, meta}=shopifyOrderNotifyArgs(c, order.order, {review_link:c.review_link||''});
+        await sendShopifyNotification(env, c, 'delivered', vars, meta);
+      }
       if(order?.order) await shopifySyncEcomOrders(env, c, [order.order]).catch(e=>reportOpsError(env, 'shopifySyncEcomOrders', e, {clientId:c.Id}));
     }
   }
@@ -8028,7 +8021,6 @@ async function handleShopifyWebhook(request, env){
   }
   // Shopify Orders / Stock modules (ecom.html) — their own tables, alongside everything above.
   if(topic!=='app/uninstalled'&&!String(topic).startsWith('checkouts/')) await shopifySyncOnWebhook(env, SHOPIFY_SYNC_DEPS, c, topic, data);
-  return json({ok:true});
 }
 
 // Cron-swept abandoned-cart nudge (see wrangler.toml's second, more frequent cron entry) —
@@ -8973,33 +8965,7 @@ async function handleEcomWaTemplatesGet(request, env){
 // post-purchase confirmations (cheapest per-conversation pricing tier); `abandoned` is MARKETING
 // since it's a re-engagement nudge, not a transactional confirmation — Meta's own category
 // guidelines, and miscategorizing it risks template rejection.
-const SHOPIFY_TEMPLATE_PRESETS={
-  received:{
-    name:'order_received_leadvyne', category:'UTILITY', language:'en_US',
-    body:'Hi {{1}}, thanks for your order {{2}}! Total: {{3}}. Items: {{4}}. We will notify you when it ships.',
-    params:['customer_name','order_number','total','items']
-  },
-  paid:{
-    name:'order_payment_received_leadvyne', category:'UTILITY', language:'en_US',
-    body:'Hi {{1}}, we have received your payment for order {{2}} ({{3}}). Thank you for your purchase!',
-    params:['customer_name','order_number','total']
-  },
-  shipped:{
-    name:'order_shipped_leadvyne', category:'UTILITY', language:'en_US',
-    body:'Hi {{1}}, your order {{2}} has shipped! Tracking number: {{3}}. Track it here: {{4}}',
-    params:['customer_name','order_number','tracking_number','tracking_url']
-  },
-  delivered:{
-    name:'order_delivered_leadvyne', category:'UTILITY', language:'en_US',
-    body:'Hi {{1}}, your order {{2}} has been delivered. We would love your feedback: {{3}}',
-    params:['customer_name','order_number','review_link']
-  },
-  abandoned:{
-    name:'cart_reminder_leadvyne', category:'MARKETING', language:'en_US',
-    body:'Hi {{1}}, you left some items in your cart at {{2}}. Complete your order here: {{3}}',
-    params:['customer_name','store_name','checkout_url']
-  },
-};
+// SHOPIFY_TEMPLATE_PRESETS (wording + variable mapping per event) lives in shopify-notify.js.
 async function handleEcomWaTemplatesCreatePreset(request, env){
   const {client_id, kind}=await request.json().catch(()=>({}));
   if(!client_id||!kind) return json({error:'client_id and kind required'}, 400);
@@ -34049,6 +34015,11 @@ const SHOPIFY_SYNC_DEPS={
   syncEcomStock:(env, c, pid, stock)=>shopifySyncEcomStock(env, c, pid, stock),
   syncEcomOrders:(env, c, orders, status)=>shopifySyncEcomOrders(env, c, orders, status),
 };
+const SHOPIFY_NOTIFY_DEPS={
+  json, requireSession, getClientById, patchClientFields, reportOpsError, logWaTemplateSend, shopifySettings,
+  resolveOrDetectMetaCredentials:(env, c, clientId, selector)=>resolveOrDetectMetaCredentials(env, c, clientId, selector),
+  inboxIdFor:c=>String(c?.chatwoot_inbox_id||parseMetaChannelCredentials(c)[0]?.inbox_id||''),
+};
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
   // A label added in Chats that marks a purchase → Purchase to Meta (capiPurchaseFromLabels).
@@ -38145,8 +38116,9 @@ export default {
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
-      else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
+      else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env, ctx); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
+      else if(url.pathname.startsWith('/ecom/shopify/notifications') && (res=await shopifyNotifyHandleRoute(request, env, SHOPIFY_NOTIFY_DEPS, url))){ /* Shopify notifications — shopify-notify.js */ }
       else if(url.pathname.startsWith('/ecom/shopify/') && (res=await shopifySyncHandleRoute(request, env, SHOPIFY_SYNC_DEPS, url))){ /* Shopify Orders / Stock — shopify-sync.js */ }
       else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
       else if(url.pathname==='/ecom/order-phones' && request.method==='GET'){ res=await handleEcomOrderPhones(request, env); }
