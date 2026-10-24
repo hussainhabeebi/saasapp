@@ -56,7 +56,7 @@ async function openStore(page, client, { pref } = {}) {
     // @ts-ignore
     applyTheme(rec.industry);
     // @ts-ignore
-    navigate(isCommerceView() ? 'storehome' : 'home');
+    navigate('home');
   }, { rec: client, today: day(0), pref });
   return calls;
 }
@@ -64,34 +64,66 @@ async function openStore(page, client, { pref } = {}) {
 test.describe('store workspace (desktop)', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test('ecommerce client gets the store sidebar and commerce Home', async ({ page }) => {
+  test('ecommerce client gets the store sidebar and one Home with the store dashboard on top', async ({ page }) => {
     await openStore(page, { industry: 'ecommerce', ecom_enabled: 'Yes', client_name: 'Kochi Looms' });
     await expect(page.locator('#commerceSide')).toBeVisible();
     await expect(page.locator('#desktopNav')).toBeHidden();
-    await expect(page.locator('#commerceSide .cv-item.active')).toHaveAttribute('data-cv-page', 'storehome');
-    for (const label of ['Orders', 'Products', 'Customers', 'Inbox', 'Campaigns', 'Reports', 'Settings']) {
-      await expect(page.locator('#commerceSide')).toContainText(label);
+    await expect(page.locator('#commerceSide .cv-item.active')).toHaveAttribute('data-cv-page', 'home');
+    // Everyday items are always on screen; the rest sit in collapsible groups.
+    for (const label of ['Home', 'Orders', 'Products', 'Customers', 'Chats', 'Needs a human']) {
+      await expect(page.locator('#commerceSide .cv-scroll > .cv-item', { hasText: label }).first()).toBeVisible();
     }
+    await expect(page.locator('#commerceSide .cv-item[data-cv-page="broadcast"]')).toBeHidden();
+    await page.locator('#commerceSide .cv-grp-h[aria-label="Marketing"]').click();
+    await expect(page.locator('#commerceSide .cv-item[data-cv-page="broadcast"]')).toBeVisible();
+    // No separate "CRM overview" any more — it's part of Home.
+    await expect(page.locator('#commerceSide')).not.toContainText('CRM overview');
     await expect(page.locator('#commerceSide')).not.toContainText('Shopify orders');
     // The Shopify page is where a store gets connected, so it's listed even before connecting.
-    await expect(page.locator('#commerceSide')).toContainText('Shopify settings');
+    await expect(page.locator('#commerceSide .cv-item[data-cv-page="cvshopify"]')).toContainText('Connect Shopify');
 
+    // One Home: store greeting + quick actions on top, CRM blocks (Getting Started etc.) still there,
+    // and the old CRM hero hidden.
+    await expect(page.locator('#pageHome')).toBeVisible();
+    await expect(page.locator('#cvHomeTop')).toContainText('Kochi Looms');
+    await expect(page.locator('#cvHomeTop')).toContainText('₹3,700');
+    await expect(page.locator('#cvHomeTop .cv-qa')).toContainText('Add a product');
+    await expect(page.locator('#pageHome .home-hero')).toBeHidden();
+    await expect(page.locator('#homeActivityCard')).toBeVisible();
     const home = page.locator('#cvHomeBody');
-    await expect(home).toContainText('Kochi Looms');
     // Last 30 days: ORD-1 + ORD-2 count; cancelled, draft and the 40-day-old order don't.
     await expect(home.locator('.cv-kpi', { hasText: 'Total sales' }).locator('.cv-kpi-v')).toHaveText('₹3,700');
     await expect(home.locator('.cv-kpi', { hasText: /^Orders/ }).locator('.cv-kpi-v')).toHaveText('2');
-    await expect(home.locator('.cv-kpi', { hasText: 'Chat → order' }).locator('.cv-kpi-v')).toHaveText('100%');
+    await expect(home.locator('.cv-kpi', { hasText: 'Chats that ordered' }).locator('.cv-kpi-v')).toHaveText('100%');
     await expect(home.locator('.cv-kpi', { hasText: 'Returning customers' }).locator('.cv-kpi-v')).toHaveText('50%');
-    await expect(home.locator('.cv-todo')).toContainText('1 order to fulfil');
-    await expect(home.locator('.cv-todo')).toContainText('1 draft order');
-    await expect(home.locator('.cv-todo')).toContainText('1 customer handed over');
+    await expect(home.locator('.cv-todo')).toContainText('1 order to pack & ship');
+    await expect(home.locator('.cv-todo')).toContainText('1 customer is still ordering in WhatsApp');
+    await expect(home.locator('.cv-todo')).toContainText('1 customer waiting for a person');
     await expect(home.locator('.cv-todo')).toContainText('1 product out of stock');
     await expect(home).toContainText('WhatsApp AI bot');
     await expect(home).toContainText('Store page');
     await expect(home.locator('.cv-banner')).toContainText('Connect your store');
     await expect(page.locator('#commerceSide [data-cv-count="orders"]')).toHaveText('1');
     if (SHOT) await page.screenshot({ path: `${SHOT}/cv-home.png`, fullPage: false });
+  });
+
+  test('Add a product tile opens Products with the add form open', async ({ page }) => {
+    await openStore(page, { industry: 'ecommerce', ecom_enabled: 'Yes' });
+    await page.locator('#cvHomeTop .cv-qa button', { hasText: 'Add a product' }).click();
+    await expect(page.locator('#pageEcommerce')).toBeVisible();
+    expect(await page.locator('#ecommerceFrame').getAttribute('src')).toContain('action=new');
+    await expect(page.frameLocator('#ecommerceFrame').locator('#productModalOverlay')).toHaveClass(/active/);
+    await expect(page.locator('#commerceSide .cv-item[data-cv-page="cvcategories"]')).toBeVisible();
+  });
+
+  test('Settings shows its sections as tabs, not a second sidebar', async ({ page }) => {
+    await openStore(page, { industry: 'ecommerce', ecom_enabled: 'Yes' });
+    await page.locator('#commerceSide .cv-grp-h[aria-label="Settings"]').click();
+    await page.locator('#commerceSide .cv-item[data-cv-page="settings"]').click();
+    await expect(page.locator('#commerceSide .cv-item.active')).toHaveAttribute('data-cv-page', 'settings');
+    const dir = await page.locator('#pageSettings').evaluate(el => getComputedStyle(el).flexDirection);
+    expect(dir).toBe('column');
+    if (SHOT) await page.screenshot({ path: `${SHOT}/cv-settings.png` });
   });
 
   test('Orders / Products open ecom.html in shell mode on the right screen', async ({ page }) => {
@@ -118,8 +150,10 @@ test.describe('store workspace (desktop)', () => {
     await expect(page.locator('#commerceSide')).toContainText('Shopify orders');
     await expect(page.locator('#commerceSide')).toContainText('kochi.myshopify.com');
     await expect(page.locator('#cvHomeBody .cv-todo')).toContainText('1 Shopify order unfulfilled');
-    await expect(page.locator('#cvHomeBody .cv-todo')).toContainText('2 abandoned checkouts');
+    await expect(page.locator('#cvHomeBody .cv-todo')).toContainText('2 left their Shopify cart');
     await expect(page.locator('#cvHomeBody .cv-banner')).toHaveCount(0);
+    await expect(page.locator('#commerceSide .cv-item[data-cv-page="cvshopify"]')).toContainText('Shopify settings');
+    await page.locator('#commerceSide .cv-grp-h[aria-label="Shopify"]').click();
     await page.locator('#commerceSide .cv-item[data-cv-page="cvshopstock"]').click();
     expect(await page.locator('#ecommerceFrame').getAttribute('src')).toContain('tab=shop-stock');
   });
@@ -132,7 +166,7 @@ test.describe('store workspace (desktop)', () => {
     await expect(page.locator('#pageHome')).toBeVisible();
     await page.locator('#dnCvSwitch').click();
     await expect(page.locator('#commerceSide')).toBeVisible();
-    await expect(page.locator('#pageStorehome')).toBeVisible();
+    await expect(page.locator('#cvHomeTop')).toBeVisible();
   });
 
   test('other industries keep the classic dashboard', async ({ page }) => {
