@@ -21289,8 +21289,23 @@ async function engineSendChatwootTyping(env, c, convId, isTyping){
 // (drive.google.com/file/d/<id>/view or ?id=<id>) isn't directly fetchable as raw image bytes;
 // this resolves it to Drive's thumbnail endpoint, which is. Any non-Drive URL (Shopify CDN,
 // direct image host, etc.) passes through unchanged.
-function engineResolveDirectImageUrl(url){
+// Shopify product photos (synced into Ecom Products) live on Shopify's image CDN, whose originals
+// can be huge or WebP — neither goes through WhatsApp as a photo. The CDN resizes and re-encodes on
+// request, so ask it for a 1200px-wide JPEG: always a valid WhatsApp image, well under its 5 MB cap.
+// Matches cdn.shopify.com and a store's own-domain CDN path (https://<store>/cdn/shop/...).
+export function shopifyCdnImageUrl(url){
+  let u; try{ u=new URL(String(url||'').trim()); }catch(e){ return ''; }
+  if(u.protocol!=='https:') return '';
+  if(u.hostname!=='cdn.shopify.com' && !u.pathname.startsWith('/cdn/shop/')) return '';
+  u.searchParams.set('width', '1200');
+  u.searchParams.set('format', 'jpg');
+  return u.toString();
+}
+
+export function engineResolveDirectImageUrl(url){
   if(!url) return '';
+  const shopify=shopifyCdnImageUrl(url);
+  if(shopify) return shopify;
   if(!/drive\.google\.com/.test(url)) return url;
   const pathMatch=url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
   const queryMatch=url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
@@ -33459,8 +33474,8 @@ function driveGuessFilename(contentType){
 // as best-effort exactly like every other WhatsApp send in this file.
 export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, filenameHint=''){
   const fileId=driveFileId(driveUrl);
-  if(!fileId) return false;
-  const fetched=await driveFetchFile(fileId,driveUrl);
+  // Shopify product photos (Ecom products synced from Shopify) are sent the same way.
+  const fetched=fileId?await driveFetchFile(fileId,driveUrl):await shopifyFetchImage(driveUrl);
   if(!fetched) return false;
   const fd=new FormData();
   fd.append('content', caption||'');
@@ -33469,6 +33484,21 @@ export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, fil
   fd.append('attachments[]', fetched.blob, fetched.filename||hinted||driveGuessFilename(fetched.contentType));
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
+}
+
+// A Shopify CDN photo as a WhatsApp-safe JPEG (see shopifyCdnImageUrl), or null when it isn't one,
+// can't be fetched, or still isn't an image under WhatsApp's 5 MB cap.
+async function shopifyFetchImage(url){
+  const direct=shopifyCdnImageUrl(url);
+  if(!direct) return null;
+  try{
+    const r=await fetch(direct);
+    const ct=r.headers.get('content-type')||'';
+    if(!r.ok || !/^image\//.test(ct)) return null;
+    const blob=await r.blob();
+    if(!blob.size || blob.size>5242880) return null;
+    return {blob, contentType:ct, filename:/png/.test(ct)?'photo.png':'photo.jpg'};
+  }catch(e){ return null; }
 }
 
 // Lightweight Drive-link size check for ecom.html's product/promotion video fields (called onblur,

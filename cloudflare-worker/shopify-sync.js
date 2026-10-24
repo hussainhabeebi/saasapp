@@ -201,7 +201,9 @@ export function shopifyEcomProductFields(shop, p){
   const images=(p?.images||[]).map(i=>i?.src).filter(Boolean);
   if(!images.length && p?.image?.src) images.push(p.image.src);
   const prices=variants.map(v=>num(v.price)).filter(n=>n>0);
-  const active=(p?.status||'active')==='active';
+  // Unlisted products are still sold — hidden from the storefront's search and collections, but
+  // their product page opens from a direct link, which is exactly what the bot shares.
+  const active=['active','unlisted'].includes(p?.status||'active');
   const f={
     name:p?.title||'', sku:(variants.find(v=>v.sku)?.sku)||'',
     price:prices.length?Math.min(...prices):0,

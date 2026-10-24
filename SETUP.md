@@ -1177,7 +1177,12 @@ them exactly like ones added by hand. `shopify-sync.js` hands every product/orde
 - **Products** — one Ecom product per Shopify product (`shopifyEcomProductFields`), keyed by a
   self-provisioned `shopify_product_id` column. Shopify owns name, SKU (first variant's), price
   (lowest variant), stock (tracked variants summed; any untracked variant → 999, "always
-  available"), status (non-active → `inactive`) and `shopify_product_url` (the bot's order link).
+  available"), status (`active` and `unlisted` → `active`, since unlisted products still sell from
+  a direct link; anything else → `inactive`) and `shopify_product_url` (the bot's order link).
+  **Photos:** Shopify CDN image URLs are shared by the bot like any product photo — every send path
+  (`engineResolveDirectImageUrl`, and `sendDriveMediaToChatwoot` for extra angles) asks Shopify's
+  CDN for a 1200px JPEG (`shopifyCdnImageUrl`: `width=1200&format=jpg`), since originals can be over
+  WhatsApp's 5 MB cap or WebP, which WhatsApp won't take as a photo.
   Description (HTML → text), category (product type), brand (vendor), colours/sizes (from the
   Color/Size options), variant names and up to 5 photos are written only when Shopify has them, so
   anything added in Ecom on top (extra photos, audio, style fields) is kept. First sync adopts a

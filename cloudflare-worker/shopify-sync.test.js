@@ -145,6 +145,11 @@ test('a Shopify product maps to one Ecom product', () => {
   assert.equal(f.image_url, 'https://cdn/k1.jpg');
   assert.equal(f.image_url_2, 'https://cdn/k2.jpg');
   assert.equal('image_url_3' in f, false); // a photo added in Ecom stays
+  // Unlisted = sold by direct link, hidden from the storefront: still a live product with its link.
+  const unlisted = shopifyEcomProductFields(SHOP, { ...KURTA, status: 'unlisted' });
+  assert.equal(unlisted.status, 'active');
+  assert.equal(unlisted.shopify_product_url, 'https://demo.myshopify.com/products/kurta');
+  assert.equal(shopifyEcomProductPlan(SHOP, [], [{ ...KURTA, status: 'unlisted' }]).creates.length, 1);
   const draft = shopifyEcomProductFields(SHOP, { ...KURTA, status: 'draft' });
   assert.equal(draft.status, 'inactive');
   assert.equal(draft.shopify_product_url, '');
