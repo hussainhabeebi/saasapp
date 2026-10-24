@@ -5103,12 +5103,23 @@ function exportShopStockCsv() {
 const ECOM_TABS = [...document.querySelectorAll('#tabs .tab')].map(t => t.dataset.tab);
 if (isCommerceShell && ECOM_TABS.includes(params.get('tab'))) showTab(params.get('tab'));
 else if (isDesktop()) showTab('home');
+// action 'new' opens the screen's "+ Add …" form — the store Home's "Add a product" / "Create an
+// order" tiles.
+function ecomGoto(tab, action) {
+  if (!ECOM_TABS.includes(tab)) return;
+  showTab(tab);
+  if (action !== 'new') return;
+  if (tab === 'products') openAddProductModal();
+  else if (tab === 'orders') openAddOrderModal();
+}
 window.addEventListener('message', e => {
-  if (!(e.origin === location.origin || (location.protocol === 'file:' && e.origin === 'null')) || e.data?.type !== 'ecom:goto' || !ECOM_TABS.includes(e.data.tab)) return;
-  showTab(e.data.tab);
+  if (!(e.origin === location.origin || (location.protocol === 'file:' && e.origin === 'null')) || e.data?.type !== 'ecom:goto') return;
+  ecomGoto(e.data.tab, e.data.action);
 });
 
-init();
+init().then(() => {
+  if (isCommerceShell && params.get('action') === 'new') ecomGoto(params.get('tab'), 'new');
+});
 </script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
