@@ -3,6 +3,7 @@ import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
+import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS} from './shopify-sync.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel} from './meta-ads-report.js';
@@ -187,6 +188,8 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/session/auto-provision'&&m==='POST', bucket:'session-auto-provision', limit:10, windowSec:300},
   {test:(p,m)=>p==='/admin/login'&&m==='POST', bucket:'admin-login', limit:20, windowSec:300},
   {test:(p,m)=>p==='/ecom/public/order'&&m==='POST', bucket:'ecom-order', limit:20, windowSec:600},
+  // Each resync pulls up to ~3k Shopify records, so a handful an hour is plenty.
+  {test:(p,m)=>p==='/ecom/shopify/resync'&&m==='POST', bucket:'shopify-resync', limit:6, windowSec:3600},
   {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
   {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
   {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
@@ -6504,7 +6507,9 @@ async function handleChannelsInboxAssignmentSync(request, env){
 // supports a given version for ~9-12 months after release, so this needs bumping periodically
 // (quarterly releases: -01, -04, -07, -10).
 const SHOPIFY_API_VERSION='2026-07';
-const SHOPIFY_SCOPES='read_orders,read_fulfillments,read_checkouts';
+// read_products/read_inventory feed the Shopify Stock module (shopify-sync.js). Stores connected
+// before those were added keep working for orders; they reconnect to grant stock access.
+const SHOPIFY_SCOPES='read_orders,read_fulfillments,read_checkouts,read_products,read_inventory';
 // Auto-provisioned on first use (see getShopifyCheckoutsTableId below) instead of a hand-pasted
 // table id — used to require creating this table in NocoDB by hand and pasting its id here (same
 // pattern as EMAIL_CAMPAIGNS_TABLE/EMAIL_SENDS_TABLE above); now the Worker creates it itself the
@@ -6649,7 +6654,7 @@ async function handleShopifyOauthCallback(request, env){
 
   // Best-effort — registers the webhooks this module depends on. A client re-connecting after a
   // revoke can just disconnect and connect again to re-register them.
-  const topics=['orders/create','orders/paid','orders/cancelled','fulfillments/create','fulfillments/update','checkouts/create','checkouts/update','app/uninstalled'];
+  const topics=[...new Set([...Object.values(SHOPIFY_SYNC_WEBHOOK_TOPICS).flat(),'checkouts/create','checkouts/update','app/uninstalled'])];
   const webhookUri=`${env.WORKER_BASE_URL}/shopify/webhook`;
   await Promise.all(topics.map(topic=>
     shopifyFetch(env, shop, access_token, '/webhooks.json', {method:'POST', body:JSON.stringify({webhook:{topic, address:webhookUri, format:'json'}})}).catch(()=>{})
@@ -7954,6 +7959,8 @@ async function handleShopifyWebhook(request, env){
   else if(topic==='app/uninstalled'){
     await patchClientFields(env, c.Id, {shopify_shop_domain:'', shopify_access_token:'', shopify_connected_at:''});
   }
+  // Shopify Orders / Stock modules (ecom.html) — their own tables, alongside everything above.
+  if(topic!=='app/uninstalled'&&!String(topic).startsWith('checkouts/')) await shopifySyncOnWebhook(env, SHOPIFY_SYNC_DEPS, c, topic, data);
   return json({ok:true});
 }
 
@@ -33658,6 +33665,11 @@ async function ceoBotTaskChanged(env, cid, taskId, prevStatus){
   const event=prevStatus===''?'created':row.status!==prevStatus?'status_changed':'';
   await pmQueueTaskLifecycle(env, row, {event, prevStatus});
 }
+const SHOPIFY_SYNC_DEPS={
+  json, ncFetch, getClientById, ncTableMeta, reportOpsError,
+  clientsTable:CLIENTS_TABLE, apiVersion:SHOPIFY_API_VERSION,
+  webhookUri:env=>`${env.WORKER_BASE_URL}/shopify/webhook`,
+};
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
   // A label added in Chats that marks a purchase → Purchase to Meta (capiPurchaseFromLabels).
@@ -37756,6 +37768,7 @@ export default {
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
+      else if(url.pathname.startsWith('/ecom/shopify/') && (res=await shopifySyncHandleRoute(request, env, SHOPIFY_SYNC_DEPS, url))){ /* Shopify Orders / Stock — shopify-sync.js */ }
       else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
       else if(url.pathname==='/ecom/order-phones' && request.method==='GET'){ res=await handleEcomOrderPhones(request, env); }
       else if(url.pathname==='/billing/usage' && request.method==='GET'){ res=await handleBillingUsage(request, env); }

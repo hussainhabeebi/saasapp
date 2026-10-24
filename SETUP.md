@@ -1202,9 +1202,10 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
    carrying the client id) and the browser navigates there directly (full-page redirect, not a
    popup — Shopify's authorize screen refuses to render in an iframe/popup on some plans).
 2. **Callback** — `GET /shopify/oauth/callback` verifies Shopify's query-param HMAC, verifies
-   `state`, exchanges `code` for a permanent access token, registers the eight webhooks this
+   `state`, exchanges `code` for a permanent access token, registers the webhooks this
    module needs (`orders/create`, `orders/paid`, `orders/cancelled`, `fulfillments/create`,
-   `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`,
+   `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`, plus the
+   Shopify Orders/Stock topics listed under "Shopify Orders + Shopify Stock" below) pointing at `/shopify/webhook`,
    writes `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back
    into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`). This is the "automatic
    webhook" — Settings → Integrations → Shopify shows the endpoint URL for reference/debugging
@@ -1253,6 +1254,37 @@ natively — the "Order Delivered" notification is best-effort and won't fire fo
 **Disconnect**: `POST /shopify/disconnect` (Settings → Integrations) clears the stored
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
+
+### Shopify Orders + Shopify Stock (`cloudflare-worker/shopify-sync.js`, `ecom.html` desktop)
+Two desktop-only pages in the Ecommerce module's sidebar (under **Shopify**), shown only when the
+client has Shopify connected in Settings → Integrations. The phone layout is unchanged — these nav
+entries (and the desktop **Home** overview) are hidden below 768px and nothing is fetched there.
+
+- **Shopify Orders** — every Shopify order with payment status (paid / pending / refunded…) and
+  fulfillment status (unfulfilled / partial / fulfilled / delivered / cancelled), saved views,
+  search, 7/30/90-day KPIs, CSV export and an order drawer (items, totals, tracking, customer,
+  WhatsApp link, "Open in Shopify").
+- **Shopify Stock** — one row per variant: price, SKU, type/vendor/status, `available` summed over
+  every location, stock value, low/out-of-stock views (threshold set per browser, default 5).
+
+**Tables (auto-provisioned, nothing to create):** `shopify_orders` and `shopify_inventory`, created
+in the clients table's base on first use, like `shopify_checkouts`. Rows carry `client_id` + `shop`,
+so switching stores never shows the old store's data. These are separate from the shared Ecom
+orders table — `syncShopifyOrderToEcom` keeps feeding the regular Orders page exactly as before.
+
+**Sync:** webhooks keep both tables live — `orders/create|updated|paid|cancelled|fulfilled`,
+`fulfillments/create|update` (tracking), `products/create|update|delete`, and
+`inventory_levels/update` (re-reads every location for that item so the total is exact). Older
+payloads never overwrite newer rows (`updated_at` guard). The pages refresh once a minute while open.
+
+**Scopes:** `SHOPIFY_SCOPES` now also asks for `read_products,read_inventory`. Stores connected
+before this keep syncing orders; the Stock page shows a banner telling them to Disconnect →
+Connect again (Settings → Integrations) to grant stock access. **Sync now** (`POST
+/ecom/shopify/resync`, rate-limited to 6/hour) backfills the last 90 days of orders and the whole
+catalog, and registers any of the webhooks above the store is missing.
+
+**Routes** (client_id-keyed like the rest of `/ecom/*`): `GET /ecom/shopify/status`,
+`GET /ecom/shopify/orders`, `GET /ecom/shopify/stock`, `POST /ecom/shopify/resync`.
 
 ## Hospitality module (`frontend/dashboard.html` — 🏨 Hospitality tab; houseboats/hotels/tourism stays)
 A new industry (`hospitality`) plus an independently-toggleable module (`hospitality_enabled`,

@@ -199,6 +199,141 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   main{overflow-y:auto;flex:1}
   .inner{max-width:none}
 }
+
+/* ═══ DESKTOP UX (≥768px) ═══════════════════════════════════════════════════════════════════
+   Home, grouped sidebar and the Shopify Orders / Stock modules are desktop-only: their nav
+   entries and group labels are display:none below 768px, so the phone layout is unchanged. */
+.desk-only,.nav-label{display:none}
+.shop-only{display:none}
+@media(min-width:768px){
+  :root{--bg:#F4F4F7;--line:#E6E4EE;--shadow:0 1px 0 rgba(17,12,46,.04),0 1px 3px rgba(17,12,46,.06)}
+  header{height:52px;padding:0 20px}
+  .desk-only{display:revert}
+  .shop-only{display:none}
+  body.shopify-on .shop-only{display:revert}
+  #tabs{width:224px;background:#FBFAFE;padding:12px 10px 20px;gap:1px}
+  #tabs .nav-label{display:block;font-family:var(--disp);font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#9A93B8;padding:16px 10px 6px}
+  #tabs .nav-label:first-child{padding-top:4px}
+  #tabs .tab{border-left:none;margin-left:0;border-radius:8px;padding:8px 10px;font-size:13px;color:#3F3A5A;font-weight:600}
+  #tabs .tab:hover{background:#F0EDFA;color:var(--ink)}
+  #tabs .tab.active{background:var(--card);color:var(--accent-ink);box-shadow:0 0 0 1px var(--line),0 1px 2px rgba(17,12,46,.06)}
+  #tabs .tab .nav-count{float:right;font-family:var(--body);font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink);border-radius:10px;padding:1px 7px}
+  main{padding:24px 28px}
+  .inner{max-width:1320px}
+  .card{border-radius:12px}
+  .stat{border-radius:12px;box-shadow:var(--shadow)}
+  .page > .stats,.page > .bc-panel{margin-bottom:16px}
+  th{background:#FAF9FD}
+  .tbl-wrap{border-radius:10px}
+  .hdr-store{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:4px 10px;background:var(--bg)}
+  .hdr-store + .hback{margin-left:8px}
+}
+
+/* Page header */
+.ph{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.ph h1{font-family:var(--disp);font-size:22px;font-weight:700;letter-spacing:-.01em}
+.ph-sub{font-size:13px;color:var(--muted);margin-top:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ph-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.live-dot{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#047857;background:#ECFDF5;border:1px solid #A7F3D0;border-radius:20px;padding:2px 9px}
+.live-dot::before{content:"";width:7px;height:7px;border-radius:50%;background:#10B981;box-shadow:0 0 0 3px rgba(16,185,129,.18)}
+.live-dot.off{color:var(--muted);background:var(--bg);border-color:var(--line)}
+.live-dot.off::before{background:var(--ls);box-shadow:none}
+.link-btn{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:8px 13px;font-family:var(--body);font-size:13px;font-weight:600;color:var(--ink);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.link-btn:hover{background:var(--bg)}
+.link-btn:disabled{opacity:.55;cursor:default}
+
+/* KPI tiles */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:18px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow);min-width:0}
+.kpi.click{cursor:pointer}
+.kpi.click:hover{border-color:var(--ls)}
+.kpi-lbl{font-size:12px;color:var(--muted);font-weight:500;display:flex;justify-content:space-between;gap:6px}
+.kpi-val{font-family:var(--disp);font-size:24px;font-weight:700;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi-foot{font-size:12px;color:var(--muted);margin-top:4px}
+.delta{font-weight:600}
+.delta.up{color:#047857}.delta.down{color:#B91C1C}
+.kpi.warn .kpi-val{color:#B45309}.kpi.bad .kpi-val{color:#B91C1C}
+
+/* Saved-view tabs + toolbar (Shopify-admin style index table) */
+.idx{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+.views{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--line);overflow-x:auto}
+.view{background:none;border:none;border-radius:8px 8px 0 0;padding:8px 12px 9px;font-family:var(--body);font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.view:hover{color:var(--ink);background:var(--bg)}
+.view.active{color:var(--ink);border-bottom-color:var(--ink)}
+.view .vc{font-size:11px;color:var(--muted);background:var(--bg);border-radius:10px;padding:1px 7px;margin-left:5px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+.toolbar .search-input{flex:1;min-width:220px;width:auto}
+.tsel{border:1.5px solid var(--line);border-radius:10px;padding:7px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
+.tsel:focus{outline:none;border-color:var(--accent);background:#fff}
+.idx table td,.idx table th{padding:10px 14px}
+.idx tbody tr{cursor:pointer}
+.idx tbody tr.nohover{cursor:default}
+.idx-foot{padding:10px 14px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.o-name{font-weight:700;color:var(--ink)}
+.muted-s{font-size:12px;color:var(--muted)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+
+/* Status pills */
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:20px;padding:2px 9px 2px 7px;font-size:11.5px;font-weight:600;white-space:nowrap;background:#EEF0F3;color:#3F4652}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.8}
+.pill.ok{background:#DCFCE7;color:#166534}
+.pill.warn{background:#FEF3C7;color:#92400E}
+.pill.info{background:#DBEAFE;color:#1E40AF}
+.pill.bad{background:#FEE2E2;color:#991B1B}
+.pill.mute{background:#F1F1F4;color:#6B6880}
+
+/* Stock level */
+.lvl{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.lvl-bar{width:56px;height:6px;border-radius:4px;background:#EEECF4;overflow:hidden}
+.lvl-bar i{display:block;height:100%;border-radius:4px;background:#10B981}
+.lvl.low .lvl-bar i{background:#F59E0B}.lvl.out .lvl-bar i{background:#EF4444}
+.lvl b{font-variant-numeric:tabular-nums;min-width:34px;text-align:right}
+.lvl.low b{color:#B45309}.lvl.out b{color:#B91C1C}
+.sthumb{width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--line);background:var(--accent-soft);display:block}
+
+/* Banner */
+.banner{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:12px;border:1px solid #FCD34D;background:#FFFBEB;color:#78350F;font-size:13px;margin-bottom:16px}
+.banner b{display:block;margin-bottom:2px}
+.banner a{color:#92400E;font-weight:600}
+
+/* Home */
+.home-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;margin-bottom:16px}
+@media(max-width:1100px){.home-grid{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:16px 18px;min-width:0}
+.panel-h{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
+.panel-h h3{font-family:var(--disp);font-size:15px;font-weight:700}
+.panel-h a,.panel-h button.lnk{font-size:12px;font-weight:600;color:var(--accent-ink);text-decoration:none;background:none;border:none;cursor:pointer;font-family:var(--body)}
+.chart{width:100%;height:190px;display:block}
+.chart text{font-family:var(--body);font-size:10px;fill:var(--muted)}
+.mini-list{display:flex;flex-direction:column}
+.mini-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
+.mini-row:last-child{border-bottom:none}
+.mini-row .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini-empty{font-size:13px;color:var(--muted);padding:18px 0;text-align:center}
+.qa{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.qa button{display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer;font-family:var(--body);font-size:13px;font-weight:600;color:var(--ink)}
+.qa button:hover{border-color:var(--accent);background:var(--accent-soft)}
+.qa button small{font-weight:400;color:var(--muted);font-size:11.5px}
+.qa button span{font-family:var(--disp);font-size:22px;font-weight:700}
+
+/* Order drawer */
+.drawer-bg{position:fixed;inset:0;background:rgba(12,10,30,.28);z-index:120;opacity:0;pointer-events:none;transition:opacity .18s}
+.drawer-bg.open{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(520px,100vw);background:var(--card);z-index:121;box-shadow:-12px 0 40px rgba(12,10,30,.18);transform:translateX(100%);visibility:hidden;transition:transform .22s ease,visibility 0s linear .22s;display:flex;flex-direction:column}
+.drawer.open{transform:none;visibility:visible;transition:transform .22s ease}
+.drawer-h{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:12px}
+.drawer-h h2{font-family:var(--disp);font-size:19px;font-weight:700}
+.drawer-x{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:16px;color:var(--muted)}
+.drawer-b{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px}
+.dsec{border:1px solid var(--line);border-radius:12px;padding:14px}
+.dsec h4{font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.li{display:flex;gap:10px;align-items:baseline;font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.li:last-child{border-bottom:none}
+.li .grow{flex:1;min-width:0}
+.tot{display:grid;grid-template-columns:1fr auto;gap:5px 12px;font-size:13px}
+.tot .t{font-weight:700;border-top:1px solid var(--line);padding-top:6px}
+.kv{font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+.kv a{color:var(--accent-ink);font-weight:600}
 </style>
 </head>
 <body>
@@ -207,23 +342,164 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <header>
   <span class="brand"><img src="data:image/png;base64,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" alt="">Leadvyne<span>.</span></span>
   <span class="chip">🛒 Ecommerce</span>
+  <span class="hdr-store desk-only shop-only" id="hdrStore" title="Shopify store connected — orders and stock sync automatically"></span>
   <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
 </header>
 
 <div id="layout">
+<!-- Mobile shows only the original tab buttons in their original order; the group labels and
+     desk-only entries (Home, Shopify Orders/Stock) are display:none below 768px. -->
 <div id="tabs">
+  <button class="tab desk-only" data-tab="home" onclick="showTab('home')">🏠 Home</button>
+  <div class="nav-label">Catalog</div>
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
+  <div class="nav-label">Marketing</div>
   <button class="tab" data-tab="promotions" onclick="showTab('promotions')">🎁 Promotions</button>
   <button class="tab" data-tab="testimonials" onclick="showTab('testimonials')">🌟 Testimonials</button>
+  <div class="nav-label">Sales</div>
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
+  <div class="nav-label">Shopify</div>
+  <button class="tab desk-only shop-only" data-tab="shop-orders" onclick="showTab('shop-orders')">🛒 Shopify Orders <span class="nav-count" id="navShopOrdersCount" style="display:none"></span></button>
+  <button class="tab desk-only shop-only" data-tab="shop-stock" onclick="showTab('shop-stock')">📊 Shopify Stock <span class="nav-count" id="navShopStockCount" style="display:none"></span></button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
+  <div class="nav-label">Configure</div>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
   <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')">🔀 Flow</button>
 </div>
 
 <main>
 <div class="inner">
+
+<!-- HOME (desktop only) — store overview built from the products/orders this page already loads. -->
+<div id="tabHome" class="page">
+  <div class="ph">
+    <div>
+      <h1 id="homeGreeting">Home</h1>
+      <div class="ph-sub" id="homeSub">Here's how your store is doing.</div>
+    </div>
+    <div class="ph-actions">
+      <select class="tsel" id="homeRange" onchange="renderHome()" title="Period">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+      <button class="link-btn" onclick="showTab('products');openAddProductModal()">+ Add product</button>
+      <button class="save-btn" onclick="showTab('orders');openAddOrderModal()">+ Create order</button>
+    </div>
+  </div>
+  <div class="kpis" id="homeKpis"></div>
+  <div class="home-grid">
+    <div class="panel">
+      <div class="panel-h"><h3>Sales over time</h3><span class="muted-s" id="homeChartNote"></span></div>
+      <svg class="chart" id="homeChart" role="img" aria-label="Daily revenue"></svg>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h3>Needs attention</h3></div>
+      <div class="mini-list" id="homeAttention"></div>
+    </div>
+  </div>
+  <div class="home-grid">
+    <div class="panel">
+      <div class="panel-h"><h3>Recent orders</h3><button class="lnk" onclick="showTab('orders')">View all →</button></div>
+      <div class="mini-list" id="homeRecent"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h3>Top products</h3><button class="lnk" onclick="showTab('products')">Catalog →</button></div>
+      <div class="mini-list" id="homeTop"></div>
+    </div>
+  </div>
+  <div class="panel shop-only" id="homeShopifyPanel">
+    <div class="panel-h"><h3>🛍️ Shopify</h3><span class="live-dot" id="homeShopifyLive">Live</span></div>
+    <div class="qa">
+      <button onclick="showTab('shop-orders');setShopOrderView('unfulfilled')"><span id="homeShopUnful">—</span><small>Unfulfilled Shopify orders</small></button>
+      <button onclick="showTab('shop-orders');setShopOrderView('unpaid')"><span id="homeShopUnpaid">—</span><small>Payment pending</small></button>
+      <button onclick="showTab('shop-stock');setShopStockView('low')"><span id="homeShopLow">—</span><small>Low-stock variants</small></button>
+      <button onclick="showTab('shop-stock');setShopStockView('out')"><span id="homeShopOut">—</span><small>Out of stock</small></button>
+    </div>
+  </div>
+</div>
+
+<!-- SHOPIFY ORDERS (desktop only, Shopify connected) — the store's own orders with payment and
+     fulfillment status, kept in sync by Shopify webhooks (shopify-sync.js in the Worker). -->
+<div id="tabShopOrders" class="page">
+  <div class="ph">
+    <div>
+      <h1>Shopify orders</h1>
+      <div class="ph-sub"><span class="live-dot" id="shopOrdersLive">Live sync</span><span id="shopOrdersShop"></span><span id="shopOrdersUpdated"></span></div>
+    </div>
+    <div class="ph-actions">
+      <button class="link-btn" onclick="exportShopOrdersCsv()">⬇ Export</button>
+      <button class="link-btn" id="shopResyncBtn1" onclick="resyncShopify(this)" title="Pull the last 90 days of orders and the full catalog from Shopify">↻ Sync now</button>
+      <a class="save-btn" id="shopOrdersAdminLink" target="_blank" rel="noopener" style="text-decoration:none">Open in Shopify ↗</a>
+    </div>
+  </div>
+  <div id="shopOrdersBanner"></div>
+  <div class="kpis" id="shopOrderKpis"></div>
+  <div class="idx">
+    <div class="views" id="shopOrderViews"></div>
+    <div class="toolbar">
+      <input class="search-input" id="shopOrderSearch" type="text" placeholder="🔍 Search order #, customer, phone, email, product…" oninput="renderShopOrders()">
+      <select class="tsel" id="shopOrderRange" onchange="renderShopOrders()" title="Order date">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="0">All time</option>
+      </select>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Order</th><th>Date</th><th>Customer</th><th class="num">Total</th><th>Payment</th><th>Fulfillment</th><th class="num">Items</th><th>Channel</th></tr></thead>
+        <tbody id="shopOrdersTbody"><tr class="loading-row nohover"><td colspan="8"><span class="spinner"></span>Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="idx-foot"><span id="shopOrdersFoot"></span><span>New orders, payments, fulfilments and cancellations arrive by webhook — no refresh needed.</span></div>
+  </div>
+</div>
+
+<!-- SHOPIFY STOCK (desktop only, Shopify connected) — one row per variant, available summed over
+     every location; products/* and inventory_levels/update webhooks keep it current. -->
+<div id="tabShopStock" class="page">
+  <div class="ph">
+    <div>
+      <h1>Shopify stock</h1>
+      <div class="ph-sub"><span class="live-dot" id="shopStockLive">Live sync</span><span id="shopStockShop"></span><span id="shopStockUpdated"></span></div>
+    </div>
+    <div class="ph-actions">
+      <label class="muted-s" title="Variants at or below this many units count as low stock">Low stock at ≤ <input class="tsel" id="shopLowThreshold" type="number" min="0" style="width:64px" oninput="onShopLowThresholdChange(this.value)"></label>
+      <button class="link-btn" onclick="exportShopStockCsv()">⬇ Export</button>
+      <button class="link-btn" id="shopResyncBtn2" onclick="resyncShopify(this)" title="Pull the full catalog and stock levels from Shopify">↻ Sync now</button>
+      <a class="save-btn" id="shopStockAdminLink" target="_blank" rel="noopener" style="text-decoration:none">Inventory in Shopify ↗</a>
+    </div>
+  </div>
+  <div id="shopStockBanner"></div>
+  <div class="kpis" id="shopStockKpis"></div>
+  <div class="idx">
+    <div class="views" id="shopStockViews"></div>
+    <div class="toolbar">
+      <input class="search-input" id="shopStockSearch" type="text" placeholder="🔍 Search product, variant, SKU, barcode…" oninput="renderShopStock()">
+      <select class="tsel" id="shopStockType" onchange="renderShopStock()"><option value="">All types</option></select>
+      <select class="tsel" id="shopStockVendor" onchange="renderShopStock()"><option value="">All vendors</option></select>
+      <select class="tsel" id="shopStockStatus" onchange="renderShopStock()">
+        <option value="">Any status</option><option value="active">Active</option><option value="draft">Draft</option><option value="archived">Archived</option>
+      </select>
+      <select class="tsel" id="shopStockSort" onchange="renderShopStock()">
+        <option value="name">Sort: Product A–Z</option>
+        <option value="stock-asc">Sort: Stock low → high</option>
+        <option value="stock-desc">Sort: Stock high → low</option>
+        <option value="value">Sort: Stock value</option>
+        <option value="updated">Sort: Recently updated</option>
+      </select>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th style="width:56px"></th><th>Product</th><th>SKU</th><th>Type</th><th>Status</th><th class="num">Price</th><th class="num">Available</th><th class="num">Stock value</th><th>Updated</th></tr></thead>
+        <tbody id="shopStockTbody"><tr class="loading-row nohover"><td colspan="9"><span class="spinner"></span>Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="idx-foot"><span id="shopStockFoot"></span><span>Stock changes in Shopify (sales, restocks, edits) update here by webhook. Edit stock in Shopify — it's the source of truth.</span></div>
+  </div>
+</div>
 
 <!-- PRODUCTS TAB -->
 <div id="tabProducts" class="page active">
@@ -1207,6 +1483,16 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 </main>
 </div><!-- /layout -->
 
+<!-- Shopify order detail drawer (desktop) -->
+<div class="drawer-bg" id="shopDrawerBg" onclick="closeShopOrder()"></div>
+<aside class="drawer" id="shopDrawer" aria-hidden="true">
+  <div class="drawer-h">
+    <div><h2 id="sdTitle">Order</h2><div class="ph-sub" id="sdSub"></div></div>
+    <button class="drawer-x" onclick="closeShopOrder()" aria-label="Close">✕</button>
+  </div>
+  <div class="drawer-b" id="sdBody"></div>
+</aside>
+
 <script>
 // All NocoDB access goes through the Worker's /ecom/* routes — the master
 // NocoDB token stays server-side there, never in this page. See worker.js's
@@ -1370,6 +1656,7 @@ async function init() {
   if (waTemplates.length) WA_TEMPLATE_KINDS.forEach(k => renderWaTemplateBlock(k.key, k.label));
 
   renderShopifyConnection();
+  initShopifyModules();
 
   loadProducts();
   loadCategories();
@@ -1405,6 +1692,12 @@ function onProductStyleChange() {
 // ── TAB NAV ──────────────────────────────────────
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('tabHome').classList.toggle('active', name === 'home');
+  document.getElementById('tabShopOrders').classList.toggle('active', name === 'shop-orders');
+  document.getElementById('tabShopStock').classList.toggle('active', name === 'shop-stock');
+  if (name === 'home') renderHome();
+  if (name === 'shop-orders') { if (shopOrders === null) loadShopOrders(); else renderShopOrders(); }
+  if (name === 'shop-stock') { if (shopStock === null) loadShopStock(); else renderShopStock(); }
   document.getElementById('tabProducts').classList.toggle('active', name === 'products');
   document.getElementById('tabCategories').classList.toggle('active', name === 'categories');
   document.getElementById('tabPromotions').classList.toggle('active', name === 'promotions');
@@ -1427,6 +1720,7 @@ async function loadProducts() {
     const r = await fetch(`${WORKER_BASE}/ecom/products?client_id=${encodeURIComponent(clientId)}&limit=200`);
     const data = await r.json();
     allProducts = data.list || [];
+    renderHome();
     const liveIds = new Set(allProducts.map(p => p.Id));
     [...selectedProductIds].forEach(id => { if (!liveIds.has(id)) selectedProductIds.delete(id); });
     renderProductsTable();
@@ -2706,6 +3000,7 @@ async function loadOrders() {
     const data = await r.json();
     if (!r.ok) { tbody.innerHTML = `<tr><td colspan="${orderColCount()}" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
     allOrders = data.list || [];
+    renderHome();
     const ids = new Set(allOrders.map(o => o.Id));
     selectedOrderIds.forEach(id => { if (!ids.has(id)) selectedOrderIds.delete(id); });
     renderOrdersTable();
@@ -4003,6 +4298,492 @@ function escAttr(str) {
 }
 
 // Auto-login: skip gate, init immediately
+// ── DESKTOP: HOME + SHOPIFY ORDERS / STOCK ───────────────────────
+// Desktop-only (≥768px): the nav entries for these pages are hidden on phones, and nothing here
+// fetches anything unless isDesktop(), so the mobile page behaves exactly as before.
+function isDesktop() { return window.matchMedia('(min-width:768px)').matches; }
+const DAY_MS = 86400000;
+function fmtMoney(n, cur) {
+  const v = Number(n) || 0;
+  try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: cur || 'INR', maximumFractionDigits: v % 1 ? 2 : 0 }).format(v); }
+  catch (e) { return `${cur || ''} ${v.toLocaleString()}`.trim(); }
+}
+function fmtCompact(n, cur) {
+  const v = Number(n) || 0;
+  if (Math.abs(v) < 100000) return fmtMoney(Math.round(v), cur);
+  try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: cur || 'INR', notation: 'compact', maximumFractionDigits: 1 }).format(v); }
+  catch (e) { return fmtMoney(v, cur); }
+}
+function relTime(iso) {
+  const t = Date.parse(iso || '');
+  if (!t) return '—';
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  if (m < 1440) return `${Math.round(m / 60)}h ago`;
+  if (m < 10080) return `${Math.round(m / 1440)}d ago`;
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function fmtDateTime(iso) {
+  const t = Date.parse(iso || '');
+  if (!t) return '—';
+  const d = new Date(t), today = new Date();
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === today.toDateString()) return `Today at ${time}`;
+  if (d.toDateString() === new Date(Date.now() - DAY_MS).toDateString()) return `Yesterday at ${time}`;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ` at ${time}`;
+}
+function deltaHtml(cur, prev) {
+  if (!prev) return cur ? '<span class="delta up">New</span>' : '';
+  const pct = Math.round(((cur - prev) / prev) * 100);
+  return `<span class="delta ${pct >= 0 ? 'up' : 'down'}">${pct >= 0 ? '↑' : '↓'} ${Math.abs(pct)}%</span>`;
+}
+function kpiHtml({ label, value, foot = '', tone = '', onclick = '', badge = '' }) {
+  return `<div class="kpi ${tone}${onclick ? ' click' : ''}"${onclick ? ` onclick="${onclick}"` : ''}>
+    <div class="kpi-lbl"><span>${label}</span>${badge}</div>
+    <div class="kpi-val" title="${escAttr(String(value))}">${value}</div>
+    ${foot ? `<div class="kpi-foot">${foot}</div>` : ''}</div>`;
+}
+function downloadCsv(filename, header, rows) {
+  const csv = [header.map(csvCell).join(','), ...rows.map(r => r.map(csvCell).join(','))].join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ── HOME ──
+function homeCountable(o) { const s = String(o.status || '').toLowerCase(); return s !== 'cancelled' && s !== 'draft'; }
+function renderHome() {
+  if (!clientRecord || !document.getElementById('tabHome').classList.contains('active')) return;
+  const days = Number(document.getElementById('homeRange').value) || 30;
+  const now = Date.now(), from = now - days * DAY_MS, prevFrom = from - days * DAY_MS;
+  const cur = allOrders.find(o => o.currency)?.currency || 'INR';
+  const inRange = (o, a, b) => { const t = orderTime(o); return t >= a && t < b; };
+  const curOrders = allOrders.filter(o => homeCountable(o) && inRange(o, from, now + DAY_MS));
+  const prevOrders = allOrders.filter(o => homeCountable(o) && inRange(o, prevFrom, from));
+  const sum = list => list.reduce((s, o) => s + (Number(o.total) || 0), 0);
+  const sales = sum(curOrders), prevSales = sum(prevOrders);
+  const toFulfil = allOrders.filter(o => ORDER_OPEN_STATUSES.includes(String(o.status || '').toLowerCase())).length;
+  const drafts = allOrders.filter(o => String(o.status || '').toLowerCase() === 'draft').length;
+  const liveProducts = allProducts.filter(p => String(p.status || '').toLowerCase() !== 'inactive');
+  const outOfStock = liveProducts.filter(p => (Number(p.stock) || 0) <= 0);
+  const lowStock = liveProducts.filter(p => { const n = Number(p.stock) || 0; return n > 0 && n <= 5; });
+
+  const h = new Date().getHours();
+  document.getElementById('homeGreeting').textContent = `Good ${h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening'}${clientRecord.client_name ? ', ' + clientRecord.client_name : ''}`;
+  document.getElementById('homeSub').textContent = `Here's how your store is doing — ${new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}.`;
+
+  document.getElementById('homeKpis').innerHTML = [
+    kpiHtml({ label: 'Total sales', value: fmtCompact(sales, cur), badge: deltaHtml(sales, prevSales), foot: `vs ${fmtCompact(prevSales, cur)} previous ${days} days` }),
+    kpiHtml({ label: 'Orders', value: curOrders.length.toLocaleString(), badge: deltaHtml(curOrders.length, prevOrders.length), foot: `${prevOrders.length} previous ${days} days`, onclick: "showTab('orders')" }),
+    kpiHtml({ label: 'Average order value', value: fmtMoney(curOrders.length ? Math.round(sales / curOrders.length) : 0, cur), badge: deltaHtml(curOrders.length ? sales / curOrders.length : 0, prevOrders.length ? prevSales / prevOrders.length : 0) }),
+    kpiHtml({ label: 'To fulfil', value: toFulfil, tone: toFulfil ? 'warn' : '', foot: 'Pending, received or processing', onclick: "showTab('orders')" }),
+    kpiHtml({ label: 'Products', value: liveProducts.length, tone: outOfStock.length ? 'bad' : '', foot: `${outOfStock.length} out of stock · ${lowStock.length} low`, onclick: "showTab('products')" }),
+  ].join('');
+
+  // Daily revenue bars (inline SVG, sized to the panel)
+  const svg = document.getElementById('homeChart');
+  const W = Math.max(svg.clientWidth || 600, 300), H = 190, padL = 46, padB = 22, padT = 8;
+  const buckets = [];
+  for (let i = days - 1; i >= 0; i--) { const d = new Date(now - i * DAY_MS); buckets.push({ day: localDay(d), v: 0, n: 0 }); }
+  const byDay = Object.fromEntries(buckets.map(b => [b.day, b]));
+  curOrders.forEach(o => { const b = byDay[orderDay(o)]; if (b) { b.v += Number(o.total) || 0; b.n++; } });
+  const max = Math.max(1, ...buckets.map(b => b.v));
+  const bw = (W - padL - 6) / buckets.length;
+  const y = v => padT + (H - padT - padB) * (1 - v / max);
+  let g = '';
+  [0, .5, 1].forEach(f => { const yy = y(max * f); g += `<line x1="${padL}" x2="${W}" y1="${yy}" y2="${yy}" stroke="var(--line)" stroke-dasharray="${f ? '3 3' : ''}"/><text x="${padL - 6}" y="${yy + 3}" text-anchor="end">${esc(fmtCompact(max * f, cur))}</text>`; });
+  buckets.forEach((b, i) => {
+    const x = padL + i * bw + bw * 0.15, bh = (H - padT - padB) - (y(b.v) - padT);
+    g += `<rect x="${x.toFixed(1)}" y="${y(b.v).toFixed(1)}" width="${Math.max(1, bw * 0.7).toFixed(1)}" height="${Math.max(0, bh).toFixed(1)}" rx="2" fill="var(--accent)" opacity="${b.v ? .9 : .15}"><title>${esc(fmtDay(b.day))}: ${esc(fmtMoney(b.v, cur))} · ${b.n} order${b.n === 1 ? '' : 's'}</title></rect>`;
+    const every = Math.ceil(buckets.length / 7);
+    if (i % every === 0) g += `<text x="${(x + bw * 0.35).toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(new Date(b.day + 'T00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' }))}</text>`;
+  });
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = g;
+  document.getElementById('homeChartNote').textContent = `${fmtMoney(sales, cur)} · ${curOrders.length} orders`;
+
+  const att = [];
+  if (toFulfil) att.push([`🧾`, `<b>${toFulfil}</b> order${toFulfil === 1 ? '' : 's'} to fulfil`, "showTab('orders')"]);
+  if (drafts) att.push([`📝`, `<b>${drafts}</b> draft order${drafts === 1 ? '' : 's'} from WhatsApp chats`, "showTab('orders')"]);
+  if (outOfStock.length) att.push([`⛔`, `<b>${outOfStock.length}</b> product${outOfStock.length === 1 ? '' : 's'} out of stock`, "showTab('products')"]);
+  if (lowStock.length) att.push([`⚠️`, `<b>${lowStock.length}</b> product${lowStock.length === 1 ? '' : 's'} low on stock (≤ 5)`, "showTab('products')"]);
+  if (shopOrders) { const n = shopOrders.filter(o => shopOrderInView(o, 'unfulfilled')).length; if (n) att.push([`🛍️`, `<b>${n}</b> Shopify order${n === 1 ? '' : 's'} unfulfilled`, "showTab('shop-orders');setShopOrderView('unfulfilled')"]); }
+  if (shopStock) { const n = shopStock.filter(r => shopStockLevel(r) === 'out').length; if (n) att.push([`📦`, `<b>${n}</b> Shopify variant${n === 1 ? '' : 's'} out of stock`, "showTab('shop-stock');setShopStockView('out')"]); }
+  document.getElementById('homeAttention').innerHTML = att.length
+    ? att.map(([i, t, on]) => `<div class="mini-row" onclick="${on}"><span>${i}</span><span class="grow">${t}</span><span class="muted-s">→</span></div>`).join('')
+    : '<div class="mini-empty">✨ All caught up — nothing needs attention.</div>';
+
+  const recent = [...allOrders].sort((a, b) => orderTime(b) - orderTime(a)).slice(0, 6);
+  document.getElementById('homeRecent').innerHTML = recent.length
+    ? recent.map(o => `<div class="mini-row" onclick="showTab('orders')"><span class="o-name">#${esc(orderRef(o))}</span><span class="grow">${esc(o.customer_name || o.customer_phone || '—')}<span class="muted-s"> · ${esc(fmtDay(orderDay(o)) || '')}</span></span><span class="badge ${esc(String(o.status || '').toLowerCase())}">${esc(orderStatusLabel(o.status))}</span><span class="num" style="min-width:84px">${esc(orderMoney(o))}</span></div>`).join('')
+    : '<div class="mini-empty">No orders yet.</div>';
+
+  const top = {};
+  curOrders.forEach(o => orderItemLines(o.items).forEach(({ name, qty }) => {
+    if (name) top[name] = (top[name] || 0) + qty;
+  }));
+  const topList = Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const maxQ = Math.max(1, ...topList.map(t => t[1]));
+  document.getElementById('homeTop').innerHTML = topList.length
+    ? topList.map(([n, q]) => `<div class="mini-row" style="cursor:default"><span class="grow" title="${escAttr(n)}">${esc(n)}</span><span class="lvl"><span class="lvl-bar"><i style="width:${Math.round(q / maxQ * 100)}%;background:var(--accent)"></i></span><b>${q}</b></span></div>`).join('')
+    : `<div class="mini-empty">No items sold in the last ${days} days.</div>`;
+
+  if (shopOrders) {
+    document.getElementById('homeShopUnful').textContent = shopOrders.filter(o => shopOrderInView(o, 'unfulfilled')).length;
+    document.getElementById('homeShopUnpaid').textContent = shopOrders.filter(o => shopOrderInView(o, 'unpaid')).length;
+  }
+  if (shopStock) {
+    document.getElementById('homeShopLow').textContent = shopStock.filter(r => shopStockLevel(r) === 'low').length;
+    document.getElementById('homeShopOut').textContent = shopStock.filter(r => shopStockLevel(r) === 'out').length;
+  }
+}
+window.addEventListener('resize', () => { clearTimeout(window._homeResize); window._homeResize = setTimeout(renderHome, 150); });
+
+// ── SHOPIFY (shared) ──
+let shopStatus = null;
+let shopOrders = null;   // null = not loaded yet
+let shopStock = null;
+let shopOrderView = 'all';
+let shopStockView = 'all';
+let shopLoadedAt = { orders: 0, stock: 0 };
+const SHOP_LOW_KEY = 'lv_shopify_low_stock';
+function shopLowThreshold() { try { const v = localStorage.getItem(SHOP_LOW_KEY); return v === null || v === '' ? 5 : Math.max(0, Number(v) || 0); } catch (e) { return 5; } }
+function onShopLowThresholdChange(v) { try { localStorage.setItem(SHOP_LOW_KEY, String(Math.max(0, Number(v) || 0))); } catch (e) {} renderShopStock(); renderHome(); }
+function shopDomain() { return clientRecord?.shopify_shop_domain || ''; }
+function shopAdminUrl(path) { return `https://${shopDomain()}/admin${path || ''}`; }
+
+function initShopifyModules() {
+  const on = !!shopDomain();
+  document.body.classList.toggle('shopify-on', on);
+  if (!on) return;
+  document.getElementById('hdrStore').innerHTML = `<span class="live-dot" style="padding:0 6px;border:none;background:none">${esc(shopDomain())}</span>`;
+  document.getElementById('shopOrdersAdminLink').href = shopAdminUrl('/orders');
+  document.getElementById('shopStockAdminLink').href = shopAdminUrl('/products/inventory');
+  document.getElementById('shopOrdersShop').textContent = shopDomain();
+  document.getElementById('shopStockShop').textContent = shopDomain();
+  document.getElementById('shopLowThreshold').value = shopLowThreshold();
+  if (!isDesktop()) return;
+  loadShopStatus();
+  loadShopOrders();
+  loadShopStock();
+  // Webhooks update the tables server-side; refresh whichever Shopify view is open once a minute.
+  setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    const active = document.querySelector('.tab.active')?.dataset.tab;
+    if (active === 'shop-orders' || active === 'home') loadShopOrders();
+    if (active === 'shop-stock' || active === 'home') loadShopStock();
+  }, 60000);
+}
+
+async function loadShopStatus() {
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/status?client_id=${encodeURIComponent(clientId)}`);
+    shopStatus = await r.json();
+  } catch (e) { shopStatus = null; }
+  renderShopBanners();
+}
+function renderShopBanners() {
+  const integrationsUrl = `https://app.leadvyne.com/dashboard.html?client=${encodeURIComponent(clientId)}&integrations`;
+  const s = shopStatus;
+  let ordersB = '', stockB = '';
+  if (s && s.connected && !s.scopes) {
+    ordersB = stockB = `<div class="banner"><span>⚠️</span><div><b>Shopify isn't responding to this connection.</b>The app may have been uninstalled or its access revoked. <a href="${escAttr(integrationsUrl)}" target="_top">Reconnect in Settings → Integrations</a>.</div></div>`;
+  } else if (s && s.scopes && !(s.scopes.products && s.scopes.inventory)) {
+    stockB = `<div class="banner"><span>🔑</span><div><b>Stock sync needs one more permission.</b>Your store was connected before stock sync existed, so Leadvyne can't read products and inventory yet. In <a href="${escAttr(integrationsUrl)}" target="_top">Settings → Integrations</a> click Disconnect, then Connect Shopify again and approve — orders keep syncing meanwhile.</div></div>`;
+  }
+  document.getElementById('shopOrdersBanner').innerHTML = ordersB;
+  document.getElementById('shopStockBanner').innerHTML = stockB;
+  ['shopOrdersLive', 'shopStockLive', 'homeShopifyLive'].forEach(id => {
+    const el = document.getElementById(id);
+    const off = !!(s && s.connected && !s.scopes) || (id === 'shopStockLive' && !!stockB);
+    el.classList.toggle('off', off);
+    el.textContent = off ? 'Sync paused' : 'Live sync';
+  });
+}
+
+async function resyncShopify(btn) {
+  const btns = [document.getElementById('shopResyncBtn1'), document.getElementById('shopResyncBtn2')];
+  btns.forEach(b => { b.disabled = true; b.textContent = '↻ Syncing…'; });
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/resync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    await Promise.all([loadShopOrders(), loadShopStock(), loadShopStatus()]);
+    btns.forEach(b => { b.textContent = `✓ ${d.orders} orders · ${d.variants} variants`; });
+  } catch (e) {
+    btns.forEach(b => { b.textContent = '↻ Sync now'; });
+    alert('Shopify sync failed: ' + e.message);
+  } finally {
+    setTimeout(() => btns.forEach(b => { b.disabled = false; b.textContent = '↻ Sync now'; }), 4000);
+  }
+}
+
+// ── SHOPIFY ORDERS ──
+const SO_VIEWS = [['all', 'All'], ['unfulfilled', 'Unfulfilled'], ['unpaid', 'Payment pending'], ['fulfilled', 'Fulfilled'], ['cancelled', 'Cancelled']];
+async function loadShopOrders() {
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/orders?client_id=${encodeURIComponent(clientId)}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    shopOrders = d.list || [];
+    shopLoadedAt.orders = Date.now();
+  } catch (e) {
+    if (shopOrders === null) { document.getElementById('shopOrdersTbody').innerHTML = `<tr class="loading-row nohover"><td colspan="8">Couldn't load Shopify orders: ${esc(e.message)}</td></tr>`; return; }
+  }
+  renderShopOrders();
+  renderHome();
+}
+function soParse(json, fallback) { try { const v = JSON.parse(json || ''); return v ?? fallback; } catch (e) { return fallback; } }
+function shopPay(o) {
+  const f = String(o.financial_status || '');
+  return ({ paid: ['Paid', 'ok'], pending: ['Payment pending', 'warn'], authorized: ['Authorized', 'warn'], partially_paid: ['Partially paid', 'warn'],
+    partially_refunded: ['Partially refunded', 'mute'], refunded: ['Refunded', 'mute'], voided: ['Voided', 'mute'] })[f] || [f ? f.replace(/_/g, ' ') : '—', 'mute'];
+}
+function shopFul(o) {
+  if (o.cancelled_at) return ['Cancelled', 'bad'];
+  const fs = String(o.fulfillment_status || 'unfulfilled');
+  if (fs === 'fulfilled') {
+    const fl = soParse(o.fulfillments_json, []);
+    return fl.length && fl.every(f => f.shipment_status === 'delivered') ? ['Delivered', 'ok'] : ['Fulfilled', 'ok'];
+  }
+  return ({ partial: ['Partially fulfilled', 'info'], restocked: ['Restocked', 'mute'] })[fs] || ['Unfulfilled', 'warn'];
+}
+function shopOrderInView(o, v) {
+  const cancelled = !!o.cancelled_at, fs = String(o.fulfillment_status || 'unfulfilled'), fin = String(o.financial_status || '');
+  if (v === 'unfulfilled') return !cancelled && !['fulfilled', 'restocked'].includes(fs);
+  if (v === 'unpaid') return !cancelled && ['pending', 'authorized', 'partially_paid'].includes(fin);
+  if (v === 'fulfilled') return !cancelled && fs === 'fulfilled';
+  if (v === 'cancelled') return cancelled;
+  return true;
+}
+function setShopOrderView(v) { shopOrderView = v; renderShopOrders(); }
+function shopOrdersInRange() {
+  const days = Number(document.getElementById('shopOrderRange').value) || 0;
+  const from = days ? Date.now() - days * DAY_MS : 0;
+  return (shopOrders || []).filter(o => (Date.parse(o.created_at) || 0) >= from);
+}
+function shopOrderSearchText(o) {
+  const items = soParse(o.line_items_json, []).map(li => `${li.title} ${li.variant_title} ${li.sku}`).join(' ');
+  return `${o.name} ${o.customer_name} ${o.customer_email} ${o.customer_phone} ${o.tags} ${items}`.toLowerCase();
+}
+function renderShopOrders() {
+  if (shopOrders === null) return;
+  const ranged = shopOrdersInRange();
+  const cur = ranged.find(o => o.currency)?.currency || shopOrders.find(o => o.currency)?.currency || 'INR';
+  const live = ranged.filter(o => !o.cancelled_at);
+  const sales = live.reduce((s, o) => s + (Number(o.total) || 0), 0);
+  const unful = ranged.filter(o => shopOrderInView(o, 'unfulfilled')).length;
+  const unpaid = ranged.filter(o => shopOrderInView(o, 'unpaid')).length;
+  const custKey = o => (o.customer_email || o.customer_phone || o.customer_name || '').toLowerCase();
+  const perCust = {}; shopOrders.forEach(o => { const k = custKey(o); if (k) perCust[k] = (perCust[k] || 0) + 1; });
+  const rangedCust = [...new Set(live.map(custKey).filter(Boolean))];
+  const repeat = rangedCust.filter(k => perCust[k] > 1).length;
+  document.getElementById('shopOrderKpis').innerHTML = [
+    kpiHtml({ label: 'Orders', value: ranged.length.toLocaleString(), foot: `${ranged.length - live.length} cancelled` }),
+    kpiHtml({ label: 'Gross sales', value: fmtCompact(sales, cur), foot: 'Excludes cancelled orders' }),
+    kpiHtml({ label: 'Average order value', value: fmtMoney(live.length ? Math.round(sales / live.length) : 0, cur) }),
+    kpiHtml({ label: 'Unfulfilled', value: unful, tone: unful ? 'warn' : '', onclick: "setShopOrderView('unfulfilled')", foot: 'Ready to pack & ship' }),
+    kpiHtml({ label: 'Payment pending', value: unpaid, tone: unpaid ? 'warn' : '', onclick: "setShopOrderView('unpaid')", foot: 'COD / awaiting capture' }),
+    kpiHtml({ label: 'Repeat customers', value: rangedCust.length ? Math.round(repeat / rangedCust.length * 100) + '%' : '—', foot: `${repeat} of ${rangedCust.length} customers` }),
+  ].join('');
+  document.getElementById('shopOrderViews').innerHTML = SO_VIEWS.map(([k, l]) =>
+    `<button class="view${shopOrderView === k ? ' active' : ''}" onclick="setShopOrderView('${k}')">${l}<span class="vc">${ranged.filter(o => shopOrderInView(o, k)).length}</span></button>`).join('');
+  const navC = document.getElementById('navShopOrdersCount');
+  const allUnful = shopOrders.filter(o => shopOrderInView(o, 'unfulfilled')).length;
+  navC.textContent = allUnful; navC.style.display = allUnful ? '' : 'none';
+  navC.title = `${allUnful} unfulfilled`;
+
+  const q = (document.getElementById('shopOrderSearch').value || '').trim().toLowerCase();
+  const list = ranged.filter(o => shopOrderInView(o, shopOrderView) && (!q || shopOrderSearchText(o).includes(q)));
+  const tbody = document.getElementById('shopOrdersTbody');
+  if (!shopOrders.length) {
+    tbody.innerHTML = `<tr class="nohover"><td colspan="8"><div class="empty-state"><div class="empty-icon">🛍️</div>No Shopify orders synced yet.<br>New orders appear here the moment they're placed. To bring in the last 90 days now, <button class="link-btn" style="margin-top:10px" onclick="resyncShopify(this)">↻ Sync now</button></div></td></tr>`;
+  } else if (!list.length) {
+    tbody.innerHTML = `<tr class="nohover"><td colspan="8"><div class="empty-state">No orders match these filters.</div></td></tr>`;
+  } else {
+    tbody.innerHTML = list.slice(0, 500).map(o => {
+      const [pl, pt] = shopPay(o), [fl, ft] = shopFul(o);
+      return `<tr onclick="openShopOrder('${escAttr(o.shopify_order_id)}')">
+        <td><span class="o-name">${esc(o.name)}</span>${o.tags ? `<div class="muted-s">${esc(o.tags)}</div>` : ''}</td>
+        <td title="${escAttr(o.created_at)}">${esc(fmtDateTime(o.created_at))}</td>
+        <td>${esc(o.customer_name || '—')}<div class="muted-s">${esc(o.customer_phone || o.customer_email || '')}</div></td>
+        <td class="num">${esc(fmtMoney(o.total, o.currency))}</td>
+        <td><span class="pill ${pt}">${esc(pl)}</span></td>
+        <td><span class="pill ${ft}">${esc(fl)}</span></td>
+        <td class="num">${Number(o.items_count) || 0}</td>
+        <td class="muted-s">${esc(o.source_name === 'web' ? 'Online store' : (o.source_name || '—'))}</td></tr>`;
+    }).join('');
+  }
+  document.getElementById('shopOrdersFoot').textContent = `${list.length} of ${ranged.length} order${ranged.length === 1 ? '' : 's'}${list.length > 500 ? ' (first 500 shown)' : ''}`;
+  document.getElementById('shopOrdersUpdated').textContent = shopLoadedAt.orders ? `· refreshed ${new Date(shopLoadedAt.orders).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : '';
+}
+function openShopOrder(id) {
+  const o = (shopOrders || []).find(x => String(x.shopify_order_id) === String(id));
+  if (!o) return;
+  const [pl, pt] = shopPay(o), [fl, ft] = shopFul(o);
+  const items = soParse(o.line_items_json, []);
+  const addr = soParse(o.shipping_address, null);
+  const fuls = soParse(o.fulfillments_json, []);
+  const m = v => esc(fmtMoney(v, o.currency));
+  document.getElementById('sdTitle').textContent = o.name;
+  document.getElementById('sdSub').innerHTML = `${esc(fmtDateTime(o.created_at))} · <span class="pill ${pt}">${esc(pl)}</span> <span class="pill ${ft}">${esc(fl)}</span>`;
+  const phoneDigits = String(o.customer_phone || '').replace(/\D/g, '');
+  document.getElementById('sdBody').innerHTML = `
+    <div class="dsec"><h4>Items <span class="muted-s">${Number(o.items_count) || 0} units</span></h4>
+      ${items.length ? items.map(li => `<div class="li"><div class="grow"><b>${esc(li.title)}</b>${li.variant_title ? `<div class="muted-s">${esc(li.variant_title)}</div>` : ''}${li.sku ? `<div class="muted-s">SKU ${esc(li.sku)}</div>` : ''}</div><span class="muted-s">${m(li.price)} × ${Number(li.quantity) || 0}</span><b class="num" style="min-width:80px">${m((Number(li.price) || 0) * (Number(li.quantity) || 0))}</b></div>`).join('') : '<div class="muted-s">No line items.</div>'}
+    </div>
+    <div class="dsec"><h4>Payment <span class="pill ${pt}">${esc(pl)}</span></h4>
+      <div class="tot">
+        <span>Subtotal</span><span class="num">${m(o.subtotal)}</span>
+        ${Number(o.total_discounts) ? `<span>Discounts</span><span class="num">− ${m(o.total_discounts)}</span>` : ''}
+        <span>Shipping</span><span class="num">${m(o.shipping_total)}</span>
+        <span>Tax</span><span class="num">${m(o.total_tax)}</span>
+        <span class="t">Total</span><span class="t num">${m(o.total)}</span>
+      </div>
+      ${o.gateway ? `<div class="muted-s" style="margin-top:8px">Paid via ${esc(o.gateway)}</div>` : ''}
+    </div>
+    <div class="dsec"><h4>Fulfillment <span class="pill ${ft}">${esc(fl)}</span></h4>
+      ${fuls.length ? fuls.map(f => `<div class="li"><div class="grow">${esc(f.company || 'Shipment')}${f.number ? ` · <b>${esc(f.number)}</b>` : ''}<div class="muted-s">${esc((f.shipment_status || f.status || '').replace(/_/g, ' '))}${f.updated_at ? ' · ' + esc(relTime(f.updated_at)) : ''}</div></div>${f.url ? `<a class="link-btn" href="${escAttr(f.url)}" target="_blank" rel="noopener">Track ↗</a>` : ''}</div>`).join('') : `<div class="muted-s">${o.cancelled_at ? 'Order cancelled' + (o.cancel_reason ? ' — ' + esc(o.cancel_reason) : '') + '.' : 'Not shipped yet.'}</div>`}
+    </div>
+    <div class="dsec"><h4>Customer</h4>
+      <div class="kv"><b>${esc(o.customer_name || '—')}</b><br>
+        ${o.customer_email ? `<a href="mailto:${escAttr(o.customer_email)}">${esc(o.customer_email)}</a><br>` : ''}
+        ${o.customer_phone ? `${esc(o.customer_phone)}${phoneDigits ? ` · <a href="https://wa.me/${phoneDigits}" target="_blank" rel="noopener">WhatsApp ↗</a>` : ''}` : ''}</div>
+    </div>
+    ${addr ? `<div class="dsec"><h4>Shipping address</h4><div class="kv">${[addr.name, addr.address1, addr.address2, [addr.city, addr.province, addr.zip].filter(Boolean).join(' '), addr.country, addr.phone].filter(Boolean).map(esc).join('<br>')}</div></div>` : ''}
+    ${o.note || o.tags ? `<div class="dsec"><h4>Notes</h4><div class="kv">${o.note ? esc(o.note) : ''}${o.tags ? `<div class="muted-s" style="margin-top:4px">Tags: ${esc(o.tags)}</div>` : ''}</div></div>` : ''}
+    <div class="ph-actions">
+      <a class="save-btn" style="text-decoration:none" href="${escAttr(shopAdminUrl('/orders/' + o.shopify_order_id))}" target="_blank" rel="noopener">Open in Shopify ↗</a>
+      ${o.order_status_url ? `<a class="link-btn" href="${escAttr(o.order_status_url)}" target="_blank" rel="noopener">Customer status page ↗</a>` : ''}
+    </div>`;
+  document.getElementById('shopDrawerBg').classList.add('open');
+  const dr = document.getElementById('shopDrawer'); dr.classList.add('open'); dr.setAttribute('aria-hidden', 'false');
+}
+function closeShopOrder() {
+  document.getElementById('shopDrawerBg').classList.remove('open');
+  const dr = document.getElementById('shopDrawer'); dr.classList.remove('open'); dr.setAttribute('aria-hidden', 'true');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeShopOrder(); });
+function exportShopOrdersCsv() {
+  const list = shopOrdersInRange().filter(o => shopOrderInView(o, shopOrderView));
+  downloadCsv(`shopify-orders-${localDay(new Date())}.csv`,
+    ['Order', 'Date', 'Customer', 'Email', 'Phone', 'Payment', 'Fulfillment', 'Items', 'Total', 'Currency', 'Tags'],
+    list.map(o => [o.name, o.created_at, o.customer_name, o.customer_email, o.customer_phone, shopPay(o)[0], shopFul(o)[0],
+      soParse(o.line_items_json, []).map(li => `${li.quantity}x ${li.title}${li.variant_title ? ' (' + li.variant_title + ')' : ''}`).join('; '), o.total, o.currency, o.tags]));
+}
+
+// ── SHOPIFY STOCK ──
+const SS_VIEWS = [['all', 'All'], ['low', 'Low stock'], ['out', 'Out of stock'], ['instock', 'In stock'], ['untracked', 'Not tracked']];
+async function loadShopStock() {
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/shopify/stock?client_id=${encodeURIComponent(clientId)}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    shopStock = d.list || [];
+    shopLoadedAt.stock = Date.now();
+  } catch (e) {
+    if (shopStock === null) { document.getElementById('shopStockTbody').innerHTML = `<tr class="loading-row nohover"><td colspan="9">Couldn't load Shopify stock: ${esc(e.message)}</td></tr>`; return; }
+  }
+  const fill = (id, key, label) => {
+    const sel = document.getElementById(id), prev = sel.value;
+    const vals = [...new Set(shopStock.map(r => r[key]).filter(Boolean))].sort();
+    sel.innerHTML = `<option value="">${label}</option>` + vals.map(v => `<option value="${escAttr(v)}">${esc(v)}</option>`).join('');
+    sel.value = vals.includes(prev) ? prev : '';
+  };
+  fill('shopStockType', 'product_type', 'All types');
+  fill('shopStockVendor', 'vendor', 'All vendors');
+  renderShopStock();
+  renderHome();
+}
+function shopStockLevel(r) {
+  if (r.tracked !== 'Yes') return 'untracked';
+  const a = Number(r.available) || 0;
+  if (a <= 0) return 'out';
+  return a <= shopLowThreshold() ? 'low' : 'ok';
+}
+function shopStockInView(r, v) {
+  const l = shopStockLevel(r);
+  if (v === 'low') return l === 'low';
+  if (v === 'out') return l === 'out';
+  if (v === 'instock') return l === 'ok' || l === 'low';
+  if (v === 'untracked') return l === 'untracked';
+  return true;
+}
+function setShopStockView(v) { shopStockView = v; renderShopStock(); }
+function renderShopStock() {
+  if (shopStock === null) return;
+  const type = document.getElementById('shopStockType').value, vendor = document.getElementById('shopStockVendor').value, status = document.getElementById('shopStockStatus').value;
+  const base = shopStock.filter(r => (!type || r.product_type === type) && (!vendor || r.vendor === vendor) && (!status || r.product_status === status));
+  const cur = clientRecord?.currency || (allOrders.find(o => o.currency)?.currency) || shopOrders?.find(o => o.currency)?.currency || 'INR';
+  const tracked = base.filter(r => r.tracked === 'Yes');
+  const units = tracked.reduce((s, r) => s + Math.max(0, Number(r.available) || 0), 0);
+  const value = tracked.reduce((s, r) => s + Math.max(0, Number(r.available) || 0) * (Number(r.price) || 0), 0);
+  const low = base.filter(r => shopStockLevel(r) === 'low').length, out = base.filter(r => shopStockLevel(r) === 'out').length;
+  document.getElementById('shopStockKpis').innerHTML = [
+    kpiHtml({ label: 'Products', value: new Set(base.map(r => r.shopify_product_id)).size, foot: `${base.length} variants` }),
+    kpiHtml({ label: 'Units in stock', value: units.toLocaleString(), foot: `${tracked.length} tracked variants` }),
+    kpiHtml({ label: 'Stock value', value: fmtCompact(value, cur), foot: 'At selling price' }),
+    kpiHtml({ label: 'Low stock', value: low, tone: low ? 'warn' : '', onclick: "setShopStockView('low')", foot: `≤ ${shopLowThreshold()} units` }),
+    kpiHtml({ label: 'Out of stock', value: out, tone: out ? 'bad' : '', onclick: "setShopStockView('out')", foot: 'Tracked, 0 available' }),
+  ].join('');
+  document.getElementById('shopStockViews').innerHTML = SS_VIEWS.map(([k, l]) =>
+    `<button class="view${shopStockView === k ? ' active' : ''}" onclick="setShopStockView('${k}')">${l}<span class="vc">${base.filter(r => shopStockInView(r, k)).length}</span></button>`).join('');
+  const navC = document.getElementById('navShopStockCount');
+  const alerts = shopStock.filter(r => ['low', 'out'].includes(shopStockLevel(r))).length;
+  navC.textContent = alerts; navC.style.display = alerts ? '' : 'none';
+  navC.title = `${alerts} low or out of stock`;
+
+  const q = (document.getElementById('shopStockSearch').value || '').trim().toLowerCase();
+  const sort = document.getElementById('shopStockSort').value;
+  const list = base.filter(r => shopStockInView(r, shopStockView) && (!q || `${r.product_title} ${r.variant_title} ${r.sku} ${r.barcode} ${r.vendor}`.toLowerCase().includes(q)));
+  const av = r => Number(r.available) || 0;
+  const cmp = {
+    name: (a, b) => String(a.product_title).localeCompare(String(b.product_title)) || String(a.variant_title).localeCompare(String(b.variant_title)),
+    'stock-asc': (a, b) => av(a) - av(b), 'stock-desc': (a, b) => av(b) - av(a),
+    value: (a, b) => Math.max(0, av(b)) * (Number(b.price) || 0) - Math.max(0, av(a)) * (Number(a.price) || 0),
+    updated: (a, b) => String(b.updated_at).localeCompare(String(a.updated_at)),
+  }[sort];
+  list.sort(cmp);
+  const tbody = document.getElementById('shopStockTbody');
+  const thr = Math.max(1, shopLowThreshold());
+  if (!shopStock.length) {
+    tbody.innerHTML = `<tr class="nohover"><td colspan="9"><div class="empty-state"><div class="empty-icon">📦</div>No Shopify products synced yet.<br><button class="link-btn" style="margin-top:10px" onclick="resyncShopify(this)">↻ Sync catalog & stock now</button></div></td></tr>`;
+  } else if (!list.length) {
+    tbody.innerHTML = `<tr class="nohover"><td colspan="9"><div class="empty-state">No variants match these filters.</div></td></tr>`;
+  } else {
+    let prevPid = '';
+    tbody.innerHTML = list.slice(0, 1000).map(r => {
+      const lvl = shopStockLevel(r), a = av(r);
+      const same = sort === 'name' && prevPid === r.shopify_product_id; prevPid = r.shopify_product_id;
+      const st = String(r.product_status || 'active');
+      const levels = soParse(r.levels_json, {});
+      const locN = Object.keys(levels).length;
+      return `<tr onclick="window.open('${escAttr(shopAdminUrl(`/products/${r.shopify_product_id}/variants/${r.shopify_variant_id}`))}','_blank','noopener')" title="Open in Shopify">
+        <td>${r.image_url ? `<img class="sthumb" src="${escAttr(r.image_url)}" alt="" loading="lazy">` : '<div class="sthumb"></div>'}</td>
+        <td>${same ? `<span class="muted-s">↳</span> ` : `<b>${esc(r.product_title)}</b>`}${r.variant_title ? `${same ? '' : '<br>'}<span class="${same ? '' : 'muted-s'}">${esc(r.variant_title)}</span>` : ''}${!same && r.vendor ? `<div class="muted-s">${esc(r.vendor)}</div>` : ''}</td>
+        <td class="muted-s">${esc(r.sku || '—')}</td>
+        <td class="muted-s">${esc(r.product_type || '—')}</td>
+        <td><span class="pill ${st === 'active' ? 'ok' : st === 'draft' ? 'info' : 'mute'}">${esc(st.charAt(0).toUpperCase() + st.slice(1))}</span></td>
+        <td class="num">${esc(fmtMoney(r.price, cur))}${Number(r.compare_at_price) > Number(r.price) ? `<div class="muted-s" style="text-decoration:line-through">${esc(fmtMoney(r.compare_at_price, cur))}</div>` : ''}</td>
+        <td>${lvl === 'untracked' ? '<span class="muted-s" style="display:block;text-align:right">Not tracked</span>' : `<div class="lvl ${lvl === 'ok' ? '' : lvl}" title="${locN > 1 ? `${locN} locations` : ''}"><span class="lvl-bar"><i style="width:${Math.min(100, Math.max(a > 0 ? 6 : 0, a / (thr * 4) * 100))}%"></i></span><b>${a}</b></div>${locN > 1 ? `<div class="muted-s" style="text-align:right">${locN} locations</div>` : ''}`}</td>
+        <td class="num">${r.tracked === 'Yes' ? esc(fmtMoney(Math.max(0, a) * (Number(r.price) || 0), cur)) : '—'}</td>
+        <td class="muted-s" title="${escAttr(r.updated_at)}">${esc(relTime(r.updated_at))}</td></tr>`;
+    }).join('');
+  }
+  document.getElementById('shopStockFoot').textContent = `${list.length} of ${base.length} variant${base.length === 1 ? '' : 's'}${list.length > 1000 ? ' (first 1000 shown)' : ''}`;
+  document.getElementById('shopStockUpdated').textContent = shopLoadedAt.stock ? `· refreshed ${new Date(shopLoadedAt.stock).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : '';
+}
+function exportShopStockCsv() {
+  downloadCsv(`shopify-stock-${localDay(new Date())}.csv`,
+    ['Product', 'Variant', 'SKU', 'Barcode', 'Type', 'Vendor', 'Status', 'Price', 'Available', 'Tracked', 'Updated'],
+    (shopStock || []).filter(r => shopStockInView(r, shopStockView)).map(r => [r.product_title, r.variant_title, r.sku, r.barcode, r.product_type, r.vendor, r.product_status, r.price, r.available, r.tracked, r.updated_at]));
+}
+
+// Desktop lands on Home; phones keep Products as their first tab.
+if (isDesktop()) showTab('home');
+
 init();
 </script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
