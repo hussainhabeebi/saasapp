@@ -201,7 +201,9 @@ export function shopifyEcomProductFields(shop, p){
   const images=(p?.images||[]).map(i=>i?.src).filter(Boolean);
   if(!images.length && p?.image?.src) images.push(p.image.src);
   const prices=variants.map(v=>num(v.price)).filter(n=>n>0);
-  const active=(p?.status||'active')==='active';
+  // Unlisted products are still sold — hidden from the storefront's search and collections, but
+  // their product page opens from a direct link, which is exactly what the bot shares.
+  const active=['active','unlisted'].includes(p?.status||'active');
   const f={
     name:p?.title||'', sku:(variants.find(v=>v.sku)?.sku)||'',
     price:prices.length?Math.min(...prices):0,
@@ -427,6 +429,23 @@ export async function shopifySyncOnWebhook(env, deps, c, topic, data){
       }
     }
   }catch(e){ await deps.reportOpsError(env, `shopifySyncOnWebhook ${topic}`, e, {clientId:c.Id}); }
+}
+
+// ── Reads for the guided chat flow (shopify-flow.js / worker.js engineShopifyFlowTurn) ─────────
+// One product's variants (sizes with stock), by its Shopify handle.
+export async function shopifyFlowVariants(env, deps, c, handle){
+  if(!handle||!c?.shopify_shop_domain) return [];
+  const tableId=await inventoryTable(env, deps);
+  return listAll(env, deps, tableId, `${scopeWhere(c.Id, c.shopify_shop_domain)}~and(handle,eq,${handle})`,
+    'shopify_variant_id,variant_title,available,tracked,price,product_status', 250);
+}
+// This store's orders for one WhatsApp number (last 10 digits), or one order by its name (#1001).
+// The caller still checks the phone matches before showing anything (shopFlowCustomerOrders).
+export async function shopifyFlowOrders(env, deps, c, {phoneKey='', name=''}={}){
+  if(!c?.shopify_shop_domain||(!phoneKey&&!name)) return [];
+  const tableId=await ordersTable(env, deps);
+  const filter=name?`~and(name,eq,${name})`:`~and(customer_phone,like,%${phoneKey})`;
+  return listAll(env, deps, tableId, scopeWhere(c.Id, c.shopify_shop_domain)+filter, '', 100);
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────────────────────

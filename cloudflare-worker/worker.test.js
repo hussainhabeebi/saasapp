@@ -86,6 +86,8 @@ import {
   eduCoursePdfUrlError,
   driveFileId,
   sendDriveMediaToChatwoot,
+  shopifyCdnImageUrl,
+  engineResolveDirectImageUrl,
   ltNormalizeOffer,
   ltEncryptCredentials,
   ltDecryptCredentials,
@@ -691,6 +693,33 @@ describe('Education Google Drive brochure delivery', () => {
     assert.match(calls[0].url,/export=download/);
     assert.equal(calls[1].options.body.get('attachments[]').name,'Digital-Marketing-brochure.pdf');
     assert.equal(calls[1].options.body.get('attachments[]').type,'application/pdf');
+  });
+
+  test('Shopify product photos are requested as a WhatsApp-safe JPEG', () => {
+    assert.equal(shopifyCdnImageUrl('https://cdn.shopify.com/s/files/1/0001/files/trunk.webp?v=17'), 'https://cdn.shopify.com/s/files/1/0001/files/trunk.webp?v=17&width=1200&format=jpg');
+    assert.equal(shopifyCdnImageUrl('https://yuva.in/cdn/shop/files/trunk.png?v=1&width=4000'), 'https://yuva.in/cdn/shop/files/trunk.png?v=1&width=1200&format=jpg');
+    assert.equal(shopifyCdnImageUrl('https://example.com/trunk.jpg'), '');
+    assert.equal(shopifyCdnImageUrl('http://cdn.shopify.com/a.jpg'), '');
+    assert.equal(engineResolveDirectImageUrl('https://cdn.shopify.com/s/files/a.jpg'), 'https://cdn.shopify.com/s/files/a.jpg?width=1200&format=jpg');
+    assert.equal(engineResolveDirectImageUrl('https://example.com/trunk.jpg'), 'https://example.com/trunk.jpg');
+  });
+
+  test('sends a Shopify product photo (extra angles) as an image attachment', async (t) => {
+    const calls=[];
+    t.mock.method(global,'fetch',async (url,options)=>{
+      calls.push({url:String(url),options});
+      if(String(url).startsWith('https://cdn.shopify.com/')) return new Response(new Blob(['jpg'],{type:'image/jpeg'}),{status:200,headers:{'Content-Type':'image/jpeg'}});
+      return new Response('{}',{status:200});
+    });
+    const c={chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'};
+    assert.equal(await sendDriveMediaToChatwoot(c,'99','https://cdn.shopify.com/s/files/1/trunk-2.webp?v=3',''), true);
+    assert.equal(calls[0].url,'https://cdn.shopify.com/s/files/1/trunk-2.webp?v=3&width=1200&format=jpg');
+    assert.equal(calls[1].options.body.get('attachments[]').name,'photo.jpg');
+    // Not an image (e.g. an error page) → nothing is sent.
+    t.mock.method(global,'fetch',async ()=>new Response('<html>',{status:200,headers:{'Content-Type':'text/html'}}));
+    assert.equal(await sendDriveMediaToChatwoot(c,'99','https://cdn.shopify.com/s/files/1/gone.jpg',''), false);
+    // Anything else that isn't Drive is still refused, as before.
+    assert.equal(await sendDriveMediaToChatwoot(c,'99','https://example.com/a.jpg',''), false);
   });
 
   test('exports a shared Google Doc as PDF before attaching it', async (t) => {

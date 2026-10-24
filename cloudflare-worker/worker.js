@@ -3,7 +3,8 @@ import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
-import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan} from './shopify-sync.js';
+import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan,shopifyFlowVariants,shopifyFlowOrders} from './shopify-sync.js';
+import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel} from './meta-ads-report.js';
@@ -12650,7 +12651,7 @@ async function handleEcomOrderSession(request, env){
 const ECOM_PRODUCT_Q_RE=/[?？]|^(?:what|how|when|where|why|which|who|is|are|can|could|do|does|did|will|would|tell|explain|describe)\b|\b(?:price|rate|cost|how much|size|sizes|age|fabric|material|cotton|colou?rs?|include[sd]?|come with|available|stock|delivery|cod|washable|quality)\b|\b(?:ethra|entha|enthu|enthanu|ano|aano|aano|alle|allo|alliyo|allayo|undo|undoo|undavo|kittumo|kittuo|pattumo|aakumo|ille|illa|kya|kitna|kitne|hai kya|milega)\b|(?:എത്ര|എന്ത്|ഉണ്ടോ|ആണോ|അല്ലേ|അല്ലിയോ|കിട്ടുമോ|പറ്റുമോ)|[ോ]\s*[.!]*$/iu;
 export function ecomIsProductQuestion(text){
   const t=String(text||'').trim();
-  if(!t || /^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(t)) return false;
+  if(!t || /^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_|SHOP_)/i.test(t)) return false;
   return ECOM_PRODUCT_Q_RE.test(t);
 }
 // Answers a question about one matched product from its own verified row, before the product card
@@ -12750,7 +12751,7 @@ function babyNum(raw, half){
 // Baby's age in months from one customer message, or null. A range ("3-6 months") gives its middle.
 export function babyAgeMonthsFromText(text){
   const t=String(text||'').toLowerCase().replace(/\s+/g,' ').trim();
-  if(!t || /^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(String(text).trim())) return null;
+  if(!t || /^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_|SHOP_)/i.test(String(text).trim())) return null;
   const units=[[BABY_UNIT_YEAR,12],[BABY_UNIT_MONTH,1],[BABY_UNIT_WEEK,1/4.345],[BABY_UNIT_DAY,1/30.4]];
   const range=new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(?:-|–|to)\\s*(\\d+(?:\\.\\d+)?)\\s*(${BABY_UNIT_YEAR}|${BABY_UNIT_MONTH})(?![\\p{L}])`,'iu').exec(t);
   if(range && !BABY_NOT_AGE_RE.test(t)){
@@ -12864,7 +12865,7 @@ const BABY_GIRL_RE=/\b(?:girls?|baby\s*girl|daughters?|mol|molu|molde|molkk?u|pe
 const BABY_BOY_RE=/\b(?:boys?|baby\s*boy|sons?|mon|monu|monte|monu?kk?u|aann?kutt\w*|ladka|beta|bacha)\b|ആൺ|മോൻ/i;
 export function babyGenderFromText(text){
   const t=String(text||'');
-  if(/^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(t.trim())) return null;
+  if(/^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_|SHOP_)/i.test(t.trim())) return null;
   if(/\btwins?\b/i.test(t)) return null;
   const girl=BABY_GIRL_RE.test(t), boy=BABY_BOY_RE.test(t);
   return girl&&!boy?'Girl':boy&&!girl?'Boy':null;
@@ -12910,7 +12911,7 @@ const BABY_PRODUCT_TYPES=[
 ];
 export function babyProductTypesFromText(text){
   const t=String(text||'');
-  if(/^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(t.trim())) return [];
+  if(/^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_|SHOP_)/i.test(t.trim())) return [];
   return BABY_PRODUCT_TYPES.filter(([,re])=>re.test(t)).map(([label])=>label);
 }
 const BABY_NAME_STOP=new Set(['is','the','a','my','to','be','not','yet','print','printed','same','please','pls','and','for','baby','name','peru']);
@@ -13478,6 +13479,237 @@ async function engineSendShopifyTier2(env, c, clientId, convId, product, opts={}
       if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
     }
   }catch(e){ await reportOpsError(env, 'engineSendShopifyTier2', e, {clientId, convId}); }
+}
+
+// ── Shopify-style guided shopping chat (Ecom communication style "shopify") ──────────────────────
+// See shopify-flow.js for the flow and its pure helpers. engineShopifyFlowTurn handles a turn that
+// is a flow step (a SHOP_* button tap, a greeting, a category/product/size named exactly, a
+// tracking ask); anything else falls through to the normal AI answer, after which
+// engineShopifyFlowResume sends the prompt for the step the customer was on as a second message.
+// Stage + OrderCollect seed carry the position: shop_menu / shop_category {category} /
+// shop_product {category, productId} / shop_track.
+export function engineShopifyFlowOn(c, botConfig){
+  return c?.industry==='ecommerce' && botConfig?.ecom_communication_style==='shopify' && botConfig?.shopify_flow_enabled!==false;
+}
+
+async function engineShopifyFlowSendPhoto(env, c, convId, url, caption){
+  if(!url||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return false;
+  const blob=await ecomGalleryImageBlob(env, url);
+  if(!blob) return false;
+  const fd=new FormData();
+  fd.append('content', caption||''); fd.append('message_type','outgoing'); fd.append('private','false');
+  fd.append('attachments[]', blob, 'photo.jpg');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd}).catch(()=>null);
+  return !!r?.ok;
+}
+
+// Size options for a product: Shopify variants (per-size stock) when it's synced from Shopify,
+// else its Size field.
+async function engineShopifyFlowOptions(env, c, product){
+  const handle=shopFlowProductHandle(product);
+  const rows=handle&&c.shopify_shop_domain?await shopifyFlowVariants(env, SHOPIFY_SYNC_DEPS, c, handle).catch(()=>[]):[];
+  return shopFlowSizeOptions(product, rows);
+}
+
+// Sends one flow step. `step` = {kind:'menu'|'category'|'product'|'sizes'|'buy'|'track'|'track_ask'|'track_number', …}.
+// Returns {reply, quickReplies, next, seed, media?, sku?} for the turn's bookkeeping.
+async function engineShopifyFlowSend(env, c, clientId, convId, phone, state, step, lang){
+  const say=t=>engineLocalizeReply(env, c, t, lang);
+  const picker=(text, items)=>engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text, items);
+  const products=step.products||await ecomListActiveProducts(env, clientId);
+  const menuItems=shopFlowMenuItems(products);
+  const sendMenu=async(text)=>{
+    const t=await say(text);
+    const qr=menuItems.length?await picker(t, menuItems):(await engineSendChatwootReply(env, c, clientId, convId, t), null);
+    return {reply:t, quickReplies:qr, next:'shop_menu', seed:{shopFlow:true}};
+  };
+  const afterItems=cat=>[
+    ...(cat?[{title:`🛍️ More ${cat}`.slice(0, 20), value:`SHOP_CAT:${cat}`}]:[]),
+    {title:'📦 Track my order', value:'SHOP_TRACK'},
+    {title:'🏠 Main menu', value:'SHOP_MENU'},
+  ];
+
+  if(step.kind==='menu'){
+    return sendMenu(step.intro
+      ?`👋 Welcome to *${c.client_name||'our store'}*! What are you looking for today?`
+      :(step.text||'Anything else I can help you with? 👇'));
+  }
+
+  if(step.kind==='category'){
+    const list=shopFlowCategoryProducts(products, step.category);
+    if(!list.length) return sendMenu(`Sorry, nothing from ${step.category==='*'?'our store':step.category} is in stock right now 😔 Anything else? 👇`);
+    if(step.gallery!==false){
+      for(const p of list.slice(0, 6)){
+        const price=shopFlowMoney(p.price, p.currency);
+        if(p.image_url) await engineShopifyFlowSendPhoto(env, c, convId, p.image_url, `*${p.name}*${price?` · ${price}`:''}`);
+      }
+    }
+    const t=await say('Tap a product to see sizes & price 👇');
+    const items=list.map(p=>({title:p.name, value:`SHOP_PROD:${shopFlowProductId(p)}`}));
+    const qr=await picker(t, items);
+    return {reply:t, quickReplies:qr, next:'shop_category', seed:{shopFlow:true, category:step.category}};
+  }
+
+  const p=step.product;
+  if(step.kind==='product'||step.kind==='sizes'){
+    const options=step.options||await engineShopifyFlowOptions(env, c, p);
+    const inStock=options.filter(o=>o.inStock);
+    const seed={shopFlow:true, category:p.category||step.category||'', productId:shopFlowProductId(p)};
+    let reply='', media=null;
+    if(step.kind==='product'){
+      const caption=shopFlowProductCaption(p, options);
+      reply=caption;
+      if(p.image_url){
+        await engineSendChatwootImageReply(env, c, clientId, convId, p.image_url, caption);
+        media={url:engineResolveDirectImageUrl(p.image_url), type:'image'};
+      }else await engineSendChatwootReply(env, c, clientId, convId, caption);
+    }
+    if(options.length && !inStock.length){
+      const t=await say(`Sorry, *${p.name}* is sold out right now 😔`);
+      const qr=await picker(t, afterItems(seed.category));
+      return {reply:[reply, t].filter(Boolean).join('\n\n'), quickReplies:qr, next:'shop_menu', seed, media, sku:p.sku};
+    }
+    // One option (or none to choose from): straight to the checkout link.
+    const real=inStock.filter(o=>!['standard','default title'].includes(o.title.toLowerCase()));
+    if(real.length<=1 && inStock.length<=1){
+      const buy=await engineShopifyFlowSend(env, c, clientId, convId, phone, state, {kind:'buy', product:p, option:inStock[0]||null, products}, lang);
+      return {...buy, reply:[reply, buy.reply].filter(Boolean).join('\n\n'), media, sku:p.sku};
+    }
+    const t=await say(step.kind==='sizes'?`Which size would you like for *${p.name}*? 👇`:'Which size would you like? 👇');
+    const qr=await picker(t, inStock.slice(0, 10).map(o=>({title:o.title, value:`SHOP_SIZE:${o.variantId||o.title}`})));
+    return {reply:[reply, t].filter(Boolean).join('\n\n'), quickReplies:qr, next:'shop_product', seed, media, sku:p.sku};
+  }
+
+  if(step.kind==='buy'){
+    const o=step.option;
+    const shop=c.shopify_shop_domain||'';
+    const link=(o?.variantId&&shopFlowCartLink(shop, o.variantId))||String(p.shopify_product_url||p.product_link||'').trim()||buildOrderLink(c, clientId, p.sku, p);
+    const label=o&&!['standard','default title'].includes(o.title.toLowerCase())?` – ${o.title}`:'';
+    const price=shopFlowMoney(o?.price||p.price, p.currency);
+    const head=await say(`Great choice 👌 *${p.name}${label}*${price?` · ${price}`:''}`);
+    const text=link
+      ?`${head}\n\n🛒 *Buy now:*\n${link}`
+      :`${head}\n\n${await say('Our team will share the order details with you shortly.')}`;
+    await engineSendChatwootReply(env, c, clientId, convId, text);
+    const t=await say('Anything else? 👇');
+    const qr=await picker(t, afterItems(p.category||''));
+    return {reply:`${text}\n\n${t}`, quickReplies:qr, next:'shop_menu', seed:{shopFlow:true, category:p.category||''}, sku:p.sku};
+  }
+
+  if(step.kind==='track'||step.kind==='track_number'){
+    let rows=[];
+    const phoneKey=shopFlowPhoneKey(phone);
+    if(c.shopify_shop_domain){
+      rows=await shopifyFlowOrders(env, SHOPIFY_SYNC_DEPS, c, step.kind==='track_number'?{name:step.orderName}:{phoneKey}).catch(()=>[]);
+    }else{
+      const tableId=await ecomResolveTable(env, clientId, 'orders');
+      if(tableId) rows=await ecomListClientRows(env, tableId, clientId, step.kind==='track_number'?`~and(order_id,eq,${step.orderName})`:`~and(customer_phone,like,%${phoneKey})`).catch(()=>[]);
+    }
+    // Only ever this customer's own orders — an order number alone never reveals someone else's.
+    const mine=shopFlowCustomerOrders(rows, phone, 3);
+    if(mine.length){
+      const head=await say(mine.length>1?'Here are your latest orders:':'Here\'s your order:');
+      const text=`${head}\n\n${mine.map(shopFlowOrderSummary).join('\n\n')}`;
+      await engineSendChatwootReply(env, c, clientId, convId, text);
+      const t=await say('Anything else? 👇');
+      const qr=await picker(t, afterItems(''));
+      return {reply:`${text}\n\n${t}`, quickReplies:qr, next:'shop_menu', seed:{shopFlow:true}};
+    }
+    if(step.kind==='track_number'){
+      const t=await say(`I couldn't find order ${step.orderName} for this WhatsApp number. Our team can check it for you — or tap below 👇`);
+      const qr=await picker(t, afterItems(''));
+      return {reply:t, quickReplies:qr, next:'shop_menu', seed:{shopFlow:true}};
+    }
+    step={kind:'track_ask'};
+  }
+
+  if(step.kind==='track_ask'){
+    const t=await say('I couldn\'t find an order for this WhatsApp number. Please send your order number (e.g. #1001) 👇');
+    const qr=await picker(t, [{title:'🏠 Main menu', value:'SHOP_MENU'}]);
+    return {reply:t, quickReplies:qr, next:'shop_track', seed:{shopFlow:true}};
+  }
+  return sendMenu('Anything else I can help you with? 👇');
+}
+
+function engineShopifyFlowApply(routing, out){
+  routing.route='ecom_faq';
+  routing.reply=out.reply; routing.next=out.next; routing.orderCollectSeed=out.seed;
+  routing.quickReplies=out.quickReplies||null;
+  if(out.media) routing.media=out.media;
+  if(out.sku) routing.matchedProductSku=out.sku;
+}
+
+// A flow step this turn? Handles it (and returns true), else leaves the turn to the AI answer.
+export async function engineShopifyFlowTurn(env, c, clientId, convId, phone, state, userText, lang, routing){
+  const text=String(userText||'').trim();
+  const parsed=shopFlowParse(text);
+  let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}')||{}; }catch(e){}
+  const stage=String(state.stage||'');
+  const inFlow=stage.startsWith('shop_');
+  const go=async step=>{ engineShopifyFlowApply(routing, await engineShopifyFlowSend(env, c, clientId, convId, phone, state, step, lang)); return true; };
+
+  if(parsed?.action==='MENU') return go({kind:'menu', text:'What are you looking for today? 👇'});
+  if(!parsed && shopFlowIsGreeting(text)) return go({kind:'menu', intro:true});
+  if(parsed?.action==='TRACK' || (!parsed && shopFlowIsTrackRequest(text))) return go({kind:'track'});
+  if(!parsed && stage==='shop_track' && shopFlowOrderNumber(text)) return go({kind:'track_number', orderName:shopFlowOrderNumber(text)});
+
+  const products=await ecomListActiveProducts(env, clientId);
+  if(parsed?.action==='CAT' || parsed?.action==='MORE'){
+    const category=parsed.arg||seed.category||'*';
+    return go({kind:'category', category, products});
+  }
+  if(!parsed){
+    const category=shopFlowFindCategory(products, text);
+    if(category) return go({kind:'category', category, products});
+  }
+  const byId=id=>products.find(p=>shopFlowProductId(p)===String(id))||null;
+  if(parsed?.action==='PROD'){
+    const p=byId(parsed.arg);
+    if(p) return go({kind:'product', product:p, products});
+    return go({kind:'menu', text:'Sorry, that product isn\'t available any more 😔 Anything else? 👇', products});
+  }
+  if(!parsed){
+    const p=shopFlowFindProduct(products, text);
+    if(p) return go({kind:'product', product:p, products});
+  }
+  // Size step: a size tap or a typed size for the product being looked at.
+  const current=seed.productId?byId(seed.productId):null;
+  if(current && (parsed?.action==='SIZE' || stage==='shop_product')){
+    const options=await engineShopifyFlowOptions(env, c, current);
+    const chosen=shopFlowMatchOption(options, text);
+    if(chosen && !chosen.inStock){
+      const left=options.filter(o=>o.inStock).map(o=>o.title).join(' · ');
+      const sorry=await engineLocalizeReply(env, c, `Sorry, size ${chosen.title} is sold out 😔${left?` In stock: ${left}`:''}`, lang);
+      await engineSendChatwootReply(env, c, clientId, convId, sorry);
+      const out=await engineShopifyFlowSend(env, c, clientId, convId, phone, state, {kind:'sizes', product:current, options, products}, lang);
+      engineShopifyFlowApply(routing, {...out, reply:`${sorry}\n\n${out.reply}`});
+      return true;
+    }
+    if(chosen) return go({kind:'buy', product:current, option:chosen, products});
+    if(stage==='shop_product' && shopFlowIsPurchaseIntent(text)) return go({kind:'sizes', product:current, options, products});
+  }
+  if(parsed) return go({kind:'menu', text:'Let\'s start again 👇', products});
+  return false;
+}
+
+// After an AI answer to an in-between question: the flow's prompt for where the customer was, as a
+// second message — the size picker for the product just talked about (this turn or before), the
+// category's product picker, the order-number ask, or the main menu.
+export async function engineShopifyFlowResume(env, c, clientId, convId, phone, state, routing, lang, matchedProduct){
+  let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}')||{}; }catch(e){}
+  const stage=String(state.stage||'');
+  const products=await ecomListActiveProducts(env, clientId);
+  let step;
+  const seenProduct=matchedProduct||(stage==='shop_product'&&seed.productId?products.find(p=>shopFlowProductId(p)===String(seed.productId)):null);
+  if(seenProduct && shopFlowInStock(seenProduct)) step={kind:'sizes', product:seenProduct, products};
+  else if(stage==='shop_category' && seed.category) step={kind:'category', category:seed.category, gallery:false, products};
+  else if(stage==='shop_track') step={kind:'track_ask', products};
+  else step={kind:'menu', products};
+  const out=await engineShopifyFlowSend(env, c, clientId, convId, phone, state, step, lang);
+  routing.reply=[routing.reply, out.reply].filter(Boolean).join('\n\n');
+  routing.next=out.next; routing.orderCollectSeed=out.seed;
+  routing.quickReplies=out.quickReplies||null;
+  if(out.sku) routing.matchedProductSku=out.sku;
 }
 
 // Shopify tier 3 follow-up: 1 random extra angle image + audio note + optionally the Shopify URL.
@@ -19770,6 +20002,9 @@ REPLY RULES:
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
+    // Shopify guided flow (engineShopifyFlowTurn): the next step's buttons follow every answer as
+    // their own message, so the answer itself stays short and never builds a menu.
+    if(engineShopifyFlowOn(c, engineParseJsonField(c.bot_config, {}))) sys+='\n\nGUIDED SHOPPING FLOW IS ON: Answer only what the customer just asked, in 1–3 short sentences, from VERIFIED ECOM PRODUCT DATA and the business prompt. Do not list categories or products as choices, do not write OPTIONS:, do not paste order links and do not ask what they would like to browse — tappable buttons for the next step (categories, sizes, checkout, order tracking) are sent automatically right after your answer.';
   }
   if(industry==='education'){
     sys+=`\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general questions. Use VERIFIED COURSE DATA (injected above) for all course facts. Never invent or infer a course name, category, fee, duration, level, start date, seats, enrollment link, brochure, certificate, scholarship amount, or instructor. Never list courses or scholarships that are not in VERIFIED COURSE DATA. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover — never guess or estimate.
@@ -21289,8 +21524,23 @@ async function engineSendChatwootTyping(env, c, convId, isTyping){
 // (drive.google.com/file/d/<id>/view or ?id=<id>) isn't directly fetchable as raw image bytes;
 // this resolves it to Drive's thumbnail endpoint, which is. Any non-Drive URL (Shopify CDN,
 // direct image host, etc.) passes through unchanged.
-function engineResolveDirectImageUrl(url){
+// Shopify product photos (synced into Ecom Products) live on Shopify's image CDN, whose originals
+// can be huge or WebP — neither goes through WhatsApp as a photo. The CDN resizes and re-encodes on
+// request, so ask it for a 1200px-wide JPEG: always a valid WhatsApp image, well under its 5 MB cap.
+// Matches cdn.shopify.com and a store's own-domain CDN path (https://<store>/cdn/shop/...).
+export function shopifyCdnImageUrl(url){
+  let u; try{ u=new URL(String(url||'').trim()); }catch(e){ return ''; }
+  if(u.protocol!=='https:') return '';
+  if(u.hostname!=='cdn.shopify.com' && !u.pathname.startsWith('/cdn/shop/')) return '';
+  u.searchParams.set('width', '1200');
+  u.searchParams.set('format', 'jpg');
+  return u.toString();
+}
+
+export function engineResolveDirectImageUrl(url){
   if(!url) return '';
+  const shopify=shopifyCdnImageUrl(url);
+  if(shopify) return shopify;
   if(!/drive\.google\.com/.test(url)) return url;
   const pathMatch=url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
   const queryMatch=url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
@@ -24094,7 +24344,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _ecomNewWithProduct=isNewLead&&c.industry==='ecommerce'
       &&_ecomStylesWithProductGreeting.has(botConfig.ecom_communication_style||'')
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk
+    // Shopify-style stores open with their own guided menu (engineShopifyFlowTurn below) instead.
+    const _shopifyFlow=engineShopifyFlowOn(c, botConfig);
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -24108,7 +24360,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
     // If the LLM call inside it fails, it returns the plain question which is still better than
     // "I'll connect you with our team shortly." on a first contact.
-    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk){
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk && !_shopifyFlow){
       const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
       if(_noFlowIntro && _noFlowIntro.trim()){
         const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
@@ -24124,13 +24376,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _isActiveEcomStage=
       (_ecomStyle==='fashion'     && state.stage?.startsWith('fashion_order_')) ||
       (_ecomStyle==='baby_care'   && state.stage?.startsWith('baby_'))          ||
-      (_ecomStyle==='electronics' && state.stage?.startsWith('elec_order_'));
+      (_ecomStyle==='electronics' && state.stage?.startsWith('elec_order_')) ||
+      (_shopifyFlow && state.stage?.startsWith('shop_'));
     // Baby care: only fast-path on recognised BABY_* button values — free-text (questions, colour
     // names) goes through full AI so the FAQ path can answer from prompt/KB and append action buttons.
     // Fashion / electronics: any text in an active stage fast-paths (stage handler is deterministic).
-    const _isEcomButtonValue=/^(?:BABY|FASHION|ELEC)_[A-Z0-9_]+$/i.test(userText.trim());
+    // Shopify flow: same as baby care — only its own button taps skip classification.
+    const _isEcomButtonValue=/^(?:BABY|FASHION|ELEC)_[A-Z0-9_]+$/i.test(userText.trim())||!!shopFlowParse(userText);
     const _ecomFastPath=_isActiveEcomStage
-      && (_ecomStyle!=='baby_care' || _isEcomButtonValue)
+      && ((_ecomStyle!=='baby_care' && !_shopifyFlow) || _isEcomButtonValue)
       && !ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
       && !(userText.toLowerCase().trim()==='start' && state.leadOptOut==='Yes');
     const _classificationDisabled=botConfig.classification_enabled===false;
@@ -24339,6 +24593,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           orderHandledInline=true;
         }
       }
+    }
+    // ── Shopify-style guided shopping (engineShopifyFlowTurn) ──────────────────────
+    // A flow step (button tap, greeting, exact category/product/size, tracking ask) is handled
+    // here; anything else (a question in between) goes to the AI answer below, and
+    // engineShopifyFlowResume then sends this step's prompt again as a second message.
+    let shopifyFlowHandled=false;
+    if(_shopifyFlow && !orderHandledInline && userText && !routing.isOptOut && !routing.isResub && !(routing.route==='human'&&routing.humanReason==='explicit')){
+      await ensureOrderCollectField(env).catch(()=>{});
+      shopifyFlowHandled=await engineShopifyFlowTurn(env, c, clientId, convId, phone, state, userText, replyLang, routing)
+        .catch(e=>{ reportOpsError(env, 'engineShopifyFlowTurn', e, {clientId, convId}); return false; });
+      if(shopifyFlowHandled){ orderHandledInline=true; sentText=routing.reply; }
+      if(routing.matchedProductSku) await ensureLastProductSkuField(env).catch(()=>{});
     }
     // ── Baby Care Ecom: button-led custom-order flow ─────────────────────────────
     // Stages: baby_quality_select → baby_customize → baby_addons → baby_order_details → baby_order_confirm
@@ -26325,6 +26591,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     }
 
+    // Shopify-style flow: after an AI answer (or a product matched by name), back to the flow.
+    const _otherFlowStage=/^(?:order_collect|chat_order|fashion_order_|elec_order_|baby_)/.test(String(routing.next||state.stage||''));
+    if(_shopifyFlow && !shopifyFlowHandled && c.bot_reply_disabled!=='Yes' && !routing.isOptOut && !routing.isResub
+      && !['human','drop'].includes(routing.route) && !_otherFlowStage && (sentText||matchedProduct) && (matchedProduct || !routing.quickReplies?.length)){
+      await ensureOrderCollectField(env).catch(()=>{});
+      await engineShopifyFlowResume(env, c, clientId, convId, phone, state, routing, replyLang, matchedProduct)
+        .catch(e=>reportOpsError(env, 'engineShopifyFlowResume', e, {clientId, convId}));
+      if(routing.matchedProductSku) await ensureLastProductSkuField(env).catch(()=>{});
+    }
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     // Baby Care: keep the Orders tab in step with the chat (draft orders + customer changes).
     // After the reply has gone out and never throws, so it can't change what the customer sees.
@@ -26461,16 +26736,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // overriding the per-product image send above (orderHandledInline gates it out when a
     // specific product was already handled this turn); see engineMaybeSendEcomCategoryMedia's own
     // comment for the full split.
-    await engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline);
+    // A Shopify-flow step already sent its own photos/buttons — no keyword-triggered extras on top.
+    const _extrasText=shopifyFlowHandled?'':userText;
+    await engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, _extrasText, orderHandledInline);
     // Promotions & Offers (migrations/0045_ecom_promotions.sql) — see engineMaybeSendPromoOffer's
     // own comment for the code-match / keyword-match split.
-    await engineMaybeSendPromoOffer(env, c, clientId, convId, userText);
+    await engineMaybeSendPromoOffer(env, c, clientId, convId, _extrasText);
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
     // Product photoshoot folder — 5 random shoot images when a product is named in the message.
     // Additive only; the per-product image/media bundle above is unchanged.
-    await engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText);
+    await engineMaybeSendProductPhotoshoot(env, c, clientId, convId, _extrasText);
     // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
     // layering as ecom category media / promo offer above.
     // A specifically named course also sends its configured Drive media bundle. Brochure,
@@ -33459,8 +33736,8 @@ function driveGuessFilename(contentType){
 // as best-effort exactly like every other WhatsApp send in this file.
 export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, filenameHint=''){
   const fileId=driveFileId(driveUrl);
-  if(!fileId) return false;
-  const fetched=await driveFetchFile(fileId,driveUrl);
+  // Shopify product photos (Ecom products synced from Shopify) are sent the same way.
+  const fetched=fileId?await driveFetchFile(fileId,driveUrl):await shopifyFetchImage(driveUrl);
   if(!fetched) return false;
   const fd=new FormData();
   fd.append('content', caption||'');
@@ -33469,6 +33746,21 @@ export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, fil
   fd.append('attachments[]', fetched.blob, fetched.filename||hinted||driveGuessFilename(fetched.contentType));
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
+}
+
+// A Shopify CDN photo as a WhatsApp-safe JPEG (see shopifyCdnImageUrl), or null when it isn't one,
+// can't be fetched, or still isn't an image under WhatsApp's 5 MB cap.
+async function shopifyFetchImage(url){
+  const direct=shopifyCdnImageUrl(url);
+  if(!direct) return null;
+  try{
+    const r=await fetch(direct);
+    const ct=r.headers.get('content-type')||'';
+    if(!r.ok || !/^image\//.test(ct)) return null;
+    const blob=await r.blob();
+    if(!blob.size || blob.size>5242880) return null;
+    return {blob, contentType:ct, filename:/png/.test(ct)?'photo.png':'photo.jpg'};
+  }catch(e){ return null; }
 }
 
 // Lightweight Drive-link size check for ecom.html's product/promotion video fields (called onblur,
