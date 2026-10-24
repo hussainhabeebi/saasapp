@@ -741,11 +741,20 @@ function wireThread(){
 function toggleMenu(force){const m=$('chatMenu');if(!m)return;m.innerHTML=menuHtml();m.classList.toggle('hidden',force===undefined?!m.classList.contains('hidden'):!force);syncBackdrop()}
 // Phones: menus are bottom sheets over a dimmed backdrop; tapping the backdrop closes them. The
 // backdrop lives in #main: the ⋮ sheet is inside #main's stacking layer and must sit above it.
+// A dropdown sheet (#ddMenu — the chat list's long-press menu, filters…) lives on <body>, so its
+// backdrop goes there too: #main is display:none on phones while the list is showing, and a backdrop
+// inside it was invisible and untappable, leaving the sheet stuck open with no way out.
+let sheetWasOpen=false;
 function syncBackdrop(){
- const open=matchMedia('(max-width:700px)').matches&&(!!$('ddMenu')||($('chatMenu')&&!$('chatMenu').classList.contains('hidden')));
+ const menuOpen=$('chatMenu')&&!$('chatMenu').classList.contains('hidden');
+ const open=matchMedia('(max-width:700px)').matches&&(!!$('ddMenu')||menuOpen);
+ const host=$('ddMenu')||!menuOpen?document.body:($('main')||document.body);
  let b=$('sheetBackdrop');
- if(open&&!b){b=document.createElement('div');b.id='sheetBackdrop';b.className='sheet-backdrop';b.addEventListener('click',e=>{e.stopPropagation();closeDd();toggleMenu(false)});($('main')||document.body).appendChild(b)}
+ if(b&&open&&b.parentNode!==host){b.remove();b=null}
+ if(open&&!b){b=document.createElement('div');b.id='sheetBackdrop';b.className='sheet-backdrop';b.addEventListener('click',e=>{e.stopPropagation();closeDd();toggleMenu(false)});host.appendChild(b)}
  else if(!open&&b)b.remove();
+ // m.html: lets the phone's Back button close the sheet instead of leaving the tab.
+ if(open!==sheetWasOpen){sheetWasOpen=open;toParent('sheet',{open})}
 }
 function toggleThreadSearch(){toggleMenu(false);const s=$('threadSearch');s.classList.toggle('hidden');if(s.classList.contains('hidden')){$('threadSearchInput').value='';searchThread('')}else $('threadSearchInput').focus()}
 function togglePanel(id){const el=$(id);const open=el.classList.contains('hidden');closePopovers();if(open)el.classList.remove('hidden')}
@@ -1159,7 +1168,7 @@ function bulkSnooze(btn){const t=snoozeTimes();openDd(btn,`<button onclick="bulk
 function openDdAt(x,y,html){const a={getBoundingClientRect:()=>({bottom:y,right:x+230})};return openDd(a,html)}
 function rowMenu(id,x,y){
  const l=leads.find(z=>String(z.Id)===String(id));if(!l||!V2)return;const r=l._v2||{},t=snoozeTimes(),done=['resolved','snoozed'].includes(r.status);
- openDdAt(x,y,`<button onclick="rowAct('${esc(id)}','${r.unread_count>0?'mark_read':'mark_unread'}')">${r.unread_count>0?'✓ Mark as read':'● Mark as unread'}</button><button onclick="rowAct('${esc(id)}','pin',{pinned:${!r.pinned}})">📌 ${r.pinned?'Unpin':'Pin'}</button><button onclick="rowAct('${esc(id)}','assign',{email:'${esc(meEmail)}'})">👤 Assign to me</button><button onclick="rowAct('${esc(id)}','${done?'reopen':'resolve'}')">${done?'↺ Reopen':'✓ Resolve'}</button><button onclick="rowAct('${esc(id)}','snooze',{until:'${t.tomorrow.toISOString()}'})">🌅 Snooze until tomorrow</button><button onclick="closeDd();togglePick('${esc(id)}')">☐ Select</button>`);
+ openDdAt(x,y,`<button onclick="rowAct('${esc(id)}','${r.unread_count>0?'mark_read':'mark_unread'}')">${r.unread_count>0?'✓ Mark as read':'● Mark as unread'}</button><button onclick="rowAct('${esc(id)}','pin',{pinned:${!r.pinned}})">📌 ${r.pinned?'Unpin':'Pin'}</button><button onclick="rowAct('${esc(id)}','assign',{email:'${esc(meEmail)}'})">👤 Assign to me</button><button onclick="rowAct('${esc(id)}','${done?'reopen':'resolve'}')">${done?'↺ Reopen':'✓ Resolve'}</button><button onclick="rowAct('${esc(id)}','snooze',{until:'${t.tomorrow.toISOString()}'})">🌅 Snooze until tomorrow</button><button onclick="closeDd();togglePick('${esc(id)}')">☐ Select</button><button class="mob-only" onclick="closeDd()">Cancel</button>`);
 }
 async function rowAct(id,op,args={}){closeDd();try{await act(op,args,[id]);toast('Done')}catch(e){toast('Could not update: '+e.message)}}
 // ── Send & resolve ──
@@ -1428,7 +1437,7 @@ window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
  const {channel:ch,leadId}=e.data;
  // m.html: the phone's Back button closes the open chat; Home's tiles open a filtered list.
- if(e.data.close){if(current)closeConversation();return}
+ if(e.data.close){if($('ddMenu')||($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))){closeDd();toggleMenu(false)}else if(current)closeConversation();return}
  if(ch&&ch!==channel)setChannel(ch);
  if(e.data.filter&&e.data.filter!==filter)setFilter(e.data.filter);
  if(!leadId)return;

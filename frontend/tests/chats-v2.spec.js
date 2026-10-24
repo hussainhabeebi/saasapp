@@ -495,6 +495,24 @@ test.describe('on a phone', () => {
   });
 });
 
+test.describe('on a phone (chat list long-press menu)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  test('the menu can always be closed: a backdrop over the list, and Cancel', async ({ page }) => {
+    await open(page);
+    // Long-press on a row (Android fires contextmenu too) opens the bottom sheet over the LIST —
+    // its backdrop used to live inside the hidden thread panel, so nothing closed it.
+    await page.locator('#list .contact', { hasText: 'Binu' }).click({ button: 'right' });
+    await expect(page.locator('#ddMenu')).toBeVisible();
+    await expect(page.locator('#sheetBackdrop')).toBeVisible();
+    await page.locator('#sheetBackdrop').click({ position: { x: 20, y: 40 } });
+    await expect(page.locator('#ddMenu')).toHaveCount(0);
+    await expect(page.locator('#sheetBackdrop')).toHaveCount(0);
+    await page.locator('#list .contact', { hasText: 'Binu' }).click({ button: 'right' });
+    await page.locator('#ddMenu').getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.locator('#ddMenu')).toHaveCount(0);
+  });
+});
+
 test.describe('on a phone (sheet stacking)', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
   test('menu items are tappable above the backdrop', async ({ page }) => {

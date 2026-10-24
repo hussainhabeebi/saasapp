@@ -231,7 +231,7 @@ function toast(t){const el=$('toast');el.textContent=t;el.classList.remove('hidd
 function openCrm(page){location.href='dashboard.html?full=1'+(page?'&page='+encodeURIComponent(page):'')}
 
 // ── Tabs. Phone Back: chat → chat list → Home → leave, like WhatsApp. ─────────────────────────
-let cur='',threadOpen=false,skipPop=false;
+let cur='',threadOpen=false,skipPop=false,chatSheetOpen=false;
 function render(tab){
  cur=tab;
  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id==='tab'+tab[0].toUpperCase()+tab.slice(1)));
@@ -250,6 +250,8 @@ function go(tab){
 addEventListener('popstate',()=>{
  if(skipPop){skipPop=false;return}
  if(sheetOpen()){closeSheets(true);return}
+ // A menu sheet open inside Chats (long-press menu, ⋮): Back closes it first.
+ if(chatSheetOpen){chatSheetOpen=false;post({close:true});return}
  if(threadOpen){post({close:true});return}
  render(history.state?.lvTab||'home');
 });
@@ -277,6 +279,11 @@ addEventListener('message',e=>{
   if(open&&!threadOpen&&!history.state?.lvThread)history.pushState({lvTab:'chats',lvThread:1},'','#chats');
   if(!open&&threadOpen&&history.state?.lvThread){skipPop=true;history.back()}
   threadOpen=open;document.body.classList.toggle('thread-open',open);
+ }
+ else if(d.type==='sheet'){
+  if(d.open&&!chatSheetOpen)history.pushState({...(history.state||{}),lvChatSheet:1},'');
+  if(!d.open&&chatSheetOpen&&history.state?.lvChatSheet){skipPop=true;history.back()}
+  chatSheetOpen=!!d.open;
  }
  else if(d.type==='read')loadCounts();
  else if(d.type==='home')go('home');
