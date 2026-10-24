@@ -1294,6 +1294,21 @@ natively — the "Order Delivered" notification is best-effort and won't fire fo
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
 
+### Store workspace for ecommerce clients (`frontend/commerce-view.js`, desktop only)
+Ecommerce-industry clients get a store-admin shell on desktop (≥768px), same layering as the travel
+workspace (`travel-view.js`): a left sidebar — Home · Orders · Products (Categories) · Customers ·
+Inbox · Handovers · Shopify (when connected) · Marketing · Analytics · Finance · Store settings ·
+Settings — and a commerce Home (`#pageStorehome`: sales, orders, AOV, chat→order conversion,
+returning customers, daily sales chart, to-do queue, recent orders, top products, sales by
+channel, chat-to-delivery funnel, newest customers, inventory). Nothing is rebuilt: Customers is
+the Leads page, Inbox is Chats, and every store screen is an `ecom.html` sub-page in
+`#ecommerceFrame`, opened with `&shell=commerce&tab=<screen>` (hides ecom.html's own sidebar and
+uses the dashboard palette) and switched afterwards without a reload. Sidebar items follow the same
+module permissions and module toggles as the classic nav. Phones are unchanged (no `cv-mode`
+below 768px). Users can switch to the classic CRM nav from the sidebar (per browser,
+`localStorage lv_commerce_view_<client>`) and back via "🛒 Store workspace". Bump `?v=` on the
+`commerce-view.js` script tag when changing it (sw.js serves scripts cache-first).
+
 ### Shopify Orders + Shopify Stock (`cloudflare-worker/shopify-sync.js`, `ecom.html` desktop)
 Two desktop-only pages in the Ecommerce module's sidebar (under **Shopify**), shown only when the
 client has Shopify connected (Ecommerce → 🛍️ Shopify). The phone layout is unchanged — these nav

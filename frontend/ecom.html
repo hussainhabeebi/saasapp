@@ -211,6 +211,9 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   .desk-only{display:revert}
   .shop-only{display:none}
   body.shopify-on .shop-only{display:revert}
+  /* Inside the dashboard's store workspace (&shell=commerce) its own sidebar drives the screens. */
+  body.cv-shell #tabs{display:none}
+  body.cv-shell main{padding:22px 28px}
   #tabs{width:224px;background:#FBFAFE;padding:12px 10px 20px;gap:1px}
   #tabs .nav-label{display:block;font-family:var(--disp);font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#9A93B8;padding:16px 10px 6px}
   #tabs .nav-label:first-child{padding-top:4px}
@@ -228,6 +231,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   .hdr-store{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:4px 10px;background:var(--bg)}
   .hdr-store + .hback{margin-left:8px}
 }
+
+/* Store workspace: take the dashboard's palette so the embedded screens match the shell around them. */
+body.cv-shell{--bg:#F2F5F3;--ink:#0C1E16;--muted:#637870;--accent:#0D9C93;--accent-ink:#1E3A6E;--accent-soft:#DFF6F3;--line:#E4EBE7;--ls:#C8D6D0}
+body.cv-shell .save-btn{background:var(--accent)}
+body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent)}
 
 /* Page header */
 .ph{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
@@ -1567,6 +1575,10 @@ let clientId = params.get('client') || '';
 // tab) — dashboard.html already has its own header/nav/notifications around this page, so this
 // page's own header (brand, chip, "Back to CRM" button) would just be a redundant duplicate.
 const isEmbedded = params.get('embed') === '1';
+// shell=commerce: embedded in dashboard.html's store workspace (commerce-view.js), whose sidebar
+// picks the screen (?tab= on first load, an 'ecom:goto' postMessage after that).
+const isCommerceShell = isEmbedded && params.get('shell') === 'commerce';
+if (isCommerceShell) document.body.classList.add('cv-shell');
 let clientRecord = null;
 let botConfig = {};
 let ecomTableIds = {};
@@ -1765,6 +1777,7 @@ function showTab(name) {
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
   document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
   if (name === 'flow' && !_flowLoaded) loadFlow();
+  if (isEmbedded) { try { parent.postMessage({ source: 'lv-ecom', type: 'ecom:tab', tab: name }, location.protocol === 'file:' ? '*' : location.origin); } catch (e) {} }
 }
 
 // ── PRODUCTS ──────────────────────────────────────
@@ -5085,8 +5098,15 @@ function exportShopStockCsv() {
     (shopStock || []).filter(r => shopStockInView(r, shopStockView)).map(r => [r.product_title, r.variant_title, r.sku, r.barcode, r.product_type, r.vendor, r.product_status, r.price, r.available, r.tracked, r.updated_at]));
 }
 
-// Desktop lands on Home; phones keep Products as their first tab.
-if (isDesktop()) showTab('home');
+// Desktop lands on Home; phones keep Products as their first tab. The store workspace names
+// the screen to open instead.
+const ECOM_TABS = [...document.querySelectorAll('#tabs .tab')].map(t => t.dataset.tab);
+if (isCommerceShell && ECOM_TABS.includes(params.get('tab'))) showTab(params.get('tab'));
+else if (isDesktop()) showTab('home');
+window.addEventListener('message', e => {
+  if (!(e.origin === location.origin || (location.protocol === 'file:' && e.origin === 'null')) || e.data?.type !== 'ecom:goto' || !ECOM_TABS.includes(e.data.tab)) return;
+  showTab(e.data.tab);
+});
 
 init();
 </script>

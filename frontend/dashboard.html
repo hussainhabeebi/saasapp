@@ -6055,6 +6055,7 @@ function navigate(page){
   if(page==='voice') voiceInit();
   if(page==='billing') billingInit();
   if(typeof tvOnNavigate==='function') tvOnNavigate(page); // travel workspace pages (travel-view.js)
+  if(typeof cvOnNavigate==='function') cvOnNavigate(page); // ecommerce store workspace (commerce-view.js)
 }
 
 function openMoreSheet(){
@@ -6153,7 +6154,7 @@ function showApp(){
   const shopifyParam=params.get('shopify');
   const gscParam=params.get('gsc');
   const gcalParam=params.get('gcal');
-  let landingPage=(typeof isTravelView==='function'&&isTravelView())?'travelhome':'home';
+  let landingPage=(typeof isTravelView==='function'&&isTravelView())?'travelhome':(typeof isCommerceView==='function'&&isCommerceView())?'storehome':'home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')) landingPage='integrations';
@@ -6675,6 +6676,7 @@ function renderHomeScoped(){
   try{renderTasks();}catch(e){}
   try{loadHomeRealEstateSnapshot();}catch(e){}
   try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
+  try{ if(typeof renderStoreHome==='function') renderStoreHome(); }catch(e){}
   try{ if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('homeStaffPerf')); }catch(e){}
   try{ const el=$id('homeSourceReport'); if(el){ const html=leadsSourceReportHtml(allLeads); el.innerHTML=html; el.style.display=html?'':'none'; } }catch(e){}
   try{ const el=$id('homeCategoryReport'); if(el){ const html=clientRecord?.industry==='travel'&&typeof tvCategoryReportHtml==='function'?tvCategoryReportHtml(allLeads):''; el.innerHTML=html; el.style.display=html?'':'none'; } }catch(e){}
@@ -6991,9 +6993,21 @@ async function kbDrop(e,stage){
 // doesn't reset whichever sub-tab (Products/Orders/Shopify/Settings) the rep was on inside it.
 // embed=1 tells ecom.html to hide its own header/"Back to CRM" button, since this dashboard's own
 // header/nav already surrounds it.
-function renderEcommerce(){
+// sub = an ecom.html screen (orders, products, shop-stock, …), passed by the store workspace
+// sidebar (commerce-view.js). First load picks it via ?tab=; after that the frame is told by
+// postMessage so it doesn't reload. In the store workspace the frame hides its own sidebar
+// (&shell=commerce) because the dashboard's sidebar drives it.
+function renderEcommerce(sub){
   const frame=$id('ecommerceFrame');
-  if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
+  if(!frame) return;
+  if(!frame.getAttribute('src')){
+    const shell=(typeof isCommerceView==='function'&&isCommerceView())?'&shell=commerce':'';
+    frame.src=`ecom.html?client=${clientId}&embed=1${shell}${sub?'&tab='+encodeURIComponent(sub):''}`;
+  } else if(sub){
+    // Same origin, so call it directly once loaded; the message covers a frame still loading.
+    try{ if(typeof frame.contentWindow?.showTab==='function'){ frame.contentWindow.showTab(sub); return; } }catch(e){}
+    frame.contentWindow?.postMessage({type:'ecom:goto',tab:sub},location.protocol==='file:'?'*':location.origin);
+  }
 }
 
 // Campaigns / Follow-ups (broadcast.html) — loaded once; later visits switch its workspace instead of
@@ -18631,6 +18645,8 @@ function applyTheme(industryKey){
   if(typeof updateRecruitTabVisibility==='function') updateRecruitTabVisibility();
   // Travel clients get their own app shell (travel-view.js)
   if(typeof tvApply==='function') tvApply();
+  // Ecommerce clients get a store-admin shell on desktop (commerce-view.js)
+  if(typeof cvApply==='function') cvApply();
 }
 
 function previewTheme(val){
@@ -23589,6 +23605,7 @@ async function deleteHospBooking(id){
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=5"></script>
 <script src="travel-view.js?v=7"></script>
+<script src="commerce-view.js?v=1"></script>
 <script src="staff-performance.js?v=1"></script>
 <script src="ads-report.js?v=2"></script>
 <script>
