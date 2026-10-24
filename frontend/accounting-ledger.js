@@ -51,15 +51,31 @@ function accountOptions(selected, filter){
 }
 const cashAccounts=a=>a.type==='asset'&&(a.subtype==='bank'||a.subtype==='cash');
 const accName=id=>{ const a=(L.meta?.accounts||[]).find(a=>String(a.id)===String(id)); return a?`${a.code} · ${a.name}`:'—'; };
+// Panels from the older single-purpose pages (Financial Planning, Expense Entry, Reports, Bank &
+// Cash — now hidden in accounting.html) are MOUNTED into the new pages instead of being rebuilt, so
+// every screen exists exactly once. Each remembers where it lives and is parked back there (hidden
+// but still in the DOM, since its own render code looks elements up by id) when you switch away.
+function mountLegacy(body, id, onFirst){
+  const el=document.getElementById(id);
+  if(!el){ body.innerHTML=empty('This section is not available.'); return; }
+  if(!el._accHome) el._accHome=el.parentNode;
+  body.innerHTML=''; el.classList.add('active'); el.dataset.accMounted='1'; body.appendChild(el);
+  if(onFirst && !el._accLoaded){ el._accLoaded=true; try{ onFirst(); }catch(e){ console.error(e); } }
+}
+function parkLegacy(container){ container.querySelectorAll('[data-acc-mounted]').forEach(el=>{ delete el.dataset.accMounted; el._accHome.appendChild(el); }); }
+const legacy=(id, onFirst)=>b=>mountLegacy(b, id, onFirst);
 function subnav(root, key, items, onShow){
-  root.innerHTML=`<div class="fp-subnav">${items.map(([k,label],i)=>`<button class="fp-pill ${i?'':'active'}" data-k="${k}">${label}</button>`).join('')}</div><div class="acc-sub-body"></div>`;
+  parkLegacy(root);
+  root.innerHTML=`${items.length>1?`<div class="fp-subnav">${items.map(([k,label],i)=>`<button class="fp-pill ${i?'':'active'}" data-k="${k}">${label}</button>`).join('')}</div>`:''}<div class="acc-sub-body"></div>`;
   const body=root.querySelector('.acc-sub-body');
-  const show=k=>{ root.querySelectorAll('.fp-pill').forEach(p=>p.classList.toggle('active', p.dataset.k===k)); body.innerHTML=spinner; onShow(k, body); try{ localStorage.setItem('acc_sub_'+key, k); }catch(_){} };
+  const show=k=>{ root.querySelectorAll('.fp-pill').forEach(p=>p.classList.toggle('active', p.dataset.k===k)); parkLegacy(body); body.innerHTML=spinner; onShow(k, body); try{ localStorage.setItem('acc_sub_'+key, k); }catch(_){} };
   root.querySelectorAll('.fp-pill').forEach(p=>p.onclick=()=>show(p.dataset.k));
   let start=items[0][0]; try{ const s=localStorage.getItem('acc_sub_'+key); if(s && items.some(i=>i[0]===s)) start=s; }catch(_){}
   show(start);
   return show;
 }
+// The section currently on screen — used to refresh a section after a save.
+const curBody=()=>document.querySelector('.page.active .acc-sub-body');
 function card(title, actions, inner){ return `<div class="card"><div class="card-title-row"><div class="card-title">${title}</div><div class="card-actions">${actions||''}</div></div>${inner}</div>`; }
 const dateRangeInputs=(id, from, to)=>`<input class="s-input" type="date" id="${id}From" value="${from}" style="width:auto"><span class="acc-muted">to</span><input class="s-input" type="date" id="${id}To" value="${to}" style="width:auto">`;
 const val=id=>document.getElementById(id)?.value;
@@ -132,9 +148,8 @@ async function renderOverview(root){
         ${card('Revenue vs expenses — last 6 months', '', '<div style="height:240px"><canvas id="accTrendChart"></canvas></div>')}
         ${card('Top overdue customers', '<button class="save-btn sec" onclick="showTab(\'documents\')">Open invoices</button>', d.top_overdue.length?`<table><tbody>${d.top_overdue.map(o=>`<tr><td>${esc(o.customer)}</td>${numCell(o.amount)}</tr>`).join('')}</tbody></table>`:empty('Nothing overdue 🎉'))}
       </div>
-      ${card('Things to check', '<button class="save-btn sec" onclick="AccLedger.openOps(\'categorise\')">Categorise expenses</button>', d.anomalies.length?`<div class="acc-alerts">${d.anomalies.map(a=>`<div class="acc-alert ${a.severity}"><span class="badge ${a.severity==='high'?'void':a.severity==='medium'?'sent':'draft'}">${a.severity}</span> ${esc(a.message)}</div>`).join('')}</div>`:empty('No issues found.'))}
-      <div id="accForecastCard">${card('13-week cash forecast', '', spinner)}</div>
-      <div id="accUnitEcoCard">${card('Profitability by client (FY to date)', '', spinner)}</div>`;
+      ${card('Things to check', '<button class="save-btn sec" onclick="AccLedger.open(\'expenses\',\'categorise\')">Categorise expenses</button>', d.anomalies.length?`<div class="acc-alerts">${d.anomalies.map(a=>`<div class="acc-alert ${a.severity}"><span class="badge ${a.severity==='high'?'void':a.severity==='medium'?'sent':'draft'}">${a.severity}</span> ${esc(a.message)}</div>`).join('')}</div>`:empty('No issues found.'))}
+      <div id="accRecurringCard"></div>`;
     if(window.Chart){
       if(L.charts.trend) L.charts.trend.destroy();
       L.charts.trend=new Chart(document.getElementById('accTrendChart'), {type:'bar', data:{labels:d.trend.map(t=>t.month), datasets:[
@@ -142,27 +157,38 @@ async function renderOverview(root){
         {label:'Net', data:d.trend.map(t=>t.net), type:'line', borderColor:'#059669', backgroundColor:'#059669', tension:.3}]},
         options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{y:{ticks:{callback:v=>Number(v).toLocaleString('en-IN')}}}}});
     }
-    api('forecast').then(f=>{
-      document.getElementById('accForecastCard').innerHTML=card('13-week cash forecast', `<span class="acc-muted">Lowest point ${money(f.lowest_balance)}</span>`,
-        `<div class="tbl-wrap"><table><thead><tr><th>Week</th><th>From</th><th class="num">In</th><th class="num">Out</th><th class="num">Closing cash</th><th>Biggest items</th></tr></thead><tbody>
-        ${f.weeks.map(w=>`<tr><td>W${w.week}</td><td>${w.start}</td>${numCell(w.inflow)}${numCell(-w.outflow)}${numCell(w.closing, w.closing<0?'neg':'')}<td class="acc-small">${w.items.slice(0,3).map(i=>`${i.dir==='inflow'?'↘':'↗'} ${esc(i.label)} ${m0(i.amount)}`).join('<br>')}</td></tr>`).join('')}</tbody></table></div>
-        <div class="s-hint">Open invoices by due date, upcoming subscription renewals and recurring dues in; unpaid bills, recurring journals, payroll and fixed expenses out.</div>`);
-    }).catch(e=>{ document.getElementById('accForecastCard').innerHTML=card('13-week cash forecast','',errBox(e)); });
-    api(`unit-economics?${qs({from:fyStart(), to:today()})}`).then(u=>{
-      document.getElementById('accUnitEcoCard').innerHTML=card('Profitability by client (FY to date)', '<button class="save-btn sec" onclick="AccLedger.openOps(\'allocations\')">Allocate costs</button>',
-        `<div class="tbl-wrap"><table><thead><tr><th>Client</th><th class="num">Net revenue</th><th class="num">Direct costs</th><th class="num">Gateway fees</th><th class="num">Margin</th><th class="num">Margin %</th></tr></thead><tbody>
-        ${u.rows.length?u.rows.slice(0,25).map(r=>`<tr><td>${esc(r.customer)}</td>${numCell(r.net_revenue)}${numCell(r.direct_costs)}${numCell(r.gateway_fees)}${numCell(r.margin)}<td class="num">${pct(r.margin_pct)}</td></tr>`).join(''):empty('No revenue yet this year.',6)}</tbody></table></div>`);
-    }).catch(e=>{ document.getElementById('accUnitEcoCard').innerHTML=card('Profitability by client','',errBox(e)); });
+    // Recurring billing (Financial Planning's Expected Funds) isn't invoiced, so it isn't in the
+    // receivables above — show this month's position here instead of on a second dashboard.
+    const fp=typeof fpDashboardData!=='undefined'?fpDashboardData:null;
+    if(fp) document.getElementById('accRecurringCard').innerHTML=card(`Recurring billing — ${esc(fp.current_period||'this month')}`, '<button class="save-btn sec" onclick="AccLedger.open(\'subscriptions\',\'fpdues\')">Expected funds</button>',
+      `<div class="stat-grid"><div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val">${money(fp.expected_this_month, fp.currency)}</div></div>
+        <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val">${money(fp.collected_this_month, fp.currency)}</div><div class="stat-sub">${fp.collection_pct??0}% collected</div></div>
+        ${fp.estimated_tax_set_aside!=null?`<div class="stat-card"><div class="stat-lbl">Set aside for tax</div><div class="stat-val">${money(fp.estimated_tax_set_aside, fp.currency)}</div><div class="stat-sub">Estimate only</div></div>`:''}</div>`);
   }catch(e){ root.innerHTML=errBox(e); }
 }
 
-/* ══════════ 📒 BOOKS ══════════ */
-async function renderBooks(root){
-  await loadMeta();
-  subnav(root, 'books', [['pl','📈 Profit & Loss'],['bs','⚖️ Balance Sheet'],['tb','🧮 Trial Balance'],['cf','🌊 Cash Flow'],['gl','📖 General Ledger'],['journals','✍️ Journals'],['coa','🗂️ Chart of Accounts'],['notes','↩️ Credit / Debit Notes'],['parties','👥 Customer & Supplier Ledgers'],['close','🔒 Period Close'],['audit','🕵️ Audit Trail']], (k, body)=>{
-    ({pl:booksPL, bs:booksBS, tb:booksTB, cf:booksCF, gl:booksGL, journals:booksJournals, coa:booksCoa, notes:booksNotes, parties:booksParties, close:booksClose, audit:booksAudit})[k](body);
-  });
+async function reportForecast(b){
+  try{ const f=await api('forecast');
+    b.innerHTML=card('13-week cash forecast', `<span class="acc-muted">Lowest point ${money(f.lowest_balance)}</span>`,
+      `<div class="tbl-wrap"><table><thead><tr><th>Week</th><th>From</th><th class="num">In</th><th class="num">Out</th><th class="num">Closing cash</th><th>Biggest items</th></tr></thead><tbody>
+      ${f.weeks.map(w=>`<tr><td>W${w.week}</td><td>${w.start}</td>${numCell(w.inflow)}${numCell(-w.outflow)}${numCell(w.closing, w.closing<0?'neg':'')}<td class="acc-small">${w.items.slice(0,3).map(i=>`${i.dir==='inflow'?'↘':'↗'} ${esc(i.label)} ${m0(i.amount)}`).join('<br>')}</td></tr>`).join('')}</tbody></table></div>
+      <div class="s-hint">Open invoices by due date, upcoming subscription renewals and recurring dues in; unpaid bills, recurring journals, payroll and fixed expenses out.</div>`);
+  }catch(e){ b.innerHTML=errBox(e); }
 }
+async function reportClients(b){
+  b.innerHTML=card('Profitability by client', `${dateRangeInputs('accUe', fyStart(), today())}<button class="save-btn sec" onclick="AccLedger.runClients()">Run</button><button class="save-btn sec" onclick="AccLedger.open('expenses','allocations')">Allocate costs</button>`, '<div id="accUeOut"></div>');
+  L.runClients();
+}
+L.runClients=async()=>{
+  const out=document.getElementById('accUeOut'); out.innerHTML=spinner;
+  try{ const u=await api(`unit-economics?${qs({from:val('accUeFrom'), to:val('accUeTo')})}`);
+    out.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>Client</th><th class="num">Net revenue</th><th class="num">Direct costs</th><th class="num">Gateway fees</th><th class="num">Margin</th><th class="num">Margin %</th></tr></thead><tbody>
+      ${u.rows.length?u.rows.map(r=>`<tr><td>${esc(r.customer)}</td>${numCell(r.net_revenue)}${numCell(r.direct_costs)}${numCell(r.gateway_fees)}${numCell(r.margin)}<td class="num">${pct(r.margin_pct)}</td></tr>`).join(''):empty('No revenue in this range.',6)}
+      <tr class="acc-total"><td>Total</td>${numCell(u.totals.revenue)}${numCell(u.totals.direct_costs)}<td></td>${numCell(u.totals.margin)}<td></td></tr></tbody></table></div>`;
+  }catch(e){ out.innerHTML=errBox(e); }
+};
+
+/* ══════════ 📒 BOOKS ══════════ */
 L.plData=null;
 function plTable(d){
   const cmp=d.compare;
@@ -195,7 +221,7 @@ L.exportPL=()=>{ const d=L.plData; if(!d) return; const rows=[['Section','Code',
   rows.push([],['','','Gross profit',d.gross_profit],['','','Operating profit',d.operating_profit],['','','Net profit',d.net_profit]);
   exportXlsx(`profit-and-loss_${d.from}_${d.to}.xlsx`, {'P&L':rows}); };
 const warnList=w=>(w&&w.length)?`<div class="acc-warn">${w.slice(0,6).map(x=>'⚠️ '+esc(x.message)).join('<br>')}</div>`:'';
-L.drill=id=>{ L.glAccount=id; const b=document.querySelector('#tabBooks .fp-pill[data-k="gl"]'); if(b) b.click(); };
+L.drill=id=>{ L.glAccount=id; L.open('reports','gl'); };
 function bsSection(title, groups, total, cmpGroups){
   const cmpAmt=id=>{ for(const g of (cmpGroups||[])) for(const r of g.rows) if(r.account_id===id && id!=null) return r.amount; return null; };
   return `<tr class="acc-sec"><td colspan="${cmpGroups?3:2}">${title}</td></tr>`+groups.map(g=>`<tr class="acc-sub"><td>${esc(g.group)}</td>${numCell(g.total)}${cmpGroups?'<td></td>':''}</tr>`+g.rows.map(r=>`<tr class="${r.account_id?'acc-click':''}" ${r.account_id?`onclick="AccLedger.drill(${r.account_id})"`:''}><td class="acc-indent">${r.code?esc(r.code)+' · ':''}${esc(r.name)}</td>${numCell(r.amount)}${cmpGroups?numCell(cmpAmt(r.account_id)):''}</tr>`).join('')).join('')+`<tr class="acc-total"><td>Total ${title.toLowerCase()}</td>${numCell(total)}${cmpGroups?'<td></td>':''}</tr>`;
@@ -302,8 +328,8 @@ L.editAccount=(a={})=>form({title:a.id?'Edit account':'New account', fields:[
   {k:'parent_id', label:'Parent account (optional)', type:'account', value:a.parent_id||''},
   {k:'is_active', label:'Status', type:'checkbox', text:'Active', value:a.id?!!a.is_active:true},
   {k:'description', label:'Description', type:'textarea', value:a.description||'', full:true}],
-  onSave:async f=>{ await post('accounts', {...f, id:a.id}); await loadMeta(true); toast('Account saved'); booksCoa(document.querySelector('#tabBooks .acc-sub-body')); }});
-L.deleteAccount=async id=>{ if(!confirm('Delete this account?')) return; await act(()=>post('accounts/delete', {id}), 'Deleted'); await loadMeta(true); booksCoa(document.querySelector('#tabBooks .acc-sub-body')); };
+  onSave:async f=>{ await post('accounts', {...f, id:a.id}); await loadMeta(true); toast('Account saved'); booksCoa(curBody()); }});
+L.deleteAccount=async id=>{ if(!confirm('Delete this account?')) return; await act(()=>post('accounts/delete', {id}), 'Deleted'); await loadMeta(true); booksCoa(curBody()); };
 
 async function booksNotes(body){
   try{
@@ -327,12 +353,12 @@ L.newNote=type=>{
     {k:'gst_rate_pct', label:'GST rate % (blank = same as invoice)', type:'number'},
     type==='credit'?{k:'refund_account_id', label:'Refund paid from (refunds only)', type:'account', filter:cashAccounts}:{k:'supplier_state', label:'Supplier state code (for CGST/SGST vs IGST)', placeholder:'e.g. 32'},
     {k:'notes', label:'Notes', type:'textarea', full:true}],
-    onSave:async f=>{ const r=await post('notes', {...f, note_type:type}); toast(`Saved — total ${m0(r.total)}`); booksNotes(document.querySelector('#tabBooks .acc-sub-body')); }});
+    onSave:async f=>{ const r=await post('notes', {...f, note_type:type}); toast(`Saved — total ${m0(r.total)}`); booksNotes(curBody()); }});
 };
-L.voidNote=async id=>{ if(!confirm('Void this note?')) return; await act(()=>post('notes/void', {id}), 'Voided'); booksNotes(document.querySelector('#tabBooks .acc-sub-body')); };
+L.voidNote=async id=>{ if(!confirm('Void this note?')) return; await act(()=>post('notes/void', {id}), 'Voided'); booksNotes(curBody()); };
 
-async function booksParties(body){
-  body.innerHTML=card('Customer & supplier ledgers', `<select class="s-input" id="accPtType" style="width:auto" onchange="AccLedger.runParties()"><option value="customer">Customers (receivable)</option><option value="supplier">Suppliers (payable)</option></select>`, '<div id="accPtOut"></div>');
+async function booksParties(body, type='customer'){
+  body.innerHTML=card(type==='supplier'?'Supplier balances &amp; statements':'Customer balances &amp; statements', `<input type="hidden" id="accPtType" value="${type}">`, '<div id="accPtOut"></div>');
   L.runParties();
 }
 L.runParties=async()=>{
@@ -370,8 +396,8 @@ async function booksClose(body){
       <div class="acc-inline"><label class="s-lbl">Financial year starting</label><input class="s-input" type="number" id="accCloseFy" value="${fy}" style="width:110px">${can('admin')?'<button class="save-btn" onclick="AccLedger.closeYear()">Close year</button>':''}</div>`)
     +card('Re-sync ledger', can('accountant')?'<button class="save-btn sec" onclick="AccLedger.resync()">Re-sync now</button>':'', '<div class="s-hint">The ledger re-reads every invoice, receipt, expense, bill and payment each time a report is opened. Use this to see what changed and any warnings.</div><div id="accSyncOut"></div>');
 }
-L.setLock=async unlock=>{ await act(()=>post('lock', {lock_date:unlock?null:val('accLockDate')}), unlock?'Books unlocked':'Lock date saved'); booksClose(document.querySelector('#tabBooks .acc-sub-body')); };
-L.closeYear=async()=>{ const fy=val('accCloseFy'); if(!confirm(`Close FY ${fy}-${String(Number(fy)+1).slice(-2)}? This posts a closing entry and locks the year.`)) return; const r=await act(()=>post('close-year', {fy})); if(r) toast(`Closed — net profit ${m0(r.net_profit)}, locked to ${r.locked_to}`); booksClose(document.querySelector('#tabBooks .acc-sub-body')); };
+L.setLock=async unlock=>{ await act(()=>post('lock', {lock_date:unlock?null:val('accLockDate')}), unlock?'Books unlocked':'Lock date saved'); booksClose(curBody()); };
+L.closeYear=async()=>{ const fy=val('accCloseFy'); if(!confirm(`Close FY ${fy}-${String(Number(fy)+1).slice(-2)}? This posts a closing entry and locks the year.`)) return; const r=await act(()=>post('close-year', {fy})); if(r) toast(`Closed — net profit ${m0(r.net_profit)}, locked to ${r.locked_to}`); booksClose(curBody()); };
 L.resync=async()=>{ const out=document.getElementById('accSyncOut'); out.innerHTML=spinner; try{ const r=await post('sync'); out.innerHTML=`<div class="acc-bal ok">Posted ${r.posted} · updated ${r.reposted} · voided ${r.voided}</div>${warnList(r.warnings)}`; }catch(e){ out.innerHTML=errBox(e); } };
 
 async function booksAudit(body){
@@ -385,8 +411,14 @@ L.runAudit=async()=>{
   }catch(e){ out.innerHTML=errBox(e); }
 };
 
+L.open=(page, sub)=>{
+  try{ localStorage.setItem('acc_sub_'+page, sub); }catch(_){}
+  showTab(page);
+  setTimeout(()=>{ const b=document.querySelector(`#tab${page.charAt(0).toUpperCase()+page.slice(1)} .fp-pill[data-k="${sub}"]`); if(b && !b.classList.contains('active')) b.click(); }, 60);
+};
 Object.assign(L, {api, post, qs, today, fyStart, money, m0, pct, numCell, empty, spinner, errBox, can, toast, act, download, toCsv, exportXlsx, accountOptions, cashAccounts, accName, subnav, card, dateRangeInputs, val, form, loadMeta, linesEditor, readLines, warnList, portalUrl, addDays, monthStart,
-  renderOverview, renderBooks, plTable});
+  renderOverview, plTable, legacy, reportForecast, reportClients,
+  booksPL, booksBS, booksTB, booksCF, booksGL, booksJournals, booksCoa, booksNotes, booksParties, booksClose, booksAudit});
 })();
 
 /* ══════════ 🔁 SUBSCRIPTIONS / 🧾 TAX / ⚙️ OPERATIONS ══════════ */
@@ -394,16 +426,13 @@ Object.assign(L, {api, post, qs, today, fyStart, money, m0, pct, numCell, empty,
 'use strict';
 const L=window.AccLedger;
 const {api, post, qs, today, fyStart, money, m0, pct, numCell, empty, spinner, errBox, can, toast, act, download, toCsv, exportXlsx, accountOptions, cashAccounts, accName, subnav, card, dateRangeInputs, val, form, loadMeta, linesEditor, readLines, portalUrl, addDays}=L;
-const body=tab=>document.querySelector(`#${tab} .acc-sub-body`);
+// Refresh target after a save: the section on screen (the argument is kept for readability only).
+const body=()=>document.querySelector('.page.active .acc-sub-body');
 const statusBadge=s=>`<span class="badge ${({active:'paid', trialing:'sent', past_due:'failed', suspended:'void', paused:'draft', cancelled:'void', open:'sent', paid:'paid', overdue:'void', draft:'draft', posted:'sent', pending:'pending', approved:'paid', rejected:'void'})[s]||'draft'}">${esc(String(s).replace('_',' '))}</span>`;
 const docs=()=>typeof allDocuments!=='undefined'?allDocuments:[];
 const fpCust=()=>typeof fpCustomers!=='undefined'?fpCustomers:[];
 
 /* ── 🔁 Subscriptions ── */
-async function renderSubs(root){
-  await loadMeta();
-  subnav(root, 'subs', [['metrics','📊 SaaS Metrics'],['subs','🔁 Subscriptions'],['plans','📦 Plans & Coupons'],['usage','📈 Usage'],['revrec','🗓️ Revenue Recognition'],['collect','📨 Dunning & Reminders'],['settle','💳 Gateway Settlements']], (k, b)=>({metrics:subsMetrics, subs:subsList, plans:subsPlans, usage:subsUsage, revrec:subsRevrec, collect:subsCollect, settle:subsSettle})[k](b));
-}
 async function subsMetrics(b){
   try{
     const d=await api('metrics');
@@ -444,10 +473,10 @@ L.newSub=()=>form({title:'New subscription', fields:[
   {k:'gst_rate_pct', label:'GST % (blank = plan)', type:'number'}, {k:'place_of_supply', label:'Customer state code', placeholder:'e.g. 32'},
   {k:'recipient_gstin', label:'Customer GSTIN (B2B)'}, {k:'auto_invoice', label:'Billing', type:'checkbox', text:'Create invoices automatically', value:true},
   {k:'recognize_over_period', label:'Revenue', type:'checkbox', text:'Recognise multi-month invoices monthly', value:true}, {k:'bill_now', label:'Now', type:'checkbox', text:'Invoice the first period immediately', value:false}],
-  onSave:async f=>{ await post('subscriptions', f); toast('Subscription created'); subsList(body('tabSubscriptions')); }});
+  onSave:async f=>{ await post('subscriptions', f); toast('Subscription created'); subsList(body()); }});
 L.subAction=async(id, a)=>{
   const s=L.subs.find(x=>x.id===id); if(!a) return;
-  const reload=()=>subsList(body('tabSubscriptions'));
+  const reload=()=>subsList(body());
   if(a==='change') return form({title:`Change ${s.customer_name}`, fields:[{k:'plan_id', label:'New plan', type:'select', options:planOpts()},{k:'amount', label:'New price (blank = plan)', type:'number', step:'0.01'},{k:'quantity', label:'Quantity', type:'number', value:s.quantity},{k:'effective_date', label:'Effective', type:'date', value:today()},{k:'prorate', label:'Proration', type:'checkbox', text:'Prorate the rest of this period', value:true}],
     onSave:async f=>{ const r=await post('subscriptions/change', {id, ...f}); toast(r.proration?`${r.proration.type==='invoice'?'Proration invoice':'Credit note'} for ${m0(r.proration.amount)}`:'Plan changed'); reload(); }});
   if(a==='edit') return form({title:`Edit ${s.customer_name}`, fields:[{k:'customer_name', label:'Customer', value:s.customer_name},{k:'customer_email', label:'Email', value:s.customer_email},{k:'next_billing_date', label:'Next billing date', type:'date', value:s.next_billing_date},{k:'gst_rate_pct', label:'GST %', type:'number', value:s.gst_rate_pct},{k:'place_of_supply', label:'State code', value:s.place_of_supply},{k:'recipient_gstin', label:'GSTIN', value:s.recipient_gstin},{k:'auto_invoice', label:'Billing', type:'checkbox', text:'Auto-invoice', value:!!s.auto_invoice},{k:'notes', label:'Notes', type:'textarea', value:s.notes, full:true}],
@@ -460,8 +489,8 @@ L.subAction=async(id, a)=>{
   const r=await act(()=>post('subscriptions/action', payload), 'Done'); if(r?.invoices?.length) toast(`Created ${r.invoices.length} invoice(s)`);
   reload();
 };
-L.billingRun=async()=>{ const r=await act(()=>post('billing-run')); if(r){ const n=r.results.reduce((s,x)=>s+(x.invoices?.length||0),0); toast(n?`Created ${n} invoice(s)`:'Nothing due today'); if(n && typeof loadDocuments==='function'){ try{ await loadDocuments(); renderDocumentsTable(); }catch(_){} } } subsList(body('tabSubscriptions')); };
-L.importFp=async()=>{ const r=await act(()=>post('import-fp-customers')); if(r) toast(`Imported ${r.imported}`); subsList(body('tabSubscriptions')); };
+L.billingRun=async()=>{ const r=await act(()=>post('billing-run')); if(r){ const n=r.results.reduce((s,x)=>s+(x.invoices?.length||0),0); toast(n?`Created ${n} invoice(s)`:'Nothing due today'); if(n && typeof loadDocuments==='function'){ try{ await loadDocuments(); renderDocumentsTable(); }catch(_){} } } subsList(body()); };
+L.importFp=async()=>{ const r=await act(()=>post('import-fp-customers')); if(r) toast(`Imported ${r.imported}`); subsList(body()); };
 async function subsPlans(b){
   try{
     const [p, c]=await Promise.all([api('plans'), api('coupons')]); L.plans=p.list;
@@ -474,9 +503,9 @@ async function subsPlans(b){
 L.editPlan=(p={})=>form({title:p.id?'Edit plan':'New plan', fields:[{k:'name', label:'Name', value:p.name},{k:'code', label:'Code', value:p.code},{k:'amount', label:'Price per period', type:'number', step:'0.01', value:p.amount},{k:'currency', label:'Currency', value:p.currency||L.meta?.settings?.base_currency},
   {k:'interval', label:'Interval', type:'select', value:p.interval||'month', options:[['month','Monthly'],['quarter','Quarterly'],['half_year','Half-yearly'],['year','Yearly']]},{k:'trial_days', label:'Trial days', type:'number', value:p.trial_days||0},{k:'gst_rate_pct', label:'GST %', type:'number', value:p.gst_rate_pct??18},{k:'sac_code', label:'SAC code', value:p.sac_code||'998314'},
   {k:'metered_unit_name', label:'Metered unit (optional)', value:p.metered_unit_name, placeholder:'e.g. messages'},{k:'metered_unit_price', label:'Price per extra unit', type:'number', step:'0.0001', value:p.metered_unit_price},{k:'included_units', label:'Units included per seat', type:'number', value:p.included_units},{k:'is_active', label:'Status', type:'checkbox', text:'Active', value:p.id?!!p.is_active:true}],
-  onSave:async f=>{ await post('plans', {...f, id:p.id}); toast('Plan saved'); subsPlans(body('tabSubscriptions')); }});
+  onSave:async f=>{ await post('plans', {...f, id:p.id}); toast('Plan saved'); subsPlans(body()); }});
 L.editCoupon=(c={})=>form({title:c.id?'Edit coupon':'New coupon', fields:[{k:'code', label:'Code', value:c.code},{k:'kind', label:'Type', type:'select', value:c.kind||'pct', options:[['pct','Percentage'],['amount','Fixed amount per period']]},{k:'value', label:'Value', type:'number', value:c.value},{k:'duration_months', label:'Duration in months (0 = forever)', type:'number', value:c.duration_months||0},{k:'max_redemptions', label:'Max redemptions (0 = unlimited)', type:'number', value:c.max_redemptions||0},{k:'valid_till', label:'Valid till', type:'date', value:c.valid_till},{k:'is_active', label:'Status', type:'checkbox', text:'Active', value:c.id?!!c.is_active:true}],
-  onSave:async f=>{ await post('coupons', {...f, id:c.id}); toast('Coupon saved'); subsPlans(body('tabSubscriptions')); }});
+  onSave:async f=>{ await post('coupons', {...f, id:c.id}); toast('Coupon saved'); subsPlans(body()); }});
 async function subsUsage(b){
   try{ const {list}=await api('usage');
     b.innerHTML=card('Metered usage', '', `<div class="s-hint" style="margin-bottom:10px">Record usage from a subscription's Actions menu, or POST it from your app. Usage above the plan's included units is billed on the next invoice.</div><div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Metric</th><th class="num">Qty</th><th>Billed</th></tr></thead><tbody>${list.length?list.map(u=>`<tr><td>${u.usage_date}</td><td>${esc(u.customer_name||'#'+u.subscription_id)}</td><td>${esc(u.metric||'')}</td><td class="num">${u.quantity}</td><td>${u.billed_invoice_id?'Invoice #'+u.billed_invoice_id:'—'}</td></tr>`).join(''):empty('No usage recorded.',5)}</tbody></table></div>`);
@@ -489,8 +518,8 @@ async function subsRevrec(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.newRevrec=()=>form({title:'Defer an invoice', fields:[{k:'invoice_id', label:'Invoice', type:'select', options:docs().filter(d=>d.type==='invoice').map(d=>[d.Id||d.id, `#${d.Id||d.id} · ${d.customer_name||''} · ${d.currency||''} ${d.subtotal}`])},{k:'start_month', label:'First month', type:'month', value:today().slice(0,7)},{k:'months', label:'Number of months', type:'number', value:12},{k:'revenue_account_id', label:'Revenue account (optional)', type:'account', filter:a=>a.type==='income'}],
-  onSave:async f=>{ await post('revrec', f); toast('Schedule saved'); subsRevrec(body('tabSubscriptions')); }});
-L.delRevrec=async id=>{ if(!confirm('Remove this schedule? The invoice will be recognised in full on its date.')) return; await act(()=>post('revrec/delete', {invoice_id:id}), 'Removed'); subsRevrec(body('tabSubscriptions')); };
+  onSave:async f=>{ await post('revrec', f); toast('Schedule saved'); subsRevrec(body()); }});
+L.delRevrec=async id=>{ if(!confirm('Remove this schedule? The invoice will be recognised in full on its date.')) return; await act(()=>post('revrec/delete', {invoice_id:id}), 'Removed'); subsRevrec(body()); };
 async function subsCollect(b){
   try{ await loadMeta(true); const s=L.meta.settings; const D=JSON.parse(s.dunning_json||'null')||L.meta.defaults.dunning, R=JSON.parse(s.reminders_json||'null')||L.meta.defaults.reminders;
     const {list}=await api('reminders-log');
@@ -504,7 +533,7 @@ async function subsCollect(b){
 const nums=s=>String(s||'').split(',').map(x=>Number(x.trim())).filter(x=>!isNaN(x)&&String(x)!=='');
 L.saveCollect=()=>act(()=>post('settings', {reminders:{enabled:document.getElementById('accRemOn').checked, offsets:nums(val('accRemOffsets')), email:document.getElementById('accRemEmail').checked, whatsapp:document.getElementById('accRemWa').checked},
   dunning:{enabled:document.getElementById('accDunOn').checked, reminder_days:nums(val('accDunDays')), suspend_after_days:Number(val('accDunSuspend'))||0, email:document.getElementById('accDunEmail').checked, whatsapp:document.getElementById('accDunWa').checked}}), 'Saved');
-L.runCollections=async()=>{ const r=await act(()=>post('collections-run')); if(r) toast(`${r.sent.length} reminder step(s) processed`); subsCollect(body('tabSubscriptions')); };
+L.runCollections=async()=>{ const r=await act(()=>post('collections-run')); if(r) toast(`${r.sent.length} reminder step(s) processed`); subsCollect(body()); };
 async function subsSettle(b){
   try{ const {list}=await api('settlements');
     b.innerHTML=card('Payment gateway settlements', can('accountant')?'<button class="save-btn sec" onclick="AccLedger.importSettle()">⬆ Import CSV</button><button class="save-btn" onclick="AccLedger.editSettle()">+ Settlement</button>':'', `<div class="s-hint" style="margin-bottom:10px">Receipts without a bank account sit in Undeposited Funds at the gross amount. A settlement moves the net payout into your bank and books the gateway fee and the GST on it (claimable as input credit).</div>
@@ -512,17 +541,13 @@ async function subsSettle(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.editSettle=()=>form({title:'New settlement', fields:[{k:'gateway', label:'Gateway', value:'razorpay'},{k:'settlement_ref', label:'Settlement ID / UTR'},{k:'settlement_date', label:'Date', type:'date', value:today()},{k:'bank_account_id', label:'Paid into', type:'select', options:bankOpts()},{k:'gross', label:'Gross collected', type:'number', step:'0.01'},{k:'fee', label:'Gateway fee', type:'number', step:'0.01'},{k:'tax_on_fee', label:'GST on fee', type:'number', step:'0.01'},{k:'net', label:'Net (blank = gross − fee − GST)', type:'number', step:'0.01'}],
-  onSave:async f=>{ await post('settlements', f); toast('Saved'); subsSettle(body('tabSubscriptions')); }});
+  onSave:async f=>{ await post('settlements', f); toast('Saved'); subsSettle(body()); }});
 L.importSettle=()=>form({title:'Import settlements CSV', fields:[{k:'gateway', label:'Gateway', value:'razorpay'},{k:'bank_account_id', label:'Paid into', type:'select', options:bankOpts()},{k:'csv', label:'Paste CSV (header row: settlement id, date, amount/gross, fee, tax, net)', type:'textarea', rows:8, full:true}],
-  onSave:async f=>{ const r=await post('settlements/import', f); toast(`Imported ${r.imported}${r.skipped?`, skipped ${r.skipped}`:''}`); subsSettle(body('tabSubscriptions')); }});
-L.delSettle=async id=>{ if(!confirm('Delete this settlement?')) return; await act(()=>post('settlements/delete', {id}), 'Deleted'); subsSettle(body('tabSubscriptions')); };
+  onSave:async f=>{ const r=await post('settlements/import', f); toast(`Imported ${r.imported}${r.skipped?`, skipped ${r.skipped}`:''}`); subsSettle(body()); }});
+L.delSettle=async id=>{ if(!confirm('Delete this settlement?')) return; await act(()=>post('settlements/delete', {id}), 'Deleted'); subsSettle(body()); };
 function bankOpts(){ return [['','— Select —'], ...(L.meta?.accounts||[]).filter(a=>a.bank_account_id).map(a=>[a.bank_account_id, a.name])]; }
 
 /* ── 🧾 Tax ── */
-async function renderTax(root){
-  await loadMeta();
-  subnav(root, 'tax', [['gstr1','📤 GSTR-1'],['gstr3b','🧾 GSTR-3B'],['purchases','📥 Purchase Tax & ITC'],['tds','🏛️ TDS'],['einv','🔏 E-invoice'],['fx','💱 FX Rates']], (k,b)=>({gstr1:taxGstr1, gstr3b:taxGstr3b, purchases:taxPurchases, tds:taxTds, einv:taxEinv, fx:taxFx})[k](b));
-}
 const monthInput=id=>`<input class="s-input" type="month" id="${id}" value="${today().slice(0,7)}" style="width:auto">`;
 function gTable(title, rows, cols){
   if(!rows.length) return '';
@@ -603,10 +628,10 @@ async function taxTds(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.newChallan=()=>form({title:'TDS challan paid', fields:[{k:'paid_date', label:'Paid on', type:'date', value:today()},{k:'section', label:'Section', placeholder:'194J'},{k:'quarter', label:'Quarter (blank = from date)'},{k:'amount', label:'Tax', type:'number', step:'0.01'},{k:'interest', label:'Interest / late fee', type:'number', step:'0.01'},{k:'challan_no', label:'Challan serial no.'},{k:'bsr_code', label:'BSR code'},{k:'bank_account_id', label:'Paid from', type:'select', options:bankOpts()}],
-  onSave:async f=>{ await post('tds/challan', f); toast('Challan saved'); taxTds(body('tabTax')); }});
+  onSave:async f=>{ await post('tds/challan', f); toast('Challan saved'); taxTds(body()); }});
 L.newTdsRec=()=>form({title:'TDS deducted by a customer', fields:[{k:'linked_invoice_id', label:'Against invoice', type:'select', options:[['','— None —'], ...docs().filter(d=>d.type==='invoice').map(d=>[d.Id||d.id, `#${d.Id||d.id} · ${d.customer_name||''} · ${d.total}`])]},{k:'party_name', label:'Customer (if no invoice)'},{k:'entry_date', label:'Date', type:'date', value:today()},{k:'tan', label:'Customer TAN'},{k:'section', label:'Section', placeholder:'194J'},{k:'base_amount', label:'Amount TDS was deducted on', type:'number'},{k:'amount', label:'TDS amount', type:'number', step:'0.01'},{k:'offset_account_id', label:'Adjust against (blank = invoice receivable)', type:'account', filter:a=>a.type==='asset'},{k:'certificate_no', label:'Form 16A no.'}],
-  onSave:async f=>{ await post('tds/receivable', f); toast('Recorded'); taxTds(body('tabTax')); }});
-L.delTds=async(kind,id)=>{ if(!confirm('Delete?')) return; await act(()=>post('tds/delete', {kind, id}), 'Deleted'); taxTds(body('tabTax')); };
+  onSave:async f=>{ await post('tds/receivable', f); toast('Recorded'); taxTds(body()); }});
+L.delTds=async(kind,id)=>{ if(!confirm('Delete?')) return; await act(()=>post('tds/delete', {kind, id}), 'Deleted'); taxTds(body()); };
 L.export26q=()=>{ const d=L.tds; if(!d) return; download('tds-deductions.csv', toCsv([['Quarter','Date','Deductee','PAN','Section','Amount paid','Rate','TDS','Source'], ...d.deductions.map(x=>[x.quarter,x.date,x.deductee,x.pan,x.section,x.amount_paid,x.rate,x.tds,x.source])]), 'text/csv'); };
 L.recon26as=()=>form({title:'Match TDS receivable with Form 26AS / AIS', fields:[{k:'csv', label:'Paste 26AS Part A rows (CSV with a header: deductor name, TAN, amount, TDS)', type:'textarea', rows:8, full:true}], submit:'Match',
   onSave:async f=>{ const r=await post('tds/26as', f); document.getElementById('acc26asOut').innerHTML=`<div class="card-title" style="margin-top:14px">26AS match — ${r.rows.length-r.unmatched_in_26as}/${r.rows.length} matched · 26AS ${m0(r.total_26as)} vs books ${m0(r.total_books)}</div><div class="tbl-wrap"><table><thead><tr><th>Deductor</th><th>TAN</th><th class="num">TDS</th><th>In books?</th></tr></thead><tbody>${r.rows.map(x=>`<tr><td>${esc(x.deductor)}</td><td>${esc(x.tan)}</td>${numCell(x.tds)}<td>${x.matched?'✓':'<span class="badge void">missing</span>'}</td></tr>`).join('')}</tbody></table></div>${r.unmatched_in_books.length?`<div class="acc-warn">In books but not in 26AS: ${r.unmatched_in_books.map(x=>`${esc(x.party||'')} ${m0(x.amount)}`).join(', ')}</div>`:''}`; }});
@@ -633,26 +658,24 @@ async function taxFx(b){
       +card('Unrealised FX on open invoices & bills', `<span class="acc-muted">Net ${money(r.net_gain_loss)}</span>`, `<div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Party</th><th>Currency</th><th class="num">Open</th><th class="num">Booked rate</th><th class="num">Today</th><th class="num">Gain / (loss)</th></tr></thead><tbody>${r.rows.length?r.rows.map(x=>`<tr><td>${esc(x.ref)}</td><td>${esc(x.party||'')}</td><td>${esc(x.currency)}</td>${numCell(x.open)}<td class="num">${x.booked_rate}</td><td class="num">${x.current_rate}</td>${numCell(x.gain_loss)}</tr>`).join(''):empty('No open foreign-currency items.',7)}</tbody></table></div><div class="s-hint">Report only — post a manual journal against Foreign Exchange Gain / Loss if you want it booked at period end.</div>`);
   }catch(e){ b.innerHTML=errBox(e); }
 }
-L.newFx=()=>form({title:'Exchange rate', fields:[{k:'currency', label:'Currency', placeholder:'USD'},{k:'rate_date', label:'Date', type:'date', value:today()},{k:'rate', label:`Value of 1 unit in ${L.meta?.settings?.base_currency||'INR'}`, type:'number', step:'0.0001'}], onSave:async f=>{ await post('fx', f); toast('Rate saved'); taxFx(body('tabTax')); }});
-L.delFx=async id=>{ await act(()=>post('fx/delete', {id}), 'Deleted'); taxFx(body('tabTax')); };
+L.newFx=()=>form({title:'Exchange rate', fields:[{k:'currency', label:'Currency', placeholder:'USD'},{k:'rate_date', label:'Date', type:'date', value:today()},{k:'rate', label:`Value of 1 unit in ${L.meta?.settings?.base_currency||'INR'}`, type:'number', step:'0.0001'}], onSave:async f=>{ await post('fx', f); toast('Rate saved'); taxFx(body()); }});
+L.delFx=async id=>{ await act(()=>post('fx/delete', {id}), 'Deleted'); taxFx(body()); };
 
-/* ── ⚙️ Operations ── */
-async function renderOps(root){
-  await loadMeta();
-  L.opsShow=subnav(root, 'ops', [['settings','⚙️ Settings'],['recurring','🔁 Recurring Journals'],['bank','🏦 Bank Feed Rules'],['approvals','✅ Approvals'],['assets','🖥️ Fixed Assets'],['payroll','👩‍💼 Payroll'],['budget','🎯 Budgets'],['links','🔗 Payment Links & Portal'],['allocations','🎯 Cost Allocation'],['categorise','🏷️ Categorise Expenses'],['exports','⬇ Exports'],['roles','👥 Roles']],
-    (k,b)=>({settings:opsSettings, recurring:opsRecurring, bank:opsBank, approvals:opsApprovals, assets:opsAssets, payroll:opsPayroll, budget:opsBudget, links:opsLinks, allocations:opsAlloc, categorise:opsCategorise, exports:opsExports, roles:opsRoles})[k](b));
-}
-L.openOps=k=>{ showTab('ops'); setTimeout(()=>{ const b=document.querySelector(`#tabOps .fp-pill[data-k="${k}"]`); if(b) b.click(); }, 50); };
+/* ── ⚙️ Settings, recurring journals, bank rules, approvals, assets, payroll, budgets… ── */
 async function opsSettings(b){
   await loadMeta(true); const s=L.meta.settings;
   const f=(k,l,v,t='text',extra='')=>`<div><label class="s-lbl">${l}</label><input class="s-input" id="accS_${k}" type="${t}" value="${escAttr(v??'')}" ${extra}></div>`;
-  b.innerHTML=card('Ledger settings', '', `<div class="modal-grid">
+  const fp=typeof fpConfig!=='undefined'&&fpConfig?fpConfig:{};
+  const state=s.state_code||fp.business_state_code||'';
+  const states=(typeof INDIA_STATES!=='undefined'?INDIA_STATES:[]).map(([c,n])=>`<option value="${c}" ${state===c?'selected':''}>${c} — ${esc(n)}</option>`).join('');
+  b.innerHTML=card('Business &amp; tax', '', `<div class="s-hint" style="margin-bottom:12px">One place for currency and GST — invoices, Financial Planning and the books all use these.</div><div class="modal-grid">
     ${f('business_name','Legal business name',s.business_name)}${f('base_currency','Base (reporting) currency',s.base_currency)}
     <div><label class="s-lbl">Financial year starts</label><select class="s-input" id="accS_fy_start_month">${['January','February','March','April','May','June','July','August','September','October','November','December'].map((m,i)=>`<option value="${i+1}" ${s.fy_start_month==i+1?'selected':''}>${m}</option>`).join('')}</select></div>
     ${f('payment_terms_days','Default payment terms (days)',s.payment_terms_days,'number')}
     <div><label class="s-lbl">Default "paid from" account</label><select class="s-input" id="accS_default_payment_account_id">${accountOptions(s.default_payment_account_id, cashAccounts)}</select><div class="s-hint">Used for expenses and bill payments with no bank account picked (default: Cash in Hand)</div></div>
     <div><label class="s-lbl">New chart template</label><select class="s-input" id="accS_coa_template"><option value="both" ${s.coa_template==='both'?'selected':''}>Agency + SaaS</option><option value="agency" ${s.coa_template==='agency'?'selected':''}>Marketing agency</option><option value="saas" ${s.coa_template==='saas'?'selected':''}>SaaS</option></select></div>
-    ${f('gstin','GSTIN',s.gstin)}${f('state_code','GST state code',s.state_code,'text','placeholder="e.g. 32"')}${f('pan','PAN',s.pan)}${f('tan','TAN (for TDS)',s.tan)}
+    ${f('gstin','GSTIN',s.gstin||fp.business_gstin)}<div><label class="s-lbl">Business state (GST)</label><select class="s-input" id="accS_state_code"><option value="">— Select state —</option>${states}</select></div>
+    ${f('default_gst_rate','Default GST rate % on invoices',fp.default_gst_rate??'','number')}${f('pan','PAN',s.pan)}${f('tan','TAN (for TDS)',s.tan)}
     ${f('lut_number','LUT number (exports without IGST)',s.lut_number)}${f('lut_valid_till','LUT valid till',s.lut_valid_till,'date')}${f('upi_id','UPI ID (on reminders & portal)',s.upi_id)}${f('upi_name','UPI payee name',s.upi_name)}
     <div><label class="acc-check"><input type="checkbox" id="accS_expense_approval_required" ${s.expense_approval_required?'checked':''}> Expenses need approval before they post</label><label class="acc-check"><input type="checkbox" id="accS_email_invoices" ${s.email_invoices?'checked':''}> Email subscription invoices automatically</label></div>
     </div>${can('admin')?'<div class="modal-actions"><button class="save-btn" onclick="AccLedger.saveSettings()">Save settings</button></div>':''}<div class="s-hint">Your role: <b>${esc(L.meta.role)}</b>. Changing the base currency re-posts every open-period entry at the new currency's exchange rates.</div>`);
@@ -662,6 +685,12 @@ L.saveSettings=async()=>{
   for(const k of ['business_name','base_currency','fy_start_month','payment_terms_days','default_payment_account_id','coa_template','gstin','state_code','pan','tan','lut_number','lut_valid_till','upi_id','upi_name']) body[k]=g(k).value;
   body.expense_approval_required=g('expense_approval_required').checked; body.email_invoices=g('email_invoices').checked;
   await act(()=>post('settings', body), 'Settings saved'); await loadMeta(true);
+  // Documents and Financial Planning read currency/GST from fp_config — keep it identical.
+  try{
+    const fp=await acctFetch('/financial/config',{method:'PATCH', body:JSON.stringify({default_currency:body.base_currency, business_gstin:body.gstin, business_state_code:body.state_code, default_gst_rate:Number(g('default_gst_rate').value)||0})});
+    if(typeof fpConfig!=='undefined') fpConfig=fp;
+    if(typeof renderFpConfigForm==='function') renderFpConfigForm();
+  }catch(e){ toast('Saved, but invoice GST/currency settings did not sync: '+e.message, true); }
 };
 async function opsRecurring(b){
   try{ const {list}=await api('recurring'); L.rec=list;
@@ -670,9 +699,9 @@ async function opsRecurring(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.editRec=i=>{ const r=i!=null?L.rec[i]:{}; form({title:r.id?'Edit recurring journal':'New recurring journal', wide:true, fields:[{k:'name', label:'Name', value:r.name},{k:'frequency', label:'Every', type:'select', value:r.frequency||'month', options:[['week','Week'],['month','Month'],['quarter','Quarter'],['half_year','6 months'],['year','Year']]},{k:'next_date', label:'Next date', type:'date', value:r.next_date||today()},{k:'end_date', label:'End date (optional)', type:'date', value:r.end_date},{k:'memo', label:'Narration', value:r.memo},{k:'is_active', label:'Status', type:'checkbox', text:'Active', value:r.id?!!r.is_active:true}],
-  extraHtml:linesEditor(r.lines_json?JSON.parse(r.lines_json):null), onSave:async f=>{ await post('recurring', {...f, id:r.id, lines:readLines()}); toast('Saved'); opsRecurring(body('tabOps')); }}); L.lineTotals(); };
-L.delRec=async id=>{ if(!confirm('Delete this template? Entries already posted stay.')) return; await act(()=>post('recurring/delete', {id}), 'Deleted'); opsRecurring(body('tabOps')); };
-L.runRec=async()=>{ const r=await act(()=>post('recurring/run')); if(r) toast(`Posted ${r.posted.filter(p=>!p.error).length} journal(s)`); opsRecurring(body('tabOps')); };
+  extraHtml:linesEditor(r.lines_json?JSON.parse(r.lines_json):null), onSave:async f=>{ await post('recurring', {...f, id:r.id, lines:readLines()}); toast('Saved'); opsRecurring(body()); }}); L.lineTotals(); };
+L.delRec=async id=>{ if(!confirm('Delete this template? Entries already posted stay.')) return; await act(()=>post('recurring/delete', {id}), 'Deleted'); opsRecurring(body()); };
+L.runRec=async()=>{ const r=await act(()=>post('recurring/run')); if(r) toast(`Posted ${r.posted.filter(p=>!p.error).length} journal(s)`); opsRecurring(body()); };
 async function opsBank(b){
   try{ const [rules, un]=await Promise.all([api('bank-rules'), api('bank-unmatched')]); L.unmatched=un.list;
     b.innerHTML=card('Unmatched bank statement lines', can('accountant')?'<button class="save-btn" onclick="AccLedger.categorizeLines()">Post selected</button>':'', `<div class="s-hint" style="margin-bottom:8px">Lines from statements uploaded in Bank &amp; Cash → Reconciliation that didn't match a payment. Pick an account (rules and keywords pre-fill it) and post — each becomes a reconciled payment entry.</div>
@@ -685,11 +714,11 @@ L.categorizeLines=async()=>{
   const items=[...document.querySelectorAll('.acc-bl-sel:checked')].map(c=>{ const i=c.dataset.i; const l=L.unmatched[i]; const rule=document.querySelector(`.acc-bl-rule[data-i="${i}"]`).value.trim();
     return {line_id:l.id, account_id:document.querySelector(`.acc-bl-acct[data-i="${i}"]`).value, party_name:l.party_name, create_rule:!!rule, rule_text:rule}; }).filter(x=>x.account_id);
   if(!items.length) return toast('Select lines and pick accounts', true);
-  const r=await act(()=>post('bank-categorize', {items})); if(r) toast(`Posted ${r.categorized}${r.errors.length?`, ${r.errors.length} skipped`:''}`); opsBank(body('tabOps'));
+  const r=await act(()=>post('bank-categorize', {items})); if(r) toast(`Posted ${r.categorized}${r.errors.length?`, ${r.errors.length} skipped`:''}`); opsBank(body());
 };
 L.editRule=()=>form({title:'New matching rule', fields:[{k:'match_text', label:'Description contains', placeholder:'e.g. GOOGLE ADS'},{k:'direction', label:'Direction', type:'select', options:[['any','Money in or out'],['out','Money out'],['in','Money in']]},{k:'account_id', label:'Post to account', type:'account'},{k:'party_name', label:'Party (optional)'},{k:'priority', label:'Priority (lower first)', type:'number', value:100}],
-  onSave:async f=>{ await post('bank-rules', f); toast('Rule saved'); opsBank(body('tabOps')); }});
-L.delRule=async id=>{ await act(()=>post('bank-rules/delete', {id}), 'Deleted'); opsBank(body('tabOps')); };
+  onSave:async f=>{ await post('bank-rules', f); toast('Rule saved'); opsBank(body()); }});
+L.delRule=async id=>{ await act(()=>post('bank-rules/delete', {id}), 'Deleted'); opsBank(body()); };
 async function opsApprovals(b){
   try{ const {list}=await api('approvals?status=pending');
     b.innerHTML=card('Expenses waiting for approval', can('approver')&&list.length?'<button class="save-btn sec" onclick="AccLedger.decide(\'reject\')">Reject selected</button><button class="save-btn" onclick="AccLedger.decide(\'approve\')">Approve selected</button>':'', `${L.meta.settings.expense_approval_required?'':'<div class="acc-warn">Approval is switched off (Operations → Settings) — new expenses post straight away.</div>'}
@@ -697,7 +726,7 @@ async function opsApprovals(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.decide=async decision=>{ const ids=[...document.querySelectorAll('.acc-ap-sel:checked')].map(c=>Number(c.value)); if(!ids.length) return; const note=decision==='reject'?prompt('Reason for rejecting?'):''; if(note==null) return;
-  await act(()=>post('approvals/decide', {expense_ids:ids, decision, note}), decision==='approve'?'Approved':'Rejected'); opsApprovals(body('tabOps')); };
+  await act(()=>post('approvals/decide', {expense_ids:ids, decision, note}), decision==='approve'?'Approved':'Rejected'); opsApprovals(body()); };
 async function opsAssets(b){
   try{ const {list}=await api('assets'); L.assets=list;
     b.innerHTML=card('Fixed asset register', can('accountant')?'<button class="save-btn" onclick="AccLedger.editAsset()">+ Asset</button>':'', `<div class="tbl-wrap"><table><thead><tr><th>Asset</th><th>Bought</th><th class="num">Cost</th><th>Method</th><th class="num">Depreciated</th><th class="num">Book value</th><th class="num">This month</th><th></th></tr></thead><tbody>
@@ -707,8 +736,8 @@ async function opsAssets(b){
 L.editAsset=i=>{ const a=i!=null?L.assets[i]:{}; form({title:a.id?'Edit asset':'New fixed asset', fields:[{k:'name', label:'Asset', value:a.name},{k:'category', label:'Category', value:a.category, placeholder:'Computers'},{k:'asset_account_id', label:'Asset account', type:'account', value:a.asset_account_id, filter:x=>x.subtype==='fixed'},{k:'purchase_date', label:'Purchase date', type:'date', value:a.purchase_date||today()},{k:'cost', label:'Cost (excl. GST claimed)', type:'number', step:'0.01', value:a.cost},{k:'salvage', label:'Residual value', type:'number', value:a.salvage||0},
   {k:'method', label:'Method', type:'select', value:a.method||'slm', options:[['slm','Straight line'],['wdv','Written-down value']]},{k:'useful_life_months', label:'Useful life (months, SLM)', type:'number', value:a.useful_life_months||36},{k:'wdv_rate_pct', label:'WDV rate % per year', type:'number', value:a.wdv_rate_pct||40},{k:'paid_from_account_id', label:'Paid from (blank = Accounts Payable)', type:'account', value:a.paid_from_account_id, filter:x=>x.type==='asset'||x.type==='liability'||x.type==='equity'},
   {k:'disposed_date', label:'Disposed on', type:'date', value:a.disposed_date},{k:'disposal_amount', label:'Sale proceeds', type:'number', value:a.disposal_amount||0},{k:'disposal_account_id', label:'Proceeds received in', type:'account', value:a.disposal_account_id, filter:cashAccounts}],
-  onSave:async f=>{ await post('assets', {...f, id:a.id}); toast('Asset saved'); opsAssets(body('tabOps')); }}); };
-L.delAsset=async id=>{ if(!confirm('Delete this asset and all its depreciation?')) return; await act(()=>post('assets/delete', {id}), 'Deleted'); opsAssets(body('tabOps')); };
+  onSave:async f=>{ await post('assets', {...f, id:a.id}); toast('Asset saved'); opsAssets(body()); }}); };
+L.delAsset=async id=>{ if(!confirm('Delete this asset and all its depreciation?')) return; await act(()=>post('assets/delete', {id}), 'Deleted'); opsAssets(body()); };
 async function opsPayroll(b){
   try{ const [e, p]=await Promise.all([api('employees'), api('payroll')]); L.emps=e.list; L.runs=p.list;
     b.innerHTML=card('Payroll runs', can('accountant')?'<button class="save-btn" onclick="AccLedger.prepPayroll()">+ Prepare month</button>':'', p.list.length?p.list.map(r=>`<div class="acc-journal"><div class="acc-j-head"><b>${r.period_month}</b> ${statusBadge(r.status)} <span class="acc-j-memo">Gross ${m0(r.gross)} · Net pay ${m0(r.net)} · Cost to company ${m0(r.employer_cost)}</span>
@@ -718,14 +747,14 @@ async function opsPayroll(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.editEmp=i=>{ const x=i!=null?L.emps[i]:{}; form({title:x.id?'Edit employee':'New employee', fields:[{k:'name', label:'Name', value:x.name},{k:'email', label:'Email', value:x.email},{k:'pan', label:'PAN', value:x.pan},{k:'uan', label:'UAN', value:x.uan},{k:'designation', label:'Designation', value:x.designation},{k:'department', label:'Department', value:x.department},{k:'basic', label:'Basic / month', type:'number', value:x.basic},{k:'hra', label:'HRA / month', type:'number', value:x.hra},{k:'other_allowances', label:'Other allowances / month', type:'number', value:x.other_allowances},{k:'pt_monthly', label:'Professional tax / month', type:'number', value:x.pt_monthly??200},{k:'tds_monthly', label:'TDS / month', type:'number', value:x.tds_monthly},{k:'joined_on', label:'Joined', type:'date', value:x.joined_on},{k:'pf_applicable', label:'PF', type:'checkbox', text:'PF applicable', value:x.id?!!x.pf_applicable:true},{k:'esi_applicable', label:'ESI', type:'checkbox', text:'ESI applicable', value:x.id?!!x.esi_applicable:true},{k:'is_active', label:'Status', type:'checkbox', text:'Active', value:x.id?!!x.is_active:true}],
-  onSave:async f=>{ await post('employees', {...f, id:x.id}); toast('Saved'); opsPayroll(body('tabOps')); }}); };
+  onSave:async f=>{ await post('employees', {...f, id:x.id}); toast('Saved'); opsPayroll(body()); }}); };
 L.prepPayroll=m=>{ const emps=(L.emps||[]).filter(e=>e.is_active);
   form({title:'Prepare payroll', wide:true, fields:[{k:'period_month', label:'Month', type:'month', value:m||today().slice(0,7)},{k:'run_date', label:'Posting date (blank = month end)', type:'date'}],
     extraHtml:`<div class="card-title">Adjustments (optional)</div><table><tr class="acc-small"><td>Employee</td><td>Paid days</td><td>Month days</td><td>Bonus</td><td>TDS override</td></tr>${emps.map(e=>`<tr class="acc-pay-ov" data-id="${e.id}"><td>${esc(e.name)}</td><td><input class="s-input" type="number" data-k="paid_days" style="width:80px"></td><td><input class="s-input" type="number" data-k="month_days" value="30" style="width:80px"></td><td><input class="s-input" type="number" data-k="bonus" style="width:100px"></td><td><input class="s-input" type="number" data-k="tds" style="width:100px"></td></tr>`).join('')}</table>`,
     submit:'Calculate', onSave:async f=>{ const overrides=[...document.querySelectorAll('.acc-pay-ov')].map(r=>{ const o={employee_id:Number(r.dataset.id)}; r.querySelectorAll('input').forEach(i=>{ if(i.value!=='') o[i.dataset.k]=i.value; }); return o; });
-      const r=await post('payroll/prepare', {...f, overrides}); toast(`Net pay ${m0(r.net)} — review and Post`); opsPayroll(body('tabOps')); }}); };
-L.payrollAct=async(id,action)=>{ if(action==='delete'&&!confirm('Delete this draft?')) return; await act(()=>post('payroll/action', {id, action}), 'Done'); opsPayroll(body('tabOps')); };
-L.payrollPay=id=>form({title:'Mark salaries paid', fields:[{k:'paid_date', label:'Paid on', type:'date', value:today()},{k:'account_id', label:'Paid from', type:'account', filter:cashAccounts}], onSave:async f=>{ await post('payroll/action', {id, action:'pay', ...f}); toast('Marked paid'); opsPayroll(body('tabOps')); }});
+      const r=await post('payroll/prepare', {...f, overrides}); toast(`Net pay ${m0(r.net)} — review and Post`); opsPayroll(body()); }}); };
+L.payrollAct=async(id,action)=>{ if(action==='delete'&&!confirm('Delete this draft?')) return; await act(()=>post('payroll/action', {id, action}), 'Done'); opsPayroll(body()); };
+L.payrollPay=id=>form({title:'Mark salaries paid', fields:[{k:'paid_date', label:'Paid on', type:'date', value:today()},{k:'account_id', label:'Paid from', type:'account', filter:cashAccounts}], onSave:async f=>{ await post('payroll/action', {id, action:'pay', ...f}); toast('Marked paid'); opsPayroll(body()); }});
 L.payslips=id=>{ const r=L.runs.find(x=>x.id===id); exportXlsx(`payroll_${r.period_month}.xlsx`, {Register:[['Employee','PAN','Paid days','Basic','HRA','Other','Gross','Employee PF','Employer PF','Employee ESI','Employer ESI','PT','TDS','Net'], ...r.lines.map(l=>[l.name,l.pan,l.paid_days,l.basic,l.hra,l.other,l.gross,l.employee_pf,l.employer_pf,l.employee_esi,l.employer_esi,l.pt,l.tds,l.net])]}); };
 async function opsBudget(b){
   const fy=Number(fyStart().slice(0,4));
@@ -757,7 +786,7 @@ L.copy=async t=>{ try{ await navigator.clipboard.writeText(t); toast('Copied'); 
 L.payLink=async id=>{ const r=await act(()=>post('payment-link', {invoice_id:id})); if(!r) return;
   const lines=[r.payment_link?.url?`Razorpay: ${r.payment_link.url}`:'Razorpay keys not set — add them in Financial Planning → Settings to create card/UPI payment links.', r.upi?`UPI: ${r.upi}`:'Add your UPI ID in Operations → Settings for a UPI link.'];
   form({title:`Collect Invoice #${id} — ${m0(r.balance)}`, fields:[{k:'links', label:'Share with the customer', type:'textarea', rows:5, value:lines.join('\n'), full:true}], submit:'Copy', onSave:async f=>{ await L.copy(f.links); }}); };
-L.revoke=async t=>{ if(!confirm('Revoke this portal link?')) return; await act(()=>post('portal-tokens/revoke', {token:t}), 'Revoked'); opsLinks(body('tabOps')); };
+L.revoke=async t=>{ if(!confirm('Revoke this portal link?')) return; await act(()=>post('portal-tokens/revoke', {token:t}), 'Revoked'); opsLinks(body()); };
 async function opsAlloc(b){
   try{ const {list}=await api('allocations'); const exps=typeof allExpenses!=='undefined'?allExpenses:[]; const bills=typeof allVendorBills!=='undefined'?allVendorBills:[];
     L.allocSrc=[...bills.map(x=>['vendor_bill', x.Id||x.id, `Bill #${x.Id||x.id} · ${x.supplier} · ${x.total} (${x.bill_date})`]), ...exps.map(x=>['expense', x.Id||x.id, `Expense #${x.Id||x.id} · ${x.vendor||x.category||''} · ${x.amount} (${x.expense_date})`])];
@@ -766,8 +795,8 @@ async function opsAlloc(b){
 }
 L.newAlloc=()=>{ const custs=[...new Set([...docs().map(d=>d.customer_name), ...fpCust().map(c=>c.name)].filter(Boolean))];
   form({title:'Allocate a cost to a client', fields:[{k:'src', label:'Cost', type:'select', options:L.allocSrc.map(s=>[`${s[0]}:${s[1]}`, s[2]])},{k:'customer_name', label:'Client', type:'select', options:custs},{k:'pct', label:'Share %', type:'number', value:100}],
-    onSave:async f=>{ const [source_type, source_id]=f.src.split(':'); await post('allocations', {source_type, source_id, customer_name:f.customer_name, pct:f.pct}); toast('Allocated'); opsAlloc(body('tabOps')); }}); };
-L.delAlloc=async id=>{ await act(()=>post('allocations/delete', {id}), 'Removed'); opsAlloc(body('tabOps')); };
+    onSave:async f=>{ const [source_type, source_id]=f.src.split(':'); await post('allocations', {source_type, source_id, customer_name:f.customer_name, pct:f.pct}); toast('Allocated'); opsAlloc(body()); }}); };
+L.delAlloc=async id=>{ await act(()=>post('allocations/delete', {id}), 'Removed'); opsAlloc(body()); };
 async function opsCategorise(b){
   try{ const d=await api('categorize'); L.cat=d.list;
     b.innerHTML=card('Categorise expenses', can('accountant')&&d.list.length?'<button class="save-btn" onclick="AccLedger.applyCat()">Apply selected</button>':'', `<div class="s-hint" style="margin-bottom:8px">Expenses and bills that would otherwise land in General / Uncategorized Expense. Suggestions come from keyword rules (rent, software, ads…); tick “Remember” to map that category permanently.</div>
@@ -776,7 +805,7 @@ async function opsCategorise(b){
   }catch(e){ b.innerHTML=errBox(e); }
 }
 L.applyCat=async()=>{ const items=[...document.querySelectorAll('.acc-cat-sel:checked')].map(c=>{ const i=c.dataset.i, x=L.cat[i]; return {source_type:x.source_type, source_id:x.source_id, account_id:document.querySelector(`.acc-cat-acct[data-i="${i}"]`).value, remember:!!document.querySelector(`.acc-cat-rem[data-i="${i}"]`)?.checked}; }).filter(x=>x.account_id);
-  const r=await act(()=>post('categorize/apply', {items})); if(r) toast(`Applied ${r.applied}`); opsCategorise(body('tabOps')); };
+  const r=await act(()=>post('categorize/apply', {items})); if(r) toast(`Applied ${r.applied}`); opsCategorise(body()); };
 async function opsExports(b){
   b.innerHTML=card('Export your books', '', `<div class="acc-inline">${dateRangeInputs('accEx', fyStart(), today())}</div>
     <div class="acc-export-grid">
@@ -797,41 +826,39 @@ async function opsRoles(b){
       <div class="acc-inline" style="margin-top:12px"><label class="s-lbl">Default role for unlisted people</label><select class="s-input" id="accDefRole" style="width:auto">${['admin','accountant','approver','viewer'].map(r=>`<option ${d.default_role===r?'selected':''}>${r}</option>`).join('')}</select><button class="save-btn sec" onclick="AccLedger.saveDefRole()">Save</button></div>`);
   }catch(e){ b.innerHTML=errBox(e); }
 }
-L.editRole=()=>form({title:'Give someone access', fields:[{k:'email', label:'Login email'},{k:'role', label:'Role', type:'select', options:[['accountant','Accountant'],['approver','Approver'],['viewer','Viewer'],['ca','External CA (read-only)'],['admin','Admin']]}], onSave:async f=>{ await post('roles', f); toast('Saved'); opsRoles(body('tabOps')); }});
-L.delRole=async email=>{ await act(()=>post('roles/delete', {email}), 'Removed'); opsRoles(body('tabOps')); };
+L.editRole=()=>form({title:'Give someone access', fields:[{k:'email', label:'Login email'},{k:'role', label:'Role', type:'select', options:[['accountant','Accountant'],['approver','Approver'],['viewer','Viewer'],['ca','External CA (read-only)'],['admin','Admin']]}], onSave:async f=>{ await post('roles', f); toast('Saved'); opsRoles(body()); }});
+L.delRole=async email=>{ await act(()=>post('roles/delete', {email}), 'Removed'); opsRoles(body()); };
 L.saveDefRole=()=>act(()=>post('settings', {default_role:val('accDefRole')}), 'Saved');
 
-Object.assign(L, {renderSubs, renderTax, renderOps, download});
+Object.assign(L, {download});
 
-/* ── Tab wiring: render each new tab the first time it's opened ── */
-const RENDER={overview:L.renderOverview, books:L.renderBooks, subscriptions:renderSubs, tax:renderTax, ops:renderOps};
+/* ── Pages (left sidebar on PC, tab strip on phones) → sections. Every screen lives in exactly one
+   place: legacy panels are mounted with L.legacy(), ledger views render fresh. ── */
+const page=(key, items)=>async root=>{ await loadMeta(); subnav(root, key, items.map(([k,l])=>[k,l]), (k,b)=>items.find(i=>i[0]===k)[2](b)); };
+const PAGES={
+  subscriptions:page('subscriptions', [['metrics','📊 SaaS Metrics',subsMetrics],['subs','🔁 Subscriptions',subsList],['plans','📦 Plans & Coupons',subsPlans],['usage','📈 Usage',subsUsage],['revrec','🗓️ Revenue Recognition',subsRevrec],
+    ['fpcust','👥 Recurring Customers',L.legacy('fpSubCustomers')],['fpdues','💵 Expected Funds',L.legacy('fpSubDues')]]),
+  customers:page('customers', [['ledgers','👥 Customers',b=>L.booksParties(b,'customer')]]),
+  collections:page('collections', [['reminders','📨 Reminders & Dunning',subsCollect],['links','🔗 Payment Links & Portal',opsLinks],['fplog','📋 Recurring-dues Reminder Log',L.legacy('fpReminderLogCard',()=>loadFpReminderLog())]]),
+  expenses:page('expenses', [['all','💸 All Expenses',L.legacy('legacyExpensesCard')],['fixed','📌 Fixed Monthly',L.legacy('fpSubExpenses')],['approvals','✅ Approvals',opsApprovals],['categorise','🏷️ Categorise',opsCategorise],['allocations','🎯 Cost Allocation',opsAlloc]]),
+  suppliers:page('suppliers', [['list','🏭 Suppliers',L.legacy('fpSubSuppliers')],['ledgers','📄 Supplier Balances',b=>L.booksParties(b,'supplier')]]),
+  bankcash:page('bankcash', [['accounts','🏦 Accounts',L.legacy('bcSubAccounts')],['payments','💳 Payment Entries',L.legacy('bcSubPayments',()=>loadPaymentEntries())],['recon','🔄 Reconciliation',L.legacy('bcSubRecon',()=>loadReconSessions())],
+    ['rules','🧩 Bank Rules & Unmatched',opsBank],['settle','💳 Gateway Settlements',subsSettle]]),
+  books:page('books', [['journals','✍️ Journals',L.booksJournals],['recurring','🔁 Recurring Journals',opsRecurring],['coa','🗂️ Chart of Accounts',L.booksCoa],['notes','↩️ Credit / Debit Notes',L.booksNotes],
+    ['assets','🖥️ Fixed Assets',opsAssets],['close','🔒 Period Close',L.booksClose],['audit','🕵️ Audit Trail',L.booksAudit]]),
+  reports:page('reports', [['pl','📈 Profit & Loss',L.booksPL],['bs','⚖️ Balance Sheet',L.booksBS],['tb','🧮 Trial Balance',L.booksTB],['cf','🌊 Cash Flow',L.booksCF],['gl','📖 General Ledger',L.booksGL],
+    ['ar','📥 Receivables Aging',L.legacy('repSubAr',()=>loadReportArAging())],['ap','📤 Payables Aging',L.legacy('repSubAp',()=>loadReportApAging())],['expbreak','🧾 Expense Breakdown',L.legacy('repSubExpbreak',()=>loadReportExpenseBreakdown())],
+    ['sales','🧮 Sales Summary',L.legacy('repSubSales')],['budget','🎯 Budget vs Actual',opsBudget],['clients','💼 Client Profitability',L.reportClients],['forecast','🔮 13-week Cash Forecast',L.reportForecast]]),
+  tax:page('tax', [['gstr1','📤 GSTR-1',taxGstr1],['gstr3b','🧾 GSTR-3B',taxGstr3b],['purchases','📥 Purchase Tax & ITC',taxPurchases],['tds','🏛️ TDS',taxTds],['einv','🔏 E-invoice',taxEinv],['fx','💱 FX Rates',taxFx]]),
+  payroll:page('payroll', [['payroll','👩‍💼 Payroll',opsPayroll]]),
+  settings:page('settings', [['general','🏢 Business & Tax',opsSettings],['payments','💳 Payments & Automation',L.legacy('fpSettingsCard')],['roles','👥 Roles',opsRoles],['exports','⬇ Exports',opsExports]]),
+};
+const RENDER={overview:L.renderOverview, ...PAGES};
 const origShowTab=window.showTab;
 window.showTab=function(name){
   origShowTab(name);
+  try{ document.querySelector(`.tab[data-tab="${name}"]`)?.scrollIntoView({block:'nearest', inline:'nearest'}); }catch(_){} // phones: keep the active tab visible in the strip
   if(RENDER[name] && !L.loaded[name]){ L.loaded[name]=true; const root=document.getElementById('tab'+name.charAt(0).toUpperCase()+name.slice(1)); RENDER[name](root.querySelector('.acc-root')||root); }
 };
 L.refresh=name=>{ L.loaded[name]=false; if(document.querySelector(`.tab[data-tab="${name}"]`)?.classList.contains('active')) window.showTab(name); };
-
-/* ── Reports tab: P&L, Trial Balance and Cash Flow now come from the ledger ── */
-window.loadReportPL=async function(){
-  const el=document.getElementById('repPlContent'); el.innerHTML=spinner;
-  try{ await loadMeta(); const d=await api(`pl?${qs({from:val('repPlFrom'), to:val('repPlTo')})}`);
-    el.innerHTML=`<div class="stat-grid" style="margin-bottom:16px"><div class="stat-card"><div class="stat-lbl">Revenue</div><div class="stat-val">${money(d.revenue)}</div></div><div class="stat-card"><div class="stat-lbl">Expenses</div><div class="stat-val">${money(d.cogs+d.opex)}</div></div><div class="stat-card"><div class="stat-lbl">Net profit</div><div class="stat-val" style="color:${d.net_profit<0?'#DC2626':'var(--ink)'}">${money(d.net_profit)}</div><div class="stat-sub">Gross margin ${pct(d.gross_margin_pct)}</div></div></div>${L.warnList(d.warnings)}${L.plTable(d)}<div class="s-hint">From the double-entry ledger — accrual basis (invoices count when issued). Books → Profit &amp; Loss adds comparisons.</div>`;
-  }catch(e){ el.innerHTML=errBox(e); }
-};
-window.loadReportTrialBalance=async function(){
-  const el=document.getElementById('repTrialContent'); const from=val('repTrialFrom'), to=val('repTrialTo');
-  if(!from||!to){ el.innerHTML='<div class="empty-state">Pick a date range and click Run.</div>'; return; }
-  el.innerHTML=spinner;
-  try{ const d=await api(`trial-balance?${qs({from, to})}`);
-    el.innerHTML=`${L.warnList(d.warnings)}<div class="acc-bal ${d.balanced?'ok':'bad'}">${d.balanced?'✓ Balanced':'⚠ Out of balance'}</div><div class="tbl-wrap"><table class="acc-fin"><thead><tr><th>Code</th><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>${d.rows.map(r=>`<tr><td>${esc(r.code)}</td><td>${esc(r.name)}</td>${numCell(r.closing_debit||'')}${numCell(r.closing_credit||'')}</tr>`).join('')||empty('No entries.',4)}<tr class="acc-total"><td colspan="2">Totals</td>${numCell(d.total_debit)}${numCell(d.total_credit)}</tr></tbody></table></div>`;
-  }catch(e){ el.innerHTML=errBox(e); }
-};
-const origCash=window.loadReportCashFlow;
-window.loadReportCashFlow=async function(){
-  const el=document.getElementById('repCashflowContent')||document.getElementById('repCfContent');
-  if(!el) return origCash&&origCash();
-  await loadMeta().catch(()=>{});
-  return L.runCF(el);
-};
 })();

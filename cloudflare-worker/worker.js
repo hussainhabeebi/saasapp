@@ -15841,7 +15841,11 @@ async function engineGeminiGenerateWithFallback(env, c, systemText, userText, op
    provider accepts audio. See SETUP.md "AI Models (bring your own key)". */
 export const AI_PROVIDERS={
   anthropic:{label:'Claude (Anthropic)', format:'anthropic', base:'https://api.anthropic.com/v1',
-    models:['claude-opus-5-5','claude-opus-5','claude-sonnet-5','claude-haiku-4-5','claude-fable-5-1'], default_model:'claude-opus-5-5'},
+    models:['claude-opus-5-5','claude-opus-5','claude-sonnet-5','claude-haiku-5-5','claude-haiku-4-5','claude-fable-5-1'], default_model:'claude-opus-5-5'},
+  // Runs on the Worker's own ANTHROPIC_API_KEY secret (no client key) and is locked to the models
+  // listed here. Hidden from the card until that secret is set.
+  leadvyne_claude:{label:'Claude Haiku 5.5 (Leadvyne, no key needed)', format:'anthropic', base:'https://api.anthropic.com/v1',
+    models:['claude-haiku-5-5'], default_model:'claude-haiku-5-5', shared:true},
   openai:{label:'ChatGPT (OpenAI)', format:'openai', base:'https://api.openai.com/v1', models:[], default_model:''},
   gemini:{label:'Google Gemini (own key)', format:'gemini', base:'https://generativelanguage.googleapis.com/v1beta',
     models:['gemini-2.5-flash','gemini-2.5-pro'], default_model:'gemini-2.5-flash'},
@@ -15852,6 +15856,11 @@ export const AI_PROVIDERS={
   custom:{label:'Custom (OpenAI-compatible)', format:'openai', base:'', models:[], default_model:''},
 };
 const AI_CALL_TIMEOUT_MS=25000;
+// Providers the card may offer: a shared provider only once its Worker key is configured.
+export function aiVisibleProviders(env){
+  return Object.fromEntries(Object.entries(AI_PROVIDERS).filter(([id, p])=>!p.shared || aiSharedApiKey(env, id)));
+}
+function aiSharedApiKey(env, provider){ return AI_PROVIDERS[provider]?.shared?(env?.ANTHROPIC_API_KEY||null):null; }
 
 // Custom endpoints are client-supplied URLs the Worker will POST to, so only public https hosts
 // are accepted — no credentials in the URL, no localhost/.local/.internal, no private IPv4, no
@@ -15894,11 +15903,14 @@ export async function aiDecryptSecret(env, stored){
 // Current Claude models (Opus 5.x, Sonnet 5, Fable, Opus/Sonnet 4.6+) reject `temperature`, and
 // most think before answering — thinking counts against max_tokens, so the engine's short WhatsApp
 // budgets (120–300 tokens) are raised to leave room; reply length is steered by the prompts.
-// `effort` isn't accepted by Haiku 4.5 or older models, so it is only sent where supported.
+// `effort` isn't accepted by Haiku 4.5 or older models, so it is only sent where supported
+// (Haiku 5.5 does accept it).
 function aiAnthropicBody(model, systemText, userText, opts){
   const body={model, max_tokens:Math.max(2048, (opts.maxOutputTokens||300)*4), messages:[{role:'user', content:userText}]};
   if(systemText) body.system=systemText;
   if(/^claude-(opus|sonnet|fable|mythos)-(5|4-[678])/.test(model)) body.output_config={effort:'low'};
+  // Haiku 5.5 thinks by default at effort medium; low keeps short WhatsApp replies fast and cheap.
+  else if(/^claude-haiku-5/.test(model)) body.output_config={effort:'low'};
   return body;
 }
 function aiOpenAiBody(provider, model, systemText, userText, opts){
@@ -15924,6 +15936,7 @@ export async function aiProviderCall(cfg, systemText, userText, opts={}){
   if(!base) return {ok:false, error:'Invalid base URL'};
   const model=aiNormalizeModel(cfg.model);
   if(!model) return {ok:false, error:'No model selected'};
+  if(p.shared && !p.models.includes(model)) return {ok:false, error:`Only ${p.models.join(', ')} is available on this provider`};
   const signal=AbortSignal.timeout(opts.timeoutMs||AI_CALL_TIMEOUT_MS);
   try{
     if(p.format==='anthropic'){
@@ -15967,6 +15980,7 @@ export async function aiProviderCall(cfg, systemText, userText, opts={}){
 export async function aiProviderListModels(cfg){
   const p=AI_PROVIDERS[cfg?.provider];
   if(!p) return {ok:false, error:'Unknown provider'};
+  if(p.shared) return {ok:true, models:[...p.models]};
   const base=cfg.provider==='custom'?aiValidateBaseUrl(cfg.base_url):p.base;
   if(!base) return {ok:false, error:'Invalid base URL'};
   const signal=AbortSignal.timeout(15000);
@@ -15994,12 +16008,13 @@ async function aiGetConfigRow(env, clientId){
 // single conversation turn — classifier + reply + localize — reads and decrypts the row once.
 const _aiRuntimeMemo=new WeakMap();
 async function aiLoadClientRuntime(env, c){
-  if(!c || typeof c!=='object' || !c.Id || !env.DB || !env.AI_KEY_ENC_SECRET) return null;
+  if(!c || typeof c!=='object' || !c.Id || !env.DB || !(env.AI_KEY_ENC_SECRET || env.ANTHROPIC_API_KEY)) return null;
   if(_aiRuntimeMemo.has(c)) return _aiRuntimeMemo.get(c);
   let rt=null;
   const row=await aiGetConfigRow(env, c.Id);
   if(row && Number(row.enabled)===1 && AI_PROVIDERS[row.provider]){
-    const apiKey=await aiDecryptSecret(env, row.api_key_enc);
+    const apiKey=AI_PROVIDERS[row.provider].shared?aiSharedApiKey(env, row.provider)
+      :(env.AI_KEY_ENC_SECRET?await aiDecryptSecret(env, row.api_key_enc):null);
     if(apiKey) rt={row, provider:row.provider, base_url:row.base_url, model:row.model, apiKey, fallback:Number(row.fallback_shared)!==0};
   }
   _aiRuntimeMemo.set(c, rt);
@@ -16046,9 +16061,10 @@ async function aiClientFirst(env, c, systemText, userText, opts, shared){
   return shared();
 }
 
-function aiConfigOut(row){
-  if(!row) return {connected:false, providers:AI_PROVIDERS};
-  return {connected:true, providers:AI_PROVIDERS, provider:row.provider, base_url:row.base_url||'', model:row.model,
+function aiConfigOut(env, row){
+  const providers=aiVisibleProviders(env);
+  if(!row) return {connected:false, providers};
+  return {connected:true, providers, provider:row.provider, base_url:row.base_url||'', model:row.model,
     key_hint:row.key_hint||'', enabled:Number(row.enabled)===1, fallback_shared:Number(row.fallback_shared)!==0,
     last_ok_at:row.last_ok_at||null, last_error:row.last_error||null, last_error_at:row.last_error_at||null, updated_at:row.updated_at};
 }
@@ -16057,6 +16073,13 @@ function aiConfigOut(row){
 async function aiResolveRequestCfg(env, clientId, body){
   const provider=String(body.provider||'');
   if(!AI_PROVIDERS[provider]) return {error:'Choose a provider.'};
+  if(AI_PROVIDERS[provider].shared){
+    const apiKey=aiSharedApiKey(env, provider);
+    if(!apiKey) return {error:'This provider is not enabled on this server yet.'};
+    const model=aiNormalizeModel(body.model)||AI_PROVIDERS[provider].default_model;
+    if(!AI_PROVIDERS[provider].models.includes(model)) return {error:`Only ${AI_PROVIDERS[provider].models.join(', ')} is available on this provider.`};
+    return {cfg:{provider, base_url:null, model, apiKey}};
+  }
   let base_url=null;
   if(provider==='custom'){
     base_url=aiValidateBaseUrl(body.base_url);
@@ -16079,7 +16102,7 @@ async function handleAiProviderConfigGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.DB) return aiStorageMissing();
-  return json({config:aiConfigOut(await aiGetConfigRow(env, payload.cid)), server_ready:!!env.AI_KEY_ENC_SECRET});
+  return json({config:aiConfigOut(env, await aiGetConfigRow(env, payload.cid)), server_ready:!!env.AI_KEY_ENC_SECRET, shared_ready:!!env.ANTHROPIC_API_KEY});
 }
 // POST /ai-provider/config {provider, base_url, model, api_key, enabled, fallback_shared}
 // Tests the key before saving so a typo can't silently switch the bot onto a dead provider.
@@ -16087,8 +16110,9 @@ async function handleAiProviderConfigSave(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.DB) return aiStorageMissing();
-  if(!env.AI_KEY_ENC_SECRET) return aiSecretMissing();
   const body=await request.json().catch(()=>({}));
+  const shared=!!AI_PROVIDERS[body.provider]?.shared;
+  if(!shared && !env.AI_KEY_ENC_SECRET) return aiSecretMissing();
   const {cfg, error}=await aiResolveRequestCfg(env, payload.cid, body);
   if(error) return json({error}, 400);
   if(!cfg.model) return json({error:'Choose a model.'}, 400);
@@ -16104,10 +16128,10 @@ async function handleAiProviderConfigSave(request, env){
       ON CONFLICT(client_id) DO UPDATE SET provider=excluded.provider, base_url=excluded.base_url, model=excluded.model, api_key_enc=excluded.api_key_enc,
         key_hint=excluded.key_hint, enabled=excluded.enabled, fallback_shared=excluded.fallback_shared, last_ok_at=COALESCE(excluded.last_ok_at, ai_provider_config.last_ok_at),
         last_error=NULL, last_error_at=NULL, updated_at=excluded.updated_at`)
-      .bind(Number(payload.cid), cfg.provider, cfg.base_url, cfg.model, await aiEncryptSecret(env, cfg.apiKey), aiKeyHint(cfg.apiKey),
+      .bind(Number(payload.cid), cfg.provider, cfg.base_url, cfg.model, shared?'':await aiEncryptSecret(env, cfg.apiKey), shared?'':aiKeyHint(cfg.apiKey),
         enabled?1:0, body.fallback_shared===false?0:1, enabled?now:null, now, now).run();
   }catch(e){ return aiStorageMissing(); }
-  return json({ok:true, config:aiConfigOut(await aiGetConfigRow(env, payload.cid))});
+  return json({ok:true, config:aiConfigOut(env, await aiGetConfigRow(env, payload.cid))});
 }
 // POST /ai-provider/remove — deletes the row; the client is back on the shared Leadvyne AI.
 async function handleAiProviderRemove(request, env){
@@ -16115,7 +16139,7 @@ async function handleAiProviderRemove(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.DB) return aiStorageMissing();
   try{ await env.DB.prepare(`DELETE FROM ai_provider_config WHERE client_id=?`).bind(Number(payload.cid)).run(); }catch(e){}
-  return json({ok:true, config:aiConfigOut(null)});
+  return json({ok:true, config:aiConfigOut(env, null)});
 }
 // POST /ai-provider/test {provider, base_url, model, api_key?} — one tiny prompt, with latency.
 async function handleAiProviderTest(request, env){
@@ -23061,6 +23085,22 @@ export function engineV2FollowStaffLanguage(history, userText, detectedLang){
   return staffLang;
 }
 
+// Session language: the language of the customer's last 3 messages (this one and the 2 before
+// it), not this message alone. A button tap ("Train", "Flight") or a short Latin-script reply in a
+// chat the customer has been writing in Arabic/Malayalam/etc. would otherwise flip the reply to
+// English. Only a language the characters prove (engineScriptLang) can take over, and only when it
+// holds at least 2 of the 3 messages; a message written in a script of its own always wins, so a
+// customer who switches language is followed straight away. Returns null to keep detectedLang.
+export function engineSessionLanguage(history, userText, detectedLang){
+  if(engineScriptLang(userText)) return null;
+  const prev=[...(history||[])].filter(m=>m?.role==='user' && typeof m.content==='string').slice(-2).map(m=>m.content);
+  const langOf=t=>engineScriptLang(t)||(/[A-Za-z]/.test(t)?'en':null);
+  const votes={};
+  for(const l of [...prev.map(langOf), detectedLang||langOf(String(userText||''))]) if(l) votes[l]=(votes[l]||0)+1;
+  const top=Object.keys(votes).find(l=>votes[l]>=2 && ENGINE_SCRIPT_LANGS.some(([code])=>code===l));
+  return top && top!==detectedLang ? top : null;
+}
+
 // Promise detection (#6): a cheap filter before spending an LLM call on a staff message.
 export function engineLooksLikeStaffPromise(text){
   return /\b(i'?ll|i will|we'?ll|we will|will (call|send|share|update|confirm|check|arrange|deliver)|tomorrow|tonight|by (today|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at \d{1,2}(:\d{2})?\s*(am|pm)?|within \d+|guarantee|promise)\b/i.test(String(text||''));
@@ -24012,6 +24052,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const staffLang=engineV2FollowStaffLanguage(state.activeHistory, userText, cls.customerLanguage);
       if(staffLang) cls.customerLanguage=staffLang;
     }
+    const sessionLang=engineSessionLanguage(state.activeHistory, userText, cls.customerLanguage);
+    if(sessionLang) cls.customerLanguage=sessionLang;
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
     Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text, body.id||body.message?.id));

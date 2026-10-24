@@ -559,8 +559,11 @@ async function noAnswerFollowUp(l){
  try{await apiSend('/wa/send','POST',{phone,text:`Hi ${name}, we tried reaching you just now but couldn't connect. We'll try again soon — or feel free to call us back anytime! 😊`,inbox_id:l.InboxId||undefined});toast('💬 WhatsApp follow-up sent')}
  catch(e){toast('WhatsApp follow-up not sent: '+e.message)}
 }
-// Back from the dialer (or the page reloaded meanwhile): ask how it went.
-function checkCallReturn(){const c=pendingCall();if(c&&!sheetOpen()&&findLead(c.id))openCallSheet(c.id,c.start)}
+// Back from the dialer (or the page reloaded meanwhile): ask how it went. The lead card is usually
+// still open (its Call button dials from inside it) — the outcome sheet takes its place; only an
+// outcome sheet already showing is left alone, or the call would never be logged and the lead would
+// stay in "Not called" although it was called.
+function checkCallReturn(){const c=pendingCall();if(c&&$id('callSheet').classList.contains('hidden')&&findLead(c.id))openCallSheet(c.id,c.start)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(checkCallReturn,400)});
 
 // ── Home → ⚡ Prime attention: leads nobody has called yet and calls that weren't answered ────
