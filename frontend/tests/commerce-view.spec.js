@@ -73,6 +73,8 @@ test.describe('store workspace (desktop)', () => {
       await expect(page.locator('#commerceSide')).toContainText(label);
     }
     await expect(page.locator('#commerceSide')).not.toContainText('Shopify orders');
+    // The Shopify page is where a store gets connected, so it's listed even before connecting.
+    await expect(page.locator('#commerceSide')).toContainText('Shopify settings');
 
     const home = page.locator('#cvHomeBody');
     await expect(home).toContainText('Kochi Looms');

@@ -20,7 +20,7 @@
 // Sidebar entries that are really an ecom.html sub-page inside #pageEcommerce.
 const CV_ECOM_PAGES={
   cvorders:'orders', cvproducts:'products', cvcategories:'categories', cvpromotions:'promotions',
-  cvtestimonials:'testimonials', cvshoporders:'shop-orders', cvshopstock:'shop-stock',
+  cvtestimonials:'testimonials', cvshoporders:'shop-orders', cvshopstock:'shop-stock', cvshopify:'shopify',
   cvstoresettings:'settings', cvflow:'flow',
 };
 Object.keys(CV_ECOM_PAGES).forEach(p=>{ PAGE_HOST[p]='ecommerce'; });
@@ -37,9 +37,11 @@ const CV_NAV=[
     ['chats','💬','Inbox',{badge:'dnChatBadge'}],
     ['humandeals','🤝','Handovers',{badge:'dnHdBadge'}],
   ]},
-  {section:'Shopify', shopify:true, items:[
+  // Shopify orders/stock need a connected store (cvCanSee); the Shopify page itself is where you connect.
+  {section:'Shopify', items:[
     ['cvshoporders','🛍️','Shopify orders'],
     ['cvshopstock','📊','Shopify stock'],
+    ['cvshopify','🔌','Shopify settings'],
   ]},
   {section:'Marketing', items:[
     ['broadcast','📢','Campaigns'],
@@ -202,7 +204,6 @@ function cvBuildSide(){
     <div class="cv-store"><div class="cv-store-av">${esc(name.trim().charAt(0).toUpperCase()||'S')}</div>
       <div style="min-width:0"><div class="cv-store-name">${esc(name)}</div><div class="cv-store-sub">${esc(sub)}</div></div></div>
     <div class="cv-scroll">${CV_NAV.map(g=>{
-      if(g.shopify&&!cvShopifyOn()) return '';
       const items=g.items.filter(i=>cvCanSee(i[0]));
       if(!items.length) return '';
       return (g.section?`<div class="cv-sec">${esc(g.section)}</div>`:'')+items.map(cvItemHtml).join('');
@@ -507,7 +508,7 @@ function renderStoreHome(){
   const fMax=Math.max(1,...funnel.map(f=>f[1]));
 
   el.innerHTML=head+(cvShopifyOn()?'':`<div class="cv-banner">🛍️ <span style="flex:1">Sell on Shopify too? Connect your store and its orders and stock sync here automatically.</span>
-      ${cvCanSee('settings')?`<button class="cv-btn" onclick="navigate('integrations')">Connect Shopify</button>`:''}</div>`)+kpis+`
+      ${cvCanSee('settings')?`<button class="cv-btn" onclick="openEcomShopify()">Connect Shopify</button>`:''}</div>`)+kpis+`
     <div class="cv-grid">
       <div class="cv-card"><div class="cv-card-h"><h3>Sales over time</h3><span class="cv-muted">${esc(cvMoney(sales,cur))} · ${curO.length} orders</span></div>
         <svg class="cv-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily sales">${svg}</svg></div>

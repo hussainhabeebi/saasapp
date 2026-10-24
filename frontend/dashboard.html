@@ -15585,8 +15585,9 @@ function renderShopifyStatus(){
 // (back from Shopify's OAuth screen) so ecom.html can run the first sync or show the error.
 function openEcomShopify(extra){
   const frame=$id('ecommerceFrame');
-  if(frame) frame.src=`ecom.html?client=${clientId}&embed=1&tab=shopify${extra||''}`;
-  navigate('ecommerce');
+  const commerce=typeof isCommerceView==='function'&&isCommerceView();
+  if(frame) frame.src=`ecom.html?client=${clientId}&embed=1${commerce?'&shell=commerce':''}&tab=shopify${extra||''}`;
+  navigate(commerce?'cvshopify':'ecommerce');
 }
 
 function renderWaStatus(){
