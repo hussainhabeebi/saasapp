@@ -7,7 +7,7 @@ import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
 import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
-import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
+import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
@@ -4456,8 +4456,8 @@ function followupWithinQuietHours(c){
 // re-engage message, which has no "Follow up N" lead field.
 async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
   const clientId=String(c.Id);
-  let sentText='', sentViaVoice=false;
-  const variant=opts.overrideText?(opts.variant||'OBJ'):await pickLadderVariant(env, c.Id, step, stepCfg);
+  let sentText='', sentViaVoice=false,providerMessageId=null;
+  const variant=opts.selectedVariant||(opts.overrideText?(opts.variant||'OBJ'):await pickLadderVariant(env,c.Id,step,stepCfg));
   const content=ladderVariantContent(stepCfg, variant);
 
   if(stepCfg.type==='session'){
@@ -4500,6 +4500,8 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
           vfd.append('attachments[]', new Blob([audioBuf], {type:'audio/ogg; codecs=opus'}), 'followup.ogg');
           const vr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:vfd});
           sentViaVoice=vr.ok;
+          if(vr.ok) providerMessageId='cw:'+((await vr.json()).id||'');
+          if(!vr.ok && vr.status>=500) throw new Error('Voice send status uncertain: HTTP '+vr.status);
           if(!vr.ok) await reportOpsError(env, 'sendFollowupLadderStep — voice send failed, falling back to text', new Error('HTTP '+vr.status), {clientId, convId});
         }
       }
@@ -4508,7 +4510,8 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
       const fd=new FormData();
       fd.append('content', sentText); fd.append('message_type','outgoing'); fd.append('private','false');
       const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-      if(!r.ok) throw new Error('HTTP '+r.status);
+      if(!r.ok){ const err=new Error('HTTP '+r.status); err.definiteFailure=r.status<500; throw err; }
+      const accepted=await r.json(); providerMessageId='cw:'+accepted.id;
     }
   } else {
     const waPhoneId=opts.creds?.wa_phone_id||c.wa_phone_id, waToken=opts.creds?.wa_token||c.wa_token;
@@ -4527,7 +4530,9 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
       body:JSON.stringify({messaging_product:'whatsapp', to:lead.Phone, type:'template', template:{name:content.template_name, language:{code:content.template_language||'en_US'}, components}})
     });
     const data=await r.json().catch(()=>({}));
-    if(!r.ok){ const err=new Error(data?.error?.message||('HTTP '+r.status)); err.code=data?.error?.code; throw err; }
+    if(!r.ok){ const err=new Error(data?.error?.message||('HTTP '+r.status)); err.code=data?.error?.code; err.definiteFailure=true; throw err; }
+    providerMessageId=data?.messages?.[0]?.id||null;
+    if(!providerMessageId) throw new Error('Provider response missing message id; verify before retry');
     await logWaTemplateSend(env, c.Id, 'followup', {template:content.template_name, phone:lead.Phone, leadId:lead.Id});
     sentText=`[template: ${content.template_name}]`;
   }
@@ -4548,7 +4553,9 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
           .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
     sendId=r?.meta?.last_row_id??null;
   }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
-  return {text:sentText, sentViaVoice, variant, sendId};
+  if(opts.v3 && !sendId) throw new Error('Message accepted but send history could not be saved; verify delivery before retry');
+  if(opts.v3 && sendId && providerMessageId) await env.DB.prepare(`UPDATE followup_sends SET provider_message_id=?,delivery_status='accepted' WHERE id=?`).bind(providerMessageId,sendId).run();
+  return {text:sentText, sentViaVoice, variant, sendId, providerMessageId};
 }
 
 // Manual "send next follow-up now" — a rep's on-demand override alongside the automated ladder
@@ -15141,23 +15148,23 @@ async function mtgLeadRows(env, clientId, leadId){
   return (await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND lead_id=? ORDER BY id DESC LIMIT 50`).bind(Number(clientId), Number(leadId)).all())?.results||[];
 }
 // Lead ids whose meeting is booked, agreed or just happened — the follow-up ladders skip these
-// (meeting reminders still go out). Never throws; an empty set means "pause nobody".
-export async function mtgActiveLeadIds(env, clientId, now=new Date()){
+// (meeting reminders still go out). Legacy callers fail open; V3 opts into strict reads.
+export async function mtgActiveLeadIds(env, clientId, now=new Date(), strict=false){
   try{
-    if(!(await mtgEnsureSchema(env))) return new Set();
+    if(!(await mtgEnsureSchema(env))){if(strict) throw new Error('Meeting safety check unavailable');return new Set();}
     const since=new Date(now.getTime()-120*86400e3).toISOString();
     const rows=(await env.DB.prepare(`SELECT id, lead_id, status, start_at, end_at, sent_at, created_at, updated_at, outcome, outcome_at, token, calcom_uid FROM meetings WHERE client_id=? AND lead_id IS NOT NULL AND (created_at>=? OR start_at>=?)`)
       .bind(Number(clientId), since, since).all())?.results||[];
     const states=mtgLeadStatesByLead(rows, now);
     return new Set(Object.entries(states).filter(([, st])=>st.active).map(([id])=>Number(id)));
-  }catch(e){ return new Set(); }
+  }catch(e){if(strict) throw e;return new Set();}
 }
-export async function mtgLeadHasActiveMeeting(env, clientId, leadId, now=new Date()){
+export async function mtgLeadHasActiveMeeting(env, clientId, leadId, now=new Date(), strict=false){
   if(!leadId) return false;
   try{
-    if(!(await mtgEnsureSchema(env))) return false;
+    if(!(await mtgEnsureSchema(env))){if(strict) throw new Error('Meeting safety check unavailable');return false;}
     return !!mtgLeadState(await mtgLeadRows(env, clientId, leadId), now)?.active;
-  }catch(e){ return false; }
+  }catch(e){if(strict) throw e;return false;}
 }
 // System-prompt block for the AI bot (see mtgBotPromptText). '' when there's nothing to say.
 export async function mtgBotPromptBlock(env, c, clientId, leadId){
@@ -23884,6 +23891,20 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
   const accountId=String(body.account?.id||body.conversation?.account_id||'');
   if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)){ await logEngineSkip(env, clientId, null, null, 'account-mismatch', `payload account ${accountId}`); return json({ok:true, skipped:'account-mismatch'}); }
 
+  if(body.event==='message_updated'){
+    if(await fv3IsEnabled(env,c.Id)){
+      await fv3EnsureSchema(env);
+      const status=String(body.status||body.message?.status||'');
+      const id=String(body.id||body.message?.id||'');
+      if(id && ['sent','delivered','read','failed'].includes(status)){
+        const mapped=status==='sent'?'accepted':status,at=new Date().toISOString();
+        await env.DB.prepare(`UPDATE followup_sends SET delivery_status=CASE WHEN delivery_status='read' THEN 'read' WHEN delivery_status='delivered' AND ?='accepted' THEN 'delivered' ELSE ? END,delivered_at=CASE WHEN ? IN ('delivered','read') THEN COALESCE(delivered_at,?) ELSE delivered_at END,read_at=CASE WHEN ?='read' THEN COALESCE(read_at,?) ELSE read_at END WHERE client_id=? AND provider_message_id=?`)
+          .bind(mapped,mapped,mapped,at,mapped,at,Number(c.Id),'cw:'+id).run();
+      }
+    }
+    return json({ok:true});
+  }
+
   // Fast, near-atomic dedup gate — checked before any NocoDB round trip (state fetch, lead
   // lookup, etc), to close the race window the LastProcessedMessageId/engineClaimMessage
   // mechanism further down still has (see its own comment for the full history): that check
@@ -26715,6 +26736,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // having worked, regardless of whether it also happened to change Stage.
     // Follow-up V3 (followup-v3.js fv3OnInbound) credits only the latest follow-up within its
     // attribution window, notes opt-outs and the lead's usual writing hour instead.
+    if(userText && resolvedLeadId && await fv3IsEnabled(env,c.Id)) await fv3Schedule(env,c.Id).catch(e=>reportOpsError(env,'followup alarm',e,{clientId:c.Id}));
     if(userText && resolvedLeadId && !await fv3OnInbound(env, c, resolvedLeadId, {optOut:leadBody?.OptOut==='Yes'})){
       try{
         await env.DB.prepare(`UPDATE followup_sends SET replied_at=? WHERE lead_id=? AND replied_at IS NULL`)
@@ -26889,10 +26911,14 @@ async function engineSyncChatwootWebhook(env, c){
       }
     }
 
+    const currentHook=existingList.find(w=>w.url===engineUrl);
+    if(currentHook && !currentHook.subscriptions?.includes('message_updated')){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${currentHook.id}`,{method:'PATCH',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({subscriptions:['message_created','message_updated']})});
+    }
     if(!existingList.some(w=>w.url===engineUrl)){
       await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
         method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
-        body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:engineUrl, subscriptions:['message_created']})
+        body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:engineUrl, subscriptions:['message_created','message_updated']})
       });
     }
   }catch(e){}
@@ -34122,17 +34148,19 @@ const CHATS_V2_DEPS={
 // Orders by customer phone (last 10 digits → latest real order's date and total), cached for 30 min
 // per client so the 15-minute sweep doesn't page the Orders table every tick.
 const fv3OrderCache=new Map();
-async function fv3OrderPhones(env, c){
+async function fv3OrderPhones(env, c, {fresh=false}={}){
   if(!c || !isEcomEnabled(c)) return null;
   const hit=fv3OrderCache.get(c.Id);
-  if(hit && Date.now()-hit.at<30*60000) return hit.map;
+  if(!fresh && hit && Date.now()-hit.at<30*60000) return hit.map;
   const tableId=await ecomResolveTable(env, c.Id, 'orders');
   if(!tableId) return null;
   const map={};
   for(let page=1; page<=25; page++){
     const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${c.Id})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,total,CreatedAt,notes,items`);
-    if(!r.ok) break;
-    const list=(await r.json().catch(()=>({})))?.list||[];
+    if(!r.ok) throw new Error('Order safety check failed: HTTP '+r.status);
+    const data=await r.json();
+    if(!Array.isArray(data.list)) throw new Error('Order safety check returned invalid data');
+    const list=data.list;
     for(const o of list){
       if(!ecomOrderIsConversion(o)) continue;
       const phone=String(o.customer_phone||'').replace(/\D/g,'').slice(-10); if(!phone) continue;
@@ -34144,6 +34172,38 @@ async function fv3OrderPhones(env, c){
   fv3OrderCache.set(c.Id, {at:Date.now(), map});
   return map;
 }
+// Per-account alarm ownership prevents the global cron from doing every tenant's work serially.
+export class FollowupV3Scheduler {
+  constructor(state,env){this.state=state;this.env=env;}
+  async fetch(request){
+    const {cid}=await request.json();
+    if(!Number.isInteger(cid)||cid<=0) return new Response('Invalid tenant',{status:400});
+    const saved=await this.state.storage.get('cid');
+    if(saved && saved!==cid) return new Response('Tenant mismatch',{status:403});
+    await this.state.storage.put('cid',cid);
+    const alarm=await this.state.storage.getAlarm();
+    // Do not move an already earlier alarm backwards or postpone it on every cron tick.
+    if(!alarm || alarm>Date.now()+1000) await this.state.storage.setAlarm(Date.now()+1000);
+    return new Response('Scheduled');
+  }
+  async alarm(){
+    const cid=await this.state.storage.get('cid');
+    // Persist the recovery wakeup BEFORE network work, including process termination/errors.
+    await this.state.storage.setAlarm(Date.now()+15*60000);
+    try{
+      if(!await fv3EnsureSchema(this.env)) throw new Error('Follow-up storage unavailable');
+      const settings=await fv3GetSettings(this.env,cid);
+      if(!settings?.enabled || settings.cfg.paused){await this.state.storage.deleteAlarm();return;}
+      const c=await getClientById(this.env,cid);
+      if(!c || c.active==='No'){await this.state.storage.deleteAlarm();return;}
+      // Run directly rather than re-arming our own DO from fv3RunClient's finally block.
+      await fv3RunClient({...this.env,FOLLOWUP_SCHEDULER:null},FOLLOWUP_V3_DEPS,c,settings);
+      const next=await this.env.DB.prepare(`SELECT MIN(next_due_at) due FROM followup_v3_leads WHERE client_id=? AND status='scheduled' AND next_due_at>?`).bind(cid,new Date().toISOString()).first();
+      if(next?.due) await this.state.storage.setAlarm(Math.min(Date.parse(next.due),Date.now()+15*60000));
+    }catch(e){await reportOpsError(this.env,'followup v3 alarm',e,{clientId:cid});throw e;}
+  }
+}
+
 const FOLLOWUP_V3_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns, reportOpsError,
   leadsTable:DEFAULT_LEADS_TABLE,
@@ -34152,10 +34212,11 @@ const FOLLOWUP_V3_DEPS={
   metaCreds:(c, lead)=>resolveMetaCredentials(c, {inbox_id:lead?.InboxId||''})||resolveMetaCredentials(c, {})
     ||(c?.wa_token&&(c.wa_phone_id||c.waba_id)?{waba_id:c.waba_id, wa_phone_id:c.wa_phone_id, wa_token:c.wa_token}:null),
   sendStep:sendFollowupLadderStep,
+  chooseVariant:pickLadderVariant,
   sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
   orderPhones:fv3OrderPhones,
-  meetingLeadIds:(env, cid)=>mtgActiveLeadIds(env, cid),
-  leadHasMeeting:(env, cid, leadId)=>mtgLeadHasActiveMeeting(env, cid, leadId),
+  meetingLeadIds:(env,cid)=>mtgActiveLeadIds(env,cid,new Date(),true),
+  leadHasMeeting:(env,cid,leadId)=>mtgLeadHasActiveMeeting(env,cid,leadId,new Date(),true),
   leadColumns:async env=>(await ncTableMeta(env, DEFAULT_LEADS_TABLE)).names,
   objectionPlaybook:c=>{ try{ const p=JSON.parse(c?.objection_playbook||'[]'); return Array.isArray(p)?p:[]; }catch(e){ return []; } },
 };
@@ -38331,6 +38392,16 @@ export default {
       // own WhatsApp webhook (/ceo/wa/webhook/<key>), which is Meta-signature-verified instead.
       else if(url.pathname.startsWith('/ceo/')){ res=await ceoHandleRoute(request, env, CEO_DEPS, url, ctx); }
       else if(url.pathname.startsWith('/chats/v2/')){ res=await chatsV2HandleRoute(request, env, CHATS_V2_DEPS, url, ctx); }
+      else if(url.pathname==='/followups/meta-status'){
+        if(request.method==='GET'){
+          res=env.META_FOLLOWUP_VERIFY_TOKEN && url.searchParams.get('hub.mode')==='subscribe' && url.searchParams.get('hub.verify_token')===env.META_FOLLOWUP_VERIFY_TOKEN
+            ?new Response(url.searchParams.get('hub.challenge')||''):json({error:'Forbidden'},403);
+        }else if(request.method==='POST'){
+          const raw=await request.text();
+          if(!await verifyWebhookSignature(env.META_APP_SECRET,raw,request.headers.get('x-hub-signature-256'))) res=json({error:'Invalid signature'},403);
+          else { await fv3DeliveryStatus(env,JSON.parse(raw)); res=json({ok:true}); }
+        }else res=json({error:'Method not allowed'},405);
+      }
       else if(url.pathname.startsWith('/followups/v3/')){ res=await fv3HandleRoute(request, env, FOLLOWUP_V3_DEPS, url); }
       else if(url.pathname.startsWith('/meta/ads-report/')){ res=await marHandleRoute(request, env, META_ADS_REPORT_DEPS, url); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }

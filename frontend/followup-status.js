@@ -13,7 +13,7 @@
   }
   function when(iso){ const t=Date.parse(iso||''); return t?new Date(t).toLocaleString([], {weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}):''; }
   const HEAD={
-    due:['📤','Sending now'], scheduled:['⏳','Next follow-up scheduled'], waiting_template:['⏳','Waiting for template approval'],
+    due:['📤','Due — waiting for execution'], scheduled:['⏳','Next follow-up scheduled'], waiting_template:['⏳','Waiting for template approval'],
     completed:['✅','All follow-ups sent'], goal_reached:['🎯','Sequence finished'], human:['🙋','On hold — your team is handling it'],
     agent_replied:['💬','On hold — your team replied last'], paused:['⏸','Follow-ups paused'], stopped:['🚫','Stopped'],
     not_enrolled:['—','Not in a follow-up sequence'], capped:['⏸','Taking a break'],
@@ -28,7 +28,7 @@
     const last=lastSent(d);
     const lastTxt=last?`✓ Follow-up ${last.step===6?'(re-engage)':last.step} sent ${rel(last.sent_at)}${last.replied_at?' · replied':''}`:'No follow-up sent yet';
     if(d.status==='scheduled'&&d.next) return `${lastTxt} · next ${rel(d.next.due_at)}`;
-    if(d.status==='due') return `${lastTxt} · next going out now`;
+    if(d.status==='due') return `${lastTxt} · next due`;
     const h=HEAD[d.status];
     return d.status==='completed'||!h?lastTxt:`${lastTxt} · ${h[1].toLowerCase()}`;
   }
@@ -47,12 +47,12 @@
     const reHist=(d.history||[]).filter(h=>h.kind==='reengage');
     const reRows=reHist.map(h=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0"><span>✅ Re-engage</span><span>${esc(rel(h.sent_at))}${h.replied_at?' · <b>replied</b>':''}</span></div>`).join('');
     const nextLine=d.next&&(d.status==='scheduled'||d.status==='due')
-      ? `<div style="margin-top:6px">Next: <b>${esc(d.next.label)}</b> — ${d.status==='due'?'going out within 15 min':esc(rel(d.next.due_at))+' <span style="'+muted+'">('+esc(when(d.next.due_at))+')</span>'}${opts.onSkip?` <button type="button" onclick="${esc(opts.onSkip)}(${Number(d.lead_id||opts.leadId)},${Number(d.next.step)})" style="margin-left:6px;font-size:11.5px;padding:2px 9px;border-radius:12px;border:1px solid #d1d7db;background:#fff;cursor:pointer">Skip</button>`:''}</div>`:'';
+      ? `<div style="margin-top:6px">Next: <b>${esc(d.next.label)}</b> — ${d.status==='due'?'due for the next healthy run':esc(rel(d.next.due_at))+' <span style="'+muted+'">('+esc(when(d.next.due_at))+')</span>'}${opts.onSkip?` <button type="button" onclick="${esc(opts.onSkip)}(${Number(d.lead_id||opts.leadId)},${Number(d.next.step)})" style="margin-left:6px;font-size:11.5px;padding:2px 9px;border-radius:12px;border:1px solid #d1d7db;background:#fff;cursor:pointer">Skip</button>`:''}</div>`:'';
     const fail=d.last_failure?`<div style="margin-top:6px;padding:6px 8px;border-radius:6px;background:#FEF3C7;color:#92400E;font-size:12px">⚠️ ${esc(d.last_failure.hint)} ${esc(d.last_failure.fix)}</div>`:'';
     return `<div style="font-size:13px;line-height:1.45">
       <div style="font-weight:700">${icon} ${esc(title)}</div>
       ${d.status==='scheduled'||d.status==='due'?'':`<div style="${muted};font-size:12.5px">${esc(d.text||'')}</div>`}
-      <div style="margin-top:6px">${last?`Last follow-up: <b>${esc(last.label)}</b> sent ${esc(rel(last.sent_at))}${last.replied_at?' — <b>customer replied</b>':' — no reply yet'}`:'<b>No follow-up sent yet</b> in this conversation.'}</div>
+      <div style="margin-top:6px">${last?`Last follow-up: <b>${esc(last.label)}</b> accepted ${esc(rel(last.sent_at))}${last.delivery_status?' · '+esc(last.delivery_status):''}${last.replied_at?' — <b>customer replied</b>':' — no reply yet'}`:'<b>No follow-up sent yet</b> in this conversation.'}</div>
       ${nextLine}${fail}
       <div style="margin-top:8px;border-top:1px solid var(--line,#e5e7eb);padding-top:6px">${stepRows}${reRows}</div>
     </div>`;

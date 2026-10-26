@@ -2135,10 +2135,12 @@ function fuKpi(value, label){ return `<div class="ws-kpi"><b>${value}</b><span>$
 function renderFuHead(){
   const on=!!fv3State?.enabled, paused=!!fv3State?.config?.paused;
   const pill=$id('fuHeadPill');
-  pill.className='ws-pill '+(on?(paused?'paused':'on'):'off');
-  pill.textContent=on?(paused?'⏸ Paused':'● V3 running'):'Classic';
+  const health=fv3LastReport?.health||fv3State?.health;
+  const state=paused?'paused':health?.status||'delayed';
+  pill.className='ws-pill '+(on?(state==='healthy'?'on':'paused'):'off');
+  pill.textContent=on?({paused:'⏸ Paused',healthy:'● Healthy',failed:'⚠ Failed',delayed:'⚠ Delayed'}[state]||'Checking health'):'Classic';
   $id('fuHeadSub').textContent=on
-    ? (paused?'Nothing is being sent until you resume.':'Running on its own — nudges, templates, timing and stopping are handled for you.')
+    ? (paused?'Nothing is being sent until you resume.':(health?.last_success_at?'Last successful run '+fv3Rel(health.last_success_at)+' · '+health.checked+' leads checked':'No successful run recorded yet — use Check now to preview eligibility.'))
     : 'Automatic nudges to leads who went quiet. Turn on Follow-up V3 to have it run itself.';
   $id('fuHeadEnable').style.display=on?'none':'';
   const pb=$id('fuHeadPause'); pb.style.display=on?'':'none'; pb.textContent=paused?'▶ Resume':'⏸ Pause';
@@ -3930,7 +3932,7 @@ async function saveFollowupEngine(){
 // send window and Smart Follow-ups cards don't apply (V3 has its own night-time quiet hours and
 // sweep), so they're hidden; the ladder step editors below stay — V3 sends those same steps.
 let fv3State=null;
-const FV3_STATUS_LABEL={APPROVED:'✅ Approved',PENDING:'⏳ Waiting for WhatsApp approval',IN_APPEAL:'⏳ In appeal',REJECTED:'❌ Rejected',ERROR:'⚠️ Could not submit',OWN:'✅ Your own template',NOT_SUBMITTED:'… Not submitted yet',PAUSED:'⏸ Paused by Meta',DISABLED:'❌ Disabled by Meta'};
+const FV3_STATUS_LABEL={APPROVED:'✅ Approved',PENDING:'⏳ Waiting for WhatsApp approval',IN_APPEAL:'⏳ In appeal',REJECTED:'❌ Rejected',ERROR:'⚠️ Could not submit',OWN:'Configured',UNVERIFIED:'Not verified — checked before sending',NOT_SUBMITTED:'… Not submitted yet',PAUSED:'⏸ Paused by Meta',DISABLED:'❌ Disabled by Meta'};
 function fv3Rel(iso){
   const t=Date.parse(iso||''); if(!t) return '';
   const diff=t-Date.now(), a=Math.abs(diff), m=Math.round(a/60000), h=Math.round(a/3600000), d=Math.round(a/86400000);
@@ -3944,6 +3946,11 @@ async function fv3Api(path, body){
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
   return d;
+}
+function fv3StageEditors(config){
+  const presets={new:['New enquiry','Hi {name}, would you like help choosing the right option?'],demo_pending:['Demo pending','Hi {name}, would you like to choose a convenient time for your demo?'],demo_done:['Demo completed','Hi {name}, do you have any questions after the demo?'],quote_sent:['Quotation sent','Hi {name}, any questions about your quotation?'],payment_pending:['Payment pending','Hi {name}, do you need help completing the payment?']};
+  const stages=[...new Set([...Object.keys(presets),...Object.keys(config)])];
+  return stages.map(stage=>{const active=Object.hasOwn(config,stage),v=config[stage]||{},preset=presets[stage]||[stage,'Hi {name}, can we help with the next step?'];return `<details class="card" data-fv3-stage="${escAttr(stage)}" style="margin:8px 0"><summary>${esc(preset[0])} <span style="font-size:11px;color:var(--muted)">(${esc(stage)})</span></summary><label style="display:block;margin:8px 0"><input type="checkbox" data-enabled ${active?'checked':''}> Use this stage sequence</label><div class="grid">${[1,2].map(i=>`<div class="form-field"><label>Nudge ${i}</label><textarea data-message="${i}" rows="2">${esc(v[i]?.message||preset[1])}</textarea><label>After hours</label><input type="number" data-hours="${i}" min="1" max="23" value="${Number(v[i]?.hours)||i*3}"></div>`).join('')}${[3,4,5].map(i=>`<div class="form-field"><label>Day ${{3:1,4:3,5:7}[i]} approved template (blank uses the default)</label><input data-template="${i}" value="${escAttr(v[i]?.template_name||'')}" placeholder="Approved template name"><label>Template language</label><input data-language="${i}" value="${escAttr(v[i]?.template_language||'en')}" placeholder="en"></div>`).join('')}</div></details>`;}).join('');
 }
 async function fv3Load(){
   try{ fv3State=await fv3Api('/settings'); }catch(e){ fv3State=null; $id('fv3Msg').textContent='Couldn\'t load Follow-up V3: '+e.message; return; }
@@ -3975,6 +3982,7 @@ function fv3Render(){
   $id('fv3Settings').innerHTML=[
     num('quiet_start','No sends from (hour, 0-23)',0,23,'Night-time quiet hours, your timezone'),
     num('quiet_end','…until (hour, 0-23)',0,23,''),
+    num('staff_reply_hours','Resume after our reply (hours)',0,336,'24 = follow up after a day without a customer reply. 0 = wait for the customer indefinitely.'),
     num('min_gap_hours','Hours between two follow-ups',1,48,'Stops nudges landing back-to-back'),
     num('daily_cap','Max follow-ups per day',1,5000,''),
     num('warmup_cap','Max per day in the first week',1,5000,'Gentle start while WhatsApp learns your number'),
@@ -3983,6 +3991,7 @@ function fv3Render(){
     num('reengage_max','Re-engage messages per lead',1,6,''),
     num('attribution_hours','A reply counts for a follow-up within (hours)',1,336,''),
     `<div class="form-field"><label>Also stop at these stages</label><input id="fv3c_exit_stages" value="${escAttr((cfg.exit_stages||[]).join(', '))}" placeholder="e.g. quote_sent, demo_done"><div style="font-size:11px;color:var(--muted);margin-top:3px">Won, booked, lost and handed-over leads always stop</div></div>`,
+    `<div style="grid-column:1/-1"><h4>Sequences by sales stage</h4><p style="font-size:12px;color:var(--muted)">Enable a stage to use its own wording. Quiet hours, customer replies, stop rules and the 24-hour chat window still apply. Templates must already be approved for your WhatsApp number and language.</p>${fv3StageEditors(cfg.stage_sequences||{})}</div>`,
     chk('include_existing_leads','Also follow up leads from before V3','Off = only new leads, so old contacts aren\'t messaged all at once'),
     chk('smart_send_time','Smart send time','Template steps go out at the hour each lead usually writes'),
     chk('objection_branching','Answer objections','Nudges 1-2 reply to the lead\'s last objection using your Objection Playbook'),
@@ -4016,8 +4025,16 @@ async function fv3EnableSetting(key, btn){
 }
 async function fv3SaveConfig(){
   const cfg={};
-  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
+  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours','staff_reply_hours'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
   ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','auto_templates','ai_variant_b','weekly_digest'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  cfg.stage_sequences={};
+  document.querySelectorAll('[data-fv3-stage]').forEach(el=>{
+    if(!el.querySelector('[data-enabled]').checked) return;
+    const stage=el.dataset.fv3Stage,steps={};
+    for(const i of [1,2]){const message=el.querySelector('[data-message="'+i+'"]').value.trim();if(message) steps[i]={message,hours:Number(el.querySelector('[data-hours="'+i+'"]').value)};}
+    for(const i of [3,4,5]){const name=el.querySelector('[data-template="'+i+'"]').value.trim();if(name) steps[i]={template_name:name,template_language:el.querySelector('[data-language="'+i+'"]').value.trim()||'en'};}
+    cfg.stage_sequences[stage]=steps;
+  });
   cfg.exit_stages=$id('fv3c_exit_stages').value.split(',').map(x=>x.trim()).filter(Boolean);
   $id('fv3SaveMsg').textContent='Saving…';
   try{ const d=await fv3Api('/settings', {config:cfg}); fv3State={...fv3State, ...d}; $id('fv3SaveMsg').textContent='Saved ✓'; fv3Render(); }
@@ -4089,7 +4106,33 @@ async function fv3LoadReport(){
   const coverage=cov.length?`<div class="card" style="margin-top:12px" id="fv3Coverage"><div style="font-weight:700;margin-bottom:6px">👥 Who is getting follow-ups (${covTotal.toLocaleString()} leads)</div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Lead status</th><th style="text-align:right">Leads</th><th>What to do</th></tr></thead><tbody>${cov.map(x=>
       `<tr data-reason="${esc(x.reason)}"><td>${x.ok?'✅':'⚠️'} ${esc(x.label)}</td><td style="text-align:right;font-weight:700">${x.n.toLocaleString()}</td><td style="font-size:12px">${x.fix?esc(x.fix):'—'}${x.setting?` <button class="btn btn-sec" style="padding:3px 8px;font-size:11px;margin-left:6px" onclick="fv3EnableSetting('${esc(x.setting)}',this)">Turn on</button>`:''}</td></tr>`).join('')}</tbody></table></div></div>`:'';
-  el.innerHTML=coverage+steps+trend+heat+fails;
+  const h=r.health||{};
+  const health=`<div class="card" style="margin-top:12px"><b>Engine: ${esc(h.status||'unknown')}</b><p>Last attempt: ${esc(h.last_attempt_at?fv3When(h.last_attempt_at):'Never')} · Last success: ${esc(h.last_success_at?fv3When(h.last_success_at):'Never')} · Leads checked: ${Number(h.checked)||0} · Due at last check: ${Number(h.due)||0}</p>${h.error?`<p style="color:#991B1B">${esc(h.error)}</p>`:''}${r.uncertain?`<p style="color:#92400e">${Number(r.uncertain)} send attempts need delivery verification. Automatic retries are held to prevent duplicates.</p><button class="btn btn-sec" onclick="fv3Attempts()">Review held attempts</button><div id="fv3Attempts"></div>`:''}<button class="btn btn-sec" onclick="fv3CheckNow(this)">Check now — no messages sent</button> <button class="btn btn-sec" onclick="fv3RunNow(this)">Send due follow-ups</button><div id="fv3Preview" aria-live="polite"></div><p style="font-size:12px;color:var(--muted)">Delivery: ${(r.delivery||[]).map(d=>esc(d.status||'unknown')+': '+Number(d.n)).join(' · ')||'No tracked messages yet'}. Accepted means the API accepted the message; it does not confirm customer delivery.</p></div>`;
+  el.innerHTML=health+coverage+steps+trend+heat+fails;
+}
+let fv3HeldAttempts=[];
+async function fv3Attempts(){
+  const el=$id('fv3Attempts');
+  try{const r=await fv3Api('/attempts');fv3HeldAttempts=r.list||[];el.innerHTML=`<p>Check the actual customer conversation before confirming. In-progress attempts can be resolved after 10 minutes.</p>${fv3HeldAttempts.map((x,i)=>`<div style="margin:8px 0">Lead #${Number(x.lead_id)} · step ${Number(x.step)} · ${esc(fv3When(x.updated_at))} <button class="btn btn-sec" onclick="fv3ResolveAttempt(${i},'sent',this)">Verified sent</button> <button class="btn btn-sec" onclick="fv3ResolveAttempt(${i},'not_sent',this)">Verified not sent — allow retry</button></div>`).join('')||'No held attempts.'}`;}
+  catch(e){el.textContent=e.message;}
+}
+async function fv3ResolveAttempt(i,outcome,btn){
+  btn.disabled=true;
+  try{await fv3Api('/attempts/resolve',{...fv3HeldAttempts[i],outcome});await fv3LoadReport();}
+  catch(e){btn.disabled=false;$id('fv3Preview').textContent=e.message;}
+}
+async function fv3CheckNow(btn){
+  btn.disabled=true;
+  const el=$id('fv3Preview'); el.textContent='Checking eligibility without sending…';
+  try{
+    const r=await fv3Api('/check',{});
+    el.innerHTML=`<p><b>${Number(r.checked)} leads checked · ${Number(r.due)} due · 0 messages sent</b></p><ul>${Object.entries(r.reasons||{}).map(([reason,n])=>`<li>${esc(reason.replaceAll('_',' '))}: ${Number(n)}</li>`).join('')}</ul><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Lead (first 100)</th><th>Status</th><th>Next action</th></tr></thead><tbody>${(r.sample||[]).map(x=>`<tr><td>${esc(x.name||x.lead_id)}</td><td>${esc(x.reason.replaceAll('_',' '))}</td><td>${x.next?esc(x.next.label+' · '+fv3When(x.next.due_at)):'—'}</td></tr>`).join('')}</tbody></table></div>`;
+  }catch(e){el.textContent='Check failed: '+e.message;}finally{btn.disabled=false;}
+}
+async function fv3RunNow(btn){
+  btn.disabled=true;
+  try{await fv3Api('/run',{}); await fv3LoadReport(); await fv3LoadUpcoming();}
+  catch(e){$id('fv3Preview').textContent='Run failed: '+e.message;}finally{btn.disabled=false;}
 }
 async function fv3DrillDown(step, outcome){
   const el=$id('fv3Drill'); el.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
