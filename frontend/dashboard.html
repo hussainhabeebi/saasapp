@@ -12194,7 +12194,7 @@ async function ensureClientField(name, uidt='SingleLineText'){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
+    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:name,title:name,uidt}).catch(()=>{});
   }catch(e){}
 }
 // CreatedVia is what marks a lead "✍️ Manual" / "✍️ Imported" (leadOrigin). NocoDB can drop a value
@@ -12222,7 +12222,7 @@ async function ensureLeadsField(name, uidt='SingleLineText'){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
+    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/columns`,{column_name:name,title:name,uidt}).catch(()=>{});
   }catch(e){}
 }
 // Hides nav tabs a restricted teammate isn't allowed into. Only ever additionally hides — never
@@ -13128,7 +13128,7 @@ async function ensureHospitalityEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -13136,7 +13136,7 @@ async function ensureHospitalityStyleColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -13144,7 +13144,7 @@ async function ensureHospitalityGreetingImagesColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('hospitality_greeting_images')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_greeting_images',title:'hospitality_greeting_images',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('hospitality_greeting_images')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'hospitality_greeting_images',title:'hospitality_greeting_images',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -13231,7 +13231,7 @@ $id('saveCalcomSecret').addEventListener('click',async()=>{
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('calcom_webhook_secret')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('calcom_webhook_secret')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}).catch(()=>{});
     await patchClient({calcom_webhook_secret:$id('cfgCalcomSecret').value.trim()});
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
@@ -14898,7 +14898,7 @@ async function mtgSyncBotLinks(){
   if(String(clientRecord?.mtg_bot_links||'')===want) return;
   const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
   if(!(info.columns||[]).some(c=>c.title==='mtg_bot_links'))
-    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'mtg_bot_links',title:'mtg_bot_links',uidt:'LongText'}).catch(()=>{});
+    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'mtg_bot_links',title:'mtg_bot_links',uidt:'LongText'}).catch(()=>{});
   await patchClient({mtg_bot_links:want});
   triggerKbRefresh();
 }
@@ -21086,10 +21086,10 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('ta_enabled')){
-      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ta_enabled',title:'ta_enabled',uidt:'SingleLineText'}).catch(()=>{});
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'ta_enabled',title:'ta_enabled',uidt:'SingleLineText'}).catch(()=>{});
     }
     if(!cols.includes('ta_table_ids')){
-      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ta_table_ids',title:'ta_table_ids',uidt:'LongText'}).catch(()=>{});
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'ta_table_ids',title:'ta_table_ids',uidt:'LongText'}).catch(()=>{});
     }
     const val=$id('cfgTaEnabled').value;
     // Same bug class as ta_table_ids above (and Appointments' already-fixed equivalent) — only
@@ -21139,7 +21139,7 @@ $id('saveB2bEnabled').addEventListener('click',async()=>{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('b2b_enabled')){
-      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'b2b_enabled',title:'b2b_enabled',uidt:'SingleLineText'}).catch(()=>{});
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'b2b_enabled',title:'b2b_enabled',uidt:'SingleLineText'}).catch(()=>{});
     }
     const val=$id('cfgB2bEnabled').value;
     await patchClient({b2b_enabled:val});
@@ -21161,7 +21161,7 @@ async function ensureClientColumn(name){
   const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
   const cols=(info.columns||[]).map(c=>c.title);
   if(!cols.includes(name)){
-    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:name,title:name,uidt:'SingleLineText'}).catch(()=>{});
+    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:name,title:name,uidt:'SingleLineText'}).catch(()=>{});
   }
 }
 // One shared factory instead of four more copy-pasted select+button+badge blocks like the
@@ -22302,7 +22302,7 @@ async function ensureHospitalityProEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('hospitality_pro_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_pro_enabled',title:'hospitality_pro_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('hospitality_pro_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'hospitality_pro_enabled',title:'hospitality_pro_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -22329,7 +22329,7 @@ async function ensureRealEstateEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('real_estate_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'real_estate_enabled',title:'real_estate_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('real_estate_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'real_estate_enabled',title:'real_estate_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -22359,7 +22359,7 @@ async function ensureHealthcareEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('healthcare_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'healthcare_enabled',title:'healthcare_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('healthcare_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'healthcare_enabled',title:'healthcare_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -22392,7 +22392,7 @@ async function ensureMatrimonialEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('matrimonial_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'matrimonial_enabled',title:'matrimonial_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('matrimonial_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'matrimonial_enabled',title:'matrimonial_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -22425,7 +22425,7 @@ async function ensureEvChargingEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('ev_charging_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ev_charging_enabled',title:'ev_charging_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('ev_charging_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'ev_charging_enabled',title:'ev_charging_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -22459,7 +22459,7 @@ async function ensureEcomEnabledColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('ecom_enabled')){
-      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ecom_enabled',title:'ecom_enabled',uidt:'SingleLineText'}).catch(()=>{});
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'ecom_enabled',title:'ecom_enabled',uidt:'SingleLineText'}).catch(()=>{});
       // NocoDB schema-cache lag: a freshly created column can silently no-op writes for several
       // seconds even after the POST succeeds — same root cause as hospitality/healthcare/real-estate
       // columns. Wait here so patchClient's first attempt lands after the cache clears.
@@ -22508,7 +22508,7 @@ $id('saveApptEnabled').addEventListener('click',async()=>{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     for(const f of [{column_name:'appt_enabled',title:'appt_enabled',uidt:'SingleLineText'},{column_name:'appt_table_ids',title:'appt_table_ids',uidt:'LongText'},{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}]){
-      if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+      if(!cols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,f).catch(()=>{});
     }
     // No longer swallowed — patchClient() verifies the write actually stuck (re-fetches and
     // compares) and throws a specific "Save didn't take effect for: X" error otherwise; that error
@@ -22577,7 +22577,7 @@ async function apptSetupTables(){
     if(!baseId)throw new Error('Could not determine base_id');
     const existingCols=(info.columns||[]).map(c=>c.title);
     for(const f of [{column_name:'appt_table_ids',title:'appt_table_ids',uidt:'LongText'},{column_name:'appt_enabled',title:'appt_enabled',uidt:'SingleLineText'},{column_name:'calcom_webhook_secret',title:'calcom_webhook_secret',uidt:'SingleLineText'}]){
-      if(!existingCols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+      if(!existingCols.includes(f.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,f).catch(()=>{});
     }
 
     const tableDefs=[
