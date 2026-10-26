@@ -36,6 +36,8 @@
 const H=3600000, D=24*H;
 
 export const FV3_DEFAULTS={
+  staff_reply_hours:24,       // resume after our reply; 0 preserves the old indefinite hold
+  stage_sequences:{},        // optional per-stage session wording and approved templates
   paused:false,               // emergency stop for this account (sends nothing, keeps the setting)
   include_existing_leads:false, // false = only leads created after V3 was switched on
   quiet_start:21, quiet_end:9,  // no sends between these local hours (night)
@@ -71,6 +73,8 @@ export function fv3Config(raw){
   o=o&&typeof o==='object'?o:{};
   const d=FV3_DEFAULTS, b=(k)=>typeof o[k]==='boolean'?o[k]:d[k];
   return {
+    staff_reply_hours:clampInt(o.staff_reply_hours, 0, 336, d.staff_reply_hours),
+    stage_sequences:fv3StageConfig(o.stage_sequences),
     paused:b('paused'), include_existing_leads:b('include_existing_leads'),
     quiet_start:clampInt(o.quiet_start, 0, 23, d.quiet_start), quiet_end:clampInt(o.quiet_end, 0, 23, d.quiet_end),
     min_gap_hours:clampInt(o.min_gap_hours, 1, 48, d.min_gap_hours),
@@ -86,6 +90,30 @@ export function fv3Config(raw){
     attribution_hours:clampInt(o.attribution_hours, 1, 336, d.attribution_hours),
     weekly_digest:b('weekly_digest'),
   };
+}
+
+// Stage overrides change wording/templates, never bypass exit goals or WhatsApp windows.
+export function fv3StageConfig(raw){
+  const out={};
+  if(!raw || typeof raw!=='object' || Array.isArray(raw)) return out;
+  for(const [stage, value] of Object.entries(raw).slice(0,20)){
+    if(!stage.trim() || !value || typeof value!=='object') continue;
+    const steps={};
+    for(let i=1;i<=5;i++){
+      const v=value[i]; if(!v || typeof v!=='object') continue;
+      steps[i]=i<=2 ? {message:String(v.message||'').slice(0,2000), hours:clampInt(v.hours,1,23,SESSION_THRESHOLD_DEFAULT[i])}
+        : {template_name:String(v.template_name||'').slice(0,512), template_language:String(v.template_language||'en').slice(0,20)};
+    }
+    out[stage.trim()]=steps;
+  }
+  return out;
+}
+export function fv3StepsForLead(steps,cfg,lead){
+  const overrides=cfg.stage_sequences?.[String(lead.Stage||'')];
+  if(!overrides) return steps;
+  const out={...steps};
+  for(const [i,v] of Object.entries(overrides)) out[i]={...steps[i],...v, step:Number(i), type:Number(i)<=2?'session':'template', message_b:'', template_name_b:'', ai_mode:0};
+  return out;
 }
 
 // ── Time helpers (client's own timezone, bot_config.timezone) ──────────────────────────────────
@@ -157,7 +185,8 @@ function parseSkip(state){ try{ const s=JSON.parse(state?.skip_json||'{}'); retu
 // in: {lead, steps:{1..5: followup_ladder_steps row}, cfg, state, sends:[{step,kind,sent_at,replied_at,variant}],
 //      enabledAt, now, tz, hasOrder, reengageReady, terminalStages?}
 export function fv3Decide(input){
-  const {lead, steps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false, hasMeeting=false}=input;
+  const {lead, steps:baseSteps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false, hasMeeting=false}=input;
+  const steps=fv3StepsForLead(baseSteps,cfg,lead);
   const stage=String(lead?.Stage||'');
   const lastCust=fv3LastCustomerMs(lead);
   const out=(status, reason, text, extra={})=>({status, reason, text, next:null, steps:stepRows(null), cycle:lastCust?new Date(lastCust).toISOString():null, ...extra});
@@ -178,6 +207,7 @@ export function fv3Decide(input){
     }
     return rows;
   }
+  if(state?.delivery_hold) return out('paused','delivery_unknown','An earlier send needs delivery verification before any retry.');
   if(cfg.paused) return out('paused', 'account_paused', 'Follow-ups are paused for your account.');
   if(lead?.OptOut==='Yes') return out('stopped', 'opted_out', 'The customer opted out — no more follow-ups.');
   if(FV3_WON_STAGES.has(stage) || (hasOrder && cfg.exit_on_order)) return out('goal_reached', hasOrder&&!FV3_WON_STAGES.has(stage)?'ordered':'won', hasOrder&&!FV3_WON_STAGES.has(stage)?'Customer placed an order — sequence finished.':'Lead is won — sequence finished.');
@@ -190,8 +220,10 @@ export function fv3Decide(input){
   if(!cfg.include_existing_leads && ms(enabledAt) && (!created || created<ms(enabledAt))) return out('not_enrolled', 'existing_lead', 'Lead came in before Follow-up V3 was switched on, so it isn\'t enrolled.');
   if(!lastCust) return out('not_enrolled', 'no_message', 'Waiting for the customer\'s first message.');
   const agentAt=ms(lead?.LastAgentMsgAt);
+  let staffFloor=0;
   if(agentAt && agentAt>lastCust+90000 && !sorted.some(s=>{ const t=ms(s.sent_at)||0; return agentAt>=t-60000 && agentAt<=t+5*60000; })){
-    return out('agent_replied', 'agent_replied', 'Your team replied last — follow-ups wait until the customer writes again.');
+    if(!cfg.staff_reply_hours) return out('agent_replied', 'agent_replied', 'Your team replied last — waiting for the customer.');
+    staffFloor=agentAt+cfg.staff_reply_hours*H;
   }
   const sent30=sorted.filter(s=>(ms(s.sent_at)||0)>now-30*D).length;
   if(sent30>=cfg.lead_cap_30d) return out('capped', 'lead_cap', `This lead already got ${sent30} follow-ups in 30 days — taking a break.`);
@@ -211,7 +243,7 @@ export function fv3Decide(input){
     if(!isSession && !String(row.template_name||'').trim()){ stepState[s]='pending_template'; if(!pendingTemplate) pendingTemplate=s; continue; }
     const thr=isSession?(Number(row.hours)||SESSION_THRESHOLD_DEFAULT[s]):TEMPLATE_THRESHOLD[s];
     const base=lastCust+thr*H;
-    let due=fv3NextAllowedMs(gapFloor(base), tz, cfg.quiet_start, cfg.quiet_end);
+    let due=fv3NextAllowedMs(Math.max(gapFloor(base),staffFloor), tz, cfg.quiet_start, cfg.quiet_end);
     if(isSession){
       if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
       if(due>=lastCust+D-SESSION_WINDOW_MARGIN || now>=lastCust+D-SESSION_WINDOW_MARGIN){ stepState[s]='expired'; continue; }
@@ -235,7 +267,7 @@ export function fv3Decide(input){
       pendingTemplate?`Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`:'All follow-ups sent — re-engage starts once its template is approved.', {steps:stepRows(null)});
     const lastRe=reAfterLast.length?ms(reAfterLast[reAfterLast.length-1].sent_at):null;
     let due=Math.max(lastCust+cfg.reengage_after_days*D, lastRe?lastRe+cfg.reengage_after_days*D:0);
-    due=gapFloor(due);
+    due=Math.max(gapFloor(due),staffFloor);
     if(prefHour!==null) due=fv3AlignToHour(due, tz, prefHour);
     due=fv3NextAllowedMs(due, tz, cfg.quiet_start, cfg.quiet_end);
     if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
@@ -266,6 +298,7 @@ export const FV3_REASON_INFO={
   lead_cap:{label:'Already got the maximum follow-ups for 30 days', fix:'Raise "Max follow-ups per lead in 30 days" in Settings if you want more.'},
   no_message:{label:'Never messaged you', fix:'Follow-ups start after the customer\'s first message.'},
   account_paused:{label:'Follow-ups are paused', fix:'Press ▶ Resume.'},
+  delivery_unknown:{label:'Delivery needs verification',fix:'Check send attempts below. Verify the provider conversation before allowing a retry.'},
   unknown:{label:'Not checked yet', fix:'The 15-minute sweep hasn\'t evaluated these leads yet. If this stays for more than an hour, check Settings → Logs for "followup v3 sweep".'},
 };
 export function fv3CoverageRows(reasonRows, cfg={}){
@@ -387,6 +420,7 @@ export function fv3BuildReport(rows, {tz='Asia/Kolkata', now=Date.now(), weeks=8
 
 // ── Storage ──────────────────────────────────────────────────────────────────────────────────────
 const SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS followup_v3_jobs (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, cycle TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(client_id,lead_id,cycle,step))`,
   `CREATE TABLE IF NOT EXISTS followup_v3_settings (client_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, enabled_at TEXT, config TEXT NOT NULL DEFAULT '{}', industry TEXT NOT NULL DEFAULT '', maint_at TEXT, last_digest_at TEXT, last_setup TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS followup_v3_leads (lead_id INTEGER PRIMARY KEY, client_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', next_step INTEGER, next_due_at TEXT, lead_name TEXT NOT NULL DEFAULT '', skip_json TEXT NOT NULL DEFAULT '{}', defer_until TEXT, retries INTEGER NOT NULL DEFAULT 0, hours_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_followup_v3_leads_client ON followup_v3_leads(client_id, next_due_at)`,
@@ -404,6 +438,15 @@ const SEND_COLUMNS=[
   `ALTER TABLE followup_sends ADD COLUMN opted_out_at TEXT`,
   `ALTER TABLE followup_v3_settings ADD COLUMN sweep_lock_until TEXT`,
   `ALTER TABLE followup_v3_settings ADD COLUMN last_run_at TEXT`,
+  `ALTER TABLE followup_v3_settings ADD COLUMN last_success_at TEXT`,
+  `ALTER TABLE followup_v3_settings ADD COLUMN last_check_at TEXT`,
+  `ALTER TABLE followup_v3_settings ADD COLUMN last_error TEXT`,
+  `ALTER TABLE followup_v3_settings ADD COLUMN last_result TEXT`,
+  `ALTER TABLE followup_sends ADD COLUMN provider_message_id TEXT`,
+  `ALTER TABLE followup_sends ADD COLUMN delivery_status TEXT DEFAULT 'accepted'`,
+  `ALTER TABLE followup_sends ADD COLUMN delivered_at TEXT`,
+  `ALTER TABLE followup_sends ADD COLUMN read_at TEXT`,
+  `ALTER TABLE followup_sends ADD COLUMN delivery_error TEXT`,
 ];
 const schemaReady=new WeakMap();
 export async function fv3EnsureSchema(env){
@@ -412,8 +455,10 @@ export async function fv3EnsureSchema(env){
   if(!p){
     p=(async()=>{
       for(const sql of SCHEMA) await env.DB.prepare(sql).run();
-      for(const sql of SEND_COLUMNS) await env.DB.prepare(sql).run().catch(()=>null); // already there
+      for(const sql of SEND_COLUMNS){ try{ await env.DB.prepare(sql).run(); }catch(e){ if(!/duplicate column/i.test(String(e?.message))) throw e; } }
       await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_followup_sends_client_sent ON followup_sends(client_id, sent_at)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_followup_sends_provider ON followup_sends(provider_message_id)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_followup_v3_jobs_status ON followup_v3_jobs(client_id,status)`).run();
       return true;
     })().catch(()=>{ schemaReady.delete(env.DB); return false; });
     schemaReady.set(env.DB, p);
@@ -505,14 +550,14 @@ async function submitTemplate(env, creds, clientId, kind, preset, attempt){
     .bind(Number(clientId), kind, name, preset.language, status, JSON.stringify(preset.params), attempt, error, now, now).run();
   return {kind, name, status, error};
 }
-async function pollTemplate(env, creds, t){
+export async function pollTemplate(env, creds, t){
   const res=await graph(`https://graph.facebook.com/v21.0/${creds.waba_id}/message_templates?name=${encodeURIComponent(t.name)}&fields=name,status,language,rejected_reason&limit=20`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
-  if(!res.ok) return t;
-  const hit=(res.data?.data||[]).find(x=>x.name===t.name && (!x.language || x.language===t.language))||(res.data?.data||[])[0];
-  if(!hit) return t;
+  if(!res.ok) throw new Error('Template verification failed: HTTP '+res.status);
+  const hit=(res.data?.data||[]).find(x=>x.name===t.name && (!x.language || x.language===t.language));
+  if(!hit) return {...t,status:'NOT_FOUND',error:'Template not found for this WhatsApp account/language'};
   const status=String(hit.status||t.status).toUpperCase();
   const error=status==='REJECTED'?String(hit.rejected_reason||'Rejected by Meta').slice(0, 300):'';
-  await env.DB.prepare(`UPDATE followup_v3_templates SET status=?, error=?, checked_at=? WHERE id=?`).bind(status, error, new Date().toISOString(), t.id).run();
+  if(t.id) await env.DB.prepare(`UPDATE followup_v3_templates SET status=?, error=?, checked_at=? WHERE id=?`).bind(status, error, new Date().toISOString(), t.id).run();
   return {...t, status, error};
 }
 async function attachTemplate(env, clientId, step, t){
@@ -573,7 +618,7 @@ export async function fv3Setup(env, deps, c, settings, {resubmit=false}={}){
       try{
         if(!t){ await submitTemplate(env, creds, cid, kind, preset, 1); t=await env.DB.prepare(`SELECT * FROM followup_v3_templates WHERE client_id=? AND kind=?`).bind(cid, kind).first(); }
         else if((t.status==='REJECTED'||t.status==='ERROR') && resubmit){ await submitTemplate(env, creds, cid, kind, preset, (t.attempt||1)+1); t=await env.DB.prepare(`SELECT * FROM followup_v3_templates WHERE client_id=? AND kind=?`).bind(cid, kind).first(); }
-        else if(t.status!=='APPROVED' && t.status!=='ERROR' && t.status!=='REJECTED') t=await pollTemplate(env, creds, t);
+        else if(t.status!=='ERROR' && t.status!=='REJECTED') t=await pollTemplate(env, creds, t);
         if(t.status==='APPROVED' && step) await attachTemplate(env, cid, step, t);
       }catch(e){ deps.reportOpsError?.(env, 'followup v3 template '+kind, e, {clientId:cid}); }
       report.templates[kind]={status:t?.status||'ERROR', name:t?.name||'', error:t?.error||''};
@@ -595,8 +640,8 @@ async function checklist(env, deps, c, settings){
   for(const s of [3, 4, 5]){
     const name=String(steps[s]?.template_name||'').trim();
     const t=templates.find(x=>x.kind==='s'+s);
-    const status=name?'APPROVED':(t?.status||'NOT_SUBMITTED');
-    items.push({key:'step'+s, ok:!!name, status, template:name||t?.name||'', error:t?.error||'', label:`Day ${s===3?1:s===4?3:7} template`});
+    const status=name?(t?.name===name?t.status:'UNVERIFIED'):(t?.status||'NOT_SUBMITTED');
+    items.push({key:'step'+s, ok:!!name && status==='APPROVED', status, template:name||t?.name||'', error:t?.error||'', label:`Day ${s===3?1:s===4?3:7} template`});
   }
   const re=templates.find(x=>x.kind==='reengage');
   items.push({key:'reengage', ok:re?.status==='APPROVED', status:re?.status||'NOT_SUBMITTED', template:re?.name||'', error:re?.error||'', label:'Re-engage template', optional:!settings.cfg.reengage_enabled});
@@ -670,11 +715,11 @@ async function logFailure(env, cid, leadId, step, e){
   return code;
 }
 
-export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}={}){
+export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), preview=false}={}){
   const cid=Number(c.Id), cfg=settings.cfg, tz=clientTz(c);
-  if(!settings.row?.maint_at || now-(ms(settings.row.maint_at)||0)>H) await fv3Setup(env, deps, c, settings).catch(e=>deps.reportOpsError?.(env, 'followup v3 setup', e, {clientId:cid}));
-  if(cfg.weekly_digest) await fv3MaybeDigest(env, deps, c, settings, now).catch(()=>null);
-  if(cfg.paused) return {sent:0, paused:true};
+  if(!preview && (!settings.row?.maint_at || now-(ms(settings.row.maint_at)||0)>H)) await fv3Setup(env, deps, c, settings).catch(e=>deps.reportOpsError?.(env, 'followup v3 setup', e, {clientId:cid}));
+  if(!preview && cfg.weekly_digest) await fv3MaybeDigest(env, deps, c, settings, now).catch(()=>null);
+  if(cfg.paused && !preview) return {sent:0, checked:0, paused:true};
   const steps=await ladderRows(env, cid);
   const templates=await templateRows(env, cid);
   const tplByName={}; templates.forEach(t=>{ tplByName[t.name]=t; });
@@ -684,21 +729,25 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
   const sendsByLead={}; (sendRows||[]).forEach(r=>{ (sendsByLead[r.lead_id]||(sendsByLead[r.lead_id]=[])).push(r); });
   const {results:stateRows}=await env.DB.prepare(`SELECT * FROM followup_v3_leads WHERE client_id=?`).bind(cid).all();
   const stateByLead={}; (stateRows||[]).forEach(r=>{ stateByLead[r.lead_id]=r; });
+  const {results:held}=await env.DB.prepare(`SELECT lead_id FROM followup_v3_jobs WHERE client_id=? AND status IN ('sending','uncertain')`).bind(cid).all();
+  for(const r of held||[]) stateByLead[r.lead_id]={...stateByLead[r.lead_id],delivery_hold:true};
   let orders=null, ordersLoaded=false;
-  const getOrders=async()=>{ if(!ordersLoaded){ ordersLoaded=true; orders=cfg.exit_on_order&&deps.orderPhones?await deps.orderPhones(env, c).catch(()=>null):null; } return orders; };
-  await deps.ensureLeadsColumns?.(env, ['LastCustomerMsgAt', 'LastAgentMsgAt', 'InterestedProduct', 'Follow up 4', 'Follow up 5']).catch(()=>null);
-  const where=`(ClientId,eq,${cid})~and(OptOut,neq,Yes)`;
+  const getOrders=async()=>{ if(!ordersLoaded){ ordersLoaded=true; orders=cfg.exit_on_order&&deps.orderPhones?await deps.orderPhones(env, c):null; } return orders; };
+  if(!preview) await deps.ensureLeadsColumns?.(env, ['LastCustomerMsgAt', 'LastAgentMsgAt', 'InterestedProduct', 'Follow up 4', 'Follow up 5']).catch(()=>null);
+  const where=`(ClientId,eq,${cid})`;
   const fields=fv3LeadFields(await deps.leadColumns?.(env).catch(()=>null));
-  const meetingLeads=await deps.meetingLeadIds?.(env, cid).catch(()=>null)||new Set();
+  const meetingLeads=await deps.meetingLeadIds?.(env, cid)||new Set();
   const due=[];
-  const stateWrites=[];
+  const stateWrites=[]; let checked=0; const reasons={}; const sample=[];
   for(let page=1; page<=30; page++){
     const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent(fields.join(','))}`);
     if(!r.ok){
       const detail=await r.text().catch(()=>'');
       throw new Error(`leads read failed (NocoDB ${r.status}) ${detail.slice(0, 300)}`);
     }
-    const list=(await r.json().catch(()=>({})))?.list||[];
+    const data=await r.json();
+    if(!Array.isArray(data?.list)) throw new Error('Invalid leads response: list missing');
+    const list=data.list;
     for(const lead of list){
       const sends=sendsByLead[lead.Id]||[];
       const state=stateByLead[lead.Id]||null;
@@ -706,49 +755,86 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
       const recent=sends.some(s=>(ms(s.sent_at)||0)>now-CONVERSION_WINDOW_DAYS*D);
       const hasOrder=lead.Phone?fv3OrderCounts((await getOrders())?.[digits10(lead.Phone)], lead):false;
       const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id))});
-      if(d.status==='goal_reached' && recent) stateWrites.push(markConversion(env, cid, lead, sends, now, hasOrder?orders?.[digits10(lead.Phone)]:null));
+      checked++; reasons[d.reason]=(reasons[d.reason]||0)+1;
+      if(sample.length<100) sample.push({lead_id:lead.Id,name:lead.Name,status:d.status,reason:d.reason,next:d.next});
+      if(!preview && d.status==='goal_reached' && recent) stateWrites.push(markConversion(env, cid, lead, sends, now, hasOrder?orders?.[digits10(lead.Phone)]:null));
       const nextStep=d.next?.step??null, nextDue=d.next?.due_at??null;
-      if(!state || state.status!==d.status || state.reason!==d.reason || (state.next_step??null)!==nextStep || (state.next_due_at??null)!==nextDue || (state.lead_name||'')!==String(lead.Name||'')){
+      if(!preview && (!state || state.status!==d.status || state.reason!==d.reason || (state.next_step??null)!==nextStep || (state.next_due_at??null)!==nextDue || (state.lead_name||'')!==String(lead.Name||''))){
         stateWrites.push(env.DB.prepare(`INSERT INTO followup_v3_leads (lead_id, client_id, status, reason, next_step, next_due_at, lead_name, updated_at) VALUES (?,?,?,?,?,?,?,?)
           ON CONFLICT(lead_id) DO UPDATE SET status=excluded.status, reason=excluded.reason, next_step=excluded.next_step, next_due_at=excluded.next_due_at, lead_name=excluded.lead_name, updated_at=excluded.updated_at`)
-          .bind(Number(lead.Id), cid, d.status, d.reason, nextStep, nextDue, String(lead.Name||'').slice(0, 120), new Date(now).toISOString()).run().catch(()=>null));
+          .bind(Number(lead.Id), cid, d.status, d.reason, nextStep, nextDue, String(lead.Name||'').slice(0, 120), new Date(now).toISOString()).run());
       }
       if(d.status==='due') due.push({lead, d, state});
     }
+    const writes=await Promise.allSettled(stateWrites.splice(0));
+    const failedWrite=writes.find(r=>r.status==='rejected');
+    if(failedWrite) throw failedWrite.reason;
     if(list.length<200) break;
+    if(page===30) throw new Error('Lead scan exceeds 6000 records; split this account into batches before sending');
   }
   await Promise.all(stateWrites);
-  if(!due.length) return {sent:0};
+  const summary={checked,due:due.length,reasons,sample};
+  if(preview) return {sent:0,preview:true,...summary};
+  if(!due.length) return {sent:0,...summary};
   // Daily cap (lower during the warm-up week).
   const warm=settings.enabled_at && now-(ms(settings.enabled_at)||0)<cfg.warmup_days*D;
   const cap=warm?Math.min(cfg.warmup_cap, cfg.daily_cap):cfg.daily_cap;
   const sent24=(await env.DB.prepare(`SELECT COUNT(*) n FROM followup_sends WHERE client_id=? AND v3=1 AND sent_at>=?`).bind(cid, new Date(now-D).toISOString()).first())?.n||0;
   let budget=Math.max(0, cap-sent24);
   due.sort((a, b)=>(ms(a.d.next.due_at)||0)-(ms(b.d.next.due_at)||0));
-  let sent=0, clientBroken=false;
-  const batch=due.slice(0, budget);
+  let sent=0, failed=0, clientBroken=false;
+  const batch=due.slice(0, Math.min(budget,50));
   for(let i=0; i<batch.length && !clientBroken; i+=5){
-    await Promise.all(batch.slice(i, i+5).map(async ({lead, d, state})=>{
+    const outcomes=await Promise.allSettled(batch.slice(i, i+5).map(async ({lead, d, state})=>{
       if(clientBroken) return;
       const step=d.next.step;
+      const liveR=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${Number(lead.Id)}`);
+      if(!liveR.ok) throw new Error('Pre-send lead refresh failed: '+liveR.status);
+      const live=await liveR.json();
+      if(String(live.ClientId)!==String(cid)) throw new Error('Pre-send lead ownership mismatch');
+      const latestSettings=await fv3GetSettings(env,cid);
+      if(!latestSettings?.enabled || latestSettings.cfg.paused) return;
+      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reTpl});
+      if(latest.status!=='due' || latest.cycle!==d.cycle || latest.next.step!==step) return;
+      lead=live;
+      const leadSteps=fv3StepsForLead(steps,latestSettings.cfg,lead);
       const stepCfg=step===REENGAGE_STEP
         ? {step, type:'template', template_name:reTpl.name, template_language:reTpl.language, template_category:'MARKETING', template_body_vars:JSON.parse(reTpl.params||'[]').length}
-        : steps[step];
-      const opts={v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
+        : leadSteps[step];
+      const selectedVariant=stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
+      const selectedTemplate=selectedVariant==='B'&&stepCfg.template_name_b?{name:stepCfg.template_name_b,language:stepCfg.template_language_b||stepCfg.template_language}:{name:stepCfg.template_name,language:stepCfg.template_language};
+      const opts={selectedVariant:stepCfg.type==='template'?selectedVariant:undefined,v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
       if(stepCfg.type==='template'){
-        const t=tplByName[stepCfg.template_name];
+        const t=tplByName[selectedTemplate.name];
         if(t){ let params=[]; try{ params=JSON.parse(t.params||'[]'); }catch(e){} opts.templateParams=fv3TemplateParams(params, lead, c, c.industry||settings.industry); }
       } else {
         opts.fill={product:String(lead.InterestedProduct||'').trim()||fv3InterestFallback(c.industry||settings.industry), business:c.client_name||'us'};
         if(cfg.objection_branching){ const t=await objectionText(env, deps, c, lead).catch(()=>null); if(t){ opts.overrideText=t; opts.variant='OBJ'; opts.kind='objection'; } }
       }
+      let claimed=false;
+      const jobCycle=step===REENGAGE_STEP?d.next.due_at:d.cycle;
       try{
+        if(stepCfg.type==='template'){
+          const creds=opts.creds;
+          if(!creds?.waba_id || !creds?.wa_token) throw new Error('WhatsApp API credentials missing');
+          const verified=await pollTemplate(env,creds,{name:selectedTemplate.name,language:selectedTemplate.language||'en_US',status:'UNKNOWN'});
+          if(verified.status!=='APPROVED') throw new Error('Template not approved: '+verified.status);
+        }
+        const claim=await env.DB.prepare(`INSERT INTO followup_v3_jobs (client_id,lead_id,cycle,step,status,updated_at) VALUES (?,?,?,?,'sending',?) ON CONFLICT(client_id,lead_id,cycle,step) DO UPDATE SET status='sending',updated_at=excluded.updated_at WHERE followup_v3_jobs.status='retry'`)
+          .bind(cid,Number(lead.Id),jobCycle,step,new Date().toISOString()).run();
+        if(!claim?.meta?.changes) return;
+        claimed=true;
         await deps.sendStep(env, c, lead, step, stepCfg, opts);
+        await env.DB.prepare(`UPDATE followup_v3_jobs SET status='accepted',updated_at=? WHERE client_id=? AND lead_id=? AND cycle=? AND step=?`).bind(new Date().toISOString(),cid,Number(lead.Id),jobCycle,step).run();
         sent++;
         if(state?.retries || state?.defer_until) await env.DB.prepare(`UPDATE followup_v3_leads SET retries=0, defer_until=NULL WHERE lead_id=?`).bind(Number(lead.Id)).run().catch(()=>null);
       }catch(e){
+        failed++;
         const code=await logFailure(env, cid, lead.Id, step, e);
         const act=fv3ErrorAction(code, e?.message);
+        // A timeout may mean the provider accepted it. Never retry an ambiguous send automatically.
+        if(claimed) await env.DB.prepare(`UPDATE followup_v3_jobs SET status=?,updated_at=? WHERE client_id=? AND lead_id=? AND cycle=? AND step=?`)
+          .bind(e?.definiteFailure?'retry':'uncertain',new Date().toISOString(),cid,Number(lead.Id),jobCycle,step).run();
         const retries=(Number(state?.retries)||0)+1;
         const skip=parseSkip(state); const cycle=d.cycle;
         const addSkip=(...ss)=>{ const base=skip.cycle===cycle?(skip.steps||[]):[]; return JSON.stringify({cycle, steps:[...new Set([...base, ...ss])]}); };
@@ -763,8 +849,10 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
           .bind(newRetries, deferUntil, skipJson, new Date(now).toISOString(), Number(lead.Id)).run().catch(()=>null);
       }
     }));
+    const rejected=outcomes.find(r=>r.status==='rejected');
+    if(rejected) throw rejected.reason;
   }
-  return {sent, due:due.length, budget};
+  return {sent,failed,...summary,budget};
 }
 
 async function markConversion(env, cid, lead, sends, now, order){
@@ -786,8 +874,18 @@ export async function fv3RunClient(env, deps, c, settings, {now=Date.now(), minG
     AND (sweep_lock_until IS NULL OR sweep_lock_until<?) AND (last_run_at IS NULL OR last_run_at<?)`)
     .bind(iso(now+SWEEP_LOCK_MS), iso(now), cid, iso(now), iso(now-minGapMs)).run();
   if(!(got?.meta?.changes>0)) return {sent:0, skipped:'recent'};
-  try{ return await fv3ProcessClient(env, deps, c, settings, {now}); }
-  finally{ await env.DB.prepare(`UPDATE followup_v3_settings SET sweep_lock_until=NULL WHERE client_id=?`).bind(cid).run().catch(()=>null); }
+  try{
+    const result=await fv3ProcessClient(env,deps,c,settings,{now});
+    await env.DB.prepare(`UPDATE followup_v3_settings SET last_success_at=?,last_error=NULL,last_result=? WHERE client_id=?`).bind(new Date().toISOString(),JSON.stringify({...result,sample:undefined}),cid).run();
+    return result;
+  }catch(e){
+    await env.DB.prepare(`UPDATE followup_v3_settings SET last_error=? WHERE client_id=?`).bind(String(e.message||e).slice(0,1000),cid).run();
+    throw e;
+  }
+  finally{
+    await env.DB.prepare(`UPDATE followup_v3_settings SET sweep_lock_until=NULL WHERE client_id=? AND sweep_lock_until=?`).bind(cid,iso(now+SWEEP_LOCK_MS)).run();
+    await fv3Schedule(env,cid);
+  }
 }
 
 export async function fv3RunForAllClients(env, deps){
@@ -799,7 +897,8 @@ export async function fv3RunForAllClients(env, deps){
       if(!c || c.active==='No') continue;
       const settings=await fv3GetSettings(env, row.client_id);
       if(!settings?.enabled) continue;
-      await fv3RunClient(env, deps, c, settings);
+      if(env.FOLLOWUP_SCHEDULER) await fv3Schedule(env,row.client_id);
+      else await fv3RunClient(env, deps, c, settings);
     }catch(e){ await deps.reportOpsError?.(env, 'followup v3 sweep', e, {clientId:row.client_id}); }
   }
 }
@@ -834,11 +933,13 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
   if(!settings?.enabled) return {enabled:false};
   const steps=await ladderRows(env, c.Id);
   const templates=await templateRows(env, c.Id);
-  const {results:sends}=await env.DB.prepare(`SELECT id, step, kind, variant, sent_at, replied_at, converted_at, opted_out_at FROM followup_sends WHERE lead_id=? ORDER BY sent_at DESC LIMIT 50`).bind(Number(lead.Id)).all();
-  const state=await env.DB.prepare(`SELECT * FROM followup_v3_leads WHERE lead_id=?`).bind(Number(lead.Id)).first();
+  const {results:sends}=await env.DB.prepare(`SELECT id, step, kind, variant, sent_at, replied_at, converted_at, opted_out_at, delivery_status, delivered_at, read_at, delivery_error FROM followup_sends WHERE lead_id=? ORDER BY sent_at DESC LIMIT 50`).bind(Number(lead.Id)).all();
+  let state=await env.DB.prepare(`SELECT * FROM followup_v3_leads WHERE lead_id=? AND client_id=?`).bind(Number(lead.Id),Number(c.Id)).first();
+  const held=await env.DB.prepare(`SELECT lead_id FROM followup_v3_jobs WHERE client_id=? AND lead_id=? AND status IN ('sending','uncertain') LIMIT 1`).bind(Number(c.Id),Number(lead.Id)).first();
+  if(held) state={...state,delivery_hold:true};
   let hasOrder=false;
   if(settings.cfg.exit_on_order && deps.orderPhones && lead.Phone){
-    const o=await deps.orderPhones(env, c).catch(()=>null);
+    const o=await deps.orderPhones(env, c);
     hasOrder=fv3OrderCounts(o?.[digits10(lead.Phone)], lead);
   }
   const hasMeeting=!!(await deps.leadHasMeeting?.(env, c.Id, lead.Id).catch(()=>false));
@@ -849,7 +950,34 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
     paused:settings.cfg.paused,
     defer_until:state?.defer_until||null,
     last_failure:lastFail?{...lastFail, ...fv3FailureHint(lastFail.error_code, lastFail.error_message)}:null,
-    history:(sends||[]).slice(0, 12).map(s=>({step:s.step, kind:s.kind||'ladder', label:fv3StepLabel(Number(s.step)), variant:s.variant, sent_at:s.sent_at, replied_at:s.replied_at, converted_at:s.converted_at, opted_out_at:s.opted_out_at}))};
+    history:(sends||[]).slice(0, 12).map(s=>({step:s.step, kind:s.kind||'ladder', label:fv3StepLabel(Number(s.step)), variant:s.variant, sent_at:s.sent_at, replied_at:s.replied_at, converted_at:s.converted_at, opted_out_at:s.opted_out_at,delivery_status:s.delivery_status,delivered_at:s.delivered_at,read_at:s.read_at,delivery_error:s.delivery_error}))};
+}
+
+// One alarm owner per tenant; D1 holds each lead's next action. Cron only repairs missing alarms.
+export async function fv3Schedule(env,cid){
+  if(!env.FOLLOWUP_SCHEDULER) return;
+  const stub=env.FOLLOWUP_SCHEDULER.get(env.FOLLOWUP_SCHEDULER.idFromName(String(cid)));
+  const response=await stub.fetch('https://followups.internal/schedule',{method:'POST',body:JSON.stringify({cid:Number(cid)})});
+  if(!response.ok) throw new Error('Follow-up alarm scheduling failed');
+}
+
+export function fv3Health(settings, now=Date.now()){
+  const row=settings.row||{};
+  let result={}; try{ result=JSON.parse(row.last_result||'{}'); }catch{}
+  const status=!settings.enabled?'disabled':settings.cfg.paused?'paused':row.last_error||result.failed?'failed':!row.last_success_at||now-(ms(row.last_success_at)||0)>30*60000?'delayed':'healthy';
+  return {status,last_attempt_at:row.last_run_at||null,last_success_at:row.last_success_at||null,last_check_at:row.last_check_at||null,error:row.last_error||(result.failed?result.failed+' send attempts failed; see send problems below':null),checked:result.checked||0,due:result.due||0,sent:result.sent||0,budget:result.budget??null};
+}
+
+// Signed Meta delivery callbacks are routed before the authenticated dashboard API.
+export async function fv3DeliveryStatus(env, body){
+  if(!await fv3EnsureSchema(env)) throw new Error('Follow-up storage unavailable');
+  for(const entry of body.entry||[]) for(const change of entry.changes||[]) for(const st of change.value?.statuses||[]){
+    if(!['sent','delivered','read','failed'].includes(st.status)||!st.id) continue;
+    const at=new Date(Number(st.timestamp)*1000); if(!Number.isFinite(at.getTime())) continue;
+    const status=st.status==='sent'?'accepted':st.status;
+    await env.DB.prepare(`UPDATE followup_sends SET delivery_status=CASE WHEN delivery_status='read' THEN 'read' WHEN delivery_status='delivered' AND ?='accepted' THEN 'delivered' ELSE ? END, delivered_at=CASE WHEN ? IN ('delivered','read') THEN COALESCE(delivered_at,?) ELSE delivered_at END,read_at=CASE WHEN ?='read' THEN COALESCE(read_at,?) ELSE read_at END,delivery_error=CASE WHEN ?='failed' THEN ? ELSE delivery_error END WHERE provider_message_id=?`)
+      .bind(status,status,status,at.toISOString(),status,at.toISOString(),status,JSON.stringify(st.errors||[]).slice(0,1000),st.id).run();
+  }
 }
 
 // ── Routes: /followups/v3/* ──────────────────────────────────────────────────────────────────────
@@ -866,7 +994,7 @@ export async function fv3HandleRoute(request, env, deps, url){
 
   if(path==='/settings' && method==='GET'){
     const s=await fv3GetSettings(env, cid);
-    return json({enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, defaults:FV3_DEFAULTS, last_setup:s.last_setup||{}, checklist:s.enabled?await checklist(env, deps, c, s):[]});
+    return json({enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, health:fv3Health(s), defaults:FV3_DEFAULTS, last_setup:s.last_setup||{}, checklist:s.enabled?await checklist(env, deps, c, s):[]});
   }
   if(path==='/settings' && method==='POST'){
     const body=await request.json().catch(()=>({}));
@@ -874,7 +1002,8 @@ export async function fv3HandleRoute(request, env, deps, url){
     const s=await fv3SaveSettings(env, cid, {enabled:body.enabled, config:body.config, industry:c.industry||''});
     let setup=null;
     if(s.enabled && !before.enabled) setup=await fv3Setup(env, deps, c, s).catch(e=>({error:e.message}));
-    return json({ok:true, enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, setup, checklist:s.enabled?await checklist(env, deps, c, s):[]});
+    await fv3Schedule(env,cid);
+    return json({ok:true, health:fv3Health(await fv3GetSettings(env,cid)), enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, setup, checklist:s.enabled?await checklist(env, deps, c, s):[]});
   }
   if(path==='/setup' && method==='POST'){
     const s=await fv3GetSettings(env, cid);
@@ -885,12 +1014,39 @@ export async function fv3HandleRoute(request, env, deps, url){
   }
   // Leads page opened → send whatever is already due now instead of waiting for the next
   // 15-minute tick. At most once every FV3_RUN_NOW_GAP_MS per account, never alongside the cron.
+  if(path==='/attempts' && method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT lead_id,cycle,step,status,updated_at FROM followup_v3_jobs WHERE client_id=? AND status IN ('sending','uncertain') ORDER BY updated_at DESC LIMIT 100`).bind(cid).all();
+    return json({list:results||[]});
+  }
+  if(path==='/attempts/resolve' && method==='POST'){
+    const b=await request.json();
+    if(!['sent','not_sent'].includes(b.outcome)) return json({error:'Verify whether the provider sent this message first'},400);
+    const job=await env.DB.prepare(`SELECT * FROM followup_v3_jobs WHERE client_id=? AND lead_id=? AND cycle=? AND step=?`).bind(cid,Number(b.lead_id),String(b.cycle),Number(b.step)).first();
+    if(!job || !['sending','uncertain'].includes(job.status)) return json({error:'Attempt not awaiting verification'},409);
+    if(Date.now()-(ms(job.updated_at)||0)<SWEEP_LOCK_MS) return json({error:'Wait 10 minutes for the in-progress send to settle before verifying'},409);
+    if(b.outcome==='sent'){
+      // Recover the send ledger if the provider accepted a message but persistence failed.
+      const logged=await env.DB.prepare(`SELECT id FROM followup_sends WHERE client_id=? AND lead_id=? AND step=? AND sent_at>=? LIMIT 1`).bind(cid,job.lead_id,job.step,new Date((ms(job.updated_at)||0)-5*60000).toISOString()).first();
+      if(!logged) await env.DB.prepare(`INSERT INTO followup_sends (client_id,lead_id,step,variant,sent_at,v3,kind,delivery_status) VALUES (?,?,?,'VERIFIED',?,1,?,'accepted')`).bind(cid,job.lead_id,job.step,job.updated_at,job.step===REENGAGE_STEP?'reengage':'ladder').run();
+    }
+    await env.DB.prepare(`UPDATE followup_v3_leads SET retries=0,defer_until=NULL WHERE client_id=? AND lead_id=?`).bind(cid,job.lead_id).run();
+    await env.DB.prepare(`UPDATE followup_v3_jobs SET status=?,updated_at=? WHERE client_id=? AND lead_id=? AND cycle=? AND step=? AND status IN ('sending','uncertain')`).bind(b.outcome==='sent'?'verified_sent':'retry',new Date().toISOString(),cid,job.lead_id,job.cycle,job.step).run();
+    await fv3Schedule(env,cid);
+    return json({ok:true});
+  }
+  if(path==='/check' && method==='POST'){
+    const s=await fv3GetSettings(env,cid);
+    if(!s.enabled) return json({error:'Switch Follow-up V3 on first'},400);
+    const result=await fv3ProcessClient(env,deps,c,s,{preview:true});
+    await env.DB.prepare(`UPDATE followup_v3_settings SET last_check_at=? WHERE client_id=?`).bind(new Date().toISOString(),cid).run();
+    return json(result);
+  }
   if(path==='/run' && method==='POST'){
     const s=await fv3GetSettings(env, cid);
     if(!s.enabled) return json({ok:true, enabled:false});
     const r=await fv3RunClient(env, deps, c, s, {minGapMs:FV3_RUN_NOW_GAP_MS})
-      .catch(e=>{ deps.reportOpsError?.(env, 'followup v3 run now', e, {clientId:cid}); return {sent:0, error:true}; });
-    return json({ok:true, enabled:true, sent:r.sent||0, due:r.due||0, skipped:r.skipped||null, error:!!r.error});
+      .catch(e=>{ deps.reportOpsError?.(env, 'followup v3 run now', e, {clientId:cid}); return {sent:0,error:e.message||'Follow-up run failed'}; });
+    return json({ok:!r.error, enabled:true, sent:r.sent||0, due:r.due||0, skipped:r.skipped||null, error:r.error||null},r.error?500:200);
   }
   if(path==='/lead' && method==='GET'){
     const leadId=Number(url.searchParams.get('lead_id'));
@@ -949,7 +1105,9 @@ export async function fv3HandleRoute(request, env, deps, url){
       const out={}; Object.entries(per).forEach(([st, rates])=>{ if(rates.length>=3) out[st]=Math.round(rates.reduce((a, x)=>a+x, 0)/rates.length*1000)/10; });
       benchmark=Object.keys(out).length?{industry:s.industry, reply_rate_by_step:out}:null;
     }
-    return json({days, ...rep, in_sequence:(statusCounts.due||0)+(statusCounts.scheduled||0), status_counts:statusCounts, coverage,
+    const {results:delivery}=await env.DB.prepare(`SELECT delivery_status status,COUNT(*) n FROM followup_sends WHERE client_id=? AND sent_at>=? GROUP BY delivery_status`).bind(cid,since).all();
+    const uncertain=(await env.DB.prepare(`SELECT COUNT(*) n FROM followup_v3_jobs WHERE client_id=? AND status IN ('sending','uncertain')`).bind(cid).first())?.n||0;
+    return json({health:fv3Health(s),delivery:delivery||[],uncertain,days, ...rep, in_sequence:(statusCounts.due||0)+(statusCounts.scheduled||0), status_counts:statusCounts, coverage,
       failures:(fails||[]).map(f=>({...f, ...fv3FailureHint(f.error_code, f.error_message)})),
       templates:(await templateRows(env, cid)).map(t=>({kind:t.kind, name:t.name, status:t.status, error:t.error})),
       benchmark, currency:c.deal_currency||''});

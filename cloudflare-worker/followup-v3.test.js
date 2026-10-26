@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import {
   fv3Config, fv3Decide, fv3AttributeReply, fv3ErrorAction, fv3TemplatePreset, fv3TemplateParams,
-  fv3BuildReport, fv3PreferredHour, fv3NextAllowedMs, fv3OrderCounts, fv3OnInbound, fv3ProcessClient,
+  fv3Health, fv3DeliveryStatus, fv3StepsForLead, fv3BuildReport, fv3PreferredHour, fv3NextAllowedMs, fv3OrderCounts, fv3OnInbound, fv3ProcessClient,
   fv3Setup, fv3SaveSettings, fv3GetSettings, fv3IsEnabled, fv3EnsureSchema, fv3LeadFields, fv3RunClient,
 } from './followup-v3.js';
 
@@ -73,7 +73,9 @@ describe('fv3Decide', ()=>{
 
   test('your team replying pauses it, but our own follow-up message does not count as a team reply', ()=>{
     const now=T('2026-10-10T18:00:00Z');
-    assert.equal(decide({now, lead:{LastAgentMsgAt:'2026-10-10T12:00:00Z'}}).status, 'agent_replied');
+    assert.equal(decide({now, cfg:fv3Config({staff_reply_hours:0}), lead:{LastAgentMsgAt:'2026-10-10T12:00:00Z'}}).status, 'agent_replied');
+    const resumed=decide({now,lead:{LastAgentMsgAt:'2026-10-10T12:00:00Z'}});
+    assert.equal(resumed.status,'scheduled'); assert.ok(Date.parse(resumed.next.due_at)>=T('2026-10-11T12:00:00Z'));
     const sends=[{step:1, sent_at:'2026-10-10T11:00:00Z'}];
     assert.notEqual(decide({now, sends, lead:{LastAgentMsgAt:'2026-10-10T11:00:02Z'}}).status, 'agent_replied');
     // The bot's own instant answer (within 90s of the customer) isn't a human reply either.
@@ -257,13 +259,14 @@ describe('with D1', ()=>{
       {Id:2, Name:'Ravi', Phone:'91901', Stage:'new', CreatedAt:iso(now-3*D), LastCustomerMsgAt:iso(now-27*H)},  // template step 3 due
       {Id:3, Name:'Old', Phone:'91902', Stage:'new', CreatedAt:iso(now-40*D), LastCustomerMsgAt:iso(now-2*H)},   // came in before V3 — not enrolled
     ];
+    globalThis.fetch=async url=>new Response(JSON.stringify({data:[{name:new URL(url).searchParams.get('name'),status:'APPROVED',language:'en_US'}]}));
     const sent=[];
     let fail=null;
     const deps={
-      leadsTable:'L', ncFetch:async()=>new Response(JSON.stringify({list:leads})), ensureLeadsColumns:async()=>{},
+      leadsTable:'L', ncFetch:async(e,path)=>new Response(JSON.stringify(/records\/\d+$/.test(path)?{...leads.find(l=>l.Id===Number(path.split('/').pop())),ClientId:42}:{list:leads})), ensureLeadsColumns:async()=>{},
       metaCreds:()=>({waba_id:'W', wa_token:'tok', wa_phone_id:'P'}),
       sendStep:async(env2, c, lead, step, stepCfg, opts)=>{
-        if(fail){ const e=new Error('held'); e.code=fail; throw e; }
+        if(fail){ const e=new Error('held'); e.code=fail; e.definiteFailure=true; throw e; }
         sent.push({lead:lead.Id, step, opts});
         db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at, v3, kind) VALUES (42,?,?,?,?,1,?)`).run(lead.Id, step, 'A', iso(now), opts.kind);
       },
@@ -296,6 +299,7 @@ describe('with D1', ()=>{
     const deps={
       leadsTable:'L', ensureLeadsColumns:async()=>{}, leadColumns:async()=>columns,
       ncFetch:async(env2, path)=>{
+        if(/records\/\d+$/.test(path)) return new Response(JSON.stringify({...leads[0],ClientId:42}));
         const fields=decodeURIComponent(new URL('http://x/'+path).searchParams.get('fields')||'').split(',');
         if(fields.some(f=>!columns.includes(f))) return new Response('{"msg":"Field not found"}', {status:404});
         return new Response(JSON.stringify({list:leads}));
@@ -318,7 +322,7 @@ describe('with D1', ()=>{
     db.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, message, updated_at) VALUES (42,1,'session',1,'Hi {name}',?)`).run(iso(now));
     const leads=[{Id:8, Name:'Zed', Stage:'new', CreatedAt:iso(now-D), LastCustomerMsgAt:iso(now-2*H)}];
     let sends=0;
-    const deps={leadsTable:'L', ensureLeadsColumns:async()=>{}, ncFetch:async()=>new Response(JSON.stringify({list:leads})),
+    const deps={leadsTable:'L', ensureLeadsColumns:async()=>{}, ncFetch:async(e,path)=>new Response(JSON.stringify(/records\/\d+$/.test(path)?{...leads.find(l=>l.Id===Number(path.split('/').pop())),ClientId:42}:{list:leads})),
       sendStep:async(e, c, lead, step)=>{ sends++; db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at, v3) VALUES (42,?,?,'A',?,1)`).run(lead.Id, step, iso(now)); }};
     const s=await fv3GetSettings(env, 42);
     assert.equal((await fv3RunClient(env, deps, client, s, {now, minGapMs:120000})).sent, 1);
@@ -331,4 +335,78 @@ describe('with D1', ()=>{
     assert.equal(sends, 1, 'nothing new was due');
     assert.equal(db.prepare(`SELECT sweep_lock_until FROM followup_v3_settings WHERE client_id=42`).get().sweep_lock_until, null, 'lock released');
   });
+  async function fixture(){
+    const now=Date.now();
+    await fv3SaveSettings(env,42,{enabled:true,config:{quiet_start:0,quiet_end:0,objection_branching:false,weekly_digest:false}});
+    db.prepare(`UPDATE followup_v3_settings SET maint_at=?,enabled_at=? WHERE client_id=42`).run(iso(now),iso(now-5*D));
+    db.prepare(`INSERT INTO followup_ladder_steps (client_id,step,type,hours,message,updated_at) VALUES (42,1,'session',1,'Hello {name}',?)`).run(iso(now));
+    const l={Id:7,ClientId:42,Name:'Test',Stage:'new',CreatedAt:iso(now-D),LastCustomerMsgAt:iso(now-2*H)};
+    let count=0;
+    const deps={leadsTable:'L',ncFetch:async(e,path)=>new Response(JSON.stringify(/records\/\d+$/.test(path)?l:{list:[l]})),sendStep:async()=>{count++;}};
+    return {now,l,deps,count:()=>count,settings:()=>fv3GetSettings(env,42)};
+  }
+  test('preview evaluates leads with no sends, template setup, state writes, or send claims',async()=>{
+    const f=await fixture();
+    f.deps.ai=()=>{throw new Error('Preview must not generate messages');};
+    const before=db.prepare(`SELECT COUNT(*) n FROM followup_v3_leads`).get().n;
+    const r=await fv3ProcessClient(env,f.deps,client,await f.settings(),{preview:true});
+    assert.equal(r.checked,1);assert.equal(r.due,1);assert.equal(r.sent,0);assert.equal(f.count(),0);
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM followup_v3_leads`).get().n,before);
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM followup_v3_jobs`).get().n,0);
+  });
+  test('fresh customer reply or opt-out between evaluation and sending cancels the send',async()=>{
+    const f=await fixture();const get=f.deps.ncFetch;
+    f.deps.ncFetch=async(e,path)=>/records\/\d+$/.test(path)?new Response(JSON.stringify({...f.l,OptOut:'Yes'})):get(e,path);
+    await fv3ProcessClient(env,f.deps,client,await f.settings());assert.equal(f.count(),0);
+    f.deps.ncFetch=async(e,path)=>/records\/\d+$/.test(path)?new Response(JSON.stringify({...f.l,LastCustomerMsgAt:iso(Date.now())})):get(e,path);
+    await fv3ProcessClient(env,f.deps,client,await f.settings());assert.equal(f.count(),0);
+  });
+  test('atomic claim prevents duplicate send even when send-history persistence was lost',async()=>{
+    const f=await fixture();
+    await fv3ProcessClient(env,f.deps,client,await f.settings());
+    await fv3ProcessClient(env,f.deps,client,await f.settings());assert.equal(f.count(),1);
+  });
+  test('ambiguous timeout holds the lead instead of automatically sending again',async()=>{
+    const f=await fixture();let attempts=0;
+    f.deps.sendStep=async()=>{attempts++;throw new Error('Connection timed out');};
+    await fv3ProcessClient(env,f.deps,client,await f.settings());
+    const r=await fv3ProcessClient(env,f.deps,client,await f.settings());
+    assert.equal(attempts,1);assert.equal(r.reasons.delivery_unknown,1);
+    assert.equal(db.prepare(`SELECT status FROM followup_v3_jobs`).get().status,'uncertain');
+  });
+  test('failed lead reads are visible in health and never reported as successful runs',async()=>{
+    const f=await fixture();f.deps.ncFetch=async()=>new Response('Unavailable',{status:503});
+    await assert.rejects(fv3RunClient(env,f.deps,client,await f.settings()),/NocoDB 503/);
+    let h=fv3Health(await f.settings());assert.equal(h.status,'failed');assert.match(h.error,/503/);assert.equal(h.last_success_at,null);
+    f.deps.ncFetch=async()=>new Response(JSON.stringify({list:[]}));
+    await fv3RunClient(env,f.deps,client,await f.settings(),{now:Date.now()+1});h=fv3Health(await f.settings());
+    assert.equal(h.status,'healthy');assert.equal(h.error,null);assert.ok(h.last_success_at);
+    assert.equal(fv3Health(await f.settings(),Date.now()+31*60000).status,'delayed');
+  });
+  test('delivery callbacks are idempotent and cannot downgrade read receipts',async()=>{
+    await fv3EnsureSchema(env);
+    db.prepare(`INSERT INTO followup_sends (client_id,lead_id,step,variant,sent_at,provider_message_id) VALUES (42,7,1,'A',?,'wamid.123')`).run(iso(Date.now()));
+    const event=status=>({entry:[{changes:[{value:{statuses:[{id:'wamid.123',status,timestamp:String(Math.floor(Date.now()/1000))}]}}]}]});
+    await fv3DeliveryStatus(env,event('read'));await fv3DeliveryStatus(env,event('sent'));await fv3DeliveryStatus(env,event('delivered'));
+    const row=db.prepare(`SELECT * FROM followup_sends`).get();assert.equal(row.delivery_status,'read');assert.ok(row.read_at);assert.ok(row.delivered_at);
+    await fv3DeliveryStatus(env,{entry:[{changes:[{value:{statuses:[{id:'unknown',status:'failed',timestamp:'1'}]}}]}]});
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM followup_sends`).get().n,1);
+  });
+  test('status write failure aborts the run before any send',async()=>{
+    const f=await fixture();const original=env.DB.prepare;
+    env.DB.prepare=function(sql){if(sql.startsWith('INSERT INTO followup_v3_leads')) return {bind(){return this;},async run(){throw new Error('D1 write failed');}};return original.call(this,sql);};
+    await assert.rejects(fv3RunClient(env,f.deps,client,await f.settings()),/D1 write failed/);assert.equal(f.count(),0);
+    assert.equal(fv3Health(await f.settings()).status,'failed');
+  });
+
+});
+
+
+test('stage sequences override wording while preserving exit rules and session expiry',()=>{
+  const custom=fv3Config({stage_sequences:{quote_sent:{1:{message:'Questions about the quote?',hours:3},3:{template_name:'quote_day1',template_language:'en_US'}}}});
+  const l=lead({Stage:'quote_sent'}),effective=fv3StepsForLead(steps,custom,l);
+  assert.equal(effective[1].message,'Questions about the quote?');assert.equal(effective[1].message_b,'');assert.equal(effective[3].template_name,'quote_day1');
+  const d=fv3Decide({lead:l,steps,cfg:custom,now:T('2026-10-11T12:00:00Z'),tz:'UTC'});
+  assert.equal(d.steps[0].state,'expired');assert.equal(d.next.step,3);
+  assert.equal(fv3Decide({lead:{...l,Handover:'Yes'},steps,cfg:custom,now:T('2026-10-11T12:00:00Z')}).status,'human');
 });

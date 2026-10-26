@@ -216,3 +216,12 @@ binding = "AI"
 [[services]]
 binding = "FLOWVYNE"
 service  = "flowvyne"
+
+# Follow-up V3: tenant alarm owner, D1 lead jobs, cron recovery.
+[[durable_objects.bindings]]
+name = "FOLLOWUP_SCHEDULER"
+class_name = "FollowupV3Scheduler"
+
+[[migrations]]
+tag = "v3-followup-scheduler"
+new_sqlite_classes = ["FollowupV3Scheduler"]
