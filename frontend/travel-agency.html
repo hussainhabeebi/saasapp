@@ -1066,7 +1066,10 @@ async function taEnsureColumns(key){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}`);
     const have=new Set((info.columns||[]).map(c=>c.title));
     for(const c of add){
-      if(!have.has(c.title)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}/fields`,{column_name:c.title,...c});
+      if(have.has(c.title)) continue;
+      // Rethrown with its own message so a failed column add isn't read as the table 404ing.
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}/columns`,{column_name:c.title,...c})
+        .catch(e=>{ throw new Error(`Couldn't add the ${c.title} column to ${TA_TABLE_TITLES[key]} (${e.message})`); });
     }
   });
   _taColumnsChecked.add(key);
@@ -1259,7 +1262,7 @@ async function taSetupTables(){
     for(const f of clientFields){
       if(!existingCols.includes(f.title)){
         msg.textContent=`Adding ${f.title} column…`;
-        await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+        await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,f).catch(()=>{});
       }
     }
 
