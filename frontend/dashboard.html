@@ -20960,12 +20960,17 @@ async function taRepairTableIds(){
   const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
   const baseId=info.base_id;
   if(!baseId) return taTableIds();
-  const baseTables=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`).catch(()=>({list:[]}));
+  // No .catch here: a failed listing read as "no tables" would drop every stored ID below.
+  const baseTables=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`);
   const existingTableMap={};
   (baseTables.list||[]).forEach(t=>{ existingTableMap[t.title]=t.id; });
   const ids=taTableIds();
   Object.entries(TA_TABLE_TITLES).forEach(([key,title])=>{
     if(existingTableMap[title]) ids[key]=existingTableMap[title];
+    // Table is really gone from the base — drop its stale ID so the setup screen / "Set up now"
+    // banner (both keyed off missing IDs) offers to recreate it; keeping it left the user with an
+    // error pointing at a Create Tables Now button that never appeared.
+    else delete ids[key];
   });
   const tableIdsJson=JSON.stringify(ids);
   // Same bug class already fixed for Appointments (see SETUP.md "Fixed: 'Enabled' not actually
@@ -20974,7 +20979,7 @@ async function taRepairTableIds(){
   // over a real save failure with a value that was never actually persisted. Only cache locally
   // after patchClient() (which itself now retries through NocoDB's schema-cache lag — see its own
   // comment) confirms the write actually stuck; let a genuine failure propagate to this function's
-  // caller (taWithRepair already has its own .catch(()=>({})) around this specific call).
+  // caller (taWithRepair reports it instead of mislabelling it as a missing table).
   await patchClient({ta_table_ids:tableIdsJson});
   taSaveLocal('ta_table_ids',tableIdsJson);
   clientRecord.ta_table_ids=tableIdsJson;
@@ -20992,9 +20997,16 @@ async function taWithRepair(key,fn){
     return await fn(id);
   }catch(e){
     if(e.message!=='HTTP 404') throw e;
-    const repaired=await taRepairTableIds().catch(()=>({}));
+    const title=TA_TABLE_TITLES[key]||key;
+    let repaired;
+    try{ repaired=await taRepairTableIds(); }
+    catch(e2){ throw new Error(`${title} returned HTTP 404 and re-checking the tables failed (${e2.message}). Reload and try again.`); }
     const newId=repaired[key];
-    if(!newId||newId===id) throw new Error(`${TA_TABLE_TITLES[key]||key} table is missing in NocoDB (it may have been deleted). Re-run "Create Tables Now" in the Agency module to recreate it.`);
+    if(!newId){
+      if(typeof taUpdateMissingBanner==='function') taUpdateMissingBanner();
+      throw new Error(`${title} table is missing in NocoDB (it may have been deleted). Close this and reopen the Agency module — it will offer to recreate it.`);
+    }
+    if(newId===id) throw e; // table is still there under the same ID, so the 404 is about something else
     return await fn(newId);
   }
 }
