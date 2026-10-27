@@ -35,7 +35,13 @@ function d1(db){
 function freshDb({v2=true}={}){
   const db=new DatabaseSync(':memory:');
   db.exec(readFileSync(new URL('./migrations/0104_calcom_meetings.sql', import.meta.url), 'utf8'));
-  if(v2) db.exec(readFileSync(new URL('./migrations/0119_meetings_manual.sql', import.meta.url), 'utf8'));
+  if(v2){
+    // The v2 columns come from mtgEnsureSchema at runtime (0119 only adds the index), so a "v2"
+    // database here is one where that already happened.
+    for(const [c, type] of [['source','TEXT'],['mode','TEXT'],['location','TEXT'],['scheduled_by','TEXT'],['notify','INTEGER'],['note','TEXT'],['brief_at','TEXT']])
+      db.exec(`ALTER TABLE meetings ADD COLUMN ${c} ${type}`);
+    db.exec(readFileSync(new URL('./migrations/0119_meetings_manual.sql', import.meta.url), 'utf8'));
+  }
   return db;
 }
 async function token(secret, cid=7, email='rita@biz.com'){
