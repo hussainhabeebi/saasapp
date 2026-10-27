@@ -1352,6 +1352,19 @@ export async function hsHandleRoute(request, env, deps, url){
     if(!c || c.hospitality_enabled!=='Yes') return json({error:'Hospitality is not enabled for this account.'}, 403);
     return json(await hsDeskBootstrap(env, c, cid, deps.now?deps.now():Date.now()));
   }
+  // Tape chart: every unit's bookings, blocked dates and rate overrides for a date window, in one call.
+  if(path==='/hospitality/desk/calendar' && method==='GET'){
+    if(!c || c.hospitality_enabled!=='Yes') return json({error:'Hospitality is not enabled for this account.'}, 403);
+    const start=V.date(url.searchParams.get('start')), end=V.date(url.searchParams.get('end'));
+    if(!start || !end || end<=start || hpNightsBetween(start, end)>92) return json({error:'start and end (up to 92 days) required'}, 400);
+    const [bookings, blocked, rates]=await Promise.all([
+      all(env, `SELECT id, unit_id, guest_name, guest_phone, check_in, check_out, adults, children, total_amount, deposit_amount, currency, status, notes FROM hospitality_bookings
+        WHERE client_id=? AND status<>'cancelled' AND check_in<? AND check_out>? ORDER BY check_in ASC LIMIT 3000`, cid, end, start),
+      all(env, `SELECT unit_id, date, reason FROM hospitality_blocked_dates WHERE client_id=? AND date>=? AND date<?`, cid, start, end),
+      all(env, `SELECT unit_id, date, rate FROM hospitality_rate_overrides WHERE client_id=? AND date>=? AND date<?`, cid, start, end),
+    ]);
+    return json({start, end, bookings, blocked, rates});
+  }
   if(!hpEnabled(c)) return json({error:'Hospitality Pro is not enabled for this account.'}, 403);
   const body=['POST','PATCH','PUT','DELETE'].includes(method)?await request.json().catch(()=>({})):{};
   const nowMs=deps.now?deps.now():Date.now(), nowIso=new Date(nowMs).toISOString();
