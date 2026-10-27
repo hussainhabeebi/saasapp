@@ -130,8 +130,7 @@ function readLines(){ return [...document.querySelectorAll('#accLinesBody .acc-l
 async function renderOverview(root){
   root.innerHTML=spinner;
   try{
-    await loadMeta();
-    const d=await api('dashboard');
+    const [, d]=await Promise.all([loadMeta(), api('dashboard')]);
     const k=(label, value, sub, cls)=>`<div class="stat-card ${cls||''}"><div class="stat-lbl">${label}</div><div class="stat-val">${value}</div>${sub?`<div class="stat-sub">${sub}</div>`:''}</div>`;
     root.innerHTML=`
       ${(d.warnings||[]).length?`<div class="acc-warn">${d.warnings.slice(0,5).map(w=>`⚠️ ${esc(w.message)}`).join('<br>')}</div>`:''}
@@ -157,14 +156,20 @@ async function renderOverview(root){
         {label:'Net', data:d.trend.map(t=>t.net), type:'line', borderColor:'#059669', backgroundColor:'#059669', tension:.3}]},
         options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{y:{ticks:{callback:v=>Number(v).toLocaleString('en-IN')}}}}});
     }
-    // Recurring billing (Financial Planning's Expected Funds) isn't invoiced, so it isn't in the
-    // receivables above — show this month's position here instead of on a second dashboard.
-    const fp=typeof fpDashboardData!=='undefined'?fpDashboardData:null;
-    if(fp) document.getElementById('accRecurringCard').innerHTML=card(`Recurring billing — ${esc(fp.current_period||'this month')}`, '<button class="save-btn sec" onclick="AccLedger.open(\'subscriptions\',\'fpdues\')">Expected funds</button>',
-      `<div class="stat-grid"><div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val">${money(fp.expected_this_month, fp.currency)}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val">${money(fp.collected_this_month, fp.currency)}</div><div class="stat-sub">${fp.collection_pct??0}% collected</div></div>
-        ${fp.estimated_tax_set_aside!=null?`<div class="stat-card"><div class="stat-lbl">Set aside for tax</div><div class="stat-val">${money(fp.estimated_tax_set_aside, fp.currency)}</div><div class="stat-sub">Estimate only</div></div>`:''}</div>`);
+    renderRecurringCard();
   }catch(e){ root.innerHTML=errBox(e); }
+}
+// Recurring billing (Financial Planning's Expected Funds) isn't invoiced, so it isn't in the
+// receivables above — show this month's position here instead of on a second dashboard. Called
+// again by accounting.html's init() once Financial Planning data has loaded (the Overview no
+// longer waits for it), so whichever finishes last fills the card.
+function renderRecurringCard(){
+  const fp=typeof fpDashboardData!=='undefined'?fpDashboardData:null;
+  const el=document.getElementById('accRecurringCard');
+  if(fp && el) el.innerHTML=card(`Recurring billing — ${esc(fp.current_period||'this month')}`, '<button class="save-btn sec" onclick="AccLedger.open(\'subscriptions\',\'fpdues\')">Expected funds</button>',
+    `<div class="stat-grid"><div class="stat-card"><div class="stat-lbl">Expected</div><div class="stat-val">${money(fp.expected_this_month, fp.currency)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Collected</div><div class="stat-val">${money(fp.collected_this_month, fp.currency)}</div><div class="stat-sub">${fp.collection_pct??0}% collected</div></div>
+      ${fp.estimated_tax_set_aside!=null?`<div class="stat-card"><div class="stat-lbl">Set aside for tax</div><div class="stat-val">${money(fp.estimated_tax_set_aside, fp.currency)}</div><div class="stat-sub">Estimate only</div></div>`:''}</div>`);
 }
 
 async function reportForecast(b){
@@ -417,7 +422,7 @@ L.open=(page, sub)=>{
   setTimeout(()=>{ const b=document.querySelector(`#tab${page.charAt(0).toUpperCase()+page.slice(1)} .fp-pill[data-k="${sub}"]`); if(b && !b.classList.contains('active')) b.click(); }, 60);
 };
 Object.assign(L, {api, post, qs, today, fyStart, money, m0, pct, numCell, empty, spinner, errBox, can, toast, act, download, toCsv, exportXlsx, accountOptions, cashAccounts, accName, subnav, card, dateRangeInputs, val, form, loadMeta, linesEditor, readLines, warnList, portalUrl, addDays, monthStart,
-  renderOverview, plTable, legacy, reportForecast, reportClients,
+  renderOverview, renderRecurringCard, plTable, legacy, reportForecast, reportClients,
   booksPL, booksBS, booksTB, booksCF, booksGL, booksJournals, booksCoa, booksNotes, booksParties, booksClose, booksAudit});
 })();
 
