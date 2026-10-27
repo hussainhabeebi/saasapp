@@ -295,6 +295,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="ta-tab" data-ta="itineraries">🗺️ Itineraries</button>
     <button class="ta-tab" data-ta="services">🗂️ Services</button>
     <button class="ta-tab" data-ta="attestation">📋 Attestation</button>
+    <button class="ta-tab" data-ta="properties">🏨 Resorts &amp; Hotels</button>
     <button class="ta-tab" data-ta="visas">🛂 Visa</button>
     <button class="ta-tab" data-ta="groupfares">👥 Group Fare</button>
     <button class="ta-tab" data-ta="specialfares">🎟️ Special Fare</button>
@@ -763,6 +764,52 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   </div>
 </div>
 
+<!-- TA: RESORT / HOTEL PROPERTY MODAL -->
+<div class="modal" id="modalProperty" style="width:600px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="propModalTitle">New Resort / Hotel</div><button class="icon-btn" onclick="closeModal('modalProperty')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Property Name *</label><input class="form-input" id="propName" placeholder="e.g. Spice Village Resort"></div>
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-input" id="propType">
+          <option value="resort">Resort</option><option value="hotel">Hotel</option><option value="villa">Villa</option><option value="homestay">Homestay</option>
+          <option value="houseboat">Houseboat</option><option value="apartment">Apartment</option><option value="camp">Camp</option><option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="propStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Location</label><input class="form-input" id="propLocation" placeholder="e.g. Thekkady, Kerala"></div>
+      <div class="form-group"><label class="form-label">Star Rating</label>
+        <select class="form-input" id="propStars"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>7</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Price From</label><input class="form-input" type="number" id="propPrice" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="propCurrency"><option>INR</option><option>AED</option><option>SAR</option><option>USD</option><option>EUR</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Price Unit</label>
+        <select class="form-input" id="propUnit"><option>per night</option><option>per person</option><option>per couple</option><option>per package</option></select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Room Types (one per line)</label><textarea class="form-input" id="propRooms" rows="2" placeholder="Deluxe Room&#10;Pool Villa"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Amenities (one per line)</label><textarea class="form-input" id="propAmenities" rows="2" placeholder="Swimming pool&#10;Breakfast included&#10;Free Wi-Fi"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Description</label><textarea class="form-input" id="propDesc" rows="2"></textarea></div>
+      <div style="grid-column:1/-1;font-size:12px;color:var(--muted)">📁 Media — paste Google Drive <strong>file</strong> links (not folders), shared as <em>Anyone with the link can view</em>. Videos must be under 16 MB, photos under 5 MB for WhatsApp.</div>
+      <div class="form-group"><label class="form-label">Photo 1</label><input class="form-input" id="propImg1" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group"><label class="form-label">Photo 2</label><input class="form-input" id="propImg2" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group"><label class="form-label">Photo 3</label><input class="form-input" id="propImg3" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group"><label class="form-label">Video</label><input class="form-input" id="propVideo" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">PDF Brochure / Tariff</label><input class="form-input" id="propPdf" placeholder="https://drive.google.com/file/d/…/view"></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="savePropBtn" onclick="saveProperty()">Save Property</button>
+    <span class="save-msg" id="savePropMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalProperty')">Cancel</button>
+    <button class="btn btn-ghost" style="color:var(--red);margin-left:auto" id="deletePropBtn" onclick="deleteProperty()">Delete</button>
+  </div>
+</div>
+
 <!-- TA: ATTESTATION SERVICE MODAL -->
 <div class="modal" id="modalAttest" style="width:560px">
   <span class="modal-drag"></span>
@@ -935,12 +982,12 @@ async function init(){
 }
 
 /* ── TRAVEL AGENCY MODULE ── */
-const TA_PAGES = ['dashboard','packages','itineraries','services','attestation','visas','groupfares','specialfares','umrah','bookings','cars','finance'];
+const TA_PAGES = ['dashboard','packages','itineraries','services','attestation','properties','visas','groupfares','specialfares','umrah','bookings','cars','finance'];
 let _taPage = TA_PAGES.includes(params.get('tab')) ? params.get('tab') : 'dashboard';
 let _taReady = false;
 let _taPendingNew = params.get('action') === 'new';
 // "+ New …" form for a sub-page — the travel workspace's quick actions (+ Itinerary, + Booking).
-const TA_NEW_FORM = {packages:'openPkgModal', itineraries:'openItinModal', visas:'openVisaModal', umrah:'openUmrahModal', bookings:'openBookingModal', groupfares:'openGroupFareModal', specialfares:'openSpecialFareModal', cars:'openCarBookingModal'};
+const TA_NEW_FORM = {packages:'openPkgModal', properties:'openPropertyModal', itineraries:'openItinModal', visas:'openVisaModal', umrah:'openUmrahModal', bookings:'openBookingModal', groupfares:'openGroupFareModal', specialfares:'openSpecialFareModal', cars:'openCarBookingModal'};
 function taOpenNew(page){
   const fn = window[TA_NEW_FORM[page]];
   if(typeof fn === 'function') fn();
@@ -955,6 +1002,7 @@ window.addEventListener('message', e => {
 });
 let _taPackages = [], _taBookings = [], _taCases = [], _taItineraries = [], _taUmrahGroups = [], _taCars = [], _taCarBookings = [];
 let _attestServices = [];
+let _taProperties = [];
 let _taVisas = [], _taGroupFares = [], _taSpecialFares = [];
 let _taLoaded = false;
 /* ── TA: TABLE IDS & CRUD HELPERS ── */
@@ -1219,12 +1267,13 @@ async function taConfirmImport(){
 
 async function taLoad(){
   if(!taTablesReady())return;
-  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares,attestData]=await Promise.all([
+  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares,attestData,propData]=await Promise.all([
     taFetch('packages'),taFetch('bookings'),taFetch('cases'),
     taFetch('itineraries'),taFetch('umrah_groups'),
     taFetch('cars'),taFetch('car_bookings'),
     taFetch('visas'),taFetch('group_fares'),taFetch('special_fares'),
-    fetch(`${WORKER_BASE}/attest/services?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).catch(()=>({list:[]}))
+    fetch(`${WORKER_BASE}/attest/services?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).catch(()=>({list:[]})),
+    fetch(`${WORKER_BASE}/ta/properties?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).catch(()=>({list:[]}))
   ]);
   _taPackages=pkgs; _taBookings=bks; _taCases=cs;
   _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
@@ -1232,6 +1281,7 @@ async function taLoad(){
   _taCars=cars; _taCarBookings=carbks;
   _taVisas=visas; _taGroupFares=gfares; _taSpecialFares=sfares;
   _attestServices=attestData.list||[];
+  _taProperties=propData.list||[];
   _taLoaded=true;
   sendTaBadgeCount();
 }
@@ -1452,6 +1502,7 @@ function renderAgencySubPage(page) {
     case 'itineraries': el.innerHTML = renderTaItineraries(); if(_itinSubTab==='send') sqFilterLeads(); break;
     case 'services':    el.innerHTML = renderTaServices(); break;
     case 'attestation': el.innerHTML = renderTaAttestation(); break;
+    case 'properties':  el.innerHTML = renderTaProperties(); break;
     case 'visas':       el.innerHTML = renderTaVisas(); break;
     case 'groupfares':  el.innerHTML = renderTaGroupFares(); break;
     case 'specialfares':el.innerHTML = renderTaSpecialFares(); break;
@@ -4071,6 +4122,82 @@ const QUOTE_DEFAULT_TERMS=`• This quotation is valid for the period stated abo
 • All prices are exclusive of taxes unless stated otherwise.
 • Payment terms and delivery/service timelines will be confirmed upon order confirmation.
 • This document does not constitute a binding contract until formally accepted by both parties.`;
+
+/* ── TA: RESORTS & HOTELS ── */
+const PROP_TYPE_LABELS={resort:'Resort',hotel:'Hotel',villa:'Villa',homestay:'Homestay',houseboat:'Houseboat',apartment:'Apartment',camp:'Camp',other:'Other'};
+function propDriveId(url){
+  const m=String(url||'').match(/\/(?:file|document|presentation|spreadsheets)\/d\/([\w-]+)|[?&]id=([\w-]+)/);
+  return m?(m[1]||m[2]):'';
+}
+function propThumb(p){
+  const id=propDriveId(p.image_url||p.image_url_2||p.image_url_3);
+  return id?`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w600`:'';
+}
+function renderTaProperties(){
+  const cards=_taProperties.map(p=>{
+    const thumb=propThumb(p);
+    const photos=[p.image_url,p.image_url_2,p.image_url_3].filter(Boolean).length;
+    const media=[photos?`📷 ${photos}`:'',p.video_url?'🎬 Video':'',p.pdf_url?'📄 PDF':''].filter(Boolean).join(' · ');
+    return `
+    <div class="ta-card" style="padding:0;overflow:hidden;cursor:pointer;margin:0" onclick="openPropertyModal('${p.id}')">
+      <div style="height:140px;background:var(--bg) center/cover no-repeat;${thumb?`background-image:url('${escAttr(thumb)}')`:''};display:flex;align-items:center;justify-content:center;font-size:36px">${thumb?'':'🏨'}</div>
+      <div style="padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+          <div style="font-weight:700">${esc(p.name)}</div>
+          <span class="stage-pill ${p.status==='active'?'stage-done':'stage-blocked'}">${esc(p.status||'active')}</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(PROP_TYPE_LABELS[p.property_type]||'Resort')}${p.star_rating?' · '+'⭐'.repeat(p.star_rating):''}${p.location?' · '+esc(p.location):''}</div>
+        <div style="font-family:var(--mono);font-size:13px;margin-top:6px">${Number(p.price_from)>0?`From ${esc(p.currency||'INR')} ${fmtMoney(p.price_from)} <span style="color:var(--muted)">${esc(p.price_unit||'per night')}</span>`:'<span style="color:var(--muted)">Price on request</span>'}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px">${media||'No media yet'}</div>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🏨 Resorts &amp; Hotels</div>
+    <button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button>
+  </div>
+  ${_taProperties.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">${cards}</div>`
+    :'<div class="ta-card" style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No resorts or hotels yet — click <strong>+ Add Property</strong> to add one with its photos, video and PDF brochure.</div>'}
+  <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
+    💡 The bot sends a property's photos, video and PDF straight to the lead when they name it, ask for its photos/video/brochure, or the bot recommends it.
+  </div>`;
+}
+
+let _editPropId=null;
+const PROP_INPUTS={name:'propName',property_type:'propType',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',video_url:'propVideo',pdf_url:'propPdf'};
+const PROP_DEFAULTS={property_type:'resort',status:'active',currency:'INR',price_unit:'per night'};
+function openPropertyModal(id){
+  _editPropId=id||null;
+  const p=id?(_taProperties.find(x=>String(x.id)===String(id))||{}):{};
+  $id('propModalTitle').textContent=id?'Edit Property':'New Resort / Hotel';
+  for(const [f,el] of Object.entries(PROP_INPUTS)) $id(el).value=p[f]??PROP_DEFAULTS[f]??'';
+  $id('savePropMsg').textContent='';
+  $id('deletePropBtn').style.display=id?'':'none';
+  openModal('modalProperty');
+}
+
+async function saveProperty(){
+  const btn=$id('savePropBtn'),msg=$id('savePropMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={client_id:clientId};
+  for(const [f,el] of Object.entries(PROP_INPUTS)) body[f]=$id(el).value.trim();
+  if(!body.name){msg.textContent='Property name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    const res=await fetch(`${WORKER_BASE}/ta/properties`,{method:_editPropId?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_editPropId?{...body,Id:_editPropId}:body)});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||data.error) throw new Error(data.error||'Save failed');
+    msg.textContent='✓ Saved';
+    setTimeout(async()=>{closeModal('modalProperty');_taLoaded=false;await taLoad();renderAgencySubPage('properties');},600);
+  }catch(e){msg.textContent=e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteProperty(){
+  if(!_editPropId||!confirm('Delete this property?'))return;
+  await fetch(`${WORKER_BASE}/ta/properties`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,Id:_editPropId})});
+  closeModal('modalProperty');_taLoaded=false;await taLoad();renderAgencySubPage('properties');
+}
 
 /* ── TA: ATTESTATION SERVICES ── */
 const ATTEST_TYPE_LABELS={mea:'MEA',embassy:'Embassy',mofa:'MOFA',apostille:'Apostille',hrd:'HRD',state:'State Auth',notary:'Notary',coc:'Chamber of Commerce',police_clearance:'Police Clearance',birth:'Birth Cert',marriage:'Marriage Cert',degree:'Degree Cert',custom:'Custom'};

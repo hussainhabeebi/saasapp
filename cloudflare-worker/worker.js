@@ -10,6 +10,7 @@ import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
+import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines} from './ta-properties.js';
 import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -10014,6 +10015,141 @@ async function travelMaybeSendAttestPdf(env, clientId, convId, replyText, c){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
+   RESORTS & HOTELS MODULE (D1-backed, auto-schema)
+   Properties a travel agency sells as products, each with Google Drive photos, video and a PDF
+   brochure. Same client-id auth as /attest/services. The bot answers from these records and sends
+   a property's media into the chat when a lead names it or asks for its photos (ta-properties.js).
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+let _taPropertySchemaEnsured=false;
+async function taPropertyEnsureSchema(env){
+  if(_taPropertySchemaEnsured)return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ta_properties(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    property_type TEXT DEFAULT 'resort',
+    location TEXT,
+    star_rating INTEGER,
+    room_types TEXT,
+    price_from REAL,
+    currency TEXT DEFAULT 'INR',
+    price_unit TEXT DEFAULT 'per night',
+    amenities TEXT,
+    description TEXT,
+    image_url TEXT,
+    image_url_2 TEXT,
+    image_url_3 TEXT,
+    video_url TEXT,
+    pdf_url TEXT,
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT(datetime('now')),
+    updated_at TEXT DEFAULT(datetime('now'))
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ta_properties_client ON ta_properties(client_id)`).run();
+  // One row per (lead, property, day) the bot volunteered media for — a property the bot keeps
+  // recommending must not re-send its whole gallery every turn. An explicit ask ignores this.
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ta_property_media_sent(
+    client_id TEXT NOT NULL,
+    lead_id TEXT NOT NULL,
+    property_id INTEGER NOT NULL,
+    sent_date TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY(client_id, lead_id, property_id, sent_date)
+  )`).run();
+  _taPropertySchemaEnsured=true;
+}
+
+async function taPropertiesForClient(env, clientId, includeInactive=false){
+  await taPropertyEnsureSchema(env);
+  const q=includeInactive
+    ?`SELECT * FROM ta_properties WHERE client_id=? ORDER BY name`
+    :`SELECT * FROM ta_properties WHERE client_id=? AND status='active' ORDER BY name`;
+  const {results}=await env.DB.prepare(q).bind(String(clientId)).all();
+  return results||[];
+}
+
+async function handleTaPropertiesList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  return json({list:await taPropertiesForClient(env, clientId, url.searchParams.get('include_inactive')==='true')});
+}
+
+async function handleTaPropertyCreate(request, env){
+  await taPropertyEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {values,error}=taPropertyClean(body);
+  if(error) return json({error},400);
+  const cols=['client_id',...Object.keys(values)];
+  const result=await env.DB.prepare(`INSERT INTO ta_properties(${cols.join(',')}) VALUES(${cols.map(()=>'?').join(',')})`)
+    .bind(clientId,...Object.values(values)).run();
+  return json({ok:true,id:result.meta?.last_row_id});
+}
+
+async function findTaProperty(env, id){
+  return await env.DB.prepare(`SELECT * FROM ta_properties WHERE id=?`).bind(id).first();
+}
+
+async function handleTaPropertyUpdate(request, env){
+  await taPropertyEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findTaProperty(env, id);
+  if(!existing||String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const {values,error}=taPropertyClean(body, true);
+  if(error) return json({error},400);
+  const keys=Object.keys(values);
+  if(!keys.length) return json({ok:true});
+  await env.DB.prepare(`UPDATE ta_properties SET ${keys.map(k=>`${k}=?`).join(', ')}, updated_at=datetime('now') WHERE id=?`)
+    .bind(...Object.values(values), id).run();
+  return json({ok:true});
+}
+
+async function handleTaPropertyDelete(request, env){
+  await taPropertyEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findTaProperty(env, id);
+  if(!existing||String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM ta_properties WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+async function taClaimPropertyMediaForToday(env, clientId, leadId, propertyId){
+  if(!leadId) return true;
+  try{
+    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO ta_property_media_sent (client_id, lead_id, property_id, sent_date, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(String(clientId), String(leadId), Number(propertyId), new Date().toISOString().slice(0,10), new Date().toISOString()).run();
+    return !!ins?.meta?.changes;
+  }catch(e){ await reportOpsError(env, 'taClaimPropertyMediaForToday', e, {clientId, leadId, propertyId}); return true; }
+}
+
+// Called after a travel_faq reply: forwards the photos/video/PDF of the resort or hotel the lead
+// named, asked media for, or the bot just recommended. Best-effort — a file that can't be fetched
+// (not shared publicly, too large) is skipped by sendDriveMediaToChatwoot.
+async function travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText, previousBotText, leadId}){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const plan=taPropertyMediaPlan(await taPropertiesForClient(env, clientId), {userText, replyText, previousBotText});
+    if(!plan) return;
+    for(const p of plan.properties){
+      const claimed=await taClaimPropertyMediaForToday(env, clientId, leadId, p.id);
+      if(!claimed&&!plan.explicit) continue;
+      for(const item of taPropertyMediaItems(p, plan.kinds)){
+        await sendDriveMediaToChatwoot(c, convId, item.url, item.caption||'', item.filename||'');
+      }
+    }
+  }catch(e){ await reportOpsError(env, 'travelMaybeSendPropertyMedia', e, {clientId, convId}); }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
    EDUCATION MODULE (migrations/0060-0065)
    All education data lives in D1 — courses, enrollments, categories, promotions, stories.
    Client-id-based auth (no session token) — same trust model as /ecom/*.
@@ -18711,6 +18847,8 @@ async function engineBuildTravelContext(env, c, clientId){
       lines.push(line);
     });
   }
+  const properties=await taPropertiesForClient(env, clientId).catch(()=>[]);
+  lines.push(...taPropertyContextLines(properties));
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
@@ -26694,6 +26832,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
       // Auto-send attestation service checklist PDF when the bot's reply names a specific service
       if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
+      // Resort/hotel photos, video and brochure — when the lead names one, asks for its media, or the reply recommends it
+      if(routing.route==='travel_faq') await travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText:sentText, previousBotText:state.botMsgs?.[state.botMsgs.length-1]||'', leadId:state.leadId});
       if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
@@ -38200,6 +38340,10 @@ export default {
       else if(url.pathname==='/attest/services' && request.method==='POST'){ res=await handleAttestServiceCreate(request, env); }
       else if(url.pathname==='/attest/services' && request.method==='PATCH'){ res=await handleAttestServiceUpdate(request, env); }
       else if(url.pathname==='/attest/services' && request.method==='DELETE'){ res=await handleAttestServiceDelete(request, env); }
+      else if(url.pathname==='/ta/properties' && request.method==='GET'){ res=await handleTaPropertiesList(request, env); }
+      else if(url.pathname==='/ta/properties' && request.method==='POST'){ res=await handleTaPropertyCreate(request, env); }
+      else if(url.pathname==='/ta/properties' && request.method==='PATCH'){ res=await handleTaPropertyUpdate(request, env); }
+      else if(url.pathname==='/ta/properties' && request.method==='DELETE'){ res=await handleTaPropertyDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
