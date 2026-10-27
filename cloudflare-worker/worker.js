@@ -1,4 +1,5 @@
-import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
+import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
+import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -26650,6 +26651,22 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // the post-turn greeting showcase + unit-photo auto-send further down, which would otherwise
     // repeat the photos Pro just sent alongside its quote.
     let hpTurnHandled=false;
+    // Hospitality Pro Suite (hospitality-suite.js) — staff task bot, agent quotes, check-in /
+    // upsell / meal / weather / feedback flows and in-stay requests. Runs first, but does nothing
+    // unless the client switched at least one suite feature on (all off by default), and returns
+    // handled:false for anything it doesn't own so Pro and the normal bot carry on unchanged.
+    if(!orderHandledInline && hpEnabled(c) && state.leadId){
+      try{
+        const hs=await hsHandleTurn(env, HS_DEPS, {c, clientId, convId, leadId:state.leadId, phone, name:state.name, userText, rawText:text,
+          mediaType, mediaUrl, lang:replyLang, optOut:!!routing.isOptOut, humanExplicit:routing.route==='human'&&routing.humanReason==='explicit'});
+        if(hs?.handled){
+          routing.reply=hs.reply||null;
+          if(hs.quickReplies) routing.quickReplies=hs.quickReplies;
+          if(routing.route==='human') routing.route='faq';
+          orderHandledInline=true; hpTurnHandled=true;
+        }
+      }catch(e){ await reportOpsError(env, 'hospitalitySuiteTurn', e, {clientId, convId}); }
+    }
     if(!orderHandledInline && hpEnabled(c) && state.leadId){
       try{
         const hp=await hpHandleTurn(env, HP_DEPS, {c, clientId, convId, leadId:state.leadId, phone, name:state.name, userText, rawText:text,
@@ -34496,6 +34513,53 @@ const HP_DEPS={
   localize:engineLocalizeReply,
   getLead:hospitalityProGetLead,
   isTakeover:engineManualTakeoverActive,
+  suiteBalancePaid:(env, clientId, bookingId, amount, paymentId)=>hsBalancePaid(env, HS_DEPS, clientId, bookingId, amount, paymentId),
+};
+
+// ── Hospitality Pro Suite glue (hospitality-suite.js) ──
+// Approved WhatsApp template for messages outside the 24h window (balance reminders, pre-arrival,
+// rebooking…). The client names it in Hospitality → Settings; its body takes {{1}} = first name,
+// {{2}} = the message. Same Graph API call as hcSendMetaAppointmentTemplate.
+async function hospitalitySuiteSendTemplate(env, c, phone, templateName, language, params){
+  if(!c?.wa_phone_id||!c?.wa_token) throw new Error('WhatsApp Business API is not connected');
+  const to=String(phone||'').replace(/\D/g,'');
+  if(!to) throw new Error('No phone number');
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`,{
+    method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp',to,type:'template',template:{name:templateName,language:{code:language||'en'},components:[{type:'body',parameters:(params||[]).map(text=>({type:'text',text:String(text)}))}]}})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data?.error?.message||`WhatsApp template HTTP ${r.status}`);
+  await logWaTemplateSend(env,c.Id,'hospitality',{template:templateName,phone:to});
+}
+// Web check-in ID scan: reads the fields off a guest's ID photo (Gemini, same model and image
+// handling as engineGeminiDescribeImage). Returns null when it can't be read.
+async function hospitalitySuiteReadId(env, mediaUrl){
+  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+  try{
+    const imgR=await fetch(mediaUrl);
+    if(!imgR.ok) return null;
+    const buf=await imgR.arrayBuffer();
+    if(!buf.byteLength || buf.byteLength>15*1024*1024) return null;
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:'This is a photo of an identity document for hotel guest registration. Return ONLY a JSON object with keys name, id_type (Aadhaar, Passport, Driving Licence, Voter ID or Other), id_number, dob (YYYY-MM-DD), nationality. Use "" for anything you cannot read. If it is not an ID document, return {}.'},
+        {inline_data:{mime_type:engineImageMimeType(imgR.headers.get('content-type')), data:engineArrayBufferToBase64(buf)}}]}],
+        generationConfig:{responseMimeType:'application/json', temperature:0}})});
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const t=(data?.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+    const obj=JSON.parse(t.replace(/^```(?:json)?|```$/g,'').trim()||'{}');
+    return obj&&typeof obj==='object'?obj:null;
+  }catch(e){ return null; }
+}
+const HS_DEPS={
+  ...HP_DEPS,
+  findConversation:apptFindConversation,
+  sendTemplate:hospitalitySuiteSendTemplate,
+  readIdImage:hospitalitySuiteReadId,
+  aiText:(env, system, user)=>engineGeminiGenerate(env, system, user, {temperature:0.5, maxOutputTokens:400, caller:'hospitality-review-reply'}),
+  razorpayLink:hpRazorpayLink,
 };
 
 // ── CEO Bot glue (ceo-bot.js) ──
@@ -38841,6 +38905,11 @@ export default {
       // Hospitality Pro (hospitality-pro.js) — every route is session-gated AND 403s unless the
       // client has Pro enabled, except the Razorpay webhook, which is HMAC-verified instead.
       else if(url.pathname.startsWith('/hospitality/pro/')){ res=await hpHandleRoute(request, env, HP_DEPS, url); }
+      // Hospitality desktop workspace (frontend/hospitality.html) + Pro Suite modules (hospitality-suite.js):
+      // /hospitality/desk/* needs Hospitality on; /hospitality/suite/* needs Pro and 403s per feature switch.
+      else if(url.pathname.startsWith('/hospitality/desk/') || url.pathname.startsWith('/hospitality/suite/')){ res=await hsHandleRoute(request, env, HS_DEPS, url); }
+      // Public per-unit iCal feed for OTAs — unguessable token, and only while iCal sync is switched on.
+      else if(url.pathname.startsWith('/hospitality/ical/') && request.method==='GET'){ res=await hsIcalExportRoute(env, url); }
       // CEO Bot (ceo-bot.js) — session-gated, owner-only and 403 unless ceo_bot_enabled, except its
       // own WhatsApp webhook (/ceo/wa/webhook/<key>), which is Meta-signature-verified instead.
       else if(url.pathname.startsWith('/ceo/')){ res=await ceoHandleRoute(request, env, CEO_DEPS, url, ctx); }
@@ -39126,6 +39195,9 @@ export default {
       // Hospitality Pro — expire unpaid holds, abandoned-inquiry nudges; only touches clients that
       // have Pro rows at all, and sends nothing unless Pro is still enabled. See hpRunForAllClients.
       ctx.waitUntil(hpRunForAllClients(env, HP_DEPS));
+      // Hospitality Pro Suite — guest journey messages, housekeeping, iCal, pricing, summary…;
+      // only clients with a suite feature switched on. See hsRunForAllClients.
+      ctx.waitUntil(hsRunForAllClients(env, HS_DEPS).catch(e=>reportOpsError(env, 'hospitality suite sweep', e)));
       // CEO Bot — briefs, staff reminders, standups, escalations, wrap, weekly report; only clients
       // with a connected CEO number, and nothing unless ceo_bot_enabled + active. See ceo-bot.js.
       ctx.waitUntil(ceoRunForAllClients(env, CEO_DEPS));

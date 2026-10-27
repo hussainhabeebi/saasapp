@@ -767,7 +767,8 @@ async function hpClaimPayment(ctx, hold){
 
 // Razorpay Payment Link for a hold's deposit — same API shape as the Matrimonial module's
 // handleMatriCreatePaymentLink. Returns {url, id} or null (caller falls back to manual text).
-async function hpRazorpayLink(env, clientId, {holdId, amount, currency, name, phone, description, expiresAt}){
+// Also used by hospitality-suite.js for balance links, which pass their own `notes`.
+export async function hpRazorpayLink(env, clientId, {holdId, amount, currency, name, phone, description, expiresAt, notes=null}){
   const s=await hpLoadSettingsRow(env, clientId);
   if(!s?.razorpay_key_id || !s?.razorpay_key_secret) return null;
   try{
@@ -779,7 +780,7 @@ async function hpRazorpayLink(env, clientId, {holdId, amount, currency, name, ph
         amount:Math.round(Number(amount)*100), currency:String(currency||'INR').toUpperCase(),
         description:String(description||'Booking deposit').slice(0,240),
         customer:{name:String(name||phone||'Guest').slice(0,50), contact:String(phone||'')},
-        notes:{kind:'hosp_pro_hold', client_id:String(clientId), hold_id:String(holdId)},
+        notes:notes||{kind:'hosp_pro_hold', client_id:String(clientId), hold_id:String(holdId)},
         expire_by:expireBy, reminder_enable:false,
       }),
     });
@@ -1204,7 +1205,8 @@ async function hpRazorpayWebhook(request, env, deps){
   const sig=request.headers.get('X-Razorpay-Signature')||'';
   let evt; try{ evt=JSON.parse(raw); }catch(e){ return new Response('bad json', {status:400}); }
   const notes={...(evt?.payload?.payment?.entity?.notes||{}), ...(evt?.payload?.payment_link?.entity?.notes||{})};
-  if(notes.kind!=='hosp_pro_hold' || !notes.client_id || !notes.hold_id) return new Response('ignored', {status:200});
+  const suiteBalance=notes.kind==='hosp_suite_balance' && notes.client_id && notes.booking_id && deps.suiteBalancePaid;
+  if(!suiteBalance && (notes.kind!=='hosp_pro_hold' || !notes.client_id || !notes.hold_id)) return new Response('ignored', {status:200});
   const s=await hpLoadSettingsRow(env, notes.client_id).catch(()=>null);
   if(!s?.razorpay_webhook_secret) return new Response('webhook secret not configured', {status:400});
   const enc=new TextEncoder();
@@ -1215,6 +1217,12 @@ async function hpRazorpayWebhook(request, env, deps){
   for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^(sig.charCodeAt(i)||0);
   if(diff!==0) return new Response('invalid signature', {status:400});
   if(evt.event!=='payment_link.paid') return new Response('ok', {status:200});
+  if(suiteBalance){
+    // Hospitality Pro Suite balance link (hospitality-suite.js hsBalancePaid) — same signature check above.
+    const paid=(Number(evt?.payload?.payment?.entity?.amount)||Number(evt?.payload?.payment_link?.entity?.amount_paid)||0)/100;
+    await deps.suiteBalancePaid(env, notes.client_id, notes.booking_id, paid, evt?.payload?.payment?.entity?.id||evt?.payload?.payment_link?.entity?.id||'razorpay');
+    return new Response('ok', {status:200});
+  }
   const paymentId=evt?.payload?.payment?.entity?.id||evt?.payload?.payment_link?.entity?.id||'razorpay';
   const r=await hpConfirmHold(env, deps, notes.client_id, notes.hold_id, {paymentRef:`razorpay:${paymentId}`});
   if(r.error){

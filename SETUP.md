@@ -1608,6 +1608,108 @@ under 🏨 Hospitality → ⭐ Pro → ⚙️ Settings.
 `GET/PATCH /hospitality/pro/registrations`, `GET/PATCH /hospitality/pro/groups`,
 `GET /hospitality/pro/recovery`. The one public route is the Razorpay webhook.
 
+## Hospitality workspace (`frontend/hospitality.html`) — the PC home for Hospitality clients
+On a PC, every client with `hospitality_enabled='Yes'` opens a separate, lighter workspace instead
+of the full CRM: Today (arrivals, departures, in-house, occupancy), Bookings, a Calendar tape chart
+(book / block / set a rate by clicking a day), Chats (`chats.html` embedded), Rooms or Boats,
+Guests and Settings.
+- **Phones and the Android app are unchanged.** Phones still go to `m.html`, and the TWA
+  (`sessionStorage lv_twa`) never redirects.
+- **Classic CRM stays one click away.** Any query parameter keeps `dashboard.html`, so the
+  workspace's *Classic CRM* and *Leads* links (`dashboard.html?full=1…`) open the full CRM as
+  before.
+- **Teammates without the module stay in the CRM.** A teammate whose saved module permissions leave
+  out 🏨 Hospitality is never redirected.
+- **How the redirect works.** `hospitalityDeskRedirect()` in `dashboard.html` runs after
+  `/session/me` and sets `localStorage lv_hosp_desk`. The early script at the top of
+  `dashboard.html` uses that flag to redirect before the CRM's libraries download.
+
+**Why it loads faster:**
+- No web fonts and no Chart.js / PDF libraries.
+- One request (`GET /hospitality/desk/bootstrap`: units, a −45/+150-day booking window, today's
+  numbers, Pro counts), painted from a localStorage cache first.
+- The calendar is one request too (`GET /hospitality/desk/calendar?start&end`, up to 92 days).
+- Heavier screens load only when opened: `hospitality-desk-suite.js` for Pro Suite, the existing
+  `hospitality-pro.js` for ⭐ Direct Sales (reused unchanged), and the Chats iframe.
+
+Bump the `?v=` on `hospitality-desk.js` / `hospitality-desk-suite.js` when changing them, because
+`sw.js` serves scripts cache-first.
+
+## Hospitality Pro Suite (`cloudflare-worker/hospitality-suite.js`)
+Six modules on top of Hospitality Pro with **30 features, each its own switch** in the workspace's
+⚙️ Settings. **Every switch starts off**, so nothing changes for an existing client until they turn
+one on. A screen appears in the workspace menu only once its feature is on. Everything also
+requires `hpEnabled(c)`.
+
+**Enable:** apply `migrations/0123_hospitality_suite.sql` once
+(`wrangler d1 migrations apply leadvyne-d1 --remote`). It only creates new `hosp_suite_*` tables.
+
+**The six modules:**
+1. **Guest Journey.**
+   - Balance reminders N days before arrival, with a Razorpay link when Direct Sales uses Razorpay.
+     Payment is confirmed through the existing Pro webhook (notes `kind:'hosp_suite_balance'`).
+   - A payments / refunds ledger per booking.
+   - Web check-in on WhatsApp: ETA → preferences → ID photos.
+   - AI ID scan: Gemini reads the fields from the ID photo, and Aadhaar is stored masked.
+   - Pre-arrival upsell of add-ons, plus an upgrade to a pricier unit that is free on those dates.
+   - Welcome and checkout messages.
+   - In-stay requests become tasks ("AC not working" → a high-priority maintenance task).
+2. **Houseboat Operations.**
+   - Fleet details: bedrooms, deck, AC, and day-cruise / overnight / night-stay rates.
+   - Jetties with boarding and cruising hours, plus a Cruise Day sheet.
+   - Weather alerts from Open-Meteo for each departure, offering "Keep my plan / Reschedule".
+   - Crew assignment, with a double-booking warning.
+   - Meal pre-order on WhatsApp, plus a kitchen sheet.
+   - Pickup details the evening before, and "boat ready / driver on the way" buttons.
+   - Fuel / service log with a service-due alert.
+3. **Revenue & Channels.**
+   - iCal import and export with OTAs. Imported nights become `hospitality_blocked_dates` rows that
+     are tracked in `hosp_suite_blocks`, so a sync only ever removes its own blocks, never a manual
+     one. Export: `GET /hospitality/ical/<token>/<unit>.ics`.
+   - Pricing rules (weekend / season / event / high demand / last minute) produce suggestions. The
+     owner applies them, which writes `hospitality_rate_overrides`.
+   - Competitor rates with drop alerts.
+   - A daily plain-language summary, also sent to the owner by template.
+4. **Housekeeping & Staff.**
+   - Room status board.
+   - Automatic clean tasks (urgent on a same-day turnover) and prepare tasks.
+   - Tasks with a WhatsApp send to the assignee.
+   - Staff WhatsApp bot: `tasks`, `start 12`, `done 12`, `issue: …`.
+5. **Reviews & Guest Memory.**
+   - Guest profiles: birthday, anniversary, preferences.
+   - Post-stay rating: 4–5★ get the Google review link; 1–3★ alert the manager and ask what went
+     wrong.
+   - AI-drafted replies to pasted reviews.
+   - Rebooking offers, and birthday / anniversary offers.
+6. **Agent Desk.**
+   - Agents with commission % and credit limit.
+   - Agents get net rates on WhatsApp and request a booking, which becomes an `inquiry` booking.
+   - Allotments: blocked for everyone except that agent, and released automatically N days
+     before.
+   - Commission ledger.
+
+**Messages outside WhatsApp's 24-hour window.**
+- **Inside the window:** if the guest wrote in the last 23h (`hosp_suite_contacts`), the message
+  goes as free text in their chat.
+- **Template set:** otherwise, the client's approved template from Settings is used. Its body is
+  `Hi {{1}}, {{2}}`, sent through the Graph API with `wa_phone_id` / `wa_token`.
+- **No template:** otherwise, it becomes a 🔔 Alert with a one-click WhatsApp link for staff.
+
+Guest messages respect Direct Sales' quiet hours.
+
+**Isolation:**
+- **Bot hook.** `hsHandleTurn` runs just before Hospitality Pro's turn, only for Pro clients. It
+  returns `handled:false` straight away when no suite feature is on, and for anything it doesn't
+  own, so the turn carries on to Pro and the normal bot unchanged.
+- **Cron.** `hsRunForAllClients` runs on the `*/15` tick and skips clients with no feature on.
+- **Missing migration.** If the migration hasn't been applied, the code treats every feature as
+  off.
+
+**Code.** `hospitality-suite.js` imports only `hospitality-pro.js` helpers; `worker.js` passes
+`HS_DEPS`. `hospitality-suite.test.js` runs the flows, cron jobs and routes against the real
+migrations on node:sqlite. Routes: `/hospitality/desk/*` needs Hospitality on;
+`/hospitality/suite/*` needs Pro and 403s per feature switch.
+
 ## B2B module (Smart Lists, trackable Documents/CPQ, brand classification, B2B analytics)
 A new industry (`b2b`) plus an independently-toggleable module, following the same pattern as
 Travel Agency/Recruitment/Appointments: **Settings → Modules → 🤝 B2B Suite** turns on a `🤝 B2B`
