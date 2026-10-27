@@ -3,8 +3,9 @@
 
 -- Daily budgets per ad set / campaign (account currency, major units; 0 = budget set elsewhere) —
 -- what the sales-based rules propose changes to.
-ALTER TABLE meta_ads_ads ADD COLUMN adset_budget REAL;
-ALTER TABLE meta_ads_ads ADD COLUMN campaign_budget REAL;
+-- Not ALTERed here: meta-ads-report.js adds adset_budget REAL and campaign_budget REAL to meta_ads_ads
+-- lazily, so on a live database they usually exist already and an ALTER would fail the migration
+-- with "duplicate column name".
 
 -- Every Conversions API event Meta refused or that never reached it (🩺 Tracking health, daily alert).
 CREATE TABLE IF NOT EXISTS meta_capi_errors (

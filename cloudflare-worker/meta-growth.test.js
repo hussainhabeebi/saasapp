@@ -20,6 +20,8 @@ function freshDb(){
   const db=new DatabaseSync(':memory:');
   for(const f of ['0003_meta_capi_log.sql','0118_meta_ads_report.sql','0120_meta_ads_running.sql','0122_meta_ads_growth.sql'])
     db.exec(readFileSync(new URL('./migrations/'+f, import.meta.url), 'utf8'));
+  // Budget columns are added at runtime by meta-ads-report.js (0122 no longer ALTERs them).
+  db.exec('ALTER TABLE meta_ads_ads ADD COLUMN adset_budget REAL'); db.exec('ALTER TABLE meta_ads_ads ADD COLUMN campaign_budget REAL');
   return db;
 }
 async function token(secret, cid=7, email='boss@biz.com'){
