@@ -27,6 +27,7 @@ const REPORT = {
   steps: [{ step: 1, label: 'Nudge 1 · after 1h', sent: 30, replied: 9, reply_rate: 30, converted: 3, revenue: 4500, opted_out: 1, opt_out_rate: 3.3, conversion_rate: 10, health: 'watch', variants: [{ variant: 'A', sent: 30, replied: 9, reply_rate: 30 }] }],
   trend: [{ week_start: '2026-10-05', sent: 40, replied: 10, converted: 3 }],
   heatmap: Array.from({ length: 7 }, () => Array(24).fill(0)), best_slot: null, failures: [], templates: [], benchmark: null, status_counts: {},
+  health: { status: 'healthy', last_success_at: iso(now - 10 * 60e3), checked: 12 },
 };
 
 async function open(page, { v3 = false, query = '' } = {}) {
@@ -86,7 +87,8 @@ test('Follow-ups workspace, V3 off: header, promo, sequence map flags what is mi
 
 test('Follow-ups workspace, V3 on: numbers from the report, re-engage step, upcoming list', async ({ page }) => {
   await open(page, { v3: true, query: '?view=followups' });
-  await expect(page.locator('#fuHeadPill')).toHaveText('● V3 running');
+  await expect(page.locator('#fuHeadPill')).toHaveText('● Healthy');
+  await expect(page.locator('#fuHeadSub')).toContainText('12 leads checked');
   await expect(page.locator('#fuHeadKpis')).toContainText('INR 4,500');
   await expect(page.locator('#fuV3Promo')).toBeHidden();
   await expect(page.locator('#fv3ReportCard')).toBeVisible();

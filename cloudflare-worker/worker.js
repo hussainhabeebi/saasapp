@@ -229,6 +229,63 @@ async function cleanupRateLimitCounters(env){
   if(!env.DB) return;
   try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
   try{ await env.DB.prepare(`DELETE FROM voice_sarvam_daily_usage WHERE usage_date < date('now','-30 days')`).run(); }catch(e){}
+  try{ await env.DB.prepare(`DELETE FROM engine_inbound_burst WHERE received_at < ?`).bind(Date.now()-24*60*60*1000).run(); }catch(e){}
+}
+
+/* ── Consecutive-message coalescing ──────────────────────────────────────────────────────────────
+   A customer typing "Singapore To Trichy" and then "08 Nov 2026" a second later used to get one
+   reply per message — each turn ran on its own, neither saw the other, and both answered the same
+   "Where are you flying from and to?" (Nanthana Air Travels, Oct 2026). Every text message is now
+   recorded here and waits a short moment (bot_config.burst_wait_ms, default 2500, 0 = off): if a
+   newer message from the same customer arrives in that window this turn stands down, and the
+   newest turn answers all of the burst's messages together as one combined text. Fail-open: any
+   D1 error just processes the message on its own, exactly as before. */
+const ENGINE_BURST_WINDOW_MS=60*1000;
+export function engineBurstWaitMs(botConfig={}){
+  const raw=botConfig?.burst_wait_ms;
+  if(raw===undefined||raw===null||raw==='') return 2500;
+  const n=Number.parseInt(raw,10);
+  return Number.isFinite(n)?Math.max(0,Math.min(8000,n)):2500;
+}
+export function engineJoinBurstTexts(texts=[]){
+  const out=[];
+  for(const t of texts){const v=String(t||'').trim();if(v&&out[out.length-1]!==v)out.push(v);}
+  return out.join('\n');
+}
+async function engineEnsureBurstSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS engine_inbound_burst (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, phone TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '', received_at INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_engine_inbound_burst_phone ON engine_inbound_burst (client_id, phone, id)`).run();
+}
+export async function engineCoalesceBurst(env,clientId,phone,messageId,text,mediaType,botConfig,sleep=ms=>new Promise(res=>setTimeout(res,ms))){
+  const wait=engineBurstWaitMs(botConfig);
+  if(!env?.DB||!wait||!phone||!String(text||'').trim()||(mediaType&&mediaType!=='text')) return {text,coalesced:false};
+  try{
+    await engineEnsureBurstSchema(env);
+    const cid=Number(clientId),ph=String(phone);
+    // A redelivery of a message already recorded (answered alone or inside a burst) is not new.
+    if(messageId){
+      const seen=await env.DB.prepare(`SELECT id FROM engine_inbound_burst WHERE client_id=? AND phone=? AND message_id=? LIMIT 1`).bind(cid,ph,String(messageId)).first();
+      if(seen) return {text,superseded:true};
+    }
+    const ins=await env.DB.prepare(`INSERT INTO engine_inbound_burst (client_id,phone,message_id,content,received_at) VALUES (?,?,?,?,?)`)
+      .bind(cid,ph,String(messageId||''),String(text),Date.now()).run();
+    const myId=Number(ins?.meta?.last_row_id||0);
+    if(!myId) return {text,coalesced:false};
+    await sleep(wait);
+    const newer=await env.DB.prepare(`SELECT id FROM engine_inbound_burst WHERE client_id=? AND phone=? AND id>? LIMIT 1`).bind(cid,ph,myId).first();
+    if(newer) return {text,superseded:true};
+    const {results}=await env.DB.prepare(`SELECT id,content FROM engine_inbound_burst WHERE client_id=? AND phone=? AND consumed=0 AND id<=? AND received_at>=? ORDER BY id`)
+      .bind(cid,ph,myId,Date.now()-ENGINE_BURST_WINDOW_MS).all();
+    await env.DB.prepare(`UPDATE engine_inbound_burst SET consumed=1 WHERE client_id=? AND phone=? AND id<=? AND consumed=0`).bind(cid,ph,myId).run();
+    const rows=results||[];
+    if(rows.length<2) return {text,coalesced:false};
+    return {text:engineJoinBurstTexts(rows.map(r=>r.content)),coalesced:true,count:rows.length};
+  }catch(e){
+    return {text,coalesced:false};
+  }
 }
 
 /* ── Engine event log (SETUP.md "Engine event log — Settings → Logs") ───────────────────────────
@@ -18754,7 +18811,35 @@ const LT_AIRPORT_ALIASES=[
   ['DXB',/\b(?:dubai|dxb)\b/i],['AUH',/\b(?:abu\s*dhabi|auh)\b/i],['SHJ',/\b(?:sharjah|shj)\b/i],
   ['CCJ',/\b(?:calicut|kozhikode|ccj)\b/i],['COK',/\b(?:kochi|cochin|ernakulam|cok)\b/i],['CNN',/\b(?:kannur|cnn)\b/i],['TRV',/\b(?:trivandrum|thiruvananthapuram|trv)\b/i],
   ['BOM',/\b(?:mumbai|bombay|bom)\b/i],['DEL',/\b(?:new\s*delhi|delhi|del)\b/i],['MAA',/\b(?:chennai|madras|maa)\b/i],['HYD',/\b(?:hyderabad|hyd)\b/i],['BLR',/\b(?:bangalore|bengaluru|blr)\b/i],
-  ['DOH',/\b(?:doha|doh)\b/i],['MCT',/\b(?:muscat|mct)\b/i],['RUH',/\b(?:riyadh|ruh)\b/i],['JED',/\b(?:jeddah|jed)\b/i],['DMM',/\b(?:dammam|dmm)\b/i]
+  ['DOH',/\b(?:doha|doh)\b/i],['MCT',/\b(?:muscat|mct)\b/i],['RUH',/\b(?:riyadh|ruh)\b/i],['JED',/\b(?:jeddah|jed)\b/i],['DMM',/\b(?:dammam|dmm)\b/i],
+  // City names only from here on (the 3-letter codes are still read by ltAirportCodeFromText's
+  // upper-case fallback). Common English words that are also airports ("male", "nice") are left
+  // out so "1 male adult" is never read as a route.
+  // South India / Tamil Nadu
+  ['TRZ',/\b(?:trichy|trichi|tiruchi|tiruchirappalli|tiruchirapalli|tiruchirapally)\b/i],['IXM',/\bmadurai\b/i],['CJB',/\b(?:coimbatore|kovai)\b/i],
+  ['TCR',/\b(?:tuticorin|thoothukudi)\b/i],['IXE',/\b(?:mangalore|mangaluru)\b/i],['GOI',/\b(?:goa|dabolim)\b/i],['GOX',/\bmopa\b/i],
+  ['VTZ',/\b(?:vizag|visakhapatnam)\b/i],['VGA',/\b(?:vijayawada)\b/i],['TIR',/\b(?:tirupati)\b/i],['PNY',/\b(?:puducherry|pondicherry)\b/i],['MYQ',/\bmysore\b/i],
+  // Rest of India
+  ['CCU',/\b(?:kolkata|calcutta)\b/i],['AMD',/\bahmedabad\b/i],['PNQ',/\bpune\b/i],['LKO',/\blucknow\b/i],['JAI',/\bjaipur\b/i],['ATQ',/\bamritsar\b/i],
+  ['VNS',/\b(?:varanasi|benaras|banaras)\b/i],['GAU',/\b(?:guwahati|gauhati)\b/i],['BBI',/\bbhubaneswar\b/i],['IXC',/\bchandigarh\b/i],['NAG',/\bnagpur\b/i],
+  ['IDR',/\bindore\b/i],['PAT',/\bpatna\b/i],['SXR',/\bsrinagar\b/i],['STV',/\bsurat\b/i],['BDQ',/\b(?:vadodara|baroda)\b/i],['IXB',/\bbagdogra\b/i],
+  // Gulf / Middle East
+  ['KWI',/\bkuwait\b(?!\s*airways?)/i],['BAH',/\bbahrain\b/i],['MED',/\b(?:madinah|madina|medina)\b/i],['RKT',/\bras\s*al\s*khaimah\b/i],['SLL',/\bsalalah\b/i],
+  ['DWC',/\bal\s*maktoum\b/i],['AAN',/\bal\s*ain\b/i],['TIF',/\btaif\b/i],['AHB',/\babha\b/i],['TUU',/\btabuk\b/i],['ELQ',/\b(?:qassim|buraidah)\b/i],
+  ['AMM',/\bamman\b/i],['BEY',/\bbeirut\b/i],['CAI',/\bcairo\b/i],['IST',/\bistanbul\b/i],['BGW',/\bbaghdad\b/i],['IKA',/\btehran\b/i],
+  // South / South-East / East Asia
+  ['SIN',/\b(?:singapore|changi)\b/i],['KUL',/\bkuala\s*lumpur\b/i],['PEN',/\bpenang\b/i],['BKK',/\bbangkok\b/i],['HKT',/\bphuket\b/i],['DPS',/\b(?:bali|denpasar)\b/i],
+  ['CGK',/\bjakarta\b/i],['MNL',/\bmanila\b/i],['SGN',/\b(?:ho\s*chi\s*minh|saigon)\b/i],['HAN',/\bhanoi\b/i],['HKG',/\bhong\s*kong\b/i],['NRT',/\btokyo\b/i],
+  ['ICN',/\bseoul\b/i],['PEK',/\bbeijing\b/i],['PVG',/\bshanghai\b/i],['CAN',/\bguangzhou\b/i],
+  ['CMB',/\bcolombo\b/i],['MLE',/\bmaldives\b/i],['KTM',/\bkathmandu\b/i],['DAC',/\bdhaka\b/i],['CGP',/\bchittagong\b/i],
+  ['KHI',/\bkarachi\b/i],['LHE',/\blahore\b/i],['ISB',/\bislamabad\b/i],['PEW',/\bpeshawar\b/i],
+  // Central Asia / Caucasus / Europe / Africa / Americas / Oceania
+  ['GYD',/\bbaku\b/i],['TBS',/\btbilisi\b/i],['EVN',/\byerevan\b/i],['ALA',/\balmaty\b/i],['TAS',/\btashkent\b/i],['SVO',/\bmoscow\b/i],
+  ['LHR',/\blondon\b/i],['MAN',/\bmanchester\b/i],['BHX',/\bbirmingham\b/i],['CDG',/\bparis\b/i],['FRA',/\bfrankfurt\b/i],['AMS',/\bamsterdam\b/i],
+  ['FCO',/\brome\b/i],['MXP',/\bmilan\b/i],['MAD',/\bmadrid\b/i],['BCN',/\bbarcelona\b/i],['ZRH',/\bzurich\b/i],['VIE',/\bvienna\b/i],
+  ['NBO',/\bnairobi\b/i],['ADD',/\baddis\s*ababa\b/i],['JNB',/\bjohannesburg\b/i],['CMN',/\bcasablanca\b/i],
+  ['JFK',/\bnew\s*york\b/i],['YYZ',/\btoronto\b/i],['ORD',/\bchicago\b/i],['IAD',/\bwashington\b/i],['SFO',/\bsan\s*francisco\b/i],['LAX',/\blos\s*angeles\b/i],
+  ['SYD',/\bsydney\b/i],['MEL',/\bmelbourne\b/i],['PER',/\bperth\b/i],['AKL',/\bauckland\b/i]
 ];
 function ltAirportCodeFromText(value){
   const text=String(value||'');
@@ -18775,6 +18860,21 @@ export function ltParseFlightRoute(value){
   }
   const origin=ltAirportCodeFromText(parts[0]),destination=ltAirportCodeFromText(parts.slice(1).join(' to '));
   return origin&&destination&&origin!==destination?{origin,destination}:null;
+}
+
+// "Salem to Trichy" where a side is not a known airport: the unread side(s), as typed. Only the
+// first line counts (a burst may add "08 Nov 2026" on the next), and only short place-like words.
+export function ltUnknownRouteCities(value,known={}){
+  const line=ltLocalTravelText(value).split('\n').map(s=>s.trim()).find(s=>/\s+to\s+/i.test(s))||'';
+  const parts=line.split(/\s+to\s+/i);
+  if(parts.length!==2)return [];
+  const clean=s=>String(s||'').replace(/\b(?:from|flights?|tickets?|air|on|for|please|pls)\b/gi,' ').replace(/\d.*$/,'').replace(/[^\p{L}\s.'-]/gu,' ').replace(/\s+/g,' ').trim();
+  const out=[];
+  [[parts[0],known.origin],[parts[1],known.destination]].forEach(([raw,code])=>{
+    const name=clean(raw);
+    if(!code&&name&&name.split(' ').length<=3&&!ltAirportCodeFromText(name))out.push(name.replace(/\b\p{L}/gu,ch=>ch.toUpperCase()));
+  });
+  return out;
 }
 
 // Customer flight filters typed in chat ("flynas", "direct only", "morning", "under 30000",
@@ -19737,6 +19837,11 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
     const routeMissing=!input.origin||!input.destination;
     const buttons=!flowOn?[]:routeMissing?await ltMenuRoutesFor(env,clientId,phone,await ltMenuLoad(env,clientId).catch(()=>null)):(!input.departure_date?ltMenuDateRows():[]);
     const picker=routeMissing?{button:'Choose route',section:'Routes'}:{button:'Choose date',section:'Dates'};
+    // The customer DID type a route we could not read ("Salem to Trichy"): say which city, rather
+    // than repeating the exact same question as if nothing had been sent.
+    const unknownCities=routeMissing?ltUnknownRouteCities(userText,input):[];
+    if(input.guided&&unknownCities.length)
+      return {handled:true,reply:`✈️ Sorry, I couldn't find the airport for *${unknownCities.join('* and *')}*.\n\nPlease send the nearest airport city or its 3-letter code — e.g. *SIN to TRZ*.`,buttons,picker};
     if(input.guided&&routeMissing)
       return {handled:true,reply:`✈️ Where are you flying from and to?\n${buttons.length?'Pick a route below, or type it':'Type your route'} — e.g. *Dubai to Kochi*.`,buttons,picker};
     if(input.guided&&!input.departure_date)
@@ -24130,8 +24235,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // time (startMs), never from the bot's reply, so this now measures genuine rapid-fire
     // customer typing — which is what this limiter is actually for — without misfiring on the
     // bot's own turnaround time.
+    // Consecutive messages are answered once, together (see engineCoalesceBurst). With coalescing
+    // on, rapid-fire typing is absorbed into one turn instead of the limiter below silently
+    // dropping the second message — so the limiter only applies when coalescing is switched off.
+    const burstOn=engineBurstWaitMs(botConfig)>0;
+    const burst=await engineCoalesceBurst(env, clientId, phone, messageId, text, mediaType, botConfig);
+    if(burst.superseded){ await logEngineSkip(env, clientId, phone, convId, 'superseded', 'answered together with the newer message in the same burst'); return json({ok:true, skipped:'superseded'}); }
+    if(burst.coalesced) text=burst.text;
     const lastMsgAt=state.lastCustomerMsgAt?new Date(state.lastCustomerMsgAt).getTime():0;
-    if(Date.now()-lastMsgAt<rateLimitMs){ await logEngineSkip(env, clientId, phone, convId, 'rate-limited', `${Date.now()-lastMsgAt}ms since last, limit ${rateLimitMs}ms`); return json({ok:true, skipped:'rate-limited'}); }
+    if(!burstOn && Date.now()-lastMsgAt<rateLimitMs){ await logEngineSkip(env, clientId, phone, convId, 'rate-limited', `${Date.now()-lastMsgAt}ms since last, limit ${rateLimitMs}ms`); return json({ok:true, skipped:'rate-limited'}); }
 
     // Claim this message id now, before the slow classify/LLM/context work below — observed in
     // production as a genuine duplicate reply (identical product-lookup message sent twice, ~1
