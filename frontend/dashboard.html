@@ -4917,6 +4917,19 @@ const ROLES = {
   </div>
 </div>
 
+<!-- MODAL: Lead timeline (lead detail → 🕒 Timeline) — see openLeadTimeline -->
+<div class="modal" id="modalTimeline" style="max-width:480px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd">
+    <div style="flex:1;min-width:0">
+      <div class="modal-title">🕒 Lead timeline</div>
+      <div style="font-size:12px;color:var(--muted)" id="ltlSub"></div>
+    </div>
+    <button class="icon-btn" onclick="closeModal('modalTimeline')">✕</button>
+  </div>
+  <div class="modal-body"><div id="ltlList"></div></div>
+</div>
+
 <!-- MODAL: Personal & staff contacts (markLeadPersonal) -->
 <div class="modal" id="modalPersonal" style="max-width:460px">
   <span class="modal-drag"></span>
@@ -9801,6 +9814,7 @@ function openDetail(id){
   $id('detailActions').innerHTML=`
     ${isIgLead(lead)?`<button class="action-btn" onclick="closeModal('modalDetail');openLeadChat(${lead.Id})"><span class="ab-icon">📷</span>Instagram chat</button>`:`<a class="action-btn" href="${callLink}" onclick="startCallTimer(${lead.Id})"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>`}
+    <button class="action-btn" id="detailTimelineBtn" onclick="openLeadTimeline(${lead.Id})"><span class="ab-icon">🕒</span>Timeline</button>
     <button class="action-btn" onclick="pushLeadToProjects(currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
@@ -10177,6 +10191,81 @@ function renderDetailCalls(lead){
         return `<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':/callback/i.test(c.outcome||'')?'🔁':'📬'}</div><div class="call-body"><b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}${by?' · '+esc(by):''}${c.src==='manual'?' · ✍️ logged without dialing':''}</div></div></div>`;
       }).join('')
     :'<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No calls logged.</div>');
+}
+
+/* ── LEAD TIMELINE ── one list of everything that happened to a lead, oldest first: arrived, bot
+   replied, assigned, each call, follow-ups sent, meetings, notes, quote, current stage. Built from
+   what the lead record already holds; Follow-up V3 sends and meetings load in after. */
+let _ltlLeadId=null;
+function _ltlTs(v){ const t=Date.parse(v||''); return Number.isFinite(t)?t:NaN; }
+function _ltlGap(ms){
+  if(!(ms>=0)) return '';
+  const m=Math.round(ms/60000), h=Math.floor(m/60), d=Math.floor(h/24);
+  return m<1?'within a minute':m<60?m+' min':h<48?h+'h'+(m%60?' '+(m%60)+'m':''):d+' days';
+}
+const _ltlOrd=n=>n===1?'First':n+(n%10===2&&n%100!==12?'nd':n%10===3&&n%100!==13?'rd':'th');
+function leadTimelineEvents(lead, extra={}){
+  const ev=[], add=(ts,icon,title,detail='',tone='info')=>ev.push({ts,icon,title,detail,tone});
+  const who=e=>e?(getTeamMembers().find(m=>sameEmail(m.email,e))?.name||e):'';
+  const arrived=_ltlTs(lead.Date);
+  add(arrived,'📥','Lead arrived',leadOriginLine(lead).replace(/ · [^·]*$/,''),'ok');
+  let hist=[]; try{ hist=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+  const firstUser=hist.find(m=>m.role==='user'&&_ltlTs(m.ts));
+  if(firstUser) add(_ltlTs(firstUser.ts),'💬','First message from customer',String(firstUser.content||'').slice(0,90));
+  const firstBot=hist.find(m=>m.role==='assistant'&&_ltlTs(m.ts));
+  if(firstBot) add(_ltlTs(firstBot.ts),'🤖','First reply sent',arrived?_ltlGap(_ltlTs(firstBot.ts)-arrived)+' after arrival':'');
+  hist.filter(m=>m.role==='system'&&/^Assigned to /.test(m.content||'')&&_ltlTs(m.ts)).forEach(m=>{
+    const email=(m.content.match(/^Assigned to (\S+)/)||[])[1];
+    add(_ltlTs(m.ts),'👤','Assigned to '+who(email),(m.content.split(' — ')[1]||''));
+  });
+  if(_ltlTs(lead.HandoverAt)) add(_ltlTs(lead.HandoverAt),'🙋','Handed over to the team','','warn');
+  const calls=parseCallLog(lead.CallLog).slice().reverse(); // stored newest first
+  calls.forEach((c,i)=>{
+    const ts=_ltlTs(c.at||c.date);
+    const gap=i===0&&arrived&&ts?' · '+_ltlGap(ts-arrived)+' after arrival':'';
+    const tone=c.outcome==='Answered'?'ok':/no answer/i.test(c.outcome||'')?'bad':'warn';
+    add(ts,'📞',`${_ltlOrd(i+1)} call — ${c.outcome||'logged'}`,[c.duration?c.duration+' min':'',who(c.by)?'by '+who(c.by):'',c.notes||''].filter(Boolean).join(' · ')+gap,tone);
+  });
+  (extra.followups||[]).forEach(h=>{
+    add(_ltlTs(h.sent_at),'📤',`${h.kind==='reengage'?'Re-engage message':(h.label||'Follow-up '+h.step)} sent`,h.replied_at?'Customer replied '+mtgAgo(h.replied_at):(h.delivery_status||'No reply yet'),h.replied_at?'ok':'info');
+  });
+  (extra.meetings||[]).forEach(m=>{
+    const status=m.outcome?MTG_OUTCOME_LABELS[m.outcome]:(m.status==='agreed'?'Agreed — time not fixed':(MTG_STATUS_LABELS[m.status]||m.status||''));
+    add(_ltlTs(m.created_at||m.sent_at||m.start_at),'📅',`${m.title||m.link_name||'Meeting'}${m.start_at?' for '+mtgWhen(m.start_at):''}`,[status,who(m.scheduled_by||m.sent_by)?'by '+who(m.scheduled_by||m.sent_by):''].filter(Boolean).join(' · '),m.outcome==='no_show'||m.status==='cancelled'?'bad':'ok');
+  });
+  let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+  notes.forEach(n=>add(_ltlTs(n.ts||n.date),'📝','Note'+(who(n.author)?' by '+who(n.author):''),String(n.text||'').slice(0,140)));
+  if(_ltlTs(lead.QuoteSentAt)) add(_ltlTs(lead.QuoteSentAt),'🧾','Quote sent',lead.QuoteSentTotal?String(lead.QuoteSentTotal):'');
+  if(_ltlTs(lead.LastMsgAt)&&hist.length) add(_ltlTs(lead.LastMsgAt),'🕘','Last message','');
+  // Undated entries (very old calls/notes) keep their place at the end rather than guessing a time.
+  return ev.map((e,i)=>({...e,i})).sort((a,b)=>(Number.isNaN(a.ts)?1:0)-(Number.isNaN(b.ts)?1:0)||(a.ts-b.ts)||(a.i-b.i));
+}
+function renderLeadTimeline(lead, extra){
+  const fmt=ts=>Number.isNaN(ts)?'Time not recorded':`${mtgWhen(new Date(ts).toISOString())} · ${mtgAgo(new Date(ts).toISOString())}`;
+  const items=leadTimelineEvents(lead, extra).map(e=>`<li class="${e.tone}">
+      <div style="font-weight:600;font-size:13.5px">${e.icon} ${esc(e.title)}</div>
+      <div style="font-size:11.5px;color:var(--muted)">${esc(fmt(e.ts))}</div>
+      ${e.detail?`<div style="font-size:12.5px;margin-top:2px">${esc(e.detail)}</div>`:''}
+    </li>`).join('');
+  $id('ltlList').innerHTML=`<ol class="bp-timeline">${items}<li class="${/^(?:won|converted)$|_booked$/.test(lead.Stage||'')?'ok':/^(?:lost|spam|not_interested)$/.test(lead.Stage||'')?'bad':'info'}">
+      <div style="font-weight:600;font-size:13.5px">📍 Now: ${esc(stageLabel(lead.Stage||'new'))}</div>
+      ${lead.ReminderDate?`<div style="font-size:12.5px">⏰ Next reminder ${esc(fmtDate(lead.ReminderDate))}</div>`:''}
+    </li></ol>${extra.loading?'<div class="s-note">Loading follow-ups and meetings…</div>':''}`;
+}
+async function openLeadTimeline(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId)||(currentLead?.Id===leadId?currentLead:null);
+  if(!lead) return;
+  _ltlLeadId=leadId;
+  $id('ltlSub').textContent=leadDisplayName(lead)+' · '+leadRef(lead);
+  renderLeadTimeline(lead,{loading:true});
+  openModal('modalTimeline');
+  if(!('ConvHistory' in lead)) await ensureLeadConvHistory(lead).catch(()=>{});
+  const [fu,mt]=await Promise.all([
+    window.FollowupStatus?FollowupStatus.load(CONFIG.WORKER_BASE, sessionToken, leadId).catch(()=>null):null,
+    mtgApi(`/meetings/lead?lead_id=${leadId}`).catch(()=>null),
+  ]);
+  if(_ltlLeadId!==leadId) return;
+  renderLeadTimeline(lead,{followups:fu?.enabled?(fu.history||[]):[], meetings:mt?.meetings||[]});
 }
 
 // leadId is optional — passed by the Call buttons on the Leads list/table/detail-panel so the
