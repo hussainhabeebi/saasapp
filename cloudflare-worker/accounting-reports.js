@@ -178,20 +178,20 @@ export async function burnRate(env, clientId, accounts, months=3){
 export async function ownerDashboard(env, clientId, sync){
   const {ctx, src, settings}=sync;
   const accounts=ctx.accounts, t=todayStr();
-  const [cash, bs, burn]=await Promise.all([cashPosition(env, clientId, accounts, t), balanceSheet(env, clientId, accounts, t), burnRate(env, clientId, accounts, 3)]);
-  const ar=arAging(src, settings.base_currency);
-  const apT=await accountTotals(env, clientId, {to:t});
-  const ap=naturalBalance('liability', apT[ctx.byKey.AP]);
-  const subs=await allRows(env, `SELECT * FROM acc_subscriptions WHERE client_id=?`, clientId);
-  const mrr=r2(subs.reduce((s,x)=>s+subMrr(x),0));
   const months=monthsRange(addMonths(t.slice(0,7)+'-01',-5).slice(0,7), t.slice(0,7));
-  const trend=[];
-  for(const m of months){
-    const pl=await profitAndLoss(env, clientId, accounts, {from:m+'-01', to:monthEnd(m)});
-    trend.push({month:m, revenue:pl.revenue, expenses:r2(pl.cogs+pl.opex), net:pl.net_profit});
-  }
   const ytd=fiscalYear(t, settings.fy_start_month);
-  const plYtd=await profitAndLoss(env, clientId, accounts, {from:ytd.from, to:t});
+  // Every figure below is an independent query — run them all at once rather than one after another.
+  const [cash, bs, burn, apT, subs, plYtd, ...monthPl]=await Promise.all([
+    cashPosition(env, clientId, accounts, t), balanceSheet(env, clientId, accounts, t), burnRate(env, clientId, accounts, 3),
+    accountTotals(env, clientId, {to:t}),
+    allRows(env, `SELECT * FROM acc_subscriptions WHERE client_id=?`, clientId),
+    profitAndLoss(env, clientId, accounts, {from:ytd.from, to:t}),
+    ...months.map(m=>profitAndLoss(env, clientId, accounts, {from:m+'-01', to:monthEnd(m)})),
+  ]);
+  const ar=arAging(src, settings.base_currency);
+  const ap=naturalBalance('liability', apT[ctx.byKey.AP]);
+  const mrr=r2(subs.reduce((s,x)=>s+subMrr(x),0));
+  const trend=months.map((m,i)=>({month:m, revenue:monthPl[i].revenue, expenses:r2(monthPl[i].cogs+monthPl[i].opex), net:monthPl[i].net_profit}));
   const topOverdue={};
   for(const i of ar.items.filter(i=>i.overdue_days>0)) topOverdue[i.customer]=r2((topOverdue[i.customer]||0)+i.balance);
   return {

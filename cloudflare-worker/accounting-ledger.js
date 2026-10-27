@@ -3,7 +3,7 @@
 // dunning/reminders). Session-gated like the rest of the Accounting module (client_id always from
 // the session), with an extra role check (acc_user_roles) on top. See accounting-core.js for the
 // ledger design.
-import {r2, num, str, todayStr, addDays, fiscalYear, allRows, firstRow, dbBatch, audit, accLedgerEnsureSchema, getSettings, SETTINGS_FIELDS, roleFor, ROLE_RANK,
+import {r2, num, str, todayStr, addDays, fiscalYear, allRows, firstRow, dbBatch, audit, accLedgerEnsureSchema, getSettings, SETTINGS_FIELDS, ROLE_RANK,
   loadAccountContext, ledgerSync, insertJournal, expenseAccountFor, isLocked, gstSplitFor, accountTotals, naturalBalance, ACCOUNT_TYPES, SOURCE_LABELS, DERIVED_TYPES, DEFAULT_REMINDERS, DEFAULT_DUNNING, DEFAULT_PAYROLL} from './accounting-core.js';
 import {trialBalance, profitAndLoss, balanceSheet, generalLedger, cashFlow, partyBalances, partyStatement, arAging, ownerDashboard, cashForecast13, budgetVsActual, reportRange} from './accounting-reports.js';
 import * as saas from './accounting-saas.js';
@@ -256,7 +256,7 @@ async function docMetaSave(c){
 }
 
 /* ── Reports ── */
-const withSync=fn=>async c=>{ const sync=await ledgerSync(c.env, c.clientId, c.actor); return fn(c, sync); };
+const withSync=fn=>async c=>{ const sync=await ledgerSync(c.env, c.clientId, c.actor, c.settings); return fn(c, sync); };
 const ROUTES=[
   // [method, path, minRole, handler]
   ['GET','me','viewer',async c=>({role:c.role, email:c.actor, base_currency:c.settings.base_currency, lock_date:c.settings.lock_date})],
@@ -287,7 +287,7 @@ const ROUTES=[
   ['GET','party-statement','viewer',withSync(async (c,s)=>{ const {from,to}=reportRange(c.url); const name=c.url.searchParams.get('name'); need(name, 'name required');
     return {base_currency:c.settings.base_currency, business_name:c.settings.business_name||'', ...(await partyStatement(c.env, c.clientId, s.ctx, {type:c.url.searchParams.get('type')==='supplier'?'supplier':'customer', name, from, to}))}; })],
   ['GET','ar-aging','viewer',withSync(async (c,s)=>({base_currency:c.settings.base_currency, ...arAging(s.src, c.settings.base_currency)}))],
-  ['GET','dashboard','viewer',withSync(async (c,s)=>({...(await ownerDashboard(c.env, c.clientId, s)), warnings:s.warnings, anomalies:(await ops.anomalies(c.env, c.clientId, s)).slice(0,8)}))],
+  ['GET','dashboard','viewer',withSync(async (c,s)=>{ const [d, an]=await Promise.all([ownerDashboard(c.env, c.clientId, s), ops.anomalies(c.env, c.clientId, s)]); return {...d, warnings:s.warnings, anomalies:an.slice(0,8)}; })],
   ['GET','forecast','viewer',withSync(async (c,s)=>cashForecast13(c.env, c.clientId, s))],
   ['GET','budget','viewer',withSync(async (c,s)=>budgetVsActual(c.env, c.clientId, s.ctx.accounts, c.settings, parseInt(c.url.searchParams.get('fy'))||fiscalYear(todayStr(), c.settings.fy_start_month).fy, c.url.searchParams.get('branch')||''))],
   ['POST','budget','accountant',ops.budgetSave], ['POST','budget/from-actuals','accountant',ops.budgetFromActuals],
@@ -355,9 +355,15 @@ export async function accLedgerHandleRoute(request, env, deps, url){
     return corsJson(deps, {error:'The Accounting module is not enabled for this account. Contact Leadvyne to turn it on.', module_disabled:true}, 403);
   try{
     await accLedgerEnsureSchema(env);
-    const settings=await getSettings(env, clientId);
     const actor=String(payload.email||'').toLowerCase()||'owner';
-    const role=await roleFor(env, clientId, payload.email, settings);
+    // Settings and the caller's role row are independent reads — fetch them together.
+    const email=String(payload.email||'').trim().toLowerCase();
+    const [settings, roleRow]=await Promise.all([
+      getSettings(env, clientId),
+      email?firstRow(env, `SELECT role FROM acc_user_roles WHERE client_id=? AND email=?`, clientId, email):null,
+    ]);
+    // Same rules as roleFor(): an explicit role row wins, else the book's default role; no email = owner.
+    const role=!email?'admin':(roleRow?.role||settings.default_role||'admin');
     if((ROLE_RANK[role]||0)<ROLE_RANK[route.role]) return corsJson(deps, {error:`Your role (${role}) can't do this — it needs ${route.role} access.`}, 403);
     const body=request.method==='POST'?await request.json().catch(()=>({})):{};
     const c={env, clientId, actor, role, settings, body, url, deps};

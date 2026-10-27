@@ -10,9 +10,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- PDF / chart / Excel libraries are only needed once something is drawn or exported, so they
+     download in parallel (defer) instead of holding up the page; init() waits for DOMContentLoaded,
+     which fires after they have run, before it renders anything that uses them. -->
+<script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{
   --bg:#FFF7ED;--card:#FFFFFF;--ink:#241A0C;--muted:#8A6D4B;
@@ -1407,6 +1410,18 @@ async function init(){
   if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
   if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the Accounting tab inside your dashboard.</div>'; return; }
   document.getElementById('app').style.display='flex';
+  // Documents/Expenses/Vendor Bills/Financial Planning live in Cloudflare D1 (migrations/0002, 0015,
+  // 0028, 0029) and are independent of each other and of the client record, so they all start NOW,
+  // in parallel with it — nothing is rendered from them until the module is confirmed enabled below.
+  // Each has its own catch so one failing (e.g. a migration not yet applied) can't take the others down.
+  const dataReady=Promise.all([
+    loadDocuments().catch(e=>{ documentsLoadError=e.message; allDocuments=[]; }),
+    loadExpenses().catch(e=>{ expensesLoadError=e.message; allExpenses=[]; }),
+    loadVendorBills().catch(e=>{ vendorBillsLoadError=e.message; allVendorBills=[]; }),
+    loadFinancialPlanning().catch(e=>{ fpLoadError=e.message; }),
+  ]);
+  // The deferred CDN libraries and accounting-ledger.js have all run by DOMContentLoaded.
+  const domReady=document.readyState==='loading'?new Promise(r=>document.addEventListener('DOMContentLoaded', r, {once:true})):Promise.resolve();
   try{
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
     // Switched on per client by the Leadvyne admin (clients.accounting_enabled, admin-only) — nothing
@@ -1415,20 +1430,19 @@ async function init(){
       document.getElementById('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>The Accounting module isn\'t enabled for your account.<br>Contact Leadvyne to turn it on.</div>';
       return;
     }
-    await loadAcctLogoDims(clientRecord.quote_logo_url||'');
-    await loadLeads();
-    // Documents/Expenses/Vendor Bills live in Cloudflare D1 (see migrations/0002, 0028, 0029) —
-    // fully standalone, no external accounting system required. Each load gets its own try/catch
-    // so one failing (e.g. a migration not yet applied) can't take the others down with it.
-    try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
+    // Logo size is only needed when a PDF is drawn, and leads only add names to Documents rows and
+    // the lead picker — neither holds up the first screen; Documents re-renders when leads arrive.
+    loadAcctLogoDims(clientRecord.quote_logo_url||'');
+    const leadsReady=loadLeads().catch(e=>console.error('[leads]', e.message));
+    await domReady;
+    // The Overview makes its own ledger requests — start it straight away rather than after the rest.
+    const activeTab=document.querySelector('.tab.active')?.dataset.tab||'overview';
+    if(activeTab==='overview') showTab('overview');
+    await dataReady;
+    leadsReady.then(()=>renderDocumentsTable());
     renderDocumentsTable();
-    try{ await loadExpenses(); }catch(e){ expensesLoadError=e.message; allExpenses=[]; }
     renderExpensesTable();
-    try{ await loadVendorBills(); }catch(e){ vendorBillsLoadError=e.message; allVendorBills=[]; }
     renderVendorBillsTable();
-    // Financial Planning is D1-backed (see migrations/0015_financial_planning.sql) — same
-    // "own try/catch" reasoning as loadDocuments above.
-    try{ await loadFinancialPlanning(); }catch(e){ fpLoadError=e.message; }
     renderFinancialPlanning();
     populateFpCustomerDatalist();
     populateFpSupplierDatalist();
@@ -1437,8 +1451,9 @@ async function init(){
     ['fpCfgBusinessStateCode','docQuotationPlaceOfSupply','docInvoicePlaceOfSupply','fpCustStateCode'].forEach(id=>renderStateOptions(id,''));
     // SaaS Ops now lives in its own standalone top-level tab (frontend/saas-ops.html) — nothing
     // to load here anymore.
-    // Land on the Overview (rendered by accounting-ledger.js) once the shared data above is loaded.
-    showTab(document.querySelector('.tab.active')?.dataset.tab||'overview');
+    // Overview's recurring-billing card reads Financial Planning data, which has just arrived.
+    if(activeTab==='overview') window.AccLedger?.renderRecurringCard?.();
+    else showTab(activeTab);
   }catch(e){
     document.getElementById('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
@@ -3427,7 +3442,7 @@ init=async function(){
 };
 init();
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="accounting-ledger.js"></script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>

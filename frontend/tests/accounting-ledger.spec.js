@@ -34,7 +34,7 @@ const deps = {
   isAccountingEnabled: async () => true,
 };
 
-async function setup(page, { enabled = true } = {}) {
+async function setup(page, { enabled = true, slowMs = 0 } = {}) {
   const db = new DatabaseSync(':memory:');
   for (const m of MIGRATIONS) db.exec(readFileSync(path.resolve(__dirname, `../../cloudflare-worker/migrations/${m}.sql`), 'utf8'));
   const env = { DB: d1(db) };
@@ -57,6 +57,8 @@ async function setup(page, { enabled = true } = {}) {
       const res = await accLedgerHandleRoute(r, env, deps, u);
       return route.fulfill({ status: res.status, contentType: 'application/json', body: await res.text() });
     }
+    // slowMs: hold back the CRM leads list and the Documents list, the two biggest loads.
+    if (slowMs && ((p.includes('/records') && !p.includes('/records/7')) || p === '/accounting/documents')) await new Promise((r) => setTimeout(r, slowMs));
     if (p.includes('/records/7')) return route.fulfill({ json: { Id: 7, client_name: 'Acme Digital', deal_currency: 'INR', accounting_enabled: enabled ? 'Yes' : 'No' } });
     if (p.includes('/records')) return route.fulfill({ json: { list: [] } });
     if (p === '/accounting/documents') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_documents`).all().map((r) => ({ ...r, Id: r.id })) } });
@@ -211,5 +213,17 @@ test('accounting does not load for a client the Leadvyne admin has not enabled',
   const { errors } = await setup(page, { enabled: false });
   await expect(page.locator('#app')).toContainText("isn't enabled for your account");
   await expect(page.locator('.tab[data-tab="books"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('the Overview shows without waiting for the slow leads and documents lists', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 900 });
+  const { errors } = await setup(page, { slowMs: 8000 });
+  // Both held-back lists take 8 s; the Overview must be up well before either arrives.
+  await expect(page.locator('#tabOverview')).toContainText('Customers owe you', { timeout: 5000 });
+  await expect(page.locator('#tabOverview')).toContainText('59,000.00');
+  // …and Documents fills in once its list does arrive.
+  await page.click('.tab[data-tab="documents"]');
+  await expect(page.locator('#tabDocuments')).toContainText('Beta Foods', { timeout: 15000 });
   expect(errors).toEqual([]);
 });

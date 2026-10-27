@@ -100,7 +100,17 @@ export async function accLedgerEnsureSchema(env){
   if(!env?.DB) return;
   const cached=schemaReady.get(env.DB);
   if(cached) return cached;
-  const pending=(async()=>{ for(const s of ACC_LEDGER_SCHEMA) await env.DB.prepare(s).run(); })();
+  // One lookup tells whether every table/index already exists (the normal case) — only a brand-new
+  // or upgraded database pays for the CREATE statements, and those go in batches, not one by one.
+  const pending=(async()=>{
+    const names=ACC_LEDGER_SCHEMA.map(s=>s.match(/IF NOT EXISTS\s+(\w+)/i)?.[1]).filter(Boolean);
+    let have=new Set();
+    try{ const {results}=await env.DB.prepare(`SELECT name FROM sqlite_master WHERE name IN (${names.map(()=>'?').join(',')})`).bind(...names).all(); have=new Set((results||[]).map(r=>r.name)); }catch(e){}
+    const missing=ACC_LEDGER_SCHEMA.filter(s=>{ const n=s.match(/IF NOT EXISTS\s+(\w+)/i)?.[1]; return !n || !have.has(n); });
+    if(!missing.length) return;
+    if(typeof env.DB.batch==='function'){ for(let i=0;i<missing.length;i+=50) await env.DB.batch(missing.slice(i,i+50).map(s=>env.DB.prepare(s))); }
+    else for(const s of missing) await env.DB.prepare(s).run();
+  })();
   schemaReady.set(env.DB, pending);
   try{ await pending; }catch(e){ schemaReady.delete(env.DB); throw e; }
 }
@@ -248,7 +258,10 @@ const CATEGORY_KEYWORDS=[
 ];
 
 export async function ensureCoa(env, clientId, settings){
-  const existing=await allRows(env, `SELECT * FROM acc_accounts WHERE client_id=?`, clientId);
+  const [existing, banks]=await Promise.all([
+    allRows(env, `SELECT * FROM acc_accounts WHERE client_id=?`, clientId),
+    allRows(env, `SELECT id, name, type FROM acc_bank_accounts WHERE client_id=?`, clientId),
+  ]);
   const now=new Date().toISOString();
   const tpl=settings?.coa_template||'both';
   const haveCodes=new Set(existing.map(a=>a.code)), haveKeys=new Set(existing.map(a=>a.system_key).filter(Boolean));
@@ -262,7 +275,6 @@ export async function ensureCoa(env, clientId, settings){
     stmts.push(env.DB.prepare(`INSERT INTO acc_accounts (client_id, code, name, type, subtype, system_key, is_active, created_at) VALUES (?,?,?,?,?,?,1,?)`).bind(clientId, code, name, type, subtype, key||null, now));
   }
   // One ledger account per Bank & Cash account (acc_bank_accounts) so payment entries post to it.
-  const banks=await allRows(env, `SELECT id, name, type FROM acc_bank_accounts WHERE client_id=?`, clientId);
   const linked=new Set(existing.map(a=>a.bank_account_id).filter(Boolean));
   for(const b of banks){
     if(linked.has(b.id)) continue;
@@ -274,14 +286,16 @@ export async function ensureCoa(env, clientId, settings){
 }
 
 export async function loadAccountContext(env, clientId, settings){
-  const accounts=await ensureCoa(env, clientId, settings);
+  const [accounts, catRows]=await Promise.all([
+    ensureCoa(env, clientId, settings),
+    allRows(env, `SELECT category, account_id FROM acc_category_map WHERE client_id=?`, clientId),
+  ]);
   const byKey={}, byBank={}, byId={}, byName={};
   for(const a of accounts){
     byId[a.id]=a; byName[String(a.name).toLowerCase()]=a;
     if(a.system_key) byKey[a.system_key]=a.id;
     if(a.bank_account_id) byBank[a.bank_account_id]=a.id;
   }
-  const catRows=await allRows(env, `SELECT category, account_id FROM acc_category_map WHERE client_id=?`, clientId);
   const catMap={}; for(const r of catRows) if(byId[r.account_id]) catMap[String(r.category).toLowerCase()]=r.account_id;
   return {accounts, byKey, byBank, byId, byName, catMap};
 }
@@ -698,11 +712,11 @@ export function depreciationSchedule(a){
 
 /* ── Sync ── */
 const syncing=new Map();
-export async function ledgerSync(env, clientId, actor){
+export async function ledgerSync(env, clientId, actor, settings){
   const key=String(clientId);
   if(syncing.has(key)) return syncing.get(key);
   const p=(async()=>{
-    try{ return await ledgerSyncOnce(env, clientId, actor); }
+    try{ return await ledgerSyncOnce(env, clientId, actor, settings); }
     catch(e){
       // Another isolate raced this one to insert the same derived entry (unique source index):
       // its rows are now in place, so a second pass just reconciles against them.
@@ -713,17 +727,22 @@ export async function ledgerSync(env, clientId, actor){
   syncing.set(key, p);
   try{ return await p; } finally{ syncing.delete(key); }
 }
-async function ledgerSyncOnce(env, clientId, actor){
+// `settings` may be passed in when the caller just loaded them (the route handler does), saving a
+// round trip; every independent read below runs in parallel — on D1 each one is a network hop.
+async function ledgerSyncOnce(env, clientId, actor, preloaded){
   await accLedgerEnsureSchema(env);
-  const settings=await getSettings(env, clientId);
-  const ctx=await loadAccountContext(env, clientId, settings);
-  const src=await loadSources(env, clientId);
+  const settings=preloaded||await getSettings(env, clientId);
+  const ph=DERIVED_TYPES.map(()=>'?').join(',');
+  const [ctx, src, existing, maxRow]=await Promise.all([
+    loadAccountContext(env, clientId, settings),
+    loadSources(env, clientId),
+    allRows(env, `SELECT id, source_type, source_ref, source_hash, status, entry_date FROM acc_journals WHERE client_id=? AND source_type IN (${ph})`, clientId, ...DERIVED_TYPES),
+    firstRow(env, `SELECT MAX(entry_no) n FROM acc_journals WHERE client_id=?`, clientId),
+  ]);
   const warnings=[];
   const desired=buildDesiredEntries(src, ctx, settings, warnings);
-  const ph=DERIVED_TYPES.map(()=>'?').join(',');
-  const existing=await allRows(env, `SELECT id, source_type, source_ref, source_hash, status, entry_date FROM acc_journals WHERE client_id=? AND source_type IN (${ph})`, clientId, ...DERIVED_TYPES);
   const exMap=new Map(existing.map(r=>[`${r.source_type}|${r.source_ref}`, r]));
-  const maxNo=(await firstRow(env, `SELECT MAX(entry_no) n FROM acc_journals WHERE client_id=?`, clientId))?.n||0;
+  const maxNo=maxRow?.n||0;
   let nextNo=maxNo;
   const now=new Date().toISOString();
   const inserts=[], updates=[];

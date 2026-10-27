@@ -331,3 +331,30 @@ describe('admin module switch', ()=>{
     assert.equal((await get('trial-balance')).status, 200);
   });
 });
+
+describe('load speed', ()=>{
+  const counting=raw=>{ const c={n:0, sql:[]}; return {c, DB:{...raw, prepare:sql=>{ c.n++; c.sql.push(sql); return raw.prepare(sql); }}}; };
+  test('a warm database checks the schema with one lookup instead of re-running every CREATE', async ()=>{
+    const {c, DB}=counting(d1(db));
+    env={DB};
+    const r=await get('me');
+    assert.equal(r.status, 200);
+    assert.equal(c.sql.filter(s=>/CREATE /i.test(s)).length, 0);
+    assert.equal(c.sql.filter(s=>/sqlite_master/i.test(s)).length, 1);
+  });
+  test('an empty database still gets every ledger table created', async ()=>{
+    db=new DatabaseSync(':memory:');
+    for(const m of MIGRATIONS.filter(m=>m!=='0117_accounting_ledger')) db.exec(readFileSync(new URL(`./migrations/${m}.sql`, import.meta.url), 'utf8'));
+    env={DB:d1(db)};
+    assert.equal((await get('dashboard')).status, 200);
+    for(const t of ['acc_settings','acc_journals','acc_journal_lines','acc_portal_tokens']) assert.ok(one(`SELECT name FROM sqlite_master WHERE name=?`, t), t);
+  });
+  test('dashboard figures are unchanged by running its queries in parallel', async ()=>{
+    invoice({total:1180, subtotal:1000, cgst:90, sgst:90});
+    const {data}=await get('dashboard');
+    assert.equal(data.trend.length, 6);
+    assert.equal(data.trend[5].revenue, 1000);
+    assert.equal(data.revenue_ytd, 1000);
+    assert.equal(data.receivables, 1180);
+  });
+});
