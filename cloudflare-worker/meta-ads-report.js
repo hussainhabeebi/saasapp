@@ -22,7 +22,7 @@
 // { json, requireSession, getClientById, isClientOwner, ncFetch, ensureLeadsColumns, leadsTable,
 //   parseTeamWhatsapp, metaCreds(c)→{wa_phone_id,wa_token}|null, sendEmail(env,to,subject,html),
 //   isAccountingEnabled(c), onExpenseCreated(env,cid,expenseId), logTemplateSend(env,cid,info),
-//   reportOpsError, listStateClients? }
+//   reportOpsError }
 
 const GRAPH='https://graph.facebook.com/v23.0';
 const H=3600000, D=24*H;
@@ -47,7 +47,29 @@ export const MAR_DEFAULTS={
   alert_junk_pct:0,           // junk share of a campaign's last-7-day leads (min 5 leads)
   accounting_post:false,      // book monthly Meta spend as an expense in Accounting
   purchase_labels:['Order placed'], // a lead getting one of these labels (Tags) sends Purchase to Meta; [] = off
+  funnel_map:{},              // pipeline stage id → Conversions API event name ("quote_sent" → "QuoteSent")
+  send_junk:true,             // a lead marked Spam → "Junk" event (Meta learns who not to find)
+  pixel_consent_banner:false, // LeadVyne web pages ask before loading the Meta Pixel
+  audiences_enabled:false,    // daily CRM audiences in the ad account (needs ads_management)
+  audience_country:'IN',      // lookalike country
+  audience_ratio:1,           // lookalike size, % of the country (1–10)
+  rules:[],                   // sales-based budget / pause rules — proposals, applied only on approval
+  capacity_guard:{enabled:false, max_uncalled:20, pct:20},
+  max_change_pct:30,          // no single approved budget change moves more than this %
+  min_daily_budget:0,         // never cut a daily budget below this (account currency)
 };
+export const MAR_RULE_METRICS=['cost_per_sale','cost_per_qualified','cost_per_lead','roas','junk_pct','no_sales_spend'];
+export const MAR_RULE_ACTIONS=['pause','budget_down','budget_up'];
+// One sales-based rule, cleaned: "if <metric> is above/below <value> over the last <days> days for
+// an <level> that spent at least <min_spend>, propose <action> (by <pct>%)".
+export function marRule(r, i=0){
+  const n=(v,max)=>{ const x=Number(v); return Number.isFinite(x)&&x>=0?Math.min(x,max):0; };
+  if(!r || !MAR_RULE_METRICS.includes(r.metric) || !MAR_RULE_ACTIONS.includes(r.action)) return null;
+  return {id:String(r.id||'r'+(i+1)).replace(/[^\w-]/g,'').slice(0,20)||'r'+(i+1), enabled:r.enabled!==false, metric:r.metric,
+    op:r.op==='below'?'below':'above', value:n(r.value, 1e9), days:[3,7,14,30].includes(Number(r.days))?Number(r.days):7,
+    min_spend:n(r.min_spend, 1e9), level:r.level==='campaign'?'campaign':'adset', action:r.action,
+    pct:r.action==='pause'?0:Math.max(1, Math.min(50, Math.round(n(r.pct, 50)||20)))};
+}
 
 const WON_STAGES=new Set(['won','converted','consultation_booked','visit_booked','appt_booked']);
 
@@ -72,7 +94,35 @@ export function marSettings(raw){
     purchase_labels:s.purchase_labels===undefined?[...MAR_DEFAULTS.purchase_labels]
       :(Array.isArray(s.purchase_labels)?s.purchase_labels:String(s.purchase_labels||'').split(','))
         .map(x=>String(x).trim().slice(0,40)).filter((x,i,a)=>x && a.findIndex(y=>y.toLowerCase()===x.toLowerCase())===i).slice(0,10),
+    funnel_map:Object.fromEntries(Object.entries(s.funnel_map&&typeof s.funnel_map==='object'?s.funnel_map:{})
+      .map(([k,v])=>[String(k).trim().slice(0,60), String(v||'').replace(/[^A-Za-z0-9_ ]/g,'').trim().slice(0,40)]).filter(([k,v])=>k&&v).slice(0,30)),
+    send_junk:s.send_junk!==false,
+    pixel_consent_banner:s.pixel_consent_banner===true,
+    audiences_enabled:s.audiences_enabled===true,
+    audience_country:/^[A-Za-z]{2}$/.test(String(s.audience_country||''))?String(s.audience_country).toUpperCase():'IN',
+    audience_ratio:Math.max(1, Math.min(10, Math.round(Number(s.audience_ratio)||1))),
+    rules:(Array.isArray(s.rules)?s.rules:[]).map(marRule).filter(Boolean).slice(0,20),
+    capacity_guard:{enabled:s.capacity_guard?.enabled===true, max_uncalled:Math.max(1, Math.min(1000, Math.round(Number(s.capacity_guard?.max_uncalled)||20))),
+      pct:Math.max(5, Math.min(50, Math.round(Number(s.capacity_guard?.pct)||20)))},
+    max_change_pct:Math.max(5, Math.min(50, Math.round(Number(s.max_change_pct)||30))),
+    min_daily_budget:num(s.min_daily_budget, 1e9),
   };
+}
+// The funnel part of the settings, for worker.js capiFunnelFromStages (no settings row → defaults).
+export async function marCapiFunnelSettings(env, cid){
+  try{
+    if(!await marEnsureSchema(env)) return {funnel_map:{}, send_junk:true};
+    const cfg=marSettings((await getState(env, cid))?.config_json);
+    return {funnel_map:cfg.funnel_map, send_junk:cfg.send_junk};
+  }catch(e){ return {funnel_map:{}, send_junk:true}; }
+}
+// What a public LeadVyne page (store, order, booking) needs to load the Pixel. Pixel ids are public.
+export async function marPublicPixel(env, c){
+  const id=String(c?.meta_pixel_id||'').trim();
+  if(!/^\d{5,25}$/.test(id)) return {meta_pixel_id:''};
+  let consent=false;
+  try{ if(await marEnsureSchema(env)) consent=marSettings((await getState(env, c.Id))?.config_json).pixel_consent_banner; }catch(e){}
+  return {meta_pixel_id:id, pixel_consent_banner:consent};
 }
 // Does a lead's Tags ("Hot, Order placed") carry one of the purchase labels? Case-insensitive, whole label.
 export function marHasPurchaseLabel(tags, labels){
@@ -183,7 +233,7 @@ export function marMoney(n, ccy){
 // Yesterday (or any `day`) for one account, from the synced ad rows and the CRM's recent leads.
 // ads: meta_ads_daily rows for `day`; leads: recent leads (arrived since day-7, plus any closed on
 // `day`); index: marAdIndex over every synced ad. Pure — the cron and the "send test" button share it.
-export function marDaySummary({day, ads, leads, index, tzMin=0, currency='', cfg=MAR_DEFAULTS, syncError=''}){
+export function marDaySummary({day, ads, leads, index, tzMin=0, currency='', cfg=MAR_DEFAULTS, syncError='', capi=null}){
   const camp=new Map();
   const C=id=>{ if(!camp.has(id)){ const a=index.byCampaign.get(id); camp.set(id, {id, name:id?(a?.campaign_name||'Campaign '+id):'Not matched to a campaign', spend:0, metaLeads:0, leads:0, junk7:0, leads7:0}); } return camp.get(id); };
   let spend=0, metaLeads=0;
@@ -212,6 +262,8 @@ export function marDaySummary({day, ads, leads, index, tzMin=0, currency='', cfg
       else if(cfg.alert_cpl_max && c.leads>0 && c.spend/c.leads>cfg.alert_cpl_max)
         alerts.push({kind:'cpl', campaign:c.name, text:`"${c.name}" cost ${marMoney(c.spend/c.leads, currency)} per lead (limit ${marMoney(cfg.alert_cpl_max, currency)})`});
     }
+    if(capi?.failed) alerts.push({kind:'capi', text:`Meta refused ${capi.failed} Conversions API event${capi.failed===1?'':'s'} (${String(capi.error||'').slice(0,100)}) — see Ads ROI → Tracking health`});
+    else if(capi && !capi.sent3d && adLeads>0) alerts.push({kind:'capi', text:'No events have reached Meta for 3 days although ads bring leads — check the Pixel/Dataset and token in Integrations → Meta Ads'});
     if(cfg.alert_junk_pct) for(const c of camp.values()){
       if(c.id && c.leads7>=5 && c.junk7/c.leads7*100>=cfg.alert_junk_pct)
         alerts.push({kind:'junk', campaign:c.name, text:`"${c.name}": ${Math.round(c.junk7/c.leads7*100)}% of last 7 days' leads were junk (${c.junk7}/${c.leads7})`});
@@ -258,7 +310,16 @@ export async function marEnsureSchema(env){
       env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_ads (client_id INTEGER NOT NULL, ad_id TEXT NOT NULL, ad_name TEXT, adset_id TEXT, adset_name TEXT, campaign_id TEXT, campaign_name TEXT, status TEXT, adset_status TEXT, campaign_status TEXT, headline TEXT, body TEXT, updated_at TEXT, PRIMARY KEY (client_id, ad_id))`),
       env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, at TEXT NOT NULL, day TEXT NOT NULL, ad_id TEXT, ad_name TEXT, campaign_name TEXT, kind TEXT NOT NULL, detail TEXT)`),
       env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meta_ads_changes_client ON meta_ads_changes(client_id, day)`),
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_capi_errors (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, event TEXT NOT NULL, lead_id INTEGER, code TEXT, error TEXT, at TEXT NOT NULL)`),
+      env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meta_capi_errors_client ON meta_capi_errors(client_id, at)`),
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_audiences (client_id INTEGER NOT NULL, key TEXT NOT NULL, audience_id TEXT, lookalike_id TEXT, size INTEGER NOT NULL DEFAULT 0, last_run_at TEXT, last_error TEXT, PRIMARY KEY (client_id, key))`),
+      env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_ads_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, at TEXT NOT NULL, actor TEXT, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, action TEXT NOT NULL, before_json TEXT, after_json TEXT, reason TEXT, status TEXT NOT NULL, error TEXT, undone_at TEXT)`),
+      env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meta_ads_actions_client ON meta_ads_actions(client_id, at)`),
     ]);
+    // Budgets arrived after meta_ads_ads (migrations/0122) — add them to an older table.
+    for(const col of ['adset_budget REAL','campaign_budget REAL']){
+      try{ await env.DB.prepare(`ALTER TABLE meta_ads_ads ADD COLUMN ${col}`).run(); }catch(e){}
+    }
     _schemaOk=true;
   }catch(e){ console.error('[ads-report] schema', e.message); }
   return _schemaOk;
@@ -380,10 +441,12 @@ export function marAdRow(a){
     adset_id:String(a.adset?.id||a.adset_id||''), adset_name:String(a.adset?.name||'').slice(0,300),
     campaign_id:String(a.campaign?.id||a.campaign_id||''), campaign_name:String(a.campaign?.name||'').slice(0,300),
     status:String(a.effective_status||'').toUpperCase(), adset_status:String(a.adset?.effective_status||'').toUpperCase(), campaign_status:String(a.campaign?.effective_status||'').toUpperCase(),
-    headline:String(cr.title||'').slice(0,300), body:String(cr.body||'').slice(0,1000)};
+    headline:String(cr.title||'').slice(0,300), body:String(cr.body||'').slice(0,1000),
+    // Daily budgets come in the account's minor unit (paise/cents); 0 = none at that level.
+    adset_budget:Math.round(Number(a.adset?.daily_budget)||0)/100, campaign_budget:Math.round(Number(a.campaign?.daily_budget)||0)/100};
 }
 async function marSyncAds(env, c, token, cid, today){
-  const qs=new URLSearchParams({limit:'200', fields:'id,name,effective_status,adset{id,name,effective_status},campaign{id,name,effective_status},creative{title,body}'});
+  const qs=new URLSearchParams({limit:'200', fields:'id,name,effective_status,adset{id,name,effective_status,daily_budget},campaign{id,name,effective_status,daily_budget},creative{title,body}'});
   let url=`${GRAPH}/${acctPath(c)}/ads?${qs}&access_token=${token}`;
   const ads=[];
   for(let page=0; url && page<25; page++){
@@ -403,10 +466,11 @@ async function marSyncAds(env, c, token, cid, today){
   }
   const stmts=[];
   for(let i=0; i<ads.length; i+=150){
-    stmts.push(env.DB.prepare(`INSERT OR REPLACE INTO meta_ads_ads (client_id, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, status, adset_status, campaign_status, headline, body, updated_at)
+    stmts.push(env.DB.prepare(`INSERT OR REPLACE INTO meta_ads_ads (client_id, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, status, adset_status, campaign_status, headline, body, adset_budget, campaign_budget, updated_at)
       SELECT ?, json_extract(j.value,'$.ad_id'), json_extract(j.value,'$.ad_name'), json_extract(j.value,'$.adset_id'), json_extract(j.value,'$.adset_name'),
         json_extract(j.value,'$.campaign_id'), json_extract(j.value,'$.campaign_name'), json_extract(j.value,'$.status'), json_extract(j.value,'$.adset_status'),
-        json_extract(j.value,'$.campaign_status'), json_extract(j.value,'$.headline'), json_extract(j.value,'$.body'), ? FROM json_each(?) j`).bind(cid, now, JSON.stringify(ads.slice(i, i+150))));
+        json_extract(j.value,'$.campaign_status'), json_extract(j.value,'$.headline'), json_extract(j.value,'$.body'), json_extract(j.value,'$.adset_budget'),
+        json_extract(j.value,'$.campaign_budget'), ? FROM json_each(?) j`).bind(cid, now, JSON.stringify(ads.slice(i, i+150))));
   }
   for(const ch of changes) stmts.push(env.DB.prepare(`INSERT INTO meta_ads_changes (client_id, at, day, ad_id, ad_name, campaign_name, kind, detail) VALUES (?,?,?,?,?,?,?,?)`)
     .bind(cid, now, today, ch.ad.ad_id, ch.ad.ad_name, ch.ad.campaign_name, ch.kind, ch.detail));
@@ -445,14 +509,15 @@ export async function marReportData(env, cid, from, to){
   const {results:hours}=await env.DB.prepare(`SELECT day, hour, ad_id, spend, meta_leads, meta_chats FROM meta_ads_hourly WHERE client_id=? AND day>=? AND day<=?`)
     .bind(Number(cid), from, to).all();
   const hourlyFrom=(await env.DB.prepare(`SELECT MIN(day) d FROM meta_ads_hourly WHERE client_id=?`).bind(Number(cid)).first())?.d||'';
-  const {results:meta}=await env.DB.prepare(`SELECT ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, status, adset_status, campaign_status, headline, body FROM meta_ads_ads WHERE client_id=?`).bind(Number(cid)).all();
+  const {results:meta}=await env.DB.prepare(`SELECT ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name, status, adset_status, campaign_status, headline, body, adset_budget, campaign_budget FROM meta_ads_ads WHERE client_id=?`).bind(Number(cid)).all();
   const {results:changes}=await env.DB.prepare(`SELECT at, day, ad_id, ad_name, campaign_name, kind, detail FROM meta_ads_changes WHERE client_id=? AND day>=? AND day<=? ORDER BY at DESC LIMIT 200`)
     .bind(Number(cid), from, to).all();
   const metaById=new Map((meta||[]).map(m=>[String(m.ad_id), m]));
   return {
     ads:(ads||[]).map(a=>{ const m=metaById.get(String(a.ad_id))||{};
       return {...a, spend:r2(a.spend), impressions:Number(a.impressions)||0, clicks:Number(a.clicks)||0, meta_leads:Number(a.meta_leads)||0, meta_chats:Number(a.meta_chats)||0,
-        status:m.status||'', adset_status:m.adset_status||'', campaign_status:m.campaign_status||'', headline:m.headline||'', body:m.body||''}; }),
+        status:m.status||'', adset_status:m.adset_status||'', campaign_status:m.campaign_status||'', headline:m.headline||'', body:m.body||'',
+        adset_budget:Number(m.adset_budget)||0, campaign_budget:Number(m.campaign_budget)||0}; }),
     days:(days||[]).map(d=>({day:d.day, spend:r2(d.spend), meta_leads:Number(d.meta_leads)||0, meta_chats:Number(d.meta_chats)||0})),
     ad_days:(adDays||[]).map(d=>({day:d.day, ad_id:String(d.ad_id), spend:r2(d.spend), meta_leads:Number(d.meta_leads)||0, meta_chats:Number(d.meta_chats)||0})),
     hours:(hours||[]).map(h=>({day:h.day, hour:Number(h.hour), ad_id:String(h.ad_id), spend:r2(h.spend), meta_leads:Number(h.meta_leads)||0, meta_chats:Number(h.meta_chats)||0})),
@@ -493,13 +558,37 @@ export async function marRecentLeads(env, deps, cid, sinceMs){
   return out;
 }
 
+// Every lead of the account (up to 10,000) — a missing optional column must not empty the list,
+// so a refused field list is retried without one.
+export async function marAllLeads(env, deps, cid, fieldList){
+  const where=encodeURIComponent(`(ClientId,eq,${cid})`);
+  let fields=fieldList?`&fields=${fieldList}`:'';
+  const out=[];
+  for(let page=0; page<50; page++){
+    let r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?where=${where}&sort=-Id&limit=200&offset=${page*200}${fields}`);
+    if(!r.ok && fields){ fields=''; r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?where=${where}&sort=-Id&limit=200&offset=${page*200}`); }
+    if(!r.ok) throw new Error('Could not read the leads ('+r.status+')');
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    out.push(...list);
+    if(list.length<200) break;
+  }
+  return out;
+}
 async function buildSummary(env, deps, c, st, day){
   const cid=Number(c.Id), tzMin=Number(st?.tz_offset_min)||0;
   const {results:ads}=await env.DB.prepare(`SELECT * FROM meta_ads_daily WHERE client_id=? AND day=?`).bind(cid, day).all();
   const {results:all}=await env.DB.prepare(`SELECT ad_id, MAX(ad_name) ad_name, MAX(adset_id) adset_id, MAX(adset_name) adset_name, MAX(campaign_id) campaign_id, MAX(campaign_name) campaign_name FROM meta_ads_daily WHERE client_id=? GROUP BY ad_id`).bind(cid).all();
   const sinceMs=Date.parse(marAddDays(day, -8)+'T00:00:00Z');
   const leads=await marRecentLeads(env, deps, cid, sinceMs);
-  return marDaySummary({day, ads:ads||[], leads, index:marAdIndex(all||[]), tzMin, currency:st?.currency||'', cfg:marSettings(st?.config_json), syncError:st?.last_error||''});
+  // Conversions API on that day: refusals, and whether anything reached Meta in the last 3 days.
+  let capi=null;
+  if(c.meta_pixel_id && c.meta_capi_token){
+    const dayStart=day+'T00:00:00Z', dayEnd=marAddDays(day, 1)+'T00:00:00Z';
+    const f=await env.DB.prepare(`SELECT COUNT(*) n, MAX(error) e FROM meta_capi_errors WHERE client_id=? AND at>=? AND at<?`).bind(cid, dayStart, dayEnd).first().catch(()=>null);
+    const s3=await env.DB.prepare(`SELECT COUNT(*) n FROM meta_capi_events WHERE client_id=? AND sent_at>=?`).bind(cid, marAddDays(day, -2)+'T00:00:00Z').first().catch(()=>null);
+    capi={failed:Number(f?.n)||0, error:f?.e||'', sent3d:Number(s3?.n)||0};
+  }
+  return marDaySummary({day, ads:ads||[], leads, index:marAdIndex(all||[]), tzMin, currency:st?.currency||'', cfg:marSettings(st?.config_json), syncError:st?.last_error||'', capi});
 }
 
 /* ── Daily summary + alerts delivery ── */
@@ -617,10 +706,209 @@ export async function marRunDue(env, deps, now=new Date()){
       await marPostExpenses(env, deps, c, st).catch(e=>deps.reportOpsError?.(env, 'ads report: accounting post', e, {clientId:cid}));
       const already=await env.DB.prepare(`SELECT 1 x FROM meta_ads_report_sends WHERE client_id=? AND day=? AND kind IN ('summary','alerts') AND status='sent' LIMIT 1`).bind(cid, day).first();
       if(!already) await marSendSummary(env, deps, c, st, day);
+      // CRM audiences in the ad account, refreshed once a day when switched on.
+      const cfg=marSettings(st?.config_json);
+      if(cfg.audiences_enabled && marConnected(c)) await marRefreshAudiences(env, deps, c, cfg).catch(e=>deps.reportOpsError?.(env, 'ads report: audiences', e, {clientId:cid}));
       ran++;
     }catch(e){ deps.reportOpsError?.(env, 'ads report: daily run', e, {clientId:cid}); }
   }
   return {ran};
+}
+
+/* ── Meta writes: audiences and approved budget / pause changes (need ads_management) ── */
+async function sha256Hex(str){
+  const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+// Same normalisation as the Conversions API (worker.js capiHashEmail / capiHashPhone).
+export async function marHashContact(lead){
+  const em=String(lead?.Email||'').trim().toLowerCase(), ph=String(lead?.Phone||'').replace(/[^0-9]/g,'');
+  return {em:em.includes('@')?await sha256Hex(em):'', ph:ph.length>=7?await sha256Hex(ph):''};
+}
+async function graphWrite(c, path, body, {form=false}={}){
+  const url=`${GRAPH}/${path}${path.includes('?')?'&':'?'}access_token=${encodeURIComponent(c.meta_capi_token)}`;
+  const r=await fetch(url, form
+    ? {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams(body), signal:AbortSignal.timeout?.(30000)}
+    : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal:AbortSignal.timeout?.(30000)});
+  const data=await r.json().catch(()=>({}));
+  return {ok:r.ok && data?.success!==false, status:r.status, data};
+}
+function writeErr(res, what){
+  const m=res.data?.error?.error_user_msg||res.data?.error?.message||'HTTP '+res.status;
+  return new Error(/permission|ads_management|\(#(200|10|294)\)/i.test(m)?`${what}: ${m} — the token needs ads_management on this ad account.`
+    :/terms|tos/i.test(m)?`${what}: ${m} — accept Meta's Custom Audience terms once in Ads Manager → Audiences.`:`${what}: ${m}`);
+}
+
+// CRM audiences, refreshed daily (marRefreshAudiences): who's in each, from the account's leads.
+export const MAR_AUDIENCES=[
+  {key:'buyers', name:'LeadVyne — Buyers (last 180 days)', lookalike:true, desc:'Won leads or leads with the purchase label, last 180 days — lookalike source.'},
+  {key:'high_value', name:'LeadVyne — Buyers by value', value:true, lookalike:true, desc:'Every buyer with a deal value — value-based lookalike source (finds people like your biggest spenders).'},
+  {key:'hot_not_bought', name:'LeadVyne — Hot, not bought (90 days)', desc:'Hot leads that haven\'t bought, last 90 days — retarget with an offer.'},
+  {key:'exclude', name:'LeadVyne — Exclude: customers, junk, opted out', desc:'Exclude from prospecting so you stop paying to reach people who already bought or said no.'},
+];
+export function marAudienceMembers(leads, labels, nowMs=Date.now()){
+  const out={buyers:[], high_value:[], hot_not_bought:[], exclude:[]};
+  for(const l of leads||[]){
+    if(!String(l.Phone||'').replace(/\D/g,'') && !String(l.Email||'').includes('@')) continue;
+    const won=marIsWon(l)||marHasPurchaseLabel(l.Tags, labels);
+    const junk=marIsJunk(l), optedOut=String(l.OptOut||'')==='Yes';
+    const arrived=marLeadArrivedMs(l), closedTs=parseTs(l.ClosedAt), closed=Number.isFinite(closedTs)?closedTs:arrived;
+    const value=Number(String(l.DealValue??'').replace(/[^0-9.]/g,''))||0;
+    if(won && Number.isFinite(closed) && closed>=nowMs-180*D) out.buyers.push(l);
+    if(won && value>0) out.high_value.push({...l, _value:value});
+    if(!won && !junk && !optedOut && l.Score==='Hot' && Number.isFinite(arrived) && arrived>=nowMs-90*D) out.hot_not_bought.push(l);
+    if(won || junk || optedOut) out.exclude.push(l);
+  }
+  return out;
+}
+// Replaces the audience's members in one session (Meta's usersreplace) — a daily refresh drops
+// people who no longer qualify, which /users (add-only) can't.
+async function marReplaceAudience(c, audienceId, rows, schema){
+  const session_id=Math.floor(Math.random()*9e15)+1;
+  const batches=Math.max(1, Math.ceil(rows.length/10000));
+  for(let i=0;i<batches;i++){
+    const res=await graphWrite(c, `${audienceId}/usersreplace`, {
+      payload:JSON.stringify({schema, data:rows.slice(i*10000, (i+1)*10000)}),
+      session:JSON.stringify({session_id, batch_seq:i+1, last_batch_flag:i===batches-1, estimated_num_total:rows.length}),
+    }, {form:true});
+    if(!res.ok) throw writeErr(res, 'Meta refused the audience upload');
+  }
+}
+export async function marRefreshAudiences(env, deps, c, cfg){
+  const cid=Number(c.Id);
+  const leads=await marAllLeads(env, deps, cid, 'Id,Email,Phone,Stage,Score,Tags,DealValue,HandoverOutcome,OptOut,ClosedAt,CreatedAt,Date');
+  const members=marAudienceMembers(leads, cfg.purchase_labels);
+  const {results}=await env.DB.prepare(`SELECT * FROM meta_ads_audiences WHERE client_id=?`).bind(cid).all();
+  const have=new Map((results||[]).map(r=>[r.key, r]));
+  const out=[];
+  for(const def of MAR_AUDIENCES){
+    const row=have.get(def.key)||{};
+    const now=new Date().toISOString();
+    try{
+      const rows=[];
+      for(const l of members[def.key]){
+        const h=await marHashContact(l);
+        if(!h.em && !h.ph) continue;
+        rows.push(def.value?[h.em, h.ph, Math.round(l._value*100)/100]:[h.em, h.ph]);
+      }
+      let audienceId=row.audience_id||'';
+      if(!audienceId){
+        const res=await graphWrite(c, `${acctPath(c)}/customaudiences`, {name:def.name, description:def.desc+' Auto-managed by LeadVyne — do not edit.', subtype:'CUSTOM',
+          customer_file_source:'USER_PROVIDED_ONLY', ...(def.value?{is_value_based:true}:{})});
+        if(!res.ok || !res.data?.id) throw writeErr(res, 'Meta refused to create the audience');
+        audienceId=String(res.data.id);
+      }
+      if(rows.length) await marReplaceAudience(c, audienceId, rows, def.value?['EMAIL','PHONE','LOOKALIKE_VALUE']:['EMAIL','PHONE']);
+      // A lookalike needs at least 100 people in its source — created once; Meta keeps it current.
+      let lookalikeId=row.lookalike_id||'', note='';
+      if(def.lookalike && !lookalikeId){
+        if(rows.length>=100){
+          const res=await graphWrite(c, `${acctPath(c)}/customaudiences`, {name:`${def.name} — Lookalike ${cfg.audience_ratio}% ${cfg.audience_country}`, subtype:'LOOKALIKE',
+            origin_audience_id:audienceId, lookalike_spec:JSON.stringify({ratio:cfg.audience_ratio/100, country:cfg.audience_country})});
+          if(res.ok && res.data?.id) lookalikeId=String(res.data.id); else note='Lookalike: '+(res.data?.error?.message||'refused');
+        }else note=`Lookalike waits for 100 people (has ${rows.length})`;
+      }
+      await env.DB.prepare(`INSERT OR REPLACE INTO meta_ads_audiences (client_id, key, audience_id, lookalike_id, size, last_run_at, last_error) VALUES (?,?,?,?,?,?,?)`)
+        .bind(cid, def.key, audienceId, lookalikeId||null, rows.length, now, note||null).run();
+      out.push({key:def.key, ok:true, audience_id:audienceId, lookalike_id:lookalikeId, size:rows.length, note});
+    }catch(e){
+      await env.DB.prepare(`INSERT OR REPLACE INTO meta_ads_audiences (client_id, key, audience_id, lookalike_id, size, last_run_at, last_error) VALUES (?,?,?,?,?,?,?)`)
+        .bind(cid, def.key, row.audience_id||null, row.lookalike_id||null, Number(row.size)||0, now, String(e.message).slice(0,300)).run();
+      out.push({key:def.key, ok:false, error:e.message});
+      if(/ads_management|terms/i.test(e.message)) break; // the same refusal would repeat for every audience
+    }
+  }
+  return out;
+}
+
+// An approved rule proposal: pause, or move a daily budget by pct (capped at max_change_pct, never
+// below min_daily_budget). What it was before is kept, so Undo puts it back.
+export async function marApplyAction(env, c, actor, body, cfg){
+  const cid=Number(c.Id);
+  const type=body.target_type==='campaign'?'campaign':body.target_type==='adset'?'adset':'';
+  const id=String(body.target_id||'');
+  const action=String(body.action||'');
+  if(!type || !/^\d{5,25}$/.test(id) || !['pause','budget_down','budget_up'].includes(action)) throw Object.assign(new Error('Unknown change'), {status:400});
+  const pct=Math.max(1, Math.min(cfg.max_change_pct, Number(body.pct)||0));
+  const cur=await graphGet(`${GRAPH}/${id}?fields=name,status,effective_status,daily_budget&access_token=${encodeURIComponent(c.meta_capi_token)}`);
+  if(!cur.ok) throw graphErr(cur, 'Meta could not find that '+(type==='adset'?'ad set':'campaign'));
+  const before={status:cur.data.status||'', daily_budget:Number(cur.data.daily_budget)||0};
+  let after, update;
+  if(action==='pause'){
+    if(before.status==='PAUSED') throw Object.assign(new Error('It is already paused.'), {status:409});
+    update={status:'PAUSED'}; after={...before, status:'PAUSED'};
+  }else{
+    if(!before.daily_budget) throw Object.assign(new Error(type==='adset'?'This ad set has no daily budget of its own — its campaign holds the budget (Advantage campaign budget).':'This campaign has no daily budget — the budget is on its ad sets.'), {status:409});
+    const floor=Math.round(cfg.min_daily_budget*100);
+    let next=Math.round(before.daily_budget*(action==='budget_up'?1+pct/100:1-pct/100));
+    if(action==='budget_down' && floor && next<floor) next=floor;
+    if(next===before.daily_budget) throw Object.assign(new Error('The budget is already at the floor you set.'), {status:409});
+    update={daily_budget:next}; after={...before, daily_budget:next};
+  }
+  const res=await graphWrite(c, id, update);
+  const now=new Date().toISOString();
+  const ins=await env.DB.prepare(`INSERT INTO meta_ads_actions (client_id, at, actor, target_type, target_id, target_name, action, before_json, after_json, reason, status, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(cid, now, actor||null, type, id, String(cur.data.name||'').slice(0,300), action, JSON.stringify(before), JSON.stringify(after), String(body.reason||'').slice(0,500),
+      res.ok?'ok':'error', res.ok?null:String(res.data?.error?.message||'HTTP '+res.status).slice(0,300)).run();
+  if(!res.ok) throw writeErr(res, 'Meta refused the change');
+  return {id:ins.meta?.last_row_id, name:cur.data.name||'', before, after};
+}
+export async function marUndoAction(env, c, actor, actionId){
+  const cid=Number(c.Id);
+  const row=await env.DB.prepare(`SELECT * FROM meta_ads_actions WHERE id=? AND client_id=?`).bind(Number(actionId), cid).first();
+  if(!row || row.status!=='ok' || row.undone_at || row.action==='undo') throw Object.assign(new Error('Nothing to undo.'), {status:404});
+  let before={}; try{ before=JSON.parse(row.before_json||'{}'); }catch(e){}
+  const update=row.action==='pause'?{status:before.status||'ACTIVE'}:{daily_budget:before.daily_budget};
+  const res=await graphWrite(c, row.target_id, update);
+  if(!res.ok) throw writeErr(res, 'Meta refused the undo');
+  const now=new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE meta_ads_actions SET undone_at=?, status='undone' WHERE id=?`).bind(now, row.id),
+    env.DB.prepare(`INSERT INTO meta_ads_actions (client_id, at, actor, target_type, target_id, target_name, action, before_json, after_json, reason, status) VALUES (?,?,?,?,?,?,'undo',?,?,?,'ok')`)
+      .bind(cid, now, actor||null, row.target_type, row.target_id, row.target_name, row.after_json, JSON.stringify(update), `Undo of #${row.id}`),
+  ]);
+  return {ok:true, restored:update};
+}
+
+/* ── Tracking health: what reached Meta, what it refused, how strongly events match ── */
+const STRONG_KEYS=new Set(['lead_id','ctwa_clid','fbc']);
+export async function marHealth(env, c, days=7){
+  const cid=Number(c.Id);
+  const since=new Date(Date.now()-days*D).toISOString();
+  const {results:sent}=await env.DB.prepare(`SELECT substr(sent_at,1,10) day, event, COALESCE(match_key,'') mk, COUNT(*) n, MAX(sent_at) last FROM meta_capi_events WHERE client_id=? AND sent_at>=? GROUP BY day, event, mk`).bind(cid, since).all()
+    .catch(()=>({results:[]}));
+  const {results:failed}=await env.DB.prepare(`SELECT substr(at,1,10) day, event, code, error, COUNT(*) n, MAX(at) last FROM meta_capi_errors WHERE client_id=? AND at>=? GROUP BY day, event, code, error`).bind(cid, since).all()
+    .catch(()=>({results:[]}));
+  const byDay={}, byEvent={}, match={lead_id:0, ctwa_clid:0, fbc:0, hashed:0, '':0}, errs={};
+  let lastSent='', total=0, totalFailed=0;
+  for(const r of sent||[]){
+    const n=Number(r.n)||0; total+=n;
+    (byDay[r.day]=byDay[r.day]||{day:r.day, sent:0, failed:0}).sent+=n;
+    const e=(byEvent[r.event]=byEvent[r.event]||{event:r.event, sent:0, failed:0, strong:0});
+    e.sent+=n; if(STRONG_KEYS.has(r.mk)) e.strong+=n;
+    match[r.mk in match?r.mk:'']+=n;
+    if(r.last>lastSent) lastSent=r.last;
+  }
+  for(const r of failed||[]){
+    const n=Number(r.n)||0; totalFailed+=n;
+    (byDay[r.day]=byDay[r.day]||{day:r.day, sent:0, failed:0}).failed+=n;
+    (byEvent[r.event]=byEvent[r.event]||{event:r.event, sent:0, failed:0, strong:0}).failed+=n;
+    const k=String(r.error||r.code||'Unknown');
+    const x=(errs[k]=errs[k]||{error:k, code:r.code||'', n:0, last:''}); x.n+=n; if(r.last>x.last) x.last=r.last;
+  }
+  // What Meta itself says it received (best-effort — needs the token to see the dataset).
+  let meta=null;
+  if(c.meta_pixel_id && c.meta_capi_token){
+    const t=encodeURIComponent(c.meta_capi_token);
+    const info=await graphGet(`${GRAPH}/${c.meta_pixel_id}?fields=name,last_fired_time&access_token=${t}`).catch(()=>null);
+    const stats=await graphGet(`${GRAPH}/${c.meta_pixel_id}/stats?aggregation=event&start_time=${Math.floor((Date.now()-days*D)/1000)}&access_token=${t}`).catch(()=>null);
+    const received={};
+    for(const b of stats?.ok?(stats.data?.data||[]):[]) for(const x of b.data||[]) received[x.value]=(received[x.value]||0)+(Number(x.count)||0);
+    meta={ok:!!info?.ok, name:info?.data?.name||'', last_fired_time:info?.data?.last_fired_time||'', received, error:info?.ok?'':(info?.data?.error?.message||'')};
+  }
+  return {days, pixel_connected:!!(c.meta_pixel_id&&c.meta_capi_token), sent:total, failed:totalFailed, last_sent_at:lastSent,
+    by_day:Object.values(byDay).sort((a,b)=>a.day.localeCompare(b.day)), by_event:Object.values(byEvent).sort((a,b)=>b.sent-a.sent),
+    match, errors:Object.values(errs).sort((a,b)=>b.n-a.n).slice(0,8), meta};
 }
 
 /* ── Routes: /meta/ads-report/* ── */
@@ -649,6 +937,26 @@ export async function marHandleRoute(request, env, deps, url){
     if(from>to) [from, to]=[to, from];
     return json({...stateOut(st), from, to, ...await marReportData(env, cid, from, to)});
   }
+  if(path==='/health' && method==='GET'){
+    const days=Math.min(90, Math.max(1, parseInt(url.searchParams.get('days'))||7));
+    return json(await marHealth(env, c, days));
+  }
+  if(path==='/audiences/refresh' && method==='POST'){
+    if(!owner) return json({error:'Only the account owner can refresh audiences.'}, 403);
+    if(!marConnected(c)) return json({error:'Add your Ad Account ID and token in Settings → Integrations → Meta Ads first.'}, 400);
+    const st=await ensureState(env, cid);
+    return json({ok:true, results:await marRefreshAudiences(env, deps, c, marSettings(st?.config_json))});
+  }
+  if((path==='/actions/apply'||path==='/actions/undo') && method==='POST'){
+    if(!owner) return json({error:'Only the account owner can change ads.'}, 403);
+    if(!marConnected(c)) return json({error:'Add your Ad Account ID and token in Settings → Integrations → Meta Ads first.'}, 400);
+    const body=await request.json().catch(()=>({}));
+    try{
+      if(path==='/actions/undo') return json(await marUndoAction(env, c, payload.email, body.id));
+      const st=await ensureState(env, cid);
+      return json({ok:true, ...await marApplyAction(env, c, payload.email, body, marSettings(st?.config_json))});
+    }catch(e){ return json({error:e.message}, e.status||502); }
+  }
   if(path==='/first-messages' && method==='GET'){
     const from=url.searchParams.get('from')||'', to=url.searchParams.get('to')||'';
     if(!DAY_RE.test(from)||!DAY_RE.test(to)) return json({error:'from and to (YYYY-MM-DD) required'}, 400);
@@ -669,7 +977,10 @@ export async function marHandleRoute(request, env, deps, url){
     const {results:sends}=await env.DB.prepare(`SELECT kind, day, recipient, status, detail, created_at FROM meta_ads_report_sends WHERE client_id=? ORDER BY id DESC LIMIT 15`).bind(cid).all();
     const {results:posts}=await env.DB.prepare(`SELECT month, expense_id, amount, currency, status, updated_at FROM meta_ads_expense_posts WHERE client_id=? ORDER BY month DESC LIMIT 12`).bind(cid).all();
     const phones=deps.parseTeamWhatsapp(c);
-    return json({config:marSettings(st?.config_json), defaults:MAR_DEFAULTS, can_edit:owner, accounting_enabled:!!deps.isAccountingEnabled(c),
+    const {results:aud}=await env.DB.prepare(`SELECT key, audience_id, lookalike_id, size, last_run_at, last_error FROM meta_ads_audiences WHERE client_id=?`).bind(cid).all();
+    const {results:acts}=await env.DB.prepare(`SELECT id, at, actor, target_type, target_id, target_name, action, before_json, after_json, reason, status, error, undone_at FROM meta_ads_actions WHERE client_id=? ORDER BY id DESC LIMIT 25`).bind(cid).all();
+    return json({audiences:MAR_AUDIENCES.map(d=>({...d, ...((aud||[]).find(a=>a.key===d.key)||{})})), actions:acts||[],
+      config:marSettings(st?.config_json), defaults:MAR_DEFAULTS, can_edit:owner, accounting_enabled:!!deps.isAccountingEnabled(c),
       whatsapp_users:Object.keys(phones), whatsapp_connected:!!deps.metaCreds(c)?.wa_token, sends:sends||[], expense_posts:posts||[], ...stateOut(st)});
   }
   if(path==='/settings' && method==='POST'){

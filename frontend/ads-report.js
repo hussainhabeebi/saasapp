@@ -148,9 +148,18 @@ async function adsFetch(range, force){
   if(!force && _adsCache.key===key && Date.now()-_adsCache.at<60000) return _adsCache;
   const get=p=>fetch(`${CONFIG.WORKER_BASE}/meta/ads-report/${p}`, {headers:ncAuthHeaders()}).then(r=>r.json()).catch(()=>null);
   const prev=adsPrevRange(range);
-  const [data, prevData, capi, settings, fm]=await Promise.all([get(`data?from=${range.from}&to=${range.to}`), get(`data?from=${prev.from}&to=${prev.to}`),
-    get('capi?days=30'), get('settings'), get(`first-messages?from=${range.from}&to=${range.to}`)]);
-  _adsCache={key, at:Date.now(), data, prev:prevData, capi, settings, firstMsgs:fm?.messages||{}};
+  const [data, prevData, capi, settings, fm, health]=await Promise.all([get(`data?from=${range.from}&to=${range.to}`), get(`data?from=${prev.from}&to=${prev.to}`),
+    get('capi?days=30'), get('settings'), get(`first-messages?from=${range.from}&to=${range.to}`), get('health?days=7')]);
+  // Each rule looks at its own last N days, whatever period the report shows.
+  const windows={};
+  const today=adsLocalDay(Date.now());
+  const days=[...new Set((settings?.config?.rules||[]).filter(r=>r.enabled).map(r=>r.days))];
+  if(settings?.config?.capacity_guard?.enabled) days.push(7);
+  await Promise.all([...new Set(days)].map(async n=>{
+    const r={from:adsAddDays(today, -(n-1)), to:today};
+    windows[n]={range:r, data:await get(`data?from=${r.from}&to=${r.to}`)};
+  }));
+  _adsCache={key, at:Date.now(), data, prev:prevData, capi, settings, firstMsgs:fm?.messages||{}, health, windows};
   return _adsCache;
 }
 
@@ -465,6 +474,7 @@ async function renderReportsAds(force){
       <div class="s-note" style="margin-top:6px">Tap a CRM leads number to see the leads behind it and how each was matched.</div>
     </div>
 
+    ${adsActionsCard(cache, adLeads, money)}
     ${adsRunningCard(running, dayList, money, connected, data)}
     ${adsDaysCard(data, adLeads, dayList, money, connected)}
     ${adsLeaderboardCard(running, money, connected)}
@@ -505,7 +515,9 @@ async function renderReportsAds(force){
       <div class="s-note" style="margin-top:6px">Conversion leaves junk out. A campaign with poor sales but slow or no calls is a follow-up problem, not an ad problem.</div>
     </div>
 
+    ${adsHealthCard(cache.health, cache.settings)}
     ${adsCapiCard(cache.capi)}
+    ${adsAudiencesCard(cache.settings)}
     ${adsSettingsCard(cache.settings)}
     <div id="adsLeadsPop" style="display:none"></div>`;
   // Phones show each row as a card labelled from data-label (dashboard.html .leads-tbl rules).
@@ -624,6 +636,189 @@ function adsShowLeadsAd(adId){
 }
 function adsCloseLeads(){ const pop=$id('adsLeadsPop'); if(pop){ pop.style.display='none'; pop.innerHTML=''; } }
 
+/* ── Sales-based rules: proposals from the same lead matching as the report, applied only when
+   the owner approves (worker: /meta/ads-report/actions/apply, Undo via /actions/undo). ── */
+const ADS_RULE_METRICS={cost_per_sale:'Cost per sale', cost_per_qualified:'Cost per qualified lead', cost_per_lead:'Cost per lead', roas:'ROAS (×)', junk_pct:'Junk leads (%)', no_sales_spend:'Spend with no sale'};
+const ADS_RULE_ACTIONS={pause:'Pause', budget_down:'Cut budget', budget_up:'Raise budget'};
+const ADS_RULE_PRESETS=[
+  {metric:'cost_per_sale', op:'above', value:3000, days:7, min_spend:2000, level:'adset', action:'budget_down', pct:20},
+  {metric:'no_sales_spend', op:'above', value:3000, days:7, min_spend:0, level:'adset', action:'pause', pct:0},
+  {metric:'roas', op:'above', value:3, days:7, min_spend:1000, level:'adset', action:'budget_up', pct:15},
+  {metric:'junk_pct', op:'above', value:40, days:7, min_spend:500, level:'adset', action:'pause', pct:0},
+];
+// The rule's number for one row; Infinity when there's spend but nothing to divide by (no sales yet).
+function adsRuleMetric(metric, r){
+  const per=(n)=>n>0?r.spend/n:(r.spend>0?Infinity:null);
+  if(metric==='cost_per_sale') return per(r.won);
+  if(metric==='cost_per_qualified') return per(r.qualified);
+  if(metric==='cost_per_lead') return per(r.leads);
+  if(metric==='roas') return r.spend>0?r.revenue/r.spend:null;
+  if(metric==='junk_pct') return r.leads>=5?r.junk/r.leads*100:null;
+  if(metric==='no_sales_spend') return r.won<0.5?r.spend:null;
+  return null;
+}
+function adsRuleProposals(cache){
+  const cfg=cache.settings?.config||{};
+  const out=[], seen=new Set();
+  for(const rule of (cfg.rules||[]).filter(r=>r.enabled)){
+    const w=cache.windows?.[rule.days]; if(!w?.data?.ads) continue;
+    const {rows}=adsCompute(w.data, w.range, {}, rule.level, true);
+    const idx=adsIndex(w.data.ads);
+    for(const r of rows){
+      if(!r.key || r.key.startsWith('c:') || r.spend<rule.min_spend) continue;
+      const v=adsRuleMetric(rule.metric, r); if(v==null) continue;
+      if(!(rule.op==='above'?v>rule.value:v<rule.value)) continue;
+      const a=rule.level==='campaign'?idx.byCampaign.get(r.key):idx.byAdset.get(r.key);
+      const st=rule.level==='campaign'?a?.campaign_status:a?.adset_status;
+      if(st && st!=='ACTIVE') continue; // already paused / not running
+      let target={type:rule.level, id:r.key, name:r.name, budget:rule.level==='campaign'?a?.campaign_budget:a?.adset_budget};
+      // Advantage campaign budget: the money sits on the campaign, so a budget change goes there.
+      if(rule.action!=='pause' && rule.level==='adset' && !(a?.adset_budget>0) && a?.campaign_budget>0)
+        target={type:'campaign', id:String(a.campaign_id), name:(a.campaign_name||'Campaign')+' (campaign budget)', budget:a.campaign_budget};
+      const k=target.type+'|'+target.id; if(seen.has(k)) continue; seen.add(k);
+      out.push({rule, target, value:v, row:r});
+    }
+  }
+  return out;
+}
+// Staff-capacity guard: ad leads from the last 48 h still waiting for a first call. Past the limit,
+// propose slowing the click-to-WhatsApp ad sets that bring chats — stop buying leads nobody calls.
+function adsCapacityProposals(cache, adLeads){
+  const g=cache.settings?.config?.capacity_guard;
+  if(!g?.enabled) return {waiting:0, list:[]};
+  const since=Date.now()-48*3600e3;
+  // The last 7 days, whatever period the report shows.
+  const w7=cache.windows?.[7];
+  if(w7?.data?.ads) adLeads=adsCompute(w7.data, w7.range, cache.firstMsgs||{}, 'ad', true).adLeads;
+  const waiting=adLeads.filter(({l, ms})=>ms>=since && !adsIsJunk(l) && !isWonLead(l) && !isLostLead(l) && adsFirstCallMin(l, ms)==null).length;
+  if(waiting<g.max_uncalled) return {waiting, list:[]};
+  const w=cache.windows?.[7]; const ads=w?.data?.ads||cache.data?.ads||[];
+  const list=[], seen=new Set();
+  for(const a of ads){
+    if(!(a.meta_chats>0) || (a.adset_status && a.adset_status!=='ACTIVE')) continue;
+    const t=a.adset_budget>0?{type:'adset', id:String(a.adset_id), name:a.adset_name||'Ad set', budget:a.adset_budget}
+      :a.campaign_budget>0?{type:'campaign', id:String(a.campaign_id), name:(a.campaign_name||'Campaign')+' (campaign budget)', budget:a.campaign_budget}:null;
+    if(!t || seen.has(t.type+'|'+t.id)) continue; seen.add(t.type+'|'+t.id);
+    list.push({rule:{id:'capacity', action:'budget_down', pct:g.pct, metric:'capacity'}, target:t, value:waiting});
+  }
+  return {waiting, list};
+}
+let _adsProposals=[];
+function adsActionsCard(cache, adLeads, money){
+  const s=cache.settings; if(!s || !cache.data?.connected) return '';
+  const cfg=s.config||{};
+  const rules=adsRuleProposals(cache), cap=adsCapacityProposals(cache, adLeads);
+  _adsProposals=[...cap.list, ...rules];
+  const can=!!s.can_edit;
+  const fmtV=(m, v)=>v===Infinity?'no '+(m==='cost_per_sale'?'sale':m==='cost_per_qualified'?'qualified lead':'lead')+' yet':m==='roas'?v.toFixed(1)+'×':m==='junk_pct'?Math.round(v)+'%':money(v);
+  const why=p=>p.rule.id==='capacity'?`${p.value} ad leads from the last 48 h are still waiting for a first call (limit ${cfg.capacity_guard.max_uncalled})`
+    :`${ADS_RULE_METRICS[p.rule.metric]} ${fmtV(p.rule.metric, p.value)} ${p.rule.op} ${fmtV(p.rule.metric, p.rule.value)} over ${p.rule.days} days · spend ${money(p.row.spend)}`;
+  const what=p=>p.rule.action==='pause'?'Pause':`${p.rule.action==='budget_up'?'Raise':'Cut'} daily budget ${p.rule.pct}%${p.target.budget?` (${money(p.target.budget)} → ${money(p.target.budget*(1+(p.rule.action==='budget_up'?1:-1)*Math.min(p.rule.pct, cfg.max_change_pct||30)/100))})`:''}`;
+  const acts=(s.actions||[]).slice(0,10);
+  const actRow=a=>{ let b={}, f={}; try{ b=JSON.parse(a.before_json||'{}'); f=JSON.parse(a.after_json||'{}'); }catch(e){}
+    const change=a.action==='pause'?'Paused':a.action==='undo'?'Undo':`Budget ${money((b.daily_budget||0)/100)} → ${money((f.daily_budget||0)/100)}`;
+    return `<div class="s-note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${esc(String(a.at||'').slice(0,16).replace('T',' '))} · <b>${esc(a.target_name||a.target_id)}</b> · ${esc(change)} · ${esc(a.status)}${a.error?' — '+esc(a.error):''}
+      ${can&&a.status==='ok'&&a.action!=='undo'&&!a.undone_at?`<button class="btn btn-secondary btn-sm" onclick="adsUndoAction(${Number(a.id)})">↩ Undo</button>`:''}</div>`; };
+  return `<div class="card" style="margin-bottom:14px" id="adsActions">
+    <div class="s-head" style="margin-bottom:4px">🧭 Suggested actions</div>
+    <div class="s-note" style="margin-bottom:8px">From your sales-based rules${cfg.capacity_guard?.enabled?' and the staff-capacity guard':''} (settings below), using the same lead matching as this report. Nothing changes in Meta until ${can?'you approve it':'the account owner approves it'}; every change can be undone.</div>
+    ${cap.waiting>=((cfg.capacity_guard||{}).max_uncalled||Infinity)?`<div class="s-note" style="color:var(--red);margin-bottom:6px">⚠️ ${cap.waiting} ad leads are waiting for a first call — slowing ads until the team catches up.</div>`:''}
+    <div id="adsProposals">${_adsProposals.length?_adsProposals.map((p,i)=>`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--line)">
+        <div style="flex:1;min-width:220px"><b>${esc(what(p))}</b> — ${esc(p.target.name)} <span class="s-note">(${p.target.type==='adset'?'ad set':'campaign'})</span><div class="s-note">${esc(why(p))}</div></div>
+        ${can?`<button class="btn btn-primary btn-sm" data-i="${i}" onclick="adsApprove(${i})">Approve</button>`:''}</div>`).join('')
+      :`<div class="s-note">${(cfg.rules||[]).some(r=>r.enabled)||cfg.capacity_guard?.enabled?'No rule is triggered right now.':'No rules yet — add one in the settings below (e.g. "cut budget 20% when cost per sale is above ₹3,000").'}</div>`}</div>
+    ${acts.length?`<div class="s-head" style="margin:12px 0 4px;font-size:13px">Recent changes</div><div id="adsActionLog">${acts.map(actRow).join('')}</div>`:''}
+  </div>`;
+}
+async function adsApprove(i){
+  const p=_adsProposals[i]; if(!p) return;
+  const btn=document.querySelector(`#adsProposals button[data-i="${i}"]`); if(btn){ btn.disabled=true; btn.textContent='Applying…'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/ads-report/actions/apply`, {method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({target_type:p.target.type, target_id:p.target.id, action:p.rule.action, pct:p.rule.pct, reason:p.rule.id==='capacity'?`Staff-capacity guard: ${p.value} leads waiting`:`Rule ${p.rule.id}: ${ADS_RULE_METRICS[p.rule.metric]}`})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    showToast(`✓ ${p.target.name}: ${p.rule.action==='pause'?'paused':'budget '+((d.before?.daily_budget||0)/100)+' → '+((d.after?.daily_budget||0)/100)}`);
+    _adsCache.at=0; renderReportsAds(true);
+  }catch(e){ showToast('Not applied: '+e.message, 'err'); if(btn){ btn.disabled=false; btn.textContent='Approve'; } }
+}
+async function adsUndoAction(id){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/ads-report/actions/undo`, {method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}), body:JSON.stringify({id})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    showToast('✓ Undone'); _adsCache.at=0; renderReportsAds(true);
+  }catch(e){ showToast('Undo failed: '+e.message, 'err'); }
+}
+
+/* ── 🩺 Tracking health + Conversion Leads checklist (worker marHealth, last 7 days) ── */
+function adsHealthCard(h, s){
+  if(!h || h.sent==null) return '';
+  const cfg=s?.config||{};
+  const strong=(h.match?.lead_id||0)+(h.match?.ctwa_clid||0)+(h.match?.fbc||0);
+  const funnelSent=(h.by_event||[]).filter(e=>String(e.event).startsWith('funnel:')).reduce((a,e)=>a+e.sent,0);
+  const mapped=Object.keys(cfg.funnel_map||{}).length;
+  const evName=e=>({lead:'Lead', qualified:'Qualified', disqualified:'Disqualified', booked:'Booked (Schedule)', purchase:'Purchase', junk:'Junk'})[e]
+    ||(String(e).startsWith('funnel:')?(Object.values(cfg.funnel_map||{}).find(n=>'funnel:'+n.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')===e)||e.slice(7)):e);
+  const metaRecv=h.meta?.received||{};
+  const check=(ok, text, fix)=>`<div class="s-note" style="margin:3px 0">${ok?'✅':'⚠️'} ${esc(text)}${!ok&&fix?` — <span style="color:var(--muted)">${fix}</span>`:''}</div>`;
+  const failRate=h.sent+h.failed?h.failed/(h.sent+h.failed):0;
+  return `<div class="card" style="margin-bottom:14px" id="adsHealth">
+    <div class="s-head" style="margin-bottom:4px">🩺 Tracking health (last ${h.days} days)</div>
+    <div class="s-note" style="margin-bottom:8px">What reached Meta through the Conversions API, what it refused, and how strongly events match an ad click. Problems also go in the daily alert.</div>
+    <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:10px">
+      <div class="stat"><div class="stat-lbl">Events sent</div><div class="stat-val">${h.sent}</div></div>
+      <div class="stat"><div class="stat-lbl">Refused by Meta</div><div class="stat-val"${h.failed?' style="color:var(--red)"':''}>${h.failed}</div><div class="s-note">${adsPct(h.failed, h.sent+h.failed)}</div></div>
+      <div class="stat"><div class="stat-lbl">Matched by ad click</div><div class="stat-val">${adsPct(strong, h.sent)}</div><div class="s-note">form id, WhatsApp click or fbc</div></div>
+      <div class="stat"><div class="stat-lbl">Last event</div><div class="stat-val" style="font-size:15px">${h.last_sent_at?esc(new Date(h.last_sent_at).toLocaleString()):'—'}</div></div>
+      ${h.meta?.ok?`<div class="stat"><div class="stat-lbl">Meta received</div><div class="stat-val">${Object.values(metaRecv).reduce((a,b)=>a+b,0)}</div><div class="s-note">all sources, incl. Pixel</div></div>`:''}
+    </div>
+    <div style="overflow-x:auto"><table class="leads-tbl" id="adsHealthEvents" style="width:100%;min-width:560px">
+      <thead><tr><th>Event</th><th>Sent</th><th>Refused</th><th>Matched by ad click</th><th>Meta received</th></tr></thead>
+      <tbody>${(h.by_event||[]).map(e=>{ const n=evName(e.event); return `<tr><td>${esc(n)}</td><td>${e.sent}</td><td${e.failed?' style="color:var(--red)"':''}>${e.failed}</td><td>${adsPct(e.strong, e.sent)}</td><td>${metaRecv[n]!=null?metaRecv[n]:'—'}</td></tr>`; }).join('')
+        ||'<tr><td colspan="5" style="color:var(--muted)">No events in these days.</td></tr>'}</tbody></table></div>
+    ${(h.errors||[]).length?`<div class="s-head" style="margin:10px 0 4px;font-size:13px">Why Meta refused events</div><div id="adsHealthErrors">${h.errors.map(x=>`<div class="s-note">${x.n}× ${esc(x.error)}${x.code?` (code ${esc(x.code)})`:''}</div>`).join('')}</div>`:''}
+    <div class="s-head" style="margin:12px 0 4px;font-size:13px">Conversion Leads setup (lead-quality optimisation)</div>
+    <div id="adsCLChecklist">
+      ${check(h.pixel_connected, 'Pixel / Dataset and token connected', 'add them in Settings → Integrations → Meta Ads')}
+      ${h.pixel_connected?check(!!h.meta?.ok, 'Meta can see the dataset with this token', esc(h.meta?.error||'assign the dataset to the token\'s system user')):''}
+      ${check(!!clientRecord?.meta_leadgen_connected, 'Lead forms connected', 'connect them in Integrations → Lead Forms so form leads carry their lead id')}
+      ${check(mapped>=2, `Funnel stages mapped to events (${mapped})`, 'map at least two pipeline stages in the settings below')}
+      ${check(funnelSent>0, `Funnel events reached Meta (${funnelSent})`, 'they start as leads move through the mapped stages')}
+      ${check((h.match?.lead_id||0)>0, 'Form leads sent back with their lead id', 'needs connected lead forms and mapped stages')}
+      ${check(failRate<0.05, 'Meta accepts the events', 'see the refusals above')}
+      <div class="s-note" style="margin-top:4px">When these are green and each stage gets events every week, switch the lead-form campaign's goal to <b>Conversion leads</b> in Ads Manager.</div>
+    </div>
+  </div>`;
+}
+
+/* ── 👥 CRM audiences in the ad account, refreshed daily (worker marRefreshAudiences) ── */
+function adsAudiencesCard(s){
+  if(!s?.audiences) return '';
+  const cfg=s.config||{};
+  return `<div class="card" style="margin-bottom:14px" id="adsAudiences">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px"><div class="s-head" style="margin:0;flex:1">👥 CRM audiences</div>
+      ${s.can_edit&&s.connected?`<button class="btn btn-secondary btn-sm" id="adsAudRefresh" onclick="adsRefreshAudiences()">🔄 Refresh now</button>`:''}</div>
+    <div class="s-note" style="margin-bottom:8px">${cfg.audiences_enabled?'Refreshed every morning from your leads (phone/email, hashed).':'Off — switch on "CRM audiences" in the settings below.'} Use Buyers / Buyers-by-value lookalikes to prospect, Hot-not-bought to retarget, and add Exclude to every prospecting ad set. Needs <b>ads_management</b> on the token.</div>
+    <div style="overflow-x:auto"><table class="leads-tbl" id="adsAudTbl" style="width:100%;min-width:640px">
+      <thead><tr><th>Audience</th><th>People</th><th>Lookalike</th><th>Last refresh</th><th>Status</th></tr></thead>
+      <tbody>${s.audiences.map(a=>`<tr><td style="white-space:normal;max-width:none;min-width:200px"><div>${esc(a.name)}</div><div class="s-note">${esc(a.desc||'')}</div></td>
+        <td>${a.last_run_at?Number(a.size||0):'—'}</td><td>${a.lookalike?(a.lookalike_id?'✅ created':'—'):'n/a'}</td><td>${a.last_run_at?esc(String(a.last_run_at).slice(0,16).replace('T',' ')):'never'}</td>
+        <td style="white-space:normal;max-width:none">${a.last_error?`<span style="color:var(--red)">${esc(a.last_error)}</span>`:a.audience_id?'OK':'—'}</td></tr>`).join('')}</tbody>
+    </table></div></div>`;
+}
+async function adsRefreshAudiences(){
+  const btn=$id('adsAudRefresh'); if(btn){ btn.disabled=true; btn.textContent='Refreshing…'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/ads-report/audiences/refresh`, {method:'POST', headers:ncAuthHeaders()});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const bad=(d.results||[]).filter(x=>!x.ok);
+    showToast(bad.length?'Some audiences failed: '+bad[0].error:'✓ Audiences refreshed', bad.length?'err':'ok');
+  }catch(e){ showToast('Refresh failed: '+e.message, 'err'); }
+  _adsCache.at=0; renderReportsAds(true);
+}
+
 function adsCapiCard(capi){
   const rows=capi?.rows||[];
   const EV={lead:'Lead', qualified:'Qualified', disqualified:'Disqualified', booked:'Booked', purchase:'Purchase'};
@@ -679,6 +874,8 @@ function adsSettingsCard(s){
       <div class="s-note">When a lead gets one of these labels (Leads tags, Edit Lead or a Chats label), a <b>Purchase</b> with the lead's deal value — or the customer's latest order total — goes to Meta through the Conversions API, once per lead, so your ads learn who actually buys. Comma separated; leave blank to switch it off. Needs the Pixel/Dataset ID and token in Settings → Integrations → Meta Ads.</div>
     </div>
 
+    ${adsGrowthSettings(cfg, dis)}
+
     <label style="display:flex;gap:8px;align-items:center;font-weight:600;margin-top:12px"><input type="checkbox" id="adsAcctOn"${cfg.accounting_post?' checked':''}${can&&s.accounting_enabled?'':' disabled'}> Book Meta spend in Accounting</label>
     <div class="s-note" style="margin-left:24px">${s.accounting_enabled?'One expense per month ("Meta Platforms", Advertising &amp; Marketing), updated daily until the month ends, so the P&amp;L shows profit after ads. Deleting it in Accounting stops it for that month. Add GST from the Meta invoice in Accounting if you claim it.':'The Accounting module isn\'t on for this account.'}</div>
     ${(s.expense_posts||[]).length?`<div id="adsExpensePosts" style="margin:6px 0 0 24px">${s.expense_posts.map(p=>`<div class="s-note">${esc(p.month)} · ${adsMoneyFmt(p.currency)(p.amount)} · ${p.status==='deleted'?'deleted in Accounting — not re-posted':'posted'}</div>`).join('')}</div>`:''}
@@ -714,7 +911,95 @@ function adsReadSettingsForm(){
     alert_spend_no_leads:Number($id('adsAlertSpend').value)||0, alert_cpl_max:Number($id('adsAlertCpl').value)||0, alert_junk_pct:Number($id('adsAlertJunk').value)||0,
     accounting_post:$id('adsAcctOn').checked,
     purchase_labels:$id('adsPurchaseLabels').value.split(',').map(x=>x.trim()).filter(Boolean),
+    funnel_map:Object.fromEntries([...document.querySelectorAll('#adsFunnelMap input[data-stage]')].map(i=>[i.dataset.stage, i.value.trim()]).filter(([,v])=>v)),
+    send_junk:$id('adsSendJunk').checked,
+    pixel_consent_banner:$id('adsConsent').checked,
+    audiences_enabled:$id('adsAudOn').checked,
+    audience_country:$id('adsAudCountry').value.trim().toUpperCase()||'IN',
+    audience_ratio:Number($id('adsAudRatio').value)||1,
+    rules:[...document.querySelectorAll('#adsRules .ads-rule')].map(adsReadRule),
+    capacity_guard:{enabled:$id('adsCapOn').checked, max_uncalled:Number($id('adsCapMax').value)||20, pct:Number($id('adsCapPct').value)||20},
+    max_change_pct:Number($id('adsMaxChange').value)||30,
+    min_daily_budget:Number($id('adsMinBudget').value)||0,
   };
+}
+function adsReadRule(el){
+  const v=k=>el.querySelector(`[data-k="${k}"]`);
+  return {id:el.dataset.id, enabled:v('enabled').checked, metric:v('metric').value, op:v('op').value, value:Number(v('value').value)||0,
+    days:Number(v('days').value)||7, min_spend:Number(v('min_spend').value)||0, level:v('level').value, action:v('action').value, pct:Number(v('pct').value)||0};
+}
+// Pipeline stages a lead can reach, plus won / lost, each with an optional Conversions API event name.
+function adsFunnelStages(mapped){
+  let flow={}; try{ flow=getFlow()||{}; }catch(e){}
+  const ids=[...new Set(['new', ...Object.keys(flow.stages||{}).filter(k=>k!=='new'), 'human_handover', 'won', 'lost', ...Object.keys(mapped||{})])];
+  return ids.map(id=>{ let n=id; try{ n=stageLabel(id)||id; }catch(e){} return {id, name:n}; });
+}
+function adsSuggestFunnel(){
+  const skip=new Set(['new','lost']);
+  document.querySelectorAll('#adsFunnelMap input[data-stage]').forEach(i=>{
+    if(i.value.trim() || skip.has(i.dataset.stage)) return;
+    i.value=String(i.dataset.label||i.dataset.stage).replace(/[^A-Za-z0-9 ]+/g,' ').trim().split(/\s+/).map(w=>w[0].toUpperCase()+w.slice(1).toLowerCase()).join('').slice(0,40);
+  });
+}
+function adsRuleRow(r, dis){
+  const opt=(o, cur)=>Object.entries(o).map(([k,v])=>`<option value="${k}"${k===cur?' selected':''}>${esc(v)}</option>`).join('');
+  return `<div class="ads-rule" data-id="${esc(r.id||'r'+Date.now().toString(36))}" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
+    <input type="checkbox" data-k="enabled"${r.enabled!==false?' checked':''}${dis} title="On">
+    If <select class="form-input" data-k="metric" style="width:auto"${dis}>${opt(ADS_RULE_METRICS, r.metric)}</select>
+    is <select class="form-input" data-k="op" style="width:auto"${dis}>${opt({above:'above', below:'below'}, r.op)}</select>
+    <input class="form-input" type="number" min="0" data-k="value" style="width:90px" value="${r.value??''}"${dis}>
+    over <select class="form-input" data-k="days" style="width:auto"${dis}>${opt({3:'3 days', 7:'7 days', 14:'14 days', 30:'30 days'}, String(r.days||7))}</select>
+    per <select class="form-input" data-k="level" style="width:auto"${dis}>${opt({adset:'ad set', campaign:'campaign'}, r.level)}</select>
+    with spend ≥ <input class="form-input" type="number" min="0" data-k="min_spend" style="width:80px" value="${r.min_spend??0}"${dis}>
+    → <select class="form-input" data-k="action" style="width:auto"${dis}>${opt(ADS_RULE_ACTIONS, r.action)}</select>
+    <input class="form-input" type="number" min="0" max="50" data-k="pct" style="width:60px" value="${r.pct??20}" title="% change (budget actions)"${dis}>%
+    ${dis?'':`<button class="btn btn-secondary btn-sm" onclick="this.closest('.ads-rule').remove()" title="Remove">✕</button>`}
+  </div>`;
+}
+function adsAddRule(i){
+  const box=$id('adsRules'); if(!box) return;
+  box.querySelector('.s-note.empty')?.remove();
+  box.insertAdjacentHTML('beforeend', adsRuleRow({...ADS_RULE_PRESETS[i]||ADS_RULE_PRESETS[0], id:'r'+Date.now().toString(36)}, ''));
+}
+function adsGrowthSettings(cfg, dis){
+  const fm=cfg.funnel_map||{};
+  const g=cfg.capacity_guard||{};
+  const presetName=p=>`${ADS_RULE_ACTIONS[p.action]} when ${ADS_RULE_METRICS[p.metric].toLowerCase()} is ${p.op} ${p.value}`;
+  return `<div style="margin-top:14px" id="adsFunnelBox">
+      <label class="form-label" style="font-weight:600">📶 Funnel events for Conversion Leads</label>
+      <div class="s-note">When a lead reaches a stage, this event goes to Meta through the Conversions API (once per lead) — form leads with their lead id, WhatsApp-ad chats with their click id. Meta then optimises lead-form campaigns for leads that move down your funnel. Use short names without spaces, e.g. <i>QualifiedLead</i>, <i>QuoteSent</i>.</div>
+      <div id="adsFunnelMap" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 12px;margin:6px 0">
+        ${adsFunnelStages(fm).map(st=>`<label style="font-size:13px;display:flex;gap:6px;align-items:center"><span style="min-width:90px">${esc(st.name)}</span><input class="form-input" data-stage="${esc(st.id)}" data-label="${esc(st.name)}" value="${esc(fm[st.id]||'')}" placeholder="—" maxlength="40"${dis}></label>`).join('')}
+      </div>
+      ${dis?'':`<button class="btn btn-secondary btn-sm" onclick="adsSuggestFunnel()">✨ Suggest names</button>`}
+      <label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:13px"><input type="checkbox" id="adsSendJunk"${cfg.send_junk!==false?' checked':''}${dis}> Send <b>Junk</b> when a lead is marked Spam (teaches Meta what to avoid)</label>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:4px;font-size:13px"><input type="checkbox" id="adsConsent"${cfg.pixel_consent_banner?' checked':''}${dis}> Ask visitors for cookie consent before the Pixel loads on your store and booking pages</label>
+    </div>
+
+    <div style="margin-top:14px" id="adsAudBox">
+      <label style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" id="adsAudOn"${cfg.audiences_enabled?' checked':''}${dis}> 👥 CRM audiences, refreshed daily</label>
+      <div class="s-note" style="margin-left:24px">Buyers, buyers by value, Hot leads not bought yet and an Exclude list (won, junk, opted out) are kept in your ad account, with lookalikes of buyers once there are 100+. Phone and email are hashed before they leave LeadVyne.</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 0 24px">
+        <div><label class="form-label">Lookalike country</label><input class="form-input" id="adsAudCountry" style="max-width:80px" maxlength="2" value="${esc(cfg.audience_country||'IN')}"${dis}></div>
+        <div><label class="form-label">Lookalike size (%)</label><input class="form-input" type="number" min="1" max="10" id="adsAudRatio" style="max-width:80px" value="${cfg.audience_ratio||1}"${dis}></div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px" id="adsRulesBox">
+      <label class="form-label" style="font-weight:600">🧭 Sales-based rules (suggestions you approve)</label>
+      <div class="s-note">Checked against CRM sales, not Meta's lead count. A triggered rule shows up under Suggested actions; nothing changes in Meta until the owner approves it.</div>
+      <div id="adsRules">${(cfg.rules||[]).map(r=>adsRuleRow(r, dis)).join('')||'<div class="s-note empty">No rules yet.</div>'}</div>
+      ${dis?'':`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${ADS_RULE_PRESETS.map((p,i)=>`<button class="btn btn-secondary btn-sm" onclick="adsAddRule(${i})">+ ${esc(presetName(p))}</button>`).join('')}</div>`}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+        <div><label class="form-label">Largest budget change (%)</label><input class="form-input" type="number" min="1" max="50" id="adsMaxChange" style="max-width:100px" value="${cfg.max_change_pct||30}"${dis}></div>
+        <div><label class="form-label">Never cut a daily budget below</label><input class="form-input" type="number" min="0" id="adsMinBudget" style="max-width:120px" value="${cfg.min_daily_budget||''}" placeholder="0"${dis}></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-weight:600;margin-top:10px"><input type="checkbox" id="adsCapOn"${g.enabled?' checked':''}${dis}> Staff-capacity guard</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 0 24px;align-items:end">
+        <div><label class="form-label">When this many ad leads (last 48 h) wait for a first call</label><input class="form-input" type="number" min="1" id="adsCapMax" style="max-width:100px" value="${g.max_uncalled||20}"${dis}></div>
+        <div><label class="form-label">suggest cutting WhatsApp-ad budgets by (%)</label><input class="form-input" type="number" min="5" max="50" id="adsCapPct" style="max-width:100px" value="${g.pct||20}"${dis}></div>
+      </div>
+    </div>`;
 }
 async function adsSaveSettings(){
   const btn=$id('adsSettingsSave'), msg=$id('adsSettingsMsg');
@@ -725,6 +1010,7 @@ async function adsSaveSettings(){
     if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
     if(_adsCache.settings) _adsCache.settings.config=d.config;
     msg.textContent='✓ Saved';
+    _adsCache.at=0; setTimeout(()=>renderReportsAds(true), 600);
     if(d.config.accounting_post) fetch(`${CONFIG.WORKER_BASE}/meta/ads-report/accounting/post`, {method:'POST', headers:ncAuthHeaders()}).catch(()=>{});
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; }

@@ -25,7 +25,7 @@ function d1(db){
 }
 function freshDb(){
   const db=new DatabaseSync(':memory:');
-  for(const f of ['0003_meta_capi_log.sql','0028_accounting_expenses.sql','0076_lead_messages.sql','0118_meta_ads_report.sql','0120_meta_ads_running.sql'])
+  for(const f of ['0003_meta_capi_log.sql','0028_accounting_expenses.sql','0076_lead_messages.sql','0118_meta_ads_report.sql','0120_meta_ads_running.sql','0122_meta_ads_growth.sql'])
     db.exec(readFileSync(new URL('./migrations/'+f, import.meta.url), 'utf8'));
   db.exec('ALTER TABLE accounting_expenses ADD COLUMN supplier_id INTEGER');
   return db;

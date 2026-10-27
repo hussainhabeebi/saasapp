@@ -80,6 +80,7 @@ textarea{resize:none;min-height:64px;line-height:1.5}
   <div class="err-page" id="errMsg" style="display:none">Sorry, this booking link is not working right now.</div>
 </div>
 
+<script src="/lv-pixel.js?v=1"></script>
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
@@ -258,8 +259,11 @@ async function submitBooking(){
   const docSel = getEl('fDoctor');
 
   setBtns(true, 'Sending…'); setMsg('','');
+  // One event id for the Pixel and the server's Conversions API copy — Meta keeps one Schedule.
+  const eventId = LVPixel.eventId('web_book');
   try{
     const body = {
+      capi: LVPixel.capi(eventId),
       client_id: clientId, name, phone,
       service_id: svcSel ? (svcSel.value || undefined) : undefined,
       date: (getEl('fDate').value||''),
@@ -274,6 +278,7 @@ async function submitBooking(){
     });
     const data = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(data.error || 'Something went wrong');
+    LVPixel.track('Schedule', {}, eventId);
     getEl('formArea').innerHTML = `
       <div class="success-bubble">
         <div class="ic">✅</div>
@@ -323,6 +328,7 @@ async function load(){
       allDoctors = docData.list || [];
     }
 
+    LVPixel.init({pixelId:bizInfo.meta_pixel_id, consent:bizInfo.pixel_consent_banner});
     document.title = 'Book with ' + (bizInfo.client_name || 'us');
     getEl('bizName').textContent = bizInfo.client_name || 'Book an Appointment';
     getEl('bizSub').textContent = isHealthcare ? 'Healthcare booking' : 'Appointment booking';
