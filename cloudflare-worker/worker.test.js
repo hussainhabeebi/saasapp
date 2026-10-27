@@ -107,6 +107,9 @@ import {
   ltBookButtons,
   ltCheckoutCtaPayload,
   ltStoredOfferSelectionIndex,
+  ltStoredOfferText,
+  ltChatFarePrefs,
+  ltTravelSettingsNormalize,
   ltExactRouteOffers,
   ltLiveAgencyEnabled,
   ltParseFlightRoute,
@@ -466,6 +469,37 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltStoredOfferSelectionIndex(offers,'1 ബുക്ക് ചെയ്യൂ'),0);
     assert.equal(ltStoredOfferSelectionIndex(offers,'two adults'),-1);
     assert.equal(ltStoredOfferSelectionIndex(offers,'yes'),-1);
+  });
+
+  test('Travel settings: fare option count is 1–5 (default 3) and prices can be hidden',()=>{
+    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3});
+    assert.deepEqual(ltChatFarePrefs({lt_fare_options:'9',lt_show_fares:'No'}),{limit:5,showFares:false});
+    assert.equal(ltChatFarePrefs({lt_fare_options:'0'}).limit,1);
+    const fares=[1,2,3,4,5,6].map(n=>({airline_name:'Air '+n,total_amount:100*n,currency:'AED',bookable:true,supplier_offer_id:'f'+n,itinerary:[{origin:'DXB',destination:'COK',stops:0}]}));
+    assert.equal(ltBookableChatOffers(fares).length,3);
+    const five=ltBookableChatOffers(fares,'',5);
+    assert.equal(five.length,5);
+    assert.deepEqual(ltBookButtons(five).map(b=>b.value),['book first','book second','book third','book fourth','book fifth']);
+    assert.equal(ltBookableChatOffers(fares,'',1).length,1);
+    const shown=ltFormatChatOffers(fares,{limit:5});
+    assert.match(shown,/Option 5: Air 5/);
+    assert.doesNotMatch(shown,/Option 6/);
+    assert.match(shown,/Fare: \*AED/);
+    const hidden=ltFormatChatOffers(fares,{limit:4,showFares:false,filterHint:true});
+    assert.match(hidden,/Option 4: Air 4/);
+    assert.doesNotMatch(hidden,/Fare:|AED|under 30000/);
+    assert.match(hidden,/fare is shown at checkout/);
+    const stored=[{airline:'Air 1',total:100,currency:'AED',origin:'DXB',destination:'COK'}];
+    assert.match(ltStoredOfferText(stored),/AED/);
+    assert.doesNotMatch(ltStoredOfferText(stored,{showFares:false}),/AED/);
+  });
+
+  test('picks options 4 and 5 when the agency shows five fares',()=>{
+    const offers=[1,2,3,4,5].map(n=>({airline:'Air '+n,flightNumber:'X'+n}));
+    assert.equal(ltStoredOfferSelectionIndex(offers,'Book Option 5'),4);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'book fourth'),3);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'the fifth one'),4);
+    assert.equal(ltStoredOfferSelectionIndex(offers.slice(0,3),'book option 4'),-1);
   });
 
   test('builds a WhatsApp Book Now CTA for the exact POOMAS checkout URL',()=>{

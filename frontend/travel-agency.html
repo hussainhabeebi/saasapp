@@ -954,6 +954,7 @@ async function init(){
   try{
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
     LEAD_CATEGORIES=leadCategoriesFor(clientRecord);
+    taLoadTravelSettings();
     if(clientRecord.ta_enabled!=='Yes'){
       $id('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">✈️</div>The Travel Agency module isn\'t enabled for this account. Ask your admin to enable it in Settings → Modules.</div>';
       return;
@@ -2958,6 +2959,7 @@ async function sqPreviewPdf(){
   // one-off "batch" of one.
   _itinSendLogoDims=isItinFull&&src.rec.logo_url?await sqMeasureImage(src.rec.logo_url):null;
   _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
+  const pdfSrc=isItinFull?{...src,rec:await itinWithAutoImages(src.rec)}:src;
 
   // Prefers the first selected lead so the preview shows real customer details; falls back to a
   // placeholder when none are picked yet, since previewing shouldn't require selecting leads first.
@@ -2966,7 +2968,7 @@ async function sqPreviewPdf(){
   const previewNum=(isItinFull?'ITN-':'QUO-')+'0000 (preview)';
   msg.textContent='';msg.className='save-msg';
   try{ await loadJsPdf(); }catch(e){ msg.textContent=e.message; msg.className='save-msg err'; return; }
-  const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum,kids);
+  const doc=sqBuildPdfDoc(lead,pdfSrc,format,price,currency,pax,validity,previewNum,kids);
   window.open(doc.output('bloburl'),'_blank');
 }
 
@@ -2991,6 +2993,8 @@ async function sqSend(){
   // by the time a bulk send runs.
   _itinSendLogoDims=isItinFull&&src.rec.logo_url?await sqMeasureImage(src.rec.logo_url):null;
   _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
+  // Auto-added photos (Travel Settings) are looked up once for the whole batch.
+  const pdfSrc=isItinFull?{...src,rec:await itinWithAutoImages(src.rec)}:src;
 
   const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
@@ -3028,7 +3032,7 @@ async function sqSend(){
       let quoteNumber;
       if(isItinFull){ itinSeq++; quoteNumber='ITN-'+String(itinSeq).padStart(4,'0'); }
       else { quoteSeq++; quoteNumber='QUO-'+String(quoteSeq).padStart(4,'0'); }
-      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber,kids);
+      const doc=sqBuildPdfDoc(lead,pdfSrc,format,price,currency,pax,validity,quoteNumber,kids);
       const pdfBlob=doc.output('blob');
       const caption=sqBuildCaption(lead,format,captionTotal,currency,validity,isItinFull?{trip_title:src.rec.title||'your trip'}:null);
       const fd=new FormData();
@@ -3882,10 +3886,96 @@ function renderTaFinance(){
   </div>`;
 }
 
+/* ── TRAVEL SETTINGS (Dashboard → Settings → Industry Modules → Travel Agency) ── */
+// itin_share_pdf: every itinerary send/print uses the itinerary PDF instead of WhatsApp text.
+// itin_auto_images: items without their own photo get one from a matching Property or another itinerary.
+let _taTravelSettings={itin_share_pdf:false,itin_auto_images:true};
+function taLoadTravelSettings(){
+  _taTravelSettings={itin_share_pdf:clientRecord?.itin_share_pdf==='Yes',itin_auto_images:clientRecord?.itin_auto_images!=='No'};
+  // Saved by the worker (D1) — the CLIENTS copy above is only a fallback.
+  return fetch(`${CONFIG.WORKER_BASE}/live-travel/travel-settings`,{headers:ncAuthHeaders()}).then(r=>r.ok?r.json():null).then(d=>{
+    if(d&&typeof d.itin_share_pdf==='boolean') _taTravelSettings={itin_share_pdf:d.itin_share_pdf,itin_auto_images:d.itin_auto_images!==false};
+  }).catch(()=>{});
+}
+
+// Property photos are Drive links; jsPDF needs the bytes, which the worker fetches (no CORS on Drive).
+const _itinPropImgCache=new Map();
+function itinPropertyImage(p){
+  const id=propDriveId(p.image_url||p.image_url_2||p.image_url_3);
+  if(!id) return Promise.resolve('');
+  if(!_itinPropImgCache.has(id)){
+    _itinPropImgCache.set(id,fetch(`${CONFIG.WORKER_BASE}/travel/drive-image?id=${encodeURIComponent(id)}`,{headers:ncAuthHeaders()})
+      .then(r=>r.ok?r.json():{}).then(d=>d.data_url||'').catch(()=>''));
+  }
+  return _itinPropImgCache.get(id);
+}
+// A copy of the itinerary with photos filled in for items that have none (the saved record is
+// untouched): first the photo already used for the same item text in another itinerary, then a
+// Property whose name appears in the item (or, for a hotel item, the day's overnight stay).
+// At most one added photo per day keeps the PDF small enough for WhatsApp.
+async function itinWithAutoImages(it){
+  if(!_taTravelSettings.itin_auto_images||!it) return it;
+  const key=v=>String(v||'').trim().toLowerCase();
+  const library=new Map();
+  _taItineraries.forEach(x=>(x.days||[]).forEach(d=>(d.items||[]).forEach(i=>{ if(i.image&&key(i.description)&&!library.has(key(i.description))) library.set(key(i.description),i.image); })));
+  const props=_taProperties.filter(p=>key(p.name).length>=4&&propDriveId(p.image_url||p.image_url_2||p.image_url_3));
+  const days=[];
+  for(const d of (it.days||[])){
+    let added=false;
+    const items=[];
+    for(const item of (d.items||[])){
+      if(item.image||added){ items.push(item); continue; }
+      const text=key(item.description)+(item.type==='hotel'?' '+key(d.overnight):'');
+      let image=library.get(key(item.description))||'';
+      if(!image){ const p=props.find(p=>text.includes(key(p.name))); if(p) image=await itinPropertyImage(p); }
+      if(image){ added=true; items.push({...item,image}); } else items.push(item);
+    }
+    days.push({...d,items});
+  }
+  return {...it,days};
+}
+// The full itinerary PDF for one lead (or a placeholder lead), numbered from itin_number_seq.
+async function itinBuildSharePdf(it,lead,quoteNumber){
+  await loadJsPdf();
+  _itinSendLogoDims=it.logo_url?await sqMeasureImage(it.logo_url):null;
+  _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
+  return itinBuildFullPdfDoc(lead,await itinWithAutoImages(it),quoteNumber);
+}
+const itinPhoneDigits=v=>String(v||'').replace(/\D/g,'');
+// Sends the itinerary PDF into the lead's WhatsApp chat (same route as the bulk send). Returns
+// false when that number has no linked chat, so the caller can fall back to a text message.
+async function itinSendPdfToPhone(it,phone){
+  const digits=itinPhoneDigits(phone);
+  const lead=allLeads.find(l=>{ const p=itinPhoneDigits(l.Phone); return p&&(p===digits||(p.length>=9&&digits.endsWith(p))||(digits.length>=9&&p.endsWith(digits))); });
+  const convId=leadConvId(lead);
+  if(!convId) return false;
+  const itinSeq=(parseInt(clientRecord.itin_number_seq)||0)+1;
+  const doc=await itinBuildSharePdf(it,lead,'ITN-'+String(itinSeq).padStart(4,'0'));
+  const fd=new FormData();
+  fd.append('conv_id',convId);
+  fd.append('lead_id',String(lead.Id||''));
+  fd.append('caption',sqBuildCaption(lead,'itinerary_full',0,'','',{trip_title:it.title||'your trip'}));
+  fd.append('file',doc.output('blob'),`Itinerary-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+  const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+  try{ await patchClient({itin_number_seq:itinSeq}); clientRecord.itin_number_seq=itinSeq; }catch(e){}
+  return true;
+}
+
 /* ── ITINERARY PDF + WA ── */
-function printItinerary(id){
+async function printItinerary(id){
   const it=_taItineraries.find(x=>String(x.Id)===String(id));
   if(!it)return;
+  if(_taTravelSettings.itin_share_pdf){
+    // Open the tab now: a window opened after the awaits below would be blocked as a popup.
+    const tab=window.open('','_blank');
+    try{
+      const doc=await itinBuildSharePdf(it,{},'');
+      if(tab) tab.location.href=doc.output('bloburl'); else window.open(doc.output('bloburl'),'_blank');
+    }catch(e){ if(tab) tab.close(); alert('Error: '+e.message); }
+    return;
+  }
   const days=it.days||[];
   const w=window.open('','_blank');
   if(!w)return;
@@ -3945,6 +4035,12 @@ async function sendItinViaWa(id){
   if(!it)return;
   const phone=prompt('Send to phone (with country code, e.g. 971501234567):');
   if(!phone)return;
+  if(_taTravelSettings.itin_share_pdf){
+    try{
+      if(await itinSendPdfToPhone(it,phone)){ alert('✓ Itinerary PDF sent via WhatsApp'); return; }
+      if(!confirm('No WhatsApp chat is linked to this number yet, so the PDF cannot be attached. Send the itinerary as a text message instead?')) return;
+    }catch(e){ alert('Error: '+e.message); return; }
+  }
   const body=itinWaText(it);
   try{
     const resp=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{

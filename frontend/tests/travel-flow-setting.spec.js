@@ -53,3 +53,46 @@ test('Travel Flow is an optional Travel Agency setting, off by default', async (
   expect(puts).toEqual([{ enabled: true }]);
   await expect(page.locator('#taFlowStatusBadge')).toHaveText('✓ Active');
 });
+
+test('Travel Settings: itinerary PDF/images and live fare options, saved through the worker', async ({ page }) => {
+  const puts = [];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/travel-flow')) return route.fulfill({ json: { enabled: false } });
+    if (url.endsWith('/live-travel/travel-settings') && req.method() === 'GET') return route.fulfill({ json: { itin_share_pdf: false, itin_auto_images: true, lt_show_fares: true, lt_fare_options: 3 } });
+    if (url.endsWith('/live-travel/travel-settings') && req.method() === 'PUT') { const b = JSON.parse(req.postData()); puts.push(b); return route.fulfill({ json: b }); }
+    return route.abort();
+  });
+  await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+  const row = page.locator('#taOptionsRow');
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord = { Id: 7, industry: 'travel', ta_enabled: 'No' }; initTaSettings();
+  });
+  await expect(row).toBeHidden();
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord = { Id: 7, industry: 'travel', ta_enabled: 'Yes' };
+    document.getElementById('app').classList.add('show');
+    document.getElementById('gate')?.style.setProperty('display', 'none');
+    // @ts-ignore
+    try { navigate('modules'); } catch (e) {}
+    // @ts-ignore
+    initTaSettings();
+  });
+  await expect(row).toBeVisible();
+  await expect(page.locator('#cfgItinSharePdf')).toHaveValue('No');
+  await expect(page.locator('#cfgItinAutoImages')).toHaveValue('Yes');
+  await expect(page.locator('#cfgLtShowFares')).toHaveValue('Yes');
+  await expect(page.locator('#cfgLtFareOptions')).toHaveValue('3');
+  await expect(page.locator('#cfgLtFareOptions option')).toHaveCount(5);
+  await page.locator('#cfgItinSharePdf').selectOption('Yes');
+  await page.locator('#cfgLtShowFares').selectOption('No');
+  await page.locator('#cfgLtFareOptions').selectOption('5');
+  await page.locator('#saveTaOptions').click();
+  await expect(page.locator('#saveTaOptionsMsg')).toContainText('Saved');
+  expect(puts).toEqual([{ itin_share_pdf: true, itin_auto_images: true, lt_show_fares: false, lt_fare_options: 5 }]);
+  // @ts-ignore
+  expect(await page.evaluate(() => [clientRecord.itin_share_pdf, clientRecord.lt_show_fares, clientRecord.lt_fare_options])).toEqual(['Yes', 'No', '5']);
+});

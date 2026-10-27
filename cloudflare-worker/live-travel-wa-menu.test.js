@@ -172,4 +172,7 @@ test('flight details card', () => {
   assert.match(text, /Cabin 7kg · Check-in 30kg/);
   assert.match(text, /Only 2 seats left/);
   assert.match(text, /\*Total: AED 650\*/);
+  const hidden = ltFlightDetailsText({ airline: 'Air India', total: 650, currency: 'AED' }, { formatMoney: (n, c) => `${c} ${n}`, showFare: false });
+  assert.doesNotMatch(hidden, /AED/);
+  assert.match(hidden, /Fare: shown at checkout/);
 });
