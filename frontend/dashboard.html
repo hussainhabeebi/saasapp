@@ -4951,18 +4951,9 @@ const ROLES = {
     </div>
   </div>
   <div class="modal-footer">
-    <button class="btn btn-primary" style="flex:1" onclick="saveCall()">Save Call</button>
+    <button class="btn btn-primary" id="saveCallBtn" style="flex:1" onclick="saveCall()">Save Call</button>
     <button class="btn btn-secondary" onclick="dismissCallLog()">Cancel</button>
   </div>
-
-  <!-- BOOKINGS PANEL -->
-  <div class="panel" id="panelBookings">
-    <div class="panel-inner" style="margin-top:20px">
-      <div style="font-family:var(--disp);font-size:15px;font-weight:600;margin-bottom:16px">📅 Booked Consultations</div>
-      <div id="bookingsWrap"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-    </div>
-  </div>
-
 </div>
 
 <!-- MODAL: Lead meeting (lead ⋯ → 📅 Mark meeting scheduled / Reschedule / outcome / history) — see openMeetingModal -->
@@ -10192,7 +10183,9 @@ function renderDetailCalls(lead){
 // modal opens against that row even if it isn't the currently-open detail lead yet; omitted, it
 // falls back to whatever currentLead already is (the pre-existing "+ Log Call" button's case).
 function openCallLog(leadId){
-  if(leadId){ const l=allLeads.find(x=>x.Id===leadId); if(l) currentLead=l; }
+  // A lead not in allLeads (still loading, filtered out) must not leave the form on whichever lead
+  // was open before — appendCallLog re-reads the CallLog from the server, so the Id is enough.
+  if(leadId) currentLead=allLeads.find(x=>x.Id===leadId)||(currentLead?.Id===leadId?currentLead:{Id:leadId});
   openModal('modalCall');
   // pre-fill stage-keyed notes template if textarea is empty
   const notes=$id('callNotes');
@@ -10211,13 +10204,25 @@ function openCallLog(leadId){
 }
 
 let _savingCall=false;
+// On a slow phone connection Save used to look dead: no feedback while the requests ran, and a
+// request that never answered kept _savingCall set, so every later tap was ignored until a reload.
+// The button now shows progress, the save's requests time out, and the lock is always released.
 async function saveCall(){
-  if(!currentLead||_savingCall)return;
-  _savingCall=true; // a double-tap on Save must not log the same call twice
-  try{ await _saveCall(); }finally{ _savingCall=false; }
+  if(_savingCall)return; // a double-tap on Save must not log the same call twice
+  if(!currentLead){ showToast('Open the lead again, then log the call','err'); return; }
+  _savingCall=true;
+  const btn=$id('saveCallBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+  try{ await _saveCall(); }
+  finally{
+    _savingCall=false;
+    if(btn){ btn.disabled=false; btn.textContent='Save Call'; }
+  }
 }
 async function _saveCall(){
-  await claimLeadIfUnowned(currentLead.Id,'Call log');
+  // Claiming an unowned lead (Owner + a ConvHistory note) is separate fields from CallLog — run it
+  // alongside the save instead of making the call wait on its three extra requests.
+  claimLeadIfUnowned(currentLead.Id,'Call log');
   // auto-fill duration from timer if field empty
   let dur=$id('callDuration').value;
   if(!dur&&currentLead){ const elapsed=callTimerElapsed(currentLead.Id); if(elapsed>0) dur=elapsed; }
@@ -10225,7 +10230,7 @@ async function _saveCall(){
   const leadId=currentLead.Id;
   const lead=currentLead;
   try{
-    await appendCallLog(lead,{outcome,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail,...callEvidence(_callInProgress[leadId]?.start)});
+    await appendCallLog(lead,{outcome,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail,...callEvidence(_callInProgress[leadId]?.start)},{timeout:20000});
   }catch(e){ showToast('Call not saved — check your connection and try again','err'); return; }
   renderDetailCalls(lead);
   closeModal('modalCall');
@@ -14212,8 +14217,11 @@ function closeAllModals(){
 
 /* ── NOCODB API (via the Cloudflare Worker proxy — see cloudflare-worker/worker.js) ── */
 function ncAuthHeaders(extra){return {'Authorization':'Bearer '+sessionToken, ...extra};}
-async function ncGet(url){
-  const r=await fetch(url,{headers:ncAuthHeaders()});
+// opts.timeout (ms) aborts a request that never answers — a flaky mobile connection otherwise
+// leaves the caller waiting forever.
+function ncTimeoutSignal(opts){ return opts?.timeout&&typeof AbortSignal!=='undefined'&&AbortSignal.timeout?AbortSignal.timeout(opts.timeout):undefined; }
+async function ncGet(url, opts){
+  const r=await fetch(url,{headers:ncAuthHeaders(),signal:ncTimeoutSignal(opts)});
   if(!r.ok)throw new Error('HTTP '+r.status);
   return r.json();
 }
@@ -14233,8 +14241,8 @@ async function freshConvHistory(lead){
     try{return JSON.parse(lead.ConvHistory||'[]');}catch(e2){return [];}
   }
 }
-async function ncPatch(url,body){
-  const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+async function ncPatch(url,body,opts){
+  const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body),signal:ncTimeoutSignal(opts)});
   if(!r.ok){
     const data=await r.json().catch(()=>({}));
     if(data.code==='SESSION_IDENTITY_REQUIRED'){
@@ -16672,15 +16680,15 @@ function parseCallLog(raw){
 // holding a stale allLeads, would otherwise overwrite each other's calls (same reason as
 // freshConvHistory). Memory is only updated once the server has the call, so a failed save never
 // shows up as a logged call. Throws on failure.
-async function appendCallLog(lead, entry){
+async function appendCallLog(lead, entry, opts={}){
   let calls;
   try{
-    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=CallLog`);
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=CallLog`, opts);
     calls=parseCallLog(fresh?.CallLog);
   }catch(e){ calls=parseCallLog(lead.CallLog); }
   calls.unshift(entry);
   const callLog=JSON.stringify(calls);
-  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,CallLog:callLog});
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,CallLog:callLog}, opts);
   lead.CallLog=callLog;
   for(const l of allLeads) if(l.Id===lead.Id) l.CallLog=callLog;
   if(currentLead&&currentLead.Id===lead.Id) currentLead.CallLog=callLog;
