@@ -3801,6 +3801,28 @@ const ROLES = {
               <span id="taFlowStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <div id="taOptionsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
+              <div style="margin-bottom:8px"><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">How itineraries and live flight fares are shared with your customers.</div></div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px">
+                <div class="form-group" style="margin:0"><label class="form-label" for="cfgItinSharePdf">🗺️ Share itineraries as PDF</label>
+                  <select class="form-input" id="cfgItinSharePdf"><option value="No">No — send as WhatsApp text</option><option value="Yes">Yes — always send the itinerary PDF</option></select>
+                  <div class="s-note" style="margin:2px 0 0">Every itinerary send uses your existing itinerary PDF layout.</div></div>
+                <div class="form-group" style="margin:0"><label class="form-label" for="cfgItinAutoImages">🖼️ Auto-add images to itinerary PDF</label>
+                  <select class="form-input" id="cfgItinAutoImages"><option value="Yes">Yes</option><option value="No">No</option></select>
+                  <div class="s-note" style="margin:2px 0 0">Items without a photo use a matching hotel or package photo. Photos you upload always win.</div></div>
+                <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtShowFares">💰 Show live flight prices</label>
+                  <select class="form-input" id="cfgLtShowFares"><option value="Yes">Yes — show fares in WhatsApp</option><option value="No">No — fare shown at checkout</option></select>
+                  <div class="s-note" style="margin:2px 0 0">Live fare options sent by the WhatsApp bot.</div></div>
+                <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtFareOptions">✈️ Number of flight options</label>
+                  <select class="form-input" id="cfgLtFareOptions"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select>
+                  <div class="s-note" style="margin:2px 0 0">Live fares shown per search (4–5 are sent as a WhatsApp list).</div></div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+                <button class="save-btn" id="saveTaOptions">Save</button>
+                <span class="save-msg" id="saveTaOptionsMsg"></span>
+              </div>
+            </div>
+
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
               <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
@@ -21164,13 +21186,38 @@ function initTaSettings(){
       _renderModuleBadge('taFlowStatusBadge',d.enabled);
     }).catch(()=>{});
   }
+  taOptionsFill(clientRecord);
+  // Saved by the worker (D1, mirrored onto CLIENTS) — read it rather than trusting the CLIENTS copy.
+  if(clientRecord.ta_enabled==='Yes'){
+    fetch(`${WORKER_BASE}/live-travel/travel-settings`,{headers:ncAuthHeaders()}).then(r=>r.ok?r.json():null).then(d=>{
+      if(!d||typeof d.lt_fare_options!=='number')return;
+      taOptionsApply(d); taOptionsFill(clientRecord);
+    }).catch(()=>{});
+  }
   updateAgencyTabVisibility();
+}
+// Travel Settings (worker /live-travel/travel-settings) ↔ the CLIENTS-style fields on clientRecord.
+function taOptionsApply(d){
+  const yn=v=>v?'Yes':'No';
+  clientRecord.itin_share_pdf=yn(d.itin_share_pdf);
+  clientRecord.itin_auto_images=yn(d.itin_auto_images);
+  clientRecord.lt_show_fares=yn(d.lt_show_fares);
+  clientRecord.lt_fare_options=String(d.lt_fare_options);
+}
+function taOptionsFill(rec){
+  const set=(id,v)=>{const el=$id(id); if(el) el.value=v;};
+  set('cfgItinSharePdf',rec.itin_share_pdf==='Yes'?'Yes':'No');
+  set('cfgItinAutoImages',rec.itin_auto_images==='No'?'No':'Yes');
+  set('cfgLtShowFares',rec.lt_show_fares==='No'?'No':'Yes');
+  const n=parseInt(rec.lt_fare_options,10);
+  set('cfgLtFareOptions',String(n>=1&&n<=5?n:3));
 }
 
 function updateAgencyTabVisibility(){
   const enabled=(clientRecord.ta_enabled==='Yes');
   // Travel Flow is an option of the Travel Agency module — only offered while the module is on.
   const flowRow=$id('taFlowRow'); if(flowRow) flowRow.style.display=enabled?'flex':'none';
+  const optRow=$id('taOptionsRow'); if(optRow) optRow.style.display=enabled?'block':'none';
   [$id('dnAgencyTab'),$id('bnAgencyTab'),$id('moreAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
   if(typeof tvApply==='function') tvApply();
 }
@@ -21212,6 +21259,26 @@ $id('saveTaFlow').addEventListener('click',async()=>{
     clientRecord.travel_flow_enabled=val;
     _renderModuleBadge('taFlowStatusBadge',val==='Yes');
     msg.textContent=val==='Yes'?'✓ Saved — Travel Flow is on':'✓ Saved — the bot works as before';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
+});
+
+// Travel Settings — itinerary PDF sharing/images (travel-agency.html) and live fares (WhatsApp bot).
+$id('saveTaOptions').addEventListener('click',async()=>{
+  const btn=$id('saveTaOptions'),msg=$id('saveTaOptionsMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const body={
+      itin_share_pdf:$id('cfgItinSharePdf').value==='Yes',
+      itin_auto_images:$id('cfgItinAutoImages').value==='Yes',
+      lt_show_fares:$id('cfgLtShowFares').value==='Yes',
+      lt_fare_options:parseInt($id('cfgLtFareOptions').value,10),
+    };
+    const r=await fetch(`${WORKER_BASE}/live-travel/travel-settings`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+    taOptionsApply(d);
+    msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
 });

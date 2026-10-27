@@ -315,3 +315,21 @@ test('the Travel Flow switch saves even when NocoDB cannot take the new column y
     assert.equal((await call(env,session,'/live-travel/travel-flow','PUT',{enabled:'yes'})).status,400);
   }finally{globalThis.fetch=realFetch;}
 });
+
+test('Travel Settings save to D1, keep unsent fields and reject out-of-range values',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',NOCODB_BASE:'https://nc.test',NOCODB_TOKEN:'nc'},session=await token(env.SESSION_SIGNING_KEY);
+  const realFetch=globalThis.fetch;
+  globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
+  try{
+    let r=await call(env,session,'/live-travel/travel-settings');
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3});
+    r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5});
+    assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:'no'})).status,400);
+  }finally{globalThis.fetch=realFetch;}
+});

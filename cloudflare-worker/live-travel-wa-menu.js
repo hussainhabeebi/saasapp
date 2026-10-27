@@ -223,7 +223,8 @@ const time=v=>{const d=new Date(v);return Number.isNaN(d.getTime())?'—':`${Str
 const day=v=>{const d=new Date(v);return Number.isNaN(d.getTime())?'':`${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${d.getUTCFullYear()}`;};
 // Supplier times are local airport times written as ISO without an offset; reading them as UTC
 // prints them unchanged.
-export function ltFlightDetailsText(s,{formatMoney}={}){
+// showFare:false (Settings → Travel Agency → Show live flight prices off) leaves the amount to checkout.
+export function ltFlightDetailsText(s,{formatMoney,showFare=true}={}){
   const fare=formatMoney?formatMoney(s.total,s.currency):`${s.currency||''} ${Number(s.total||0).toLocaleString('en-US')}`.trim();
   const dur=Number(s.duration||0),stops=Number(s.stops||0);
   const bag=s.baggage||{},cabinBag=bag.cabin||bag.cabinBaggage,checked=bag.checked||bag.checkedBaggage;
@@ -237,7 +238,7 @@ export function ltFlightDetailsText(s,{formatMoney}={}){
   lines.push(`💺 Cabin: ${String(s.cabin||'economy').replace('_',' ').replace(/^./,c=>c.toUpperCase())}`);
   if(cabinBag||checked)lines.push(`🧳 Baggage: ${[cabinBag&&`Cabin ${cabinBag}`,checked&&`Check-in ${checked}`].filter(Boolean).join(' · ')}`);
   if(s.seatsLeft!=null&&Number(s.seatsLeft)<=5)lines.push(`⚠️ Only ${s.seatsLeft} seat${Number(s.seatsLeft)===1?'':'s'} left`);
-  lines.push('',`💰 *Total: ${fare}*`);
+  lines.push('',showFare?`💰 *Total: ${fare}*`:'💰 Fare: shown at checkout');
   return lines.join('\n');
 }
 
