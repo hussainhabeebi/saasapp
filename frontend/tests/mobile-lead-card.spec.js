@@ -145,3 +145,33 @@ test('lead card → Staff: the contact stops being a lead (tag + bot stopped) an
   await page.locator('#nav [data-tab="leads"]').click();
   await expect(page.locator('#leadList .lead', { hasText: 'Sahilath' })).toHaveCount(0);
 });
+
+test('lead card → Timeline: arrived, first reply, calls, follow-ups and meetings in order; Back returns to the card', async ({ page }) => {
+  await open(page);
+  await page.route(/\/followups\/v3\/lead/, (r) => r.fulfill({ json: { enabled: true, history: [{ step: 1, label: 'Follow-up 1', sent_at: iso(20 * 86400e3), replied_at: iso(19 * 86400e3) }] } }));
+  await page.route(/\/meetings\/lead/, (r) => r.fulfill({ json: { meetings: [{ title: 'Demo', status: 'scheduled', start_at: iso(-86400e3), created_at: iso(2 * 3600e3), scheduled_by: 'riya@x.test' }] } }));
+  await page.route(/\/records\/12\?/, (r) => r.fulfill({ json: { Id: 12, CallLog: JSON.stringify([{ by: 'riya@x.test', outcome: 'No Answer', at: iso(3600e3) }]),
+    NotesList: JSON.stringify([{ text: 'Asked for brochure', ts: iso(30 * 86400e3), author: 'riya@x.test' }]),
+    ConvHistory: JSON.stringify([{ role: 'user', content: 'Price for 2 nights?', ts: iso(41 * 86400e3) }, { role: 'assistant', content: 'Hi!', ts: iso(41 * 86400e3 - 120e3) }]) } }));
+  await page.locator('#nav [data-tab="leads"]').click();
+  await page.locator('#leadList .lead', { hasText: 'Jio' }).locator('.info').click();
+  if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT + '/m-card.png' });
+  await page.locator('#leadSheet').getByRole('button', { name: /Timeline/ }).click();
+  const tl = page.locator('#tlSheet');
+  await expect(tl).toBeVisible();
+  await expect(tl).not.toContainText('Loading');
+  if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT + '/m-timeline.png' });
+  const titles = await tl.locator('.tl > li > b').allTextContents();
+  expect(titles).toEqual([
+    '📥 Lead arrived', '💬 First message from customer', '🤖 First reply sent', '📝 Note by Riya', '📤 Follow-up 1 sent',
+    expect.stringMatching(/^📅 Demo for /), '📞 First call — No Answer', '📍 Now: New',
+  ]);
+  await expect(tl.locator('.tl > li').nth(2)).toContainText('2 min after arrival');
+  await expect(tl.locator('.tl > li').nth(4)).toContainText('Customer replied');
+  await expect(tl.locator('.tl > li').nth(6)).toContainText('by Riya');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await tl.getByTitle('Back').click();
+  await expect(page.locator('#leadSheet h2')).toHaveText('Jio');
+  await page.goBack();
+  await expect(page.locator('#leadSheet')).toBeHidden();
+});

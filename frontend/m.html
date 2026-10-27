@@ -129,6 +129,12 @@ button:active{transform:scale(.98)}
 .calls .c{display:flex;gap:12px;padding:10px 20px;border-bottom:1px solid var(--line)}.calls .c i{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;font-style:normal;flex:none;background:var(--surface)}
 .calls .c div{flex:1;min-width:0;font-size:14px}.calls .c small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
 .ls-full{display:block;margin:16px auto 0;color:var(--muted);font-size:13px;text-decoration:underline}
+.ls-tl{display:flex;align-items:center;justify-content:center;gap:8px;margin:2px 16px 4px;width:calc(100% - 32px);padding:12px;border-radius:16px;background:var(--surface);color:var(--ink);font-weight:700;font-size:14.5px}
+.tl{list-style:none;margin:6px 20px 0 30px;padding:0 0 0 18px;border-left:2px solid var(--line)}
+.tl li{position:relative;padding:0 0 16px 4px;font-size:14px}
+.tl li::before{content:'';position:absolute;left:-26px;top:3px;width:12px;height:12px;border-radius:50%;background:#94A3B8;border:2px solid #fff}
+.tl li.ok::before{background:#22C55E}.tl li.bad::before{background:#DC2626}.tl li.warn::before{background:#F59E0B}.tl li.info::before{background:#3B82F6}
+.tl b{display:block;font-weight:700}.tl small{display:block;color:var(--muted);font-size:12.5px;margin-top:1px}.tl p{margin:3px 0 0;font-size:13.5px;word-break:break-word}
 .oc{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:4px 16px 8px}
 .oc button{padding:14px 10px;border-radius:16px;background:var(--surface);font-weight:700;font-size:14.5px;border:2px solid transparent}
 .oc button.on{border-color:var(--green);background:var(--green-soft);color:var(--green)}
@@ -212,6 +218,7 @@ svg{display:block}
 <div class="sheet-bg hidden" id="sheetBg" onclick="closeSheets()"></div>
 <!-- Lead card: opens over any tab; Back closes it. -->
 <section class="sheet hidden" id="leadSheet" aria-label="Lead"></section>
+<section class="sheet hidden" id="tlSheet" aria-label="Lead timeline"></section>
 <!-- After a call: how did it go? Saved to the lead's CallLog like the dashboard's Log Call. -->
 <section class="sheet hidden" id="callSheet" aria-label="Log call"></section>
 <div id="toast" class="toast hidden"></div>
@@ -442,15 +449,16 @@ function findLead(id){
 }
 const leadsUrl=()=>`/nocodb/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`;
 const telOf=l=>{const d=String(l.Phone||'').replace(/[^0-9]/g,'');return d?'+'+d:''};
-function sheetOpen(){return !$id('leadSheet').classList.contains('hidden')||!$id('callSheet').classList.contains('hidden')}
+const SHEETS=['leadSheet','callSheet','tlSheet'];
+function sheetOpen(){return SHEETS.some(x=>!$id(x).classList.contains('hidden'))}
 function showSheet(id){
  if(!sheetOpen())history.pushState({...(history.state||{}),lvSheet:1},'');
- ['leadSheet','callSheet'].forEach(x=>$id(x).classList.toggle('hidden',x!==id));$id('sheetBg').classList.remove('hidden');
+ SHEETS.forEach(x=>$id(x).classList.toggle('hidden',x!==id));$id('sheetBg').classList.remove('hidden');
 }
 // fromPop: Back already removed the history entry.
 function closeSheets(fromPop){
  if(!sheetOpen())return;
- ['leadSheet','callSheet'].forEach(x=>$id(x).classList.add('hidden'));$id('sheetBg').classList.add('hidden');
+ SHEETS.forEach(x=>$id(x).classList.add('hidden'));$id('sheetBg').classList.add('hidden');
  if(!fromPop&&history.state?.lvSheet){skipPop=true;history.back()}
 }
 function chatLead(l){
@@ -475,6 +483,7 @@ function openLeadSheet(l){
    <button onclick="chatLead(findLead('${esc(l.Id)}'))"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.7-5.1A8.5 8.5 0 1 1 21 11.5z"/></svg>${l.ConversationID?'Chat':'WhatsApp'}</button>
    <button class="log" onclick="openCallSheet('${esc(l.Id)}',0)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Log call</button>
   </div>
+  <button class="ls-tl" onclick="openTimeline('${esc(l.Id)}')">🕒 Timeline — arrived, calls, follow-ups…</button>
   <div class="ls-sec">Details</div>${rows||'<div class="kv"><span>No details yet</span><b></b></div>'}
   <div class="kv"><span>Follow-up</span><input type="datetime-local" value="${esc(rem)}" onchange="setReminder('${esc(l.Id)}',this.value)"></div>
   <div class="ls-sec">Calls</div><div class="calls">${calls.length?calls.slice(0,20).map(c=>`<div class="c"><i>${OUTCOME_ICON[c.outcome]||'📞'}</i><div><b>${esc(c.outcome||'Call')}</b>${c.duration?` · ${esc(c.duration)} min`:''}<small>${esc(fmtWhen(c.at||c.date))}${c.by?' · '+esc(getTeamMembers().find(m=>sameEmail(m.email,c.by))?.name||c.by):''}</small>${c.notes?`<small>${esc(c.notes)}</small>`:''}</div></div>`).join(''):'<div class="kv"><span>No calls yet</span><b></b></div>'}</div>
@@ -483,6 +492,61 @@ function openLeadSheet(l){
   <button class="ls-full" onclick="location.href='dashboard.html?full=1&lead=${encodeURIComponent(l.Id)}'">Open in the full CRM (edit, stage, meetings…)</button>`;
  showSheet('leadSheet');$id('leadSheet').scrollTop=0;
 }
+// ── Lead timeline: everything that happened to the lead, oldest first — arrived, first reply,
+// assigned, each call, follow-ups sent, meetings, notes, quote — ending with where it stands now.
+// Same events as dashboard.html leadTimelineEvents; ConvHistory/NotesList aren't in the slim list,
+// so they're fetched for this one lead, with Follow-up V3 sends and meetings alongside.
+const tlTs=v=>{const t=Date.parse(v||'');return Number.isFinite(t)?t:NaN};
+function tlGap(ms){if(!(ms>=0))return'';const m=Math.round(ms/60000),h=Math.floor(m/60),d=Math.floor(h/24);return m<1?'within a minute':m<60?m+' min':h<48?h+'h'+(m%60?' '+(m%60)+'m':''):d+' days'}
+const tlOrd=n=>n===1?'First':n+(n%10===2&&n%100!==12?'nd':n%10===3&&n%100!==13?'rd':'th');
+const TL_MTG_OUTCOME={interested:'👍 Interested',not_interested:'👎 Not interested',follow_up:'🔁 Follow-up',no_show:'🚫 No-show'};
+const TL_MTG_STATUS={link_sent:'Link sent',clicked:'Clicked',pending:'Awaiting confirmation',scheduled:'Scheduled',cancelled:'Cancelled',completed:'Completed',agreed:'Agreed — time not fixed'};
+function timelineEvents(l,x={}){
+ const ev=[],add=(ts,icon,title,detail='',tone='info')=>ev.push({ts,icon,title,detail,tone});
+ const who=e=>e?(getTeamMembers().find(m=>sameEmail(m.email,e))?.name||e):'';
+ const arrived=tlTs(l.Date);
+ add(arrived,'📥','Lead arrived',[l.Source||l.LeadSource||'',l.Campaign||''].filter(Boolean).join(' · '),'ok');
+ let hist=[];try{hist=JSON.parse(x.ConvHistory||'[]')}catch{}if(!Array.isArray(hist))hist=[];
+ const fu=hist.find(m=>m.role==='user'&&tlTs(m.ts));if(fu)add(tlTs(fu.ts),'💬','First message from customer',String(fu.content||'').slice(0,90));
+ const fb=hist.find(m=>m.role==='assistant'&&tlTs(m.ts));if(fb)add(tlTs(fb.ts),'🤖','First reply sent',arrived?tlGap(tlTs(fb.ts)-arrived)+' after arrival':'');
+ hist.filter(m=>m.role==='system'&&/^Assigned to /.test(m.content||'')&&tlTs(m.ts)).forEach(m=>add(tlTs(m.ts),'👤','Assigned to '+who((m.content.match(/^Assigned to (\S+)/)||[])[1]),m.content.split(' — ')[1]||''));
+ if(tlTs(x.HandoverAt??l.HandoverAt))add(tlTs(x.HandoverAt??l.HandoverAt),'🙋','Handed over to the team','','warn');
+ parseCallLog(x.CallLog??l.CallLog).slice().reverse().forEach((c,i)=>{
+  const ts=tlTs(c.at||c.date),gap=i===0&&arrived&&ts?tlGap(ts-arrived)+' after arrival':'';
+  add(ts,'📞',`${tlOrd(i+1)} call — ${c.outcome||'logged'}`,[c.duration?c.duration+' min':'',c.by?'by '+who(c.by):'',c.notes||'',gap].filter(Boolean).join(' · '),c.outcome==='Answered'?'ok':NO_ANSWER.has(c.outcome)?'bad':'warn');
+ });
+ (x.followups||[]).forEach(h=>add(tlTs(h.sent_at),'📤',`${h.kind==='reengage'?'Re-engage message':(h.label||'Follow-up '+h.step)} sent`,h.replied_at?'Customer replied '+timeAgo(h.replied_at):(h.delivery_status||'No reply yet'),h.replied_at?'ok':'info'));
+ (x.meetings||[]).forEach(m=>add(tlTs(m.created_at||m.sent_at||m.start_at),'📅',`${m.title||m.link_name||'Meeting'}${m.start_at?' for '+fmtWhen(m.start_at):''}`,[m.outcome?TL_MTG_OUTCOME[m.outcome]:(TL_MTG_STATUS[m.status]||m.status||''),(m.scheduled_by||m.sent_by)?'by '+who(m.scheduled_by||m.sent_by):''].filter(Boolean).join(' · '),m.outcome==='no_show'||m.status==='cancelled'?'bad':'ok'));
+ let notes=[];try{notes=JSON.parse(x.NotesList??l.NotesList??'[]')}catch{}if(!Array.isArray(notes))notes=[];
+ notes.forEach(n=>add(tlTs(n.ts||n.date),'📝','Note'+(n.author?' by '+who(n.author):''),String(n.text||'').slice(0,140)));
+ if(tlTs(x.QuoteSentAt??l.QuoteSentAt))add(tlTs(x.QuoteSentAt??l.QuoteSentAt),'🧾','Quote sent',String(x.QuoteSentTotal??l.QuoteSentTotal??''));
+ if(tlTs(x.LastMsgAt??l.LastMsgAt)&&hist.length)add(tlTs(x.LastMsgAt??l.LastMsgAt),'🕘','Last message','');
+ // Undated entries (very old calls/notes) go last rather than guessing a time.
+ return ev.map((e,i)=>({...e,i})).sort((a,b)=>(isNaN(a.ts)?1:0)-(isNaN(b.ts)?1:0)||(a.ts-b.ts)||(a.i-b.i));
+}
+function renderTimeline(l,x={}){
+ const stage=String(l.Stage||'new'),tone=isWonLead(l)?'ok':isLostLead(l)?'bad':'info';
+ const when=ts=>isNaN(ts)?'Time not recorded':`${fmtWhen(ts)} · ${timeAgo(ts)}`;
+ $id('tlSheet').innerHTML=`<div class="grab"></div>
+  <div class="ls-head"><button class="icon" title="Back" onclick="openLeadSheet(findLead('${esc(l.Id)}'))">←</button><div style="min-width:0"><h2>🕒 Timeline</h2><small>${esc(l.Name||l.Phone||'')}${Number(l.Id)>0?' · LD-'+String(l.Id).padStart(5,'0'):''}</small></div><button class="icon ls-x" title="Close" onclick="closeSheets()">✕</button></div>
+  <ol class="tl">${timelineEvents(l,x).map(e=>`<li class="${e.tone}"><b>${e.icon} ${esc(e.title)}</b><small>${esc(when(e.ts))}</small>${e.detail?`<p>${esc(e.detail)}</p>`:''}</li>`).join('')}
+   <li class="${tone}"><b>📍 Now: ${esc(stage.replace(/_/g,' ').replace(/^./,c=>c.toUpperCase()))}</b>${l.ReminderDate?`<p>⏰ Next follow-up ${esc(fmtWhen(l.ReminderDate)||String(l.ReminderDate).slice(0,10))}</p>`:''}</li></ol>
+  ${x.loading?'<div class="empty" style="padding:6px 20px">Loading chat, follow-ups and meetings…</div>':''}`;
+}
+let tlFor='';
+async function openTimeline(id){
+ const l=findLead(id);if(!l)return;tlFor=String(id);
+ renderTimeline(l,{loading:true});showSheet('tlSheet');$id('tlSheet').scrollTop=0;
+ const [rec,fu,mt]=await Promise.all([
+  // The list already has every other column; ConvHistory is the one it leaves out.
+  api(`${leadsUrl()}/${l.Id}?fields=Id,ConvHistory,NotesList,CallLog`).catch(()=>api(`${leadsUrl()}/${l.Id}`)).catch(()=>({})),
+  api(`/followups/v3/lead?lead_id=${encodeURIComponent(l.Id)}`).catch(()=>null),
+  api(`/meetings/lead?lead_id=${encodeURIComponent(l.Id)}`).catch(()=>null),
+ ]);
+ if(tlFor!==String(id)||$id('tlSheet').classList.contains('hidden'))return;
+ renderTimeline(l,{...rec,followups:fu?.enabled?(fu.history||[]):[],meetings:mt?.meetings||[]});
+}
+
 // Same as the dashboard's ⋯ → "Personal chat / Staff — not a lead": a Personal/Staff tag plus
 // OptOut=Yes (the bot stops replying), and the contact leaves every lead list and count.
 async function markPersonal(id,kind){
