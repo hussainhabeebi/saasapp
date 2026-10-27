@@ -4543,6 +4543,54 @@ Routes (session-gated, `/meta/ads-report/*`): `GET data`, `GET first-messages`, 
 owner only), `POST test-summary`, `POST accounting/post`, `GET capi`. Settings live in D1
 `meta_ads_report_state.config_json`, not on the CLIENTS row.
 
+### Growth tools (funnel events, audiences, Pixel, sales-based rules, tracking health)
+
+Apply `cloudflare-worker/migrations/0122_meta_ads_growth.sql` (the Worker also creates these on
+first use): budgets on `meta_ads_ads`, plus `meta_capi_errors`, `meta_ads_audiences` and
+`meta_ads_actions`. All settings are in Ads ROI → settings (owner only).
+
+- **Funnel events / Conversion Leads.** Map pipeline stages (plus won / lost) to event names. When a
+  lead reaches a mapped stage, through a Leads PATCH or a bot turn, that event goes to Meta's Conversions
+  API once per lead. Form leads go with their `lead_id` (`action_source: system_generated`,
+  `event_source: crm`), WhatsApp-ad chats with `ctwa_clid`, and web leads with `fbc`/`fbp`. "Spam"
+  sends `Junk` unless that's switched off. Refused events are logged in `meta_capi_errors`. Once
+  the 🩺 Tracking health checklist is green, switch the lead-form campaign's goal to **Conversion leads**.
+- **CRM audiences** (daily after the spend sync, or 🔄 Refresh now): Buyers (180 days), Buyers by
+  value (value-based), Hot not bought (90 days) and Exclude (won, junk, opted out). Phone and email are
+  SHA-256 hashed and replaced with `usersreplace`. A 1–10% lookalike of the buyer audiences is created
+  once one reaches 100 people.
+  - The token needs **ads_management**, and the ad account must have accepted the Custom Audience terms
+    (business.facebook.com/ads/manage/customaudiences/tos.php).
+  - An audience that becomes empty keeps its last members, because Meta can't replace an audience with zero rows.
+- **Pixel on the store, order and booking pages** (`frontend/lv-pixel.js`). The Pixel ID comes from the
+  public client endpoints (`meta_pixel_id`).
+  - `fbclid` is kept as `_fbc` for 90 days.
+  - Order and booking requests carry `capi:{event_id,url,fbc,fbp}`. The Worker sends Purchase or Schedule
+    with the same `event_id` as the browser event, so Meta deduplicates them.
+  - The optional consent banner holds the Pixel and the click ids until the visitor taps Allow.
+  - nginx CSP allows `connect.facebook.net`.
+  - A web order has no CRM lead, so a later "Order placed" label can send a second Purchase for the same sale.
+- **Sales-based rules.** Each rule is: metric (cost per sale, qualified or lead; ROAS; junk %; spend
+  with no sale) above or below a value, over 3/7/14/30 days, per ad set or campaign, with a minimum spend.
+  The action is pause, cut budget or raise budget.
+  - A triggered rule appears under 🧭 Suggested actions. Nothing changes until the owner taps Approve
+    (`POST actions/apply`), which writes `status` or `daily_budget` through the Graph API.
+  - Changes are capped by "largest budget change" and the budget floor, logged in `meta_ads_actions`,
+    and can be undone (`POST actions/undo`).
+  - On Advantage campaign budget, budget changes go to the campaign.
+  - Needs **ads_management**.
+- **Staff-capacity guard.** When N or more ad leads from the last 48 h have no logged call, the page
+  suggests cutting the budgets of the active click-to-WhatsApp ad sets.
+- **Tracking health** (`GET health?days=7`) shows:
+  - events sent and refused, by event
+  - the share matched by an ad click (lead id, ctwa_clid or fbc)
+  - Meta's refusal reasons
+  - what Meta says the dataset received (`/{pixel}/stats`)
+  - the Conversion Leads checklist
+
+  The daily alert also flags refused events, and flags when no events reached Meta for 3 days while ad
+  leads kept arriving.
+
 ## Meta Ads Automation module (`frontend/dashboard.html` — Reports page's 🤖 Ads Automation tab)
 A **standalone module**, separate from the read-only Marketing/ROI tab above — genuinely
 write-capable against Meta's **Marketing API**: it creates/syncs Custom Audiences and moves real

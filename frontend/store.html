@@ -62,6 +62,7 @@ a{color:inherit}
   <div class="err" id="errMsg" style="display:none">Sorry, this store link isn't working right now.</div>
 </div>
 
+<script src="/lv-pixel.js?v=1"></script>
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
@@ -144,7 +145,12 @@ async function load(){
     const chat = waLink(storeInfo.whatsapp_phone, `Hi! I'm browsing your products.`);
     if(chat){ chatBtn.href = chat; chatBtn.style.display = 'inline-flex'; }
 
+    // Meta Pixel (lv-pixel.js): the business's own pixel; a product link counts as a product view,
+    // an "Order on WhatsApp" tap as Contact.
+    LVPixel.init({pixelId:storeInfo.meta_pixel_id, consent:storeInfo.pixel_consent_banner});
     renderProducts();
+    const focus = focusSku && allProducts.find(p => p.sku === focusSku);
+    if(focus) LVPixel.track('ViewContent', {content_ids:[focusSku], content_type:'product', content_name:focus.name, value:Number(focus.price)||0, currency:focus.currency||'INR'});
     if(focusSku){
       const el = document.getElementById('p-'+focusSku);
       if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
@@ -153,6 +159,11 @@ async function load(){
     document.getElementById('errMsg').style.display = 'block';
   }
 }
+document.getElementById('grid').addEventListener('click', e => {
+  const btn = e.target.closest('a.order-btn'); if(!btn) return;
+  const sku = (btn.closest('.card')?.id || '').replace(/^p-/, '');
+  LVPixel.track('Contact', {content_ids:sku?[sku]:[], content_type:'product'});
+});
 load();
 </script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>

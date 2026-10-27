@@ -8,7 +8,7 @@ import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNum
 import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
-import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode} from './meta-ads-report.js';
+import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines} from './ta-properties.js';
 import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
@@ -1778,11 +1778,13 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
   }
   // A lead labelled "Order placed" (or the account's own purchase label) → Purchase to Meta.
   // After the response when the runtime allows, so a slow Meta never holds up the save.
-  if(r.ok && (method==='PATCH'||method==='POST') && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"Tags"')){
+  // …and a stage mapped in the funnel (or Spam) → that stage's event (capiFunnelFromStages).
+  if(r.ok && (method==='PATCH'||method==='POST') && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && /"(Tags|Stage|HandoverOutcome)"/.test(body)){
     try{
       const sent=[].concat(JSON.parse(body));
       const ids=method==='POST'?[].concat(JSON.parse(data||'null')).map(x=>x?.Id):sent.map(x=>x?.Id);
-      const job=capiPurchaseFromLabels(env, payload.cid, sent.map((x,i)=>({...x, Id:ids[i]})));
+      const rows=sent.map((x,i)=>({...x, Id:ids[i]}));
+      const job=Promise.all([capiPurchaseFromLabels(env, payload.cid, rows), capiFunnelFromStages(env, payload.cid, rows)]);
       if(ctx?.waitUntil) ctx.waitUntil(job); else await job;
     }catch(e){}
   }
@@ -2484,7 +2486,16 @@ const META_CAPI_EVENTS={
   disqualified: {name:'DisqualifiedLead'}, // custom event — negative signal matters too
   booked:       {name:'Schedule'},     // standard event — reached a terminal/booked pipeline stage
   purchase:     {name:'Purchase'},     // standard event — the lead was won, with its deal value
+  junk:         {name:'Junk'},         // custom event — marked Spam: Meta learns who NOT to find
 };
+// Funnel events (Reports → 💸 Ads ROI → settings): a pipeline stage mapped to an event name, e.g.
+// "quote_sent" → "QuoteSent". Keyed "funnel:<slug>" in meta_capi_events so each goes once per lead.
+export function metaFunnelEventKey(name){ return 'funnel:'+String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,40); }
+function metaCapiEventDef(eventKey, extra){
+  if(META_CAPI_EVENTS[eventKey]) return META_CAPI_EVENTS[eventKey];
+  if(String(eventKey).startsWith('funnel:') && String(extra?.eventName||'').trim()) return {name:String(extra.eventName).trim().slice(0,50)};
+  return null;
+}
 async function sha256Hex(str){
   return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)));
 }
@@ -2499,18 +2510,26 @@ async function capiHashPhone(phone){
 // Which key ties an event to the ad click, strongest first (Reports → 💸 Ads ROI shows the mix):
 // an Instant Form lead's own lead id (Meta's "conversion leads" CRM integration), a click-to-WhatsApp
 // lead's ctwa_clid, else hashed phone/email only.
+// Which key ties an event to the ad click, strongest first (Reports → 💸 Ads ROI shows the mix):
+// an Instant Form lead's own lead id (Meta's "conversion leads" CRM integration), a click-to-WhatsApp
+// lead's ctwa_clid, a website visitor's fbc (Meta click id from the ad's landing URL — kept on the
+// lead as Fbc, so later stage events still carry it), else hashed phone/email only.
+// extra.web = {fbc, fbp, url, ip, ua}: an event that happened on a LeadVyne web page (store order,
+// booking) — sent with the same extra.eventId the page's Pixel used, so Meta counts it once.
 export function metaCapiBuildEvent(c, eventKey, lead, extra={}, hashed={}){
-  const def=META_CAPI_EVENTS[eventKey];
+  const def=metaCapiEventDef(eventKey, extra);
   const user_data={};
   if(hashed.em) user_data.em=[hashed.em];
   if(hashed.ph) user_data.ph=[hashed.ph];
   const leadgenId=String(lead?.MetaLeadgenId||'').trim();
   const clid=String(lead?.CtwaClid||'').trim();
+  const web=extra.web||null;
+  const fbc=String(web?.fbc||lead?.Fbc||'').trim().slice(0,300), fbp=String(web?.fbp||lead?.Fbp||'').trim().slice(0,200);
   const event={
     event_name:def.name,
     event_time:Math.floor(Date.now()/1000),
-    // Stable per lead+stage — dedupes retries and lines up with a future client-side Pixel event_id.
-    event_id:`lead_${lead?.Id}_${eventKey}`,
+    // Stable per lead+stage — dedupes retries; a web event uses its Pixel's own event id.
+    event_id:String(extra.eventId||'').slice(0,100)||`lead_${lead?.Id}_${eventKey}`,
     user_data,
   };
   let matchKey='hashed';
@@ -2519,16 +2538,28 @@ export function metaCapiBuildEvent(c, eventKey, lead, extra={}, hashed={}){
     user_data.lead_id=leadgenId; // a string: these ids can pass 2^53
     event.custom_data={event_source:'crm', lead_event_source:'LeadVyne'};
     matchKey='lead_id';
+  }else if(clid){
+    event.action_source='business_messaging';
+    event.messaging_channel='whatsapp';
+    user_data.ctwa_clid=clid;
+    if(c?.waba_id) user_data.whatsapp_business_account_id=String(c.waba_id);
+    matchKey='ctwa_clid';
+  }else if(web){
+    event.action_source='website';
+    if(web.url) event.event_source_url=String(web.url).slice(0,500);
+    if(web.ip) user_data.client_ip_address=String(web.ip).slice(0,64);
+    if(web.ua) user_data.client_user_agent=String(web.ua).slice(0,400);
+    if(fbc){ user_data.fbc=fbc; matchKey='fbc'; }
+    if(fbp) user_data.fbp=fbp;
+  }else if(fbc){
+    event.action_source='system_generated';
+    user_data.fbc=fbc; if(fbp) user_data.fbp=fbp;
+    matchKey='fbc';
   }else{
     event.action_source='business_messaging';
     event.messaging_channel='whatsapp';
-    if(clid){
-      user_data.ctwa_clid=clid;
-      if(c?.waba_id) user_data.whatsapp_business_account_id=String(c.waba_id);
-      matchKey='ctwa_clid';
-    }
   }
-  if(matchKey==='hashed' && !hashed.em && !hashed.ph) return {error:'Lead has no email or phone to match on'};
+  if(matchKey==='hashed' && !hashed.em && !hashed.ph && !(web && fbp)) return {error:'Lead has no email or phone to match on'};
   if(extra.value || eventKey==='purchase'){
     event.custom_data={...(event.custom_data||{}), value:Number(extra.value)||0, currency:String(extra.currency||c?.deal_currency||'INR').toUpperCase()};
   }
@@ -2544,8 +2575,17 @@ async function metaCapiLog(env, c, eventKey, leadId, matchKey){
     try{ await env.DB.prepare(`INSERT INTO meta_capi_events (client_id, event, lead_id, sent_at) VALUES (?,?,?,?)`).bind(Number(c.Id), eventKey, leadId||null, now).run(); }catch(e2){}
   }
 }
+// Every event Meta refused (or that never reached it) — Ads ROI → 🩺 Tracking health and the daily
+// alert read this, so a broken token or dataset shows up the same day instead of silently.
+async function metaCapiLogError(env, c, eventKey, leadId, code, error){
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_capi_errors (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, event TEXT NOT NULL, lead_id INTEGER, code TEXT, error TEXT, at TEXT NOT NULL)`).run();
+    await env.DB.prepare(`INSERT INTO meta_capi_errors (client_id, event, lead_id, code, error, at) VALUES (?,?,?,?,?,?)`)
+      .bind(Number(c.Id), eventKey, leadId||null, String(code||'').slice(0,40), String(error||'').slice(0,300), new Date().toISOString()).run();
+  }catch(e){}
+}
 async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
-  const def=META_CAPI_EVENTS[eventKey];
+  const def=metaCapiEventDef(eventKey, extra);
   if(!def) return {ok:false, error:'Unknown event type'};
   if(!c?.meta_pixel_id||!c?.meta_capi_token) return {ok:false, skipped:true};
   // Each stage reaches Meta once per lead — the dashboard and the bot can both report it.
@@ -2553,18 +2593,49 @@ async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
     const dup=await env.DB.prepare(`SELECT 1 x FROM meta_capi_events WHERE client_id=? AND lead_id=? AND event=? LIMIT 1`).bind(Number(c.Id), Number(lead.Id), eventKey).first().catch(()=>null);
     if(dup) return {ok:true, duplicate:true};
   }
-  const built=metaCapiBuildEvent(c, eventKey, lead, extra, {em:await capiHashEmail(lead.Email), ph:await capiHashPhone(lead.Phone)});
+  const built=metaCapiBuildEvent(c, eventKey, lead||{}, extra, {em:await capiHashEmail(lead?.Email), ph:await capiHashPhone(lead?.Phone)});
   if(built.error) return {ok:false, error:built.error};
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.meta_pixel_id}/events?access_token=${encodeURIComponent(c.meta_capi_token)}`, {
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({data:[built.event]}), signal:AbortSignal.timeout?.(8000),
-  });
-  const data=await r.json().catch(()=>({}));
+  let r, data;
+  try{
+    r=await fetch(`https://graph.facebook.com/v18.0/${c.meta_pixel_id}/events?access_token=${encodeURIComponent(c.meta_capi_token)}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({data:[built.event]}), signal:AbortSignal.timeout?.(8000),
+    });
+    data=await r.json().catch(()=>({}));
+  }catch(e){
+    await metaCapiLogError(env, c, eventKey, lead?.Id, 'network', e.message);
+    return {ok:false, error:e.message, matchKey:built.matchKey};
+  }
   // Logged to D1 (meta_capi_events — see migrations/0003_meta_capi_log.sql) only on a real
-  // successful send, never on skip/failure — this is what the Reports page's "events actually
-  // sent to Meta" audit trail reads from. Best-effort: a logging failure must never surface as if
-  // the CAPI send itself failed.
+  // successful send — this is what the Reports page's "events actually sent to Meta" audit trail
+  // reads from; refusals go to meta_capi_errors. Best-effort: a logging failure must never surface
+  // as if the CAPI send itself failed.
   if(r.ok) await metaCapiLog(env, c, eventKey, lead?.Id, built.matchKey);
+  else await metaCapiLogError(env, c, eventKey, lead?.Id, data?.error?.code||r.status, data?.error?.error_user_msg||data?.error?.message||'HTTP '+r.status);
   return {ok:r.ok, status:r.status, data, matchKey:built.matchKey};
+}
+// Full funnel (Reports → 💸 Ads ROI → settings): a lead moved to a mapped pipeline stage — from the
+// dashboard or by the bot — sends that stage's event ("QuoteSent", "VisitBooked"…); marked Spam →
+// Junk. Lead-form leads go back with their form lead id, which is what Meta's Conversion Leads
+// optimisation reads. patches: [{Id, Stage?, HandoverOutcome?}]. Once per lead+event; never throws.
+export async function capiFunnelFromStages(env, cid, patches){
+  const out=[];
+  try{
+    const list=[].concat(patches||[]).filter(p=>p&&p.Id&&('Stage' in p||'HandoverOutcome' in p)).slice(0,50);
+    if(!list.length) return out;
+    const cfg=await marCapiFunnelSettings(env, cid);
+    const jobs=list.map(p=>({p, name:String(cfg.funnel_map[String(p.Stage||'')]||'').trim(), junk:cfg.send_junk && p.HandoverOutcome==='Spam'})).filter(j=>j.name||j.junk);
+    if(!jobs.length) return out;
+    const c=await getClientById(env, cid);
+    if(!c?.meta_pixel_id || !c?.meta_capi_token) return out;
+    for(const {p, name, junk} of jobs){
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(p.Id)}`);
+      const lead=r.ok?await r.json().catch(()=>null):null;
+      if(!lead || String(lead.ClientId)!==String(cid)) continue;
+      if(name){ const res=await sendMetaCapiEvent(env, c, metaFunnelEventKey(name), lead, {eventName:name}); out.push({id:Number(p.Id), event:name, ok:!!res.ok, duplicate:!!res.duplicate, matchKey:res.matchKey}); }
+      if(junk){ const res=await sendMetaCapiEvent(env, c, 'junk', lead); out.push({id:Number(p.Id), event:'Junk', ok:!!res.ok, duplicate:!!res.duplicate, matchKey:res.matchKey}); }
+    }
+  }catch(e){ console.error('[capiFunnelFromStages]', e.message); }
+  return out;
 }
 // A lead given the purchase label ("Order placed" by default — Reports → 💸 Ads ROI → settings)
 // from the dashboard (tag chips, Edit Lead, bulk edit) or Chats → Purchase to Meta, with the deal
@@ -27017,6 +27088,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env, c, clientId, resolvedLeadId, state.lead, leadBody, {inboxId:state.inboxId});
     // Conversions API: an ad click's Lead and the bot's Hot score go back to Meta (Reports → 💸 Ads ROI).
     if(resolvedLeadId) await engineReportCapiFromTurn(env, c, resolvedLeadId, state, leadBody);
+    if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.lead?.Stage) await capiFunnelFromStages(env, clientId, [{Id:resolvedLeadId, Stage:leadBody.Stage}]);
     // Dual-write new messages to D1 lead_messages for chats.html display
     if(resolvedLeadId){
       const userTs=new Date(startMs).toISOString();
@@ -27310,7 +27382,7 @@ async function handleEcomPublicClient(request, env){
   const url=new URL(request.url);
   const c=await ecomPublicResolveClient(env, url);
   if(!c) return json({error:'Store not found'},404);
-  return json(ecomPublicClientOut(c));
+  return json({...ecomPublicClientOut(c), ...await marPublicPixel(env, c)});
 }
 
 async function handleEcomPublicProducts(request, env){
@@ -27340,7 +27412,23 @@ async function handleEcomPublicProducts(request, env){
 // all). A customer who does complete checkout ends up with two order rows: the bare intent one and
 // this fuller one — an accepted duplicate, not a bug, since staff can tell them apart by `notes`
 // and there's no reliable way to know from here whether they're "the same" order.
-async function handleEcomPublicOrder(request, env){
+// A LeadVyne web page's Pixel ids for the same event (frontend/lv-pixel.js): event_id shared with the
+// browser so Meta keeps one, fbc/fbp click and browser ids, page URL, plus the visitor's IP and
+// browser from the request — all for the Conversions API's website match.
+export function metaWebCapiInfo(request, capi){
+  const x=capi&&typeof capi==='object'?capi:{};
+  const eventId=/^[\w.:-]{6,100}$/.test(String(x.event_id||''))?String(x.event_id):'';
+  const fbc=/^fb\.\d\.\d{10,14}\.[\w-]{10,300}$/.test(String(x.fbc||''))?String(x.fbc):'';
+  const fbp=/^fb\.\d\.\d{10,14}\.\d{5,25}$/.test(String(x.fbp||''))?String(x.fbp):'';
+  let url=''; try{ const u=new URL(String(x.url||'')); if(/^https?:$/.test(u.protocol)) url=u.href.slice(0,500); }catch(e){}
+  return {eventId, web:{fbc, fbp, url, ip:request.headers.get('CF-Connecting-IP')||'', ua:request.headers.get('User-Agent')||''}};
+}
+// Sent after the response when the runtime allows; never fails the page's own request.
+function metaWebCapiSend(env, ctx, c, eventKey, lead, extra){
+  const job=sendMetaCapiEvent(env, c, eventKey, lead, extra).catch(e=>console.error('[metaWebCapiSend]', e.message));
+  if(ctx?.waitUntil) ctx.waitUntil(job); else return job;
+}
+async function handleEcomPublicOrder(request, env, ctx=null){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
   if(!clientId) return json({error:'client_id required'}, 400);
@@ -27388,6 +27476,9 @@ async function handleEcomPublicOrder(request, env){
     await reportOpsError(env, 'handleEcomPublicOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, ordersTable});
     return json({error:'Something went wrong saving your order — please try again or contact us directly.'}, 502);
   }
+  // Purchase to Meta with the same event id as order.html's Pixel (one event, matched both ways).
+  const wc=metaWebCapiInfo(request, body.capi);
+  await metaWebCapiSend(env, ctx, c, 'purchase', {Phone:phone, Email:email}, {value:Number(product.price)||0, currency:product.currency||'', eventId:wc.eventId||('web_'+order_id), web:wc.web});
   return json({ok:true, order_id});
 }
 
@@ -27438,7 +27529,7 @@ async function handleApptPublicClient(request, env){
   if(!c) return json({error:'Booking page not found'}, 404);
   // Healthcare clients use D1; non-healthcare clients require appt_enabled
   if(!apptPublicIsEnabled(c)) return json({error:'Booking page not found'}, 404);
-  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No'});
+  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No', ...await marPublicPixel(env, c)});
 }
 
 async function handleApptPublicServices(request, env){
@@ -27512,7 +27603,15 @@ async function handleApptPublicDoctors(request, env){
 // The one write path this whole public surface has — always creates a `requested` row (never
 // confirms/updates/deletes), so a spammed or malicious submission can only ever add noise for
 // staff to dismiss, not corrupt existing data.
-async function handleApptPublicBook(request, env){
+// The booking's lead keeps the visitor's Meta click/browser ids, so its later stage events match too.
+async function metaKeepWebIds(env, leadId, web){
+  if(!leadId || !(web?.fbc||web?.fbp)) return;
+  try{
+    await ensureLeadsColumns(env, ['Fbc','Fbp']);
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...(web.fbc?{Fbc:web.fbc}:{}), ...(web.fbp?{Fbp:web.fbp}:{})}});
+  }catch(e){}
+}
+async function handleApptPublicBook(request, env, ctx=null){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
   if(!clientId) return json({error:'client_id required'}, 400);
@@ -27542,6 +27641,9 @@ async function handleApptPublicBook(request, env){
     let svc=null;
     if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
     advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
+    // Schedule to Meta with the same event id as book.html's Pixel.
+    const wc=metaWebCapiInfo(request, body.capi);
+    await metaWebCapiSend(env, ctx, c, 'booked', {Phone:phone, Name:name}, {eventId:wc.eventId||('web_appt_'+ins.meta.last_row_id), web:wc.web});
     // The confirmation (details + location map) is sent by the appointment Workflow queued above.
     return json({ok:true});
   }
@@ -27562,6 +27664,9 @@ async function handleApptPublicBook(request, env){
   }
 
   const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service, {date, time});
+  const wc=metaWebCapiInfo(request, body.capi);
+  await metaKeepWebIds(env, lead_id, wc.web);
+  await metaWebCapiSend(env, ctx, c, 'booked', {Id:lead_id||null, Phone:phone, Name:name}, {eventId:wc.eventId||('web_book_'+(lead_id||Date.now())), web:wc.web});
   // notes from the public form aren't in advanceLeadBookingAndTask's fixed shape — patch them
   // onto the row it just inserted rather than threading a free-text field through that helper.
   if(notes){
@@ -38506,12 +38611,12 @@ export default {
       else if(url.pathname==='/internal-chat/history' && request.method==='DELETE'){ res=await handleInternalChatClear(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
-      else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env); }
+      else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env, ctx); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/appt/public/client' && request.method==='GET'){ res=await handleApptPublicClient(request, env); }
       else if(url.pathname==='/appt/public/services' && request.method==='GET'){ res=await handleApptPublicServices(request, env); }
       else if(url.pathname==='/appt/public/doctors' && request.method==='GET'){ res=await handleApptPublicDoctors(request, env); }
-      else if(url.pathname==='/appt/public/book' && request.method==='POST'){ res=await handleApptPublicBook(request, env); }
+      else if(url.pathname==='/appt/public/book' && request.method==='POST'){ res=await handleApptPublicBook(request, env, ctx); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
