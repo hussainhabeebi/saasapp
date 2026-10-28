@@ -1,4 +1,8 @@
 /* ── Hospitality workspace (frontend/hospitality.html) ─────────────────────────────────────────
+   Runs embedded in the CRM (?embed=1 — dashboard.html's 🛎️ Front Desk pages, hospitality-view.js):
+   the CRM's own nav replaces this page's sidebar, and Chats / leads / other CRM pages are handed to
+   the CRM through postMessage ({source:'lv-hospdesk', type:'chat'|'crm'|'lead'}), so nothing ever
+   opens in a new tab.
    Core: sign-in state, the one-request bootstrap (/hospitality/desk/bootstrap) painted from a local
    cache first, navigation, and the front-desk screens every Hospitality client gets — Today,
    Bookings, Calendar (tape chart), Chats, Rooms / Boats, Guests, Settings. Pro screens are loaded on
@@ -19,6 +23,9 @@ var clientRecord={}, hospUnits=[], hospProperties=[];
 let D=null;                       // bootstrap payload
 let page='today';
 const CACHE_KEY='lv_hosp_desk_'+clientId;
+const EMBED=new URLSearchParams(location.search).get('embed')==='1';
+if(EMBED) document.documentElement.classList.add('embed');
+function hostPost(type, data){ try{ window.parent.postMessage({source:'lv-hospdesk', type, ...(data||{})}, location.protocol==='file:'?'*':location.origin); }catch(e){} }
 
 // ── Small helpers ────────────────────────────────────────────────────────────────────────────────
 function toast(msg, err){ const t=$('toast'); t.textContent=msg; t.className=err?'err':''; t.style.display='block'; clearTimeout(toast.t); toast.t=setTimeout(()=>t.style.display='none', err?4200:2400); }
@@ -47,13 +54,26 @@ function isBoat(){ return D?.client?.style==='houseboat'; }
 function unitWord(plural){ return isBoat()?(plural?'Boats':'Boat'):(plural?'Rooms':'Room'); }
 const STATUS={inquiry:['Inquiry','warn'], confirmed:['Confirmed','green'], checked_in:['In-house','blue'], checked_out:['Checked out','gray'], cancelled:['Cancelled','red']};
 function statusBadge(s){ const [l, c]=STATUS[s]||[s, 'gray']; return `<span class="badge ${c}">${esc(l)}</span>`; }
-function waLink(phone, text){ const p=String(phone||'').replace(/\D/g,''); return p?`https://wa.me/${p.length===10?'91'+p:p}${text?'?text='+encodeURIComponent(text):''}`:''; }
 function loadScript(src){
   loadScript.p=loadScript.p||{};
   return loadScript.p[src]||(loadScript.p[src]=new Promise((ok, no)=>{ const s=document.createElement('script'); s.src=src; s.onload=ok; s.onerror=()=>{ delete loadScript.p[src]; no(new Error('Could not load '+src)); }; document.head.appendChild(s); }));
 }
-function openCrm(p){ location.href='dashboard.html?full=1'+(p?'&page='+encodeURIComponent(p):''); }
-function signOut(){ location.href='dashboard.html?logout=1'; }
+function openCrm(p){ if(EMBED) return hostPost('crm', {page:p||'home'}); location.href='dashboard.html'+(p?'?page='+encodeURIComponent(p):''); }
+function signOut(){ if(EMBED) return hostPost('crm', {page:'logout'}); location.href='dashboard.html?logout=1'; }
+// A guest's WhatsApp conversation, inside the CRM's Chats — never a new tab. Without a CRM lead the
+// CRM looks the number up; a prepared message is copied so staff can paste it.
+function openChat(leadId, phone, text){
+  if(text){ try{ navigator.clipboard.writeText(text); toast('Message copied — paste it in the chat'); }catch(e){} }
+  if(EMBED) return hostPost('chat', {leadId:leadId||null, phone:phone||''});
+  if(leadId){ go('chats'); setTimeout(()=>{ const f=$('chatsHost').querySelector('iframe'); try{ f?.contentWindow.postMessage({source:'lv-dashboard', leadId:Number(leadId)}, location.protocol==='file:'?'*':location.origin); }catch(e){} }, 300); return; }
+  toast('Open this guest from Chats — no chat is linked to this number yet', true);
+}
+// wa.me links the Worker returns for an unsent message → the same in-CRM chat, text copied.
+function openChatFromLink(link, leadId){
+  const m=String(link||'').match(/wa\.me\/(\d+)(?:\?text=(.*))?/);
+  openChat(leadId||null, m?m[1]:'', m&&m[2]?decodeURIComponent(m[2]):'');
+}
+function chatBtn(leadId, phone, label){ return phone||leadId?`<button class="btn btn-sm" onclick="event.stopPropagation();openChat(${Number(leadId)||'null'},'${esc(String(phone||'').replace(/[^\d+]/g,''))}')">${label||'💬'}</button>`:''; }
 function skeleton(){ return '<div class="card"><div class="skel" style="width:35%"></div><div class="skel"></div><div class="skel" style="width:80%"></div><div class="skel" style="width:60%"></div></div>'; }
 function errBox(e){ return `<div class="card" style="color:var(--red)">Couldn't load: ${esc(e.message||e)}</div>`; }
 
@@ -184,12 +204,22 @@ function render(){
   const label=it&&it.k===page?(typeof it.l==='function'?it.l():it.l):'Today';
   $('title').textContent=label;
   document.title=`${label} · Hospitality`;
+  if(page==='chats' && EMBED){ hostPost('crm', {page:'chats'}); history.replaceState(null, '', '#today'); page='today'; }
   document.body.classList.toggle('chats-on', page==='chats');
   if(page==='chats'){ mountChats(); return; }
   const el=$('view');
   if(!D){ el.innerHTML=skeleton(); return; }
   const core={today:renderToday, bookings:renderBookings, calendar:renderCalendar, rooms:renderRooms, guests:renderGuests, sales:renderSales, settings:renderSettings};
-  if(core[page]) return core[page](el);
+  if(core[page]){
+    core[page](el);
+    // ?new=1 / ?b=<id> on the hash (from the CRM's Home): open the booking form once.
+    const q=new URLSearchParams((location.hash.split('?')[1])||'');
+    if(page==='bookings' && (q.get('new') || q.get('b'))){
+      history.replaceState(null, '', '#bookings');
+      if(q.get('b')) editBooking(Number(q.get('b'))); else openBooking();
+    }
+    return;
+  }
   el.innerHTML=skeleton();
   loadScript('hospitality-desk-suite.js?v=1').then(()=>{ if(page===want) window.HSX.render(page, el); }).catch(e=>{ el.innerHTML=errBox(e); });
 }
@@ -279,7 +309,7 @@ function bookingForm(b, id){
     <label class="full">Notes<textarea class="in" name="notes" placeholder="Requests, source, special occasion…">${esc(b.notes||'')}</textarea></label>
   </div>
   <div class="muted" id="bkInfo" style="margin-top:8px"></div>
-  ${id&&b.guest_phone?`<div class="row" style="margin-top:10px"><a class="btn btn-sm" target="_blank" rel="noopener" href="${esc(waLink(b.guest_phone))}">💬 WhatsApp guest</a>${D.pro&&onAny('balance_reminders','refunds','web_checkin','prearrival_upsell','stay_messages')?`<button class="btn btn-sm" onclick="closeModal();location.hash='journey?b=${id}'">🧭 Guest journey</button>`:''}</div>`:''}`;
+  ${id&&(b.guest_phone||b.lead_id)?`<div class="row" style="margin-top:10px"><button class="btn btn-sm" onclick="closeModal();openChat(${Number(b.lead_id)||'null'},'${esc(String(b.guest_phone||'').replace(/[^\d+]/g,''))}')">💬 Chat with guest</button>${D.pro&&onAny('balance_reminders','refunds','web_checkin','prearrival_upsell','stay_messages')?`<button class="btn btn-sm" onclick="closeModal();location.hash='journey?b=${id}'">🧭 Guest journey</button>`:''}</div>`:''}`;
   const buttons=[];
   if(id){
     if(b.status==='confirmed') buttons.push({label:'Check in', onClick:()=>setStatus(id, 'checked_in')});
@@ -456,7 +486,7 @@ async function renderGuests(el){
     el.innerHTML=`<div class="muted" style="margin-bottom:10px">${list.length} guests from your bookings.${D.pro?' Switch on <b>Guest profiles</b> in Settings to save birthdays, anniversaries and preferences.':''}</div>
     ${list.length?`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Guest</th><th>Phone</th><th>Stays</th><th>Nights</th><th>Spent</th><th>Last stay</th><th>Next stay</th><th></th></tr></thead><tbody>
     ${list.map(g=>`<tr><td><b>${esc(g.name||'—')}</b>${g.stays>=3?' <span class="badge green">Regular</span>':''}</td><td>${esc(g.phone||'')}</td><td>${g.stays}</td><td>${g.nights}</td><td>${money(g.spent)}</td><td>${g.last?fmtDate(g.last, false):'—'}</td><td>${g.next?fmtDate(g.next, false):'—'}</td>
-      <td>${g.phone?`<a class="btn btn-sm" target="_blank" rel="noopener" href="${esc(waLink(g.phone))}">💬</a>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div class="card empty-state">No guests yet.</div>'}`;
+      <td>${chatBtn(null, g.phone)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="card empty-state">No guests yet.</div>'}`;
   }catch(e){ el.innerHTML=errBox(e); }
 }
 

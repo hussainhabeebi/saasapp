@@ -127,17 +127,18 @@ async function hsSaveOptions(){
 const ALERT_IC={weather:'🌧️', low_rating:'😟', feedback:'📝', competitor:'📉', service:'🛠️', unsent:'✉️', payment:'💳', agent:'🤝'};
 R.alerts=async el=>{
   el.innerHTML=skeleton();
-  const list=await slist('alerts');
+  const list=await slist('alerts'); window._alerts=list;
   const open=list.filter(a=>a.status==='open');
   el.innerHTML=`<div class="row" style="margin-bottom:12px"><span class="muted">${open.length} open</span><span class="sp"></span>${open.length?'<button class="btn" onclick="hsAlertDone(0,true)">Mark all done</button>':''}</div>
   ${list.length?list.map(a=>{
     const phone=a.kind==='unsent'?String(a.ref).split('|')[1]:'';
     return `<div class="card" style="opacity:${a.status==='open'?1:.55};padding:12px 14px"><div class="row"><span style="font-size:20px">${ALERT_IC[a.kind]||'🔔'}</span><div style="flex:1;min-width:0"><b>${esc(a.title)}</b>
       <div class="muted" style="white-space:pre-wrap">${esc(a.body).slice(0,600)}</div><div class="muted">${new Date(a.created_at).toLocaleString()}</div></div>
-      ${phone?`<a class="btn btn-sm" target="_blank" rel="noopener" href="${esc(waLink(phone, a.body))}">Send on WhatsApp</a>`:''}
+      ${phone?`<button class="btn btn-sm" onclick="hsAlertChat(${a.id})">Open chat & copy message</button>`:''}
       ${a.status==='open'?`<button class="btn btn-sm" onclick="hsAlertDone(${a.id})">Done</button>`:'<span class="badge gray">Done</span>'}</div></div>`;
   }).join(''):'<div class="card empty-state">🎉 No alerts.</div>'}`;
 };
+function hsAlertChat(id){ const a=(window._alerts||[]).find(x=>x.id===id); if(a) openChat(null, String(a.ref).split('|')[1]||'', a.body); }
 async function hsAlertDone(id, all){ try{ await sapi('alerts', 'PATCH', all?{all:true}:{id, status:'done'}); await refresh(); }catch(e){ toast(e.message, true); } }
 
 // ── Guest Journey ────────────────────────────────────────────────────────────────────────────────
@@ -167,7 +168,7 @@ async function jrOpen(id){
   if(b.id_count) ids=(await sapi(`idscans?booking_id=${id}`).catch(()=>({list:[]}))).list;
   const sendBtn=(k, l, f)=>f?`<button class="btn btn-sm" onclick="jrSend(${id},'${k}')">${l}</button>`:'';
   modal(`${b.guest_name||'Guest'} · ${b.unit_name||''}`, `
-    <div class="row" style="margin-bottom:10px"><span>${fmtDate(b.check_in)} → ${fmtDate(b.check_out)}</span>${statusBadge(b.status)}<span class="sp"></span>${b.guest_phone?`<a class="btn btn-sm" target="_blank" rel="noopener" href="${esc(waLink(b.guest_phone))}">💬 WhatsApp</a>`:''}</div>
+    <div class="row" style="margin-bottom:10px"><span>${fmtDate(b.check_in)} → ${fmtDate(b.check_out)}</span>${statusBadge(b.status)}<span class="sp"></span>${chatBtn(b.lead_id, b.guest_phone, '💬 Chat')}</div>
     <div class="kpis" style="grid-template-columns:repeat(4,1fr)"><div class="stat"><div class="stat-lbl">Total</div><div class="stat-val" style="font-size:18px">${money(m.total, m.currency)}</div></div>
       <div class="stat"><div class="stat-lbl">Received</div><div class="stat-val" style="font-size:18px">${money(m.received, m.currency)}</div></div>
       <div class="stat${m.balance>0?' accent':''}"><div class="stat-lbl">Balance</div><div class="stat-val" style="font-size:18px">${money(m.balance, m.currency)}</div></div>
@@ -191,7 +192,7 @@ async function jrSend(id, kind){
   try{
     const r=await sapi('journey/send', 'POST', {booking_id:id, kind});
     if(r.ok) toast(r.status==='template'?'Sent as WhatsApp template':'Sent on WhatsApp');
-    else{ toast('Not sent — the guest hasn\'t written in 24h and no template is set (see Settings).', true); if(r.wa_link) window.open(r.wa_link, '_blank', 'noopener'); }
+    else{ toast('Not sent — the guest hasn\'t written in 24h and no template is set (see Settings).', true); if(r.wa_link) openChatFromLink(r.wa_link, (jr.list.find(x=>x.id===id)||{}).lead_id); }
     jrReload(id);
   }catch(e){ toast(e.message, true); }
 }
@@ -315,7 +316,7 @@ R.tasks=async el=>{
 };
 function tkTab(k){ SUB.tasks=k; rerender(); }
 async function tkStatus(id, status){ try{ await sapi('tasks', 'PATCH', {id, status}); toast(status==='done'?'Done ✓':'Updated'); rerender(); refresh(); }catch(e){ toast(e.message, true); } }
-async function tkNotify(id){ try{ const r=await sapi('tasks/notify', 'POST', {id}); if(r.ok) toast('Sent on WhatsApp'); else window.open(r.wa_link, '_blank', 'noopener'); }catch(e){ toast(e.message, true); } }
+async function tkNotify(id){ try{ const r=await sapi('tasks/notify', 'POST', {id}); if(r.ok) toast('Sent on WhatsApp'); else openChatFromLink(r.wa_link); }catch(e){ toast(e.message, true); } }
 function tkForm(id){
   const x=id?(window._tasks||[]).find(t=>t.id===id):{kind:'maintenance', priority:'normal', status:'open', due_date:today()};
   formModal(id?`Task #${id}`:'New task', [{n:'title', l:'Task', full:true, ph:'Fix AC in Villa 2'}, {n:'kind', l:'Type', t:'select', o:[['maintenance', 'Maintenance'], ['housekeeping', 'Housekeeping'], ['request', 'Guest request'], ['other', 'Other']]},
@@ -350,7 +351,7 @@ R.cruise=async el=>{
     <div class="grid g3" style="margin-top:10px">
       <div><div class="muted">📍 Jetty</div><b>${esc(b.jetty?.name||'Not set')}</b>${b.jetty?.map_url?` <a target="_blank" rel="noopener" href="${esc(b.jetty.map_url)}">map</a>`:''}
         ${b.plan.length?`<div style="margin-top:6px">${b.plan.map(p=>`<div class="muted">${p.next?'<i>next day</i> ':''}<b style="color:var(--ink)">${esc(p.at)}</b> ${esc(p.what)}</div>`).join('')}</div>`:''}</div>
-      <div><div class="muted">👥 Crew</div>${b.crew.map(c=>`<div>${esc(c.role)}: <b>${esc(c.name)}</b> ${c.phone?`<a target="_blank" rel="noopener" href="${esc(waLink(c.phone))}">💬</a>`:''}</div>`).join('')||'<span class="muted">No crew assigned</span>'}</div>
+      <div><div class="muted">👥 Crew</div>${b.crew.map(c=>`<div>${esc(c.role)}: <b>${esc(c.name)}</b> ${chatBtn(null, c.phone)}</div>`).join('')||'<span class="muted">No crew assigned</span>'}</div>
       <div><div class="muted">🍛 Meals</div>${b.meals.map(m=>`<div><b>${esc(m.meal)}:</b> ${esc(m.items.map(i=>i.name).join(', ')||'—')}${m.notes?` <i class="muted">(${esc(m.notes)})</i>`:''}</div>`).join('')||'<span class="muted">No pre-order</span>'}${b.suite?.preferences?`<div class="muted">📝 ${esc(b.suite.preferences)}</div>`:''}</div>
     </div>
     ${b.check_in===cruiseDate?`<div class="row" style="margin-top:10px">${on('pickup')?`<button class="btn btn-sm" onclick="crSend(${b.id},'pickup')">📍 Send pickup details</button><button class="btn btn-sm" onclick="crSend(${b.id},'driver_on_way')">🚗 Driver on the way</button><button class="btn btn-sm btn-primary" onclick="crSend(${b.id},'boat_ready')">🚤 Boat ready</button>`:''}</div>`:''}</div>`;
@@ -367,7 +368,7 @@ function crTrip(id){
 async function crSend(id, kind){
   const extra=kind==='driver_on_way'?prompt('Add a note (e.g. "Arriving in 15 minutes, white Innova KL-04-1234"):', ''):'';
   if(extra===null) return;
-  try{ const r=await sapi('journey/send', 'POST', {booking_id:id, kind, text:extra}); if(r.ok) toast('Sent'); else{ toast('Not sent — open WhatsApp instead', true); if(r.wa_link) window.open(r.wa_link, '_blank', 'noopener'); } }catch(e){ toast(e.message, true); }
+  try{ const r=await sapi('journey/send', 'POST', {booking_id:id, kind, text:extra}); if(r.ok) toast('Sent'); else{ toast('Not sent — open WhatsApp instead', true); if(r.wa_link) openChatFromLink(r.wa_link, ((window._cruise||[]).find(x=>x.id===id)||{}).lead_id); } }catch(e){ toast(e.message, true); }
 }
 
 // ── Fleet & Maintenance ──────────────────────────────────────────────────────────────────────────
@@ -532,7 +533,7 @@ R.feedback=async el=>{
   el.innerHTML=`<div class="kpis"><div class="stat accent"><div class="stat-lbl">Average rating</div><div class="stat-val">${avg} ★</div></div><div class="stat"><div class="stat-lbl">Ratings</div><div class="stat-val">${list.length}</div></div>
     <div class="stat"><div class="stat-lbl">Happy (4–5★)</div><div class="stat-val">${list.filter(x=>x.rating>=4).length}</div></div><div class="stat"><div class="stat-lbl">Needs attention (1–3★)</div><div class="stat-val">${list.filter(x=>x.rating<=3).length}</div></div></div>`+
     tbl(['Guest', 'Stay', 'Rating', 'What they said', ''], list.map(x=>`<tr><td><b>${esc(x.guest_name||'—')}</b><div class="muted">${esc(x.guest_phone||'')}</div></td><td>${esc(x.unit_name||'')}<div class="muted">${fmtDate(x.check_in, false)} → ${fmtDate(x.check_out, false)}</div></td>
-      <td><span class="badge ${x.rating>=4?'green':x.rating===3?'warn':'red'}">${'★'.repeat(x.rating)}</span></td><td>${esc(x.feedback||'')}</td><td>${x.guest_phone?`<a class="btn btn-sm" target="_blank" rel="noopener" href="${esc(waLink(x.guest_phone))}">💬</a>`:''}</td></tr>`), 'Ratings arrive after check-out.');
+      <td><span class="badge ${x.rating>=4?'green':x.rating===3?'warn':'red'}">${'★'.repeat(x.rating)}</span></td><td>${esc(x.feedback||'')}</td><td>${chatBtn(null, x.guest_phone)}</td></tr>`), 'Ratings arrive after check-out.');
 };
 
 // ── Review Replies ───────────────────────────────────────────────────────────────────────────────
@@ -561,7 +562,7 @@ R.profiles=async el=>{
   const md=s=>s?`${Number(s.slice(3))} ${MON[Number(s.slice(0,2))-1]}`:'';
   el.innerHTML=`<div class="row" style="margin-bottom:10px"><input class="in" id="gpQ" placeholder="Search guests…" value="${esc(gpQ)}" style="width:280px"><span class="sp"></span><button class="btn btn-primary" onclick="gpForm()">＋ Add guest</button></div>`+
     tbl(['Guest', 'Stays', 'Spent', 'Last / next', 'Birthday', 'Anniversary', 'Preferences', ''], shown.slice(0, 500).map((g, i)=>`<tr class="click" onclick="gpForm('${esc(g.phone_key)}')"><td><b>${esc(g.name||'—')}</b>${g.stays>=3?' <span class="badge green">Regular</span>':''}<div class="muted">${esc(g.phone||'')}</div></td><td>${g.stays}</td><td>${money(g.spent)}</td>
-      <td>${g.last_stay?fmtDate(g.last_stay, false):'—'}${g.next_stay?` · <b>${fmtDate(g.next_stay, false)}</b>`:''}</td><td>${md(g.birthday)||'—'}</td><td>${md(g.anniversary)||'—'}</td><td class="muted">${esc((g.preferences||'').slice(0,80))}</td><td>${g.phone?`<a class="btn btn-sm" target="_blank" rel="noopener" onclick="event.stopPropagation()" href="${esc(waLink(g.phone))}">💬</a>`:''}</td></tr>`), 'No guests yet.');
+      <td>${g.last_stay?fmtDate(g.last_stay, false):'—'}${g.next_stay?` · <b>${fmtDate(g.next_stay, false)}</b>`:''}</td><td>${md(g.birthday)||'—'}</td><td>${md(g.anniversary)||'—'}</td><td class="muted">${esc((g.preferences||'').slice(0,80))}</td><td>${chatBtn(null, g.phone)}</td></tr>`), 'No guests yet.');
   const qi=$('gpQ'); qi.oninput=()=>{ gpQ=qi.value; clearTimeout(qi.t); qi.t=setTimeout(()=>{ R.profiles($('view')).then(()=>{ const n=$('gpQ'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 300); };
 };
 function gpForm(key){
