@@ -35006,11 +35006,30 @@ const HS_DEPS={
 };
 
 // ── Hospitality → API Import glue (hospitality-import.js) ── API keys are encrypted the same way
-// AI provider keys are (AI_KEY_ENC_SECRET).
+// AI provider keys are (AI_KEY_ENC_SECRET, "v1:…"). Where that secret isn't configured, they're
+// encrypted with a key derived from SESSION_SIGNING_KEY instead ("s1:…", always set — login needs
+// it), so the import works without extra setup. Each stored key says which scheme it used, so
+// adding AI_KEY_ENC_SECRET later doesn't strand keys saved before it.
+async function hiSessionCryptoKey(env){
+  const digest=await crypto.subtle.digest('SHA-256', new TextEncoder().encode('hospitality-api-import:'+String(env.SESSION_SIGNING_KEY)));
+  return crypto.subtle.importKey('raw', digest, {name:'AES-GCM'}, false, ['encrypt','decrypt']);
+}
 const HI_DEPS={
   json, requireSession, getClientById, reportOpsError,
-  encrypt:async(env, plain)=>{ if(!env.AI_KEY_ENC_SECRET) throw new Error('AI_KEY_ENC_SECRET is not configured'); return aiEncryptSecret(env, plain); },
-  decrypt:async(env, stored)=>env.AI_KEY_ENC_SECRET?aiDecryptSecret(env, stored):null,
+  encrypt:async(env, plain)=>{
+    if(env.AI_KEY_ENC_SECRET) return aiEncryptSecret(env, plain);
+    if(!env.SESSION_SIGNING_KEY) throw new Error('No encryption secret configured');
+    const iv=crypto.getRandomValues(new Uint8Array(12));
+    const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, await hiSessionCryptoKey(env), new TextEncoder().encode(String(plain)));
+    return `s1:${aiB64(iv)}:${aiB64(ct)}`;
+  },
+  decrypt:async(env, stored)=>{
+    const [v, iv, ct]=String(stored||'').split(':');
+    if(v==='v1') return env.AI_KEY_ENC_SECRET?aiDecryptSecret(env, stored):null;
+    if(v!=='s1'||!iv||!ct||!env.SESSION_SIGNING_KEY) return null;
+    try{ return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM', iv:aiUnB64(iv)}, await hiSessionCryptoKey(env), aiUnB64(ct))); }
+    catch(e){ return null; }
+  },
 };
 
 // ── CEO Bot glue (ceo-bot.js) ──

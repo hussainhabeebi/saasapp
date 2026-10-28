@@ -1538,8 +1538,8 @@ Imports properties and their units/rooms from another system's REST API — e.g.
 offers `GET https://example.com/api/v1/properties` with `Authorization: Bearer <key>` (or `X-API-Key`)
 — and keeps them in live sync.
 
-- **Setup:** none beyond `AI_KEY_ENC_SECRET` (already used for AI provider keys) — API keys are stored
-  encrypted with it. The tables (`migrations/0125_hospitality_api_import.sql`) are also created on first
+- **Setup:** none. API keys are stored encrypted with `AI_KEY_ENC_SECRET` when it's set (as for AI
+  provider keys), otherwise with a key derived from `SESSION_SIGNING_KEY`; each stored key records which. The tables (`migrations/0125_hospitality_api_import.sql`) are also created on first
   use, so applying the migration is optional.
 - **Using it:** paste the link and key, **🔍 Test link** to preview what will be imported, then
   **Import & keep in sync**. Each link has its own live-sync interval (15 min – daily) and a
