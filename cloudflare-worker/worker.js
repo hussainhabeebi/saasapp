@@ -20198,15 +20198,22 @@ async function taSendPackageMediaItem(env,c,convId,item){
       blob=await hospitalityFetchMediaBlob(env,item.url,false);
       if(blob)filename=/png/.test(blob.type)?'photo.png':'photo.jpg';
     }else{
+      // Drive often labels a PDF application/octet-stream, so the file's own %PDF header decides.
       const fileId=driveFileId(item.url);
+      let raw=null;
       if(fileId){
-        const fetched=await driveFetchFile(fileId,item.url);
-        if(fetched&&/pdf/i.test(fetched.contentType||fetched.blob?.type||''))blob=fetched.blob;
+        raw=(await driveFetchFile(fileId,item.url))?.blob||null;
+        if(!await taIsPdfBlob(raw)){
+          const r=await fetch(`https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=t`).catch(()=>null);
+          raw=r?.ok?await r.blob():null;
+        }
       }else{
         const r=await fetch(item.url);
-        if(r.ok&&/pdf/i.test(r.headers.get('content-type')||''))blob=await r.blob();
+        raw=r.ok?await r.blob():null;
       }
-      if(blob&&blob.size>WA_PDF_LIMIT)blob=null;
+      if(await taIsPdfBlob(raw))blob=new Blob([raw],{type:'application/pdf'});
+      else if(raw&&raw.size)await reportOpsError(env,'Travel package PDF — link is not a downloadable PDF',new Error(`${raw.size} bytes, type ${raw.type||'unknown'} — share the file as "Anyone with the link can view"`),{url:item.url});
+      if(blob&&blob.size>WA_PDF_LIMIT){await reportOpsError(env,'Travel package PDF — too large for WhatsApp',new Error(`${blob.size} bytes`),{url:item.url});blob=null;}
       filename=item.filename||'brochure.pdf';
     }
     if(!blob||!blob.size)return false;
@@ -20216,10 +20223,17 @@ async function taSendPackageMediaItem(env,c,convId,item){
     fd.append('private','false');
     fd.append('attachments[]',blob,filename);
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+    if(!r.ok)await reportOpsError(env,'Travel package media — Chatwoot rejected the send',new Error(`HTTP ${r.status} — ${(await r.text().catch(()=>'')).slice(0,300)}`),{convId,url:item.url});
     return r.ok;
-  }catch(e){return false;}
+  }catch(e){await reportOpsError(env,'Travel package media — send failed',e,{convId,url:item.url}).catch(()=>{});return false;}
 }
-const WA_PDF_LIMIT=25*1024*1024;
+// Chatwoot's default attachment cap; WhatsApp itself takes documents up to 100 MB.
+const WA_PDF_LIMIT=40*1024*1024;
+async function taIsPdfBlob(blob){
+  if(!blob||!blob.size)return false;
+  const head=new Uint8Array(await blob.slice(0,1024).arrayBuffer());
+  return new TextDecoder().decode(head).includes('%PDF-');
+}
 
 // One row per (lead, package, day) whose photos / brochure the bot sent unasked — a package the
 // lead keeps naming must not re-send its gallery every message. A tap or a PDF ask ignores this.
@@ -34623,8 +34637,18 @@ async function driveFetchFile(fileId, sourceUrl=''){
     if(ct.includes('text/html')){
       const html=await r.text();
       const m=html.match(/confirm=([0-9A-Za-z_-]+)/);
-      if(!m) return null;
-      r=await fetch(driveDirectUrl(fileId,m[1],sourceUrl));
+      // Newer interstitial: a form posting to drive.usercontent.google.com/download whose hidden
+      // inputs (id, export, confirm, uuid) make up the real download URL.
+      const form=!m&&/<form[^>]+action="(https:\/\/drive\.usercontent\.google\.com\/download)"/i.exec(html);
+      if(!m&&!form) return null;
+      let next=m?driveDirectUrl(fileId,m[1],sourceUrl):'';
+      if(form){
+        const q=new URLSearchParams();
+        for(const [,name,value] of html.matchAll(/<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"/gi)) q.set(name,value);
+        if(!q.get('id')) q.set('id',fileId);
+        next=`${form[1]}?${q.toString()}`;
+      }
+      r=await fetch(next);
       ct=(r.headers.get('content-type')||'');
       if(ct.includes('text/html')) return null; // still the interstitial — give up rather than send it as-is
     }
