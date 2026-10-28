@@ -83,8 +83,12 @@ async function setup(page, { enabled = true, slowMs = 0, failSettings = 0 } = {}
   if (enabled) await expect(page.locator('.tab[data-tab="books"]')).toBeVisible();
   return { db, errors, fpPatches };
 }
-const PAGES = ['overview', 'documents', 'subscriptions', 'customers', 'collections', 'expenses', 'vendorbills', 'suppliers', 'bankcash', 'books', 'reports', 'tax', 'payroll', 'settings'];
+const SECTIONS = ['overview', 'sales', 'purchases', 'banking', 'reports', 'books', 'settings'];
 const pageId = (t) => 'tab' + t.charAt(0).toUpperCase() + t.slice(1);
+const go = async (page, section, sub) => {
+  await page.click(`.tab[data-tab="${section}"]`);
+  if (sub) await page.click(`#${pageId(section)} .fp-pill[data-k="${sub}"]`);
+};
 const settle = async (page, id) => {
   await expect(page.locator(`#${id} .acc-sub-body .spinner`)).toHaveCount(0, { timeout: 10000 });
   await expect(page.locator(`#${id} .acc-sub-body`)).not.toContainText(/Something went wrong|is not a function|undefined|not available/);
@@ -97,61 +101,66 @@ const sections = async (page, id) => {
   return n;
 };
 
-test('PC view: grouped left sidebar; each screen exists once; every section renders', async ({ page }) => {
+test('PC view: seven sections in a left sidebar; every sub-section renders', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 900 });
   const { errors } = await setup(page);
   const nav = await page.locator('#tabs').boundingBox();
   expect(nav.height).toBeGreaterThan(nav.width); // vertical sidebar
-  await expect(page.locator('#tabs .nav-head')).toHaveText(['Sales', 'Purchases', 'Banking', 'Accounting', 'Setup']);
-  expect(await page.locator('#tabs .tab').evaluateAll((els) => els.map((e) => e.dataset.tab))).toEqual(PAGES);
-  for (const gone of ['financial', 'ops']) await expect(page.locator(`.tab[data-tab="${gone}"]`)).toHaveCount(0);
+  expect(await page.locator('#tabs .tab').evaluateAll((els) => els.map((e) => e.dataset.tab))).toEqual(SECTIONS);
+  await expect(page.locator('#tabOverview .acc-h1')).toHaveText('Home');
+  await expect(page.locator('#tabOverview .acc-quick button')).toHaveCount(6);
   await expect(page.locator('#tabOverview')).toContainText('Customers owe you');
   await expect(page.locator('#tabOverview')).toContainText('59,000.00');
-  await expect(page.locator('#tabOverview')).not.toContainText(/Ask your books|AI/);
-  for (const t of PAGES.filter((t) => !['overview', 'documents', 'vendorbills'].includes(t))) {
+  const subs = {};
+  for (const t of SECTIONS.filter((t) => t !== 'overview')) {
     await page.click(`.tab[data-tab="${t}"]`);
-    await sections(page, pageId(t));
+    await expect(page.locator(`#${pageId(t)} .acc-h1`)).toBeVisible();
+    subs[t] = await sections(page, pageId(t));
   }
+  // Every old page's screens are still reachable, now grouped: 12 + 8 + 5 + 18 + 8 + 4 sub-sections.
+  expect(subs).toEqual({ sales: 12, purchases: 8, banking: 5, reports: 18, books: 8, settings: 4 });
+  // Each legacy panel lives in exactly one place.
+  for (const id of ['docsPanel', 'billsPanel', 'legacyExpensesCard', 'bcSubAccounts']) expect(await page.locator(`#${id}`).count()).toBe(1);
   expect(errors).toEqual([]);
 });
 
-test('phone view keeps a horizontal tab strip', async ({ page }) => {
+test('phone view: one scrollable strip of sections and of sub-sections', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await setup(page);
+  const { errors } = await setup(page);
   const nav = await page.locator('#tabs').boundingBox();
   expect(nav.width).toBeGreaterThan(nav.height);
-  await expect(page.locator('#tabs .nav-head').first()).toBeHidden();
+  await go(page, 'reports');
+  const sub = await page.locator('#tabReports .acc-subnav').boundingBox();
+  expect(sub.height).toBeLessThan(80); // a single row, scrolled sideways — not 18 pills stacked
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
 });
 
-test('mounted legacy panels survive switching away and back (Expenses, Suppliers, Bank & Cash)', async ({ page }) => {
+test('mounted panels survive switching away and back (Expenses, Bank)', async ({ page }) => {
   const { errors } = await setup(page);
-  await page.click('.tab[data-tab="expenses"]');
-  await page.click('#tabExpenses .fp-pill[data-k="all"]');
-  await expect(page.locator('#tabExpenses #expensesTbody')).toContainText('Figma');
-  await page.click('#tabExpenses .fp-pill[data-k="fixed"]');
-  await expect(page.locator('#tabExpenses')).toContainText('Fixed Recurring Expenses');
-  await expect(page.locator('#tabExpenses')).not.toContainText('AI Quick Add');
-  await page.click('#tabExpenses .fp-pill[data-k="all"]');
-  await expect(page.locator('#tabExpenses #expensesTbody')).toContainText('Figma');
-  await page.click('.tab[data-tab="bankcash"]');
-  await page.click('#tabBankcash .fp-pill[data-k="accounts"]');
-  await expect(page.locator('#tabBankcash')).toContainText('HDFC Current');
+  await go(page, 'purchases', 'expenses');
+  await expect(page.locator('#tabPurchases #expensesTbody')).toContainText('Figma');
+  await go(page, 'purchases', 'fixed');
+  await expect(page.locator('#tabPurchases')).toContainText('Fixed Recurring Expenses');
+  await go(page, 'purchases', 'expenses');
+  await expect(page.locator('#tabPurchases #expensesTbody')).toContainText('Figma');
+  await go(page, 'banking', 'accounts');
+  await expect(page.locator('#tabBanking')).toContainText('HDFC Current');
+  await go(page, 'purchases');
+  await expect(page.locator('#tabPurchases #expensesTbody')).toContainText('Figma');
   // Parked panels stay in the DOM (hidden), so their own render code still finds them by id.
-  await page.click('.tab[data-tab="suppliers"]');
   expect(await page.evaluate(() => !!document.getElementById('expensesTbody') && !!document.getElementById('bcSubAccounts'))).toBe(true);
   expect(errors).toEqual([]);
 });
 
 test('Reports: P&L, balance sheet and trial balance tie out; Books: manual journal posts', async ({ page }) => {
   const { errors } = await setup(page);
-  await page.click('.tab[data-tab="reports"]');
-  await page.click('#tabReports .fp-pill[data-k="pl"]');
+  await go(page, 'reports', 'pl');
   await expect(page.locator('#accPlOut')).toContainText('Net profit');
   await expect(page.locator('#accPlOut')).toContainText('25,500.00'); // 50,000 − 4,500 − 20,000
-  await page.click('#tabReports .fp-pill[data-k="bs"]');
+  await go(page, 'reports', 'bs');
   await expect(page.locator('#accBsOut')).toContainText('Assets = Liabilities + Equity');
-  await page.click('.tab[data-tab="books"]');
-  await page.click('#tabBooks .fp-pill[data-k="journals"]');
+  await go(page, 'books', 'journals');
   await page.click('text=+ Manual journal');
   await page.fill('#accF_memo', 'Owner capital');
   const rows = page.locator('#accLinesBody .acc-line');
@@ -164,16 +173,14 @@ test('Reports: P&L, balance sheet and trial balance tie out; Books: manual journ
   await expect(page.locator('#accLinesTotals')).toContainText('Balanced');
   await page.click('#accFormSave');
   await expect(page.locator('#accJOut')).toContainText('Owner capital');
-  await page.click('.tab[data-tab="reports"]');
-  await page.click('#tabReports .fp-pill[data-k="tb"]');
+  await go(page, 'reports', 'tb');
   await expect(page.locator('#accTbOut')).toContainText('✓ Balanced');
   expect(errors).toEqual([]);
 });
 
 test('subscription → billing run → invoice appears; GSTR-1 picks it up', async ({ page }) => {
   const { db, errors } = await setup(page);
-  await page.click('.tab[data-tab="subscriptions"]');
-  await page.click('#tabSubscriptions .fp-pill[data-k="subs"]');
+  await go(page, 'sales', 'subs');
   await page.click('text=+ Subscription');
   await page.fill('#accF_customer_name', 'Gamma SaaS');
   await page.fill('#accF_amount', '12000');
@@ -182,20 +189,18 @@ test('subscription → billing run → invoice appears; GSTR-1 picks it up', asy
   await page.fill('#accF_place_of_supply', '32');
   await page.check('#accF_bill_now');
   await page.click('#accFormSave');
-  await expect(page.locator('#tabSubscriptions')).toContainText('Gamma SaaS');
+  await expect(page.locator('#tabSales')).toContainText('Gamma SaaS');
   expect(db.prepare(`SELECT COUNT(*) n FROM accounting_documents WHERE customer_name='Gamma SaaS'`).get().n).toBe(1);
-  await page.click('#tabSubscriptions .fp-pill[data-k="metrics"]');
-  await expect(page.locator('#tabSubscriptions')).toContainText('1,000.00'); // MRR of a 12,000/yr plan
-  await page.click('.tab[data-tab="tax"]');
-  await page.click('#tabTax .fp-pill[data-k="gstr1"]');
+  await go(page, 'sales', 'metrics');
+  await expect(page.locator('#tabSales')).toContainText('1,000.00'); // MRR of a 12,000/yr plan
+  await go(page, 'reports', 'gstr1');
   await expect(page.locator('#accG1Out')).toContainText('62,000.00'); // 50,000 + 12,000 taxable
   expect(errors).toEqual([]);
 });
 
 test('Settings → Business & tax saves the books and the invoice GST/currency settings together', async ({ page }) => {
   const { db, fpPatches, errors } = await setup(page);
-  await page.click('.tab[data-tab="settings"]');
-  await page.click('#tabSettings .fp-pill[data-k="general"]');
+  await go(page, 'settings', 'general');
   await page.fill('#accS_gstin', '32ABCDE1234F1Z5');
   await page.selectOption('#accS_state_code', '32');
   await page.fill('#accS_default_gst_rate', '18');
@@ -208,9 +213,8 @@ test('Settings → Business & tax saves the books and the invoice GST/currency s
 
 test('client portal shows the customer their open invoice', async ({ page }) => {
   const { db } = await setup(page);
-  await page.click('.tab[data-tab="collections"]');
-  await page.click('#tabCollections .fp-pill[data-k="links"]');
-  await expect(page.locator('#tabCollections')).toContainText('Beta Foods');
+  await go(page, 'sales', 'links');
+  await expect(page.locator('#tabSales')).toContainText('Beta Foods');
   const token = (await page.evaluate(() => AccLedger.post('portal-tokens', { customer_name: 'Beta Foods' }))).token;
   expect(db.prepare(`SELECT COUNT(*) n FROM acc_portal_tokens`).get().n).toBe(1);
   await page.goto(`${portalUrl}?t=${token}`);
@@ -225,45 +229,85 @@ test('accounting does not load for a client the Leadvyne admin has not enabled',
   expect(errors).toEqual([]);
 });
 
-test('the Overview shows without waiting for the slow leads and documents lists', async ({ page }) => {
+test('Home shows without waiting for the slow leads and documents lists', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 900 });
   const { errors } = await setup(page, { slowMs: 8000 });
-  // Both held-back lists take 8 s; the Overview must be up well before either arrives.
+  // Both held-back lists take 8 s; Home must be up well before either arrives.
   await expect(page.locator('#tabOverview')).toContainText('Customers owe you', { timeout: 5000 });
   await expect(page.locator('#tabOverview')).toContainText('59,000.00');
-  // …and Documents fills in once its list does arrive.
-  await page.click('.tab[data-tab="documents"]');
-  await expect(page.locator('#tabDocuments')).toContainText('Beta Foods', { timeout: 15000 });
+  // …and Invoices & quotes fills in once its list does arrive.
+  await go(page, 'sales', 'docs');
+  await expect(page.locator('#tabSales #docsPanel')).toContainText('Beta Foods', { timeout: 15000 });
   expect(errors).toEqual([]);
 });
 
-test('phone: a failed settings call shows Retry instead of a blank page, and Retry loads Payroll', async ({ page }) => {
+test('phone: a failed settings call shows Retry in place, and Retry loads Payroll', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const { errors } = await setup(page, { failSettings: 2 }); // the Overview's call and Payroll's first call both fail
+  const { errors } = await setup(page, { failSettings: 2 }); // Home's call and Books' first call both fail
   await expect(page.locator('#tabOverview button', { hasText: 'Retry' })).toBeVisible();
-  await page.click('.tab[data-tab="payroll"]');
-  const retry = page.locator('#tabPayroll button', { hasText: 'Retry' });
+  await page.evaluate(() => localStorage.setItem('acc_sub_books', 'payroll')); // land straight on Payroll
+  await go(page, 'books');
+  await expect(page.locator('#tabBooks .fp-pill.active')).toHaveAttribute('data-k', 'payroll');
+  const retry = page.locator('#tabBooks .acc-sub-body button', { hasText: 'Retry' });
   await expect(retry).toBeVisible();
-  await expect(page.locator('#tabPayroll')).toContainText('Bad gateway');
+  await expect(page.locator('#tabBooks')).toContainText('Bad gateway');
   await retry.click();
-  await expect(page.locator('#tabPayroll')).toContainText('Payroll runs');
-  await expect(page.locator('#tabPayroll')).toContainText('Employees');
+  await expect(page.locator('#tabBooks')).toContainText('Payroll runs');
+  await expect(page.locator('#tabBooks')).toContainText('Employees');
   expect(errors).toEqual([]);
 });
 
-test('an expense entered on the Expenses page saves and is listed', async ({ page }) => {
+test('Expenses, Bank and Reports still open while the ledger settings call is failing', async ({ page }) => {
+  const { errors } = await setup(page, { failSettings: 99 });
+  await go(page, 'purchases', 'expenses');
+  await expect(page.locator('#tabPurchases #expensesTbody')).toContainText('Figma');
+  await go(page, 'banking', 'accounts');
+  await expect(page.locator('#tabBanking')).toContainText('HDFC Current');
+  await go(page, 'reports', 'ar');
+  await expect(page.locator('#tabReports .acc-sub-body')).not.toContainText('Bad gateway');
+  await go(page, 'reports', 'pl'); // a ledger report says what went wrong instead of going blank
+  await expect(page.locator('#tabReports .acc-sub-body')).toContainText('Bad gateway');
+  expect(errors).toEqual([]);
+});
+
+test('an expense entered from Purchases saves and is listed', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 900 });
   const { db, errors } = await setup(page);
-  await page.click('.tab[data-tab="expenses"]');
-  await expect(page.locator('#tabExpenses')).toContainText('Figma');
-  await page.click('#tabExpenses button:has-text("+ New Expense")');
+  await go(page, 'purchases', 'expenses');
+  await expect(page.locator('#tabPurchases')).toContainText('Figma');
+  await page.click('#tabPurchases .acc-head button:has-text("Record expense")');
   await expect(page.locator('#expenseModal')).toBeVisible();
   await page.fill('#expAmount', '2500');
   await page.fill('#expCategory', 'Travel');
   await page.fill('#expVendor', 'Uber');
   await page.click('#expenseModal button:has-text("Save")');
   await expect(page.locator('#expenseModal')).toBeHidden();
-  await expect(page.locator('#tabExpenses')).toContainText('Uber');
+  await expect(page.locator('#tabPurchases')).toContainText('Uber');
   expect(db.prepare(`SELECT amount FROM accounting_expenses WHERE vendor='Uber'`).get().amount).toBe(2500);
+  expect(errors).toEqual([]);
+});
+
+test('"+ New" menu opens each form from any screen; old page links land in the right section', async ({ page }) => {
+  const { errors } = await setup(page);
+  await go(page, 'reports', 'pl');
+  for (const [label, modal] of [['Invoice', '#invoiceModal .drawer-panel'], ['Expense', '#expenseModal'], ['Vendor bill', '#vendorBillModal']]) {
+    await page.click('#accNewBtn');
+    await expect(page.locator('#accNewMenu')).toBeVisible();
+    await page.click(`#accNewMenu button:has-text("${label}")`);
+    await expect(page.locator('#accNewMenu')).toBeHidden();
+    await expect(page.locator(modal).first()).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => document.querySelectorAll('.modal-overlay.active, .drawer-overlay.active').forEach((m) => m.classList.remove('active')));
+  }
+  await page.click('#accNewBtn');
+  await page.click('#accNewMenu button:has-text("Journal")');
+  await expect(page.locator('#accFormModal')).toContainText('New manual journal');
+  await page.click('#accFormCancel');
+  // Links written for the old 14-tab layout still work.
+  await page.evaluate(() => showTab('documents'));
+  await expect(page.locator('.tab.active')).toHaveAttribute('data-tab', 'sales');
+  await expect(page.locator('#tabSales #docsPanel')).toBeVisible();
+  await page.evaluate(() => AccLedger.open('expenses', 'categorise'));
+  await expect(page.locator('#tabPurchases .fp-pill.active')).toHaveAttribute('data-k', 'categorise');
   expect(errors).toEqual([]);
 });

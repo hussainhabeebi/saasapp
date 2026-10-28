@@ -18,14 +18,15 @@
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  --bg:#FFF7ED;--card:#FFFFFF;--ink:#241A0C;--muted:#8A6D4B;
-  --accent:#C2410C;--accent-ink:#9A3412;--accent-soft:#FFEDD5;
-  --line:#FDE8CE;--ls:#FBCFA0;
+  /* Neutral slate surfaces + Leadvyne teal, matching the dashboard. */
+  --bg:#F5F7FA;--card:#FFFFFF;--ink:#0F172A;--muted:#64748B;
+  --accent:#0D9C93;--accent-ink:#0B766F;--accent-soft:#E6F6F5;
+  --line:#E5E9F0;--ls:#CBD5E1;
   --green:#059669;--green-soft:#D1FAE5;--red:#DC2626;--red-soft:#FEE2E2;
-  --shadow:0 1px 2px rgba(36,26,12,.04),0 2px 8px rgba(36,26,12,.05);
-  --shadow-md:0 4px 16px rgba(36,26,12,.08),0 1px 3px rgba(36,26,12,.06);
-  --shadow-lg:0 20px 48px rgba(36,26,12,.18),0 4px 16px rgba(36,26,12,.08);
-  --r:16px;--r-sm:10px;--ease:cubic-bezier(.4,0,.2,1);
+  --shadow:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.04);
+  --shadow-md:0 6px 20px rgba(15,23,42,.08),0 1px 3px rgba(15,23,42,.05);
+  --shadow-lg:0 24px 56px rgba(15,23,42,.20),0 4px 16px rgba(15,23,42,.08);
+  --r:14px;--r-sm:10px;--ease:cubic-bezier(.4,0,.2,1);
   --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -36,7 +37,15 @@ body{display:flex;flex-direction:column}
 ::-webkit-scrollbar-thumb{background:var(--ls);border-radius:20px;border:2px solid var(--bg)}
 ::-webkit-scrollbar-thumb:hover{background:var(--accent)}
 
-header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:60px;display:flex;align-items:center;gap:12px;flex-shrink:0;position:relative;z-index:20}
+.acc-title{font-family:var(--disp);font-size:15px;font-weight:600;color:var(--muted);padding-left:12px;border-left:1px solid var(--line)}
+.acc-new{position:relative;margin-left:auto}
+.acc-new-btn{padding:9px 16px;font-size:13.5px}
+.acc-new-menu{display:none;position:absolute;right:0;top:calc(100% + 8px);background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-lg);padding:6px;min-width:210px;z-index:50}
+.acc-new-menu.open{display:block;animation:modalin .14s var(--ease)}
+.acc-new-menu button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;border-radius:8px;padding:10px 12px;font-family:var(--body);font-size:14px;color:var(--ink);cursor:pointer;text-align:left}
+.acc-new-menu button:hover{background:var(--bg)}
+.acc-new-menu button span{width:22px;text-align:center}
 /* Logo + module chip + "Back to CRM" button can run past the viewport on the smallest phones
    with no wrap/scroll to fall back on — let the header wrap to a second line instead of clipping. */
 @media(max-width:480px){header{flex-wrap:wrap;height:auto;min-height:56px;padding:8px 14px}}
@@ -44,22 +53,25 @@ header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px
 .brand span{color:var(--accent)}
 .chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
 .chip.currency-chip{background:var(--ink);color:#fff;font-family:var(--mono);letter-spacing:.03em}
-.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body);transition:background .15s var(--ease),border-color .15s var(--ease)}
+.hback{background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body);transition:background .15s var(--ease),border-color .15s var(--ease)}
 .hback:hover{background:var(--bg);border-color:var(--ls)}
 
-#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
-.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s var(--ease),border-color .15s var(--ease),background .15s var(--ease);white-space:nowrap;border-radius:8px 8px 0 0}
-.tab:hover{color:var(--accent-ink);background:var(--bg)}
-.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent);background:var(--accent-soft)}
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;gap:4px;padding:8px 12px;flex-shrink:0;overflow-x:auto;scrollbar-width:none}
+#tabs::-webkit-scrollbar{display:none}
+.tab{font-family:var(--body);font-size:13.5px;font-weight:600;padding:8px 14px;border:none;background:none;cursor:pointer;color:var(--muted);transition:color .15s var(--ease),background .15s var(--ease);white-space:nowrap;border-radius:999px;display:inline-flex;align-items:center;gap:7px}
+.tab-ic{font-size:15px;line-height:1}
+.tab:hover{color:var(--ink);background:var(--bg)}
+.tab.active{color:#fff;background:var(--accent)}
 
-main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:24px;min-height:0}
+@media(max-width:640px){main{padding:14px}}
 .inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 .page{display:none}
 .page.active{display:block;animation:fadein .2s var(--ease)}
 @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
 .card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow);transition:box-shadow .2s var(--ease)}
-.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.card-title{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--ink);margin-bottom:14px;letter-spacing:-.005em}
 .card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .card-title-row .card-title{margin-bottom:0}
 .card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -82,11 +94,11 @@ tbody tr:hover{background:var(--bg)}
 
 .search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px;transition:border-color .15s var(--ease),background .15s var(--ease)}
 .search-input:focus{outline:none;border-color:var(--accent);background:#fff}
-.save-btn{background:linear-gradient(135deg,#C2410C,#F97316);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s var(--ease),transform .1s var(--ease),box-shadow .15s var(--ease);box-shadow:0 1px 2px rgba(194,65,12,.15)}
-.save-btn:hover{opacity:.92;box-shadow:0 4px 12px rgba(194,65,12,.25)}
+.save-btn{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-family:var(--body);font-weight:600;font-size:13px;cursor:pointer;transition:background .15s var(--ease),transform .1s var(--ease),box-shadow .15s var(--ease);box-shadow:0 1px 2px rgba(13,156,147,.2);white-space:nowrap}
+.save-btn:hover{background:var(--accent-ink);box-shadow:0 4px 12px rgba(13,156,147,.25)}
 .save-btn:active{transform:scale(.97)}
-.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent);box-shadow:none}
-.save-btn.sec:hover{box-shadow:none;background:#FFE0BD}
+.save-btn.sec{background:var(--card);color:var(--ink);border:1px solid var(--line);box-shadow:none}
+.save-btn.sec:hover{box-shadow:none;background:var(--bg);border-color:var(--ls)}
 .save-btn:disabled{opacity:.5;cursor:default;transform:none;box-shadow:none}
 .save-msg{font-size:12px;color:var(--accent);align-self:center}
 .save-msg.err{color:var(--red)}
@@ -101,7 +113,7 @@ tbody tr:hover{background:var(--bg)}
 .s-input:focus{outline:none;border-color:var(--accent);background:#fff}
 .s-hint{font-size:12px;color:var(--muted);margin-top:5px}
 
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.5);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.active{display:flex;animation:overlayin .15s var(--ease)}
 @keyframes overlayin{from{opacity:0}to{opacity:1}}
 .modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:modalin .18s var(--ease)}
@@ -127,16 +139,16 @@ tbody tr:hover{background:var(--bg)}
    Reports (its own top-level tab) reuses these same classes for its own sub-nav — see
    showReportSub's own comment for why the JS scopes its queries per-tab. ── */
 .fp-subnav{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.fp-pill{font-family:var(--disp);font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;color:var(--muted);transition:background .15s var(--ease),border-color .15s var(--ease),color .15s var(--ease),box-shadow .15s var(--ease)}
-.fp-pill:hover{border-color:var(--ls);color:var(--accent-ink)}
-.fp-pill.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(194,65,12,.3)}
+.fp-pill{font-family:var(--body);font-size:12.5px;font-weight:600;padding:7px 13px;border-radius:999px;border:1px solid var(--line);background:var(--card);cursor:pointer;color:var(--muted);white-space:nowrap;transition:background .15s var(--ease),border-color .15s var(--ease),color .15s var(--ease)}
+.fp-pill:hover{border-color:var(--ls);color:var(--ink)}
+.fp-pill.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink)}
 .fp-sub{display:none}
 .fp-sub.active{display:block;animation:fadein .18s var(--ease)}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
-.stat-card{background:var(--bg);border:1px solid var(--line);border-left:3px solid var(--ls);border-radius:var(--r-sm);padding:14px 16px;transition:transform .15s var(--ease),box-shadow .15s var(--ease)}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+.stat-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;box-shadow:var(--shadow);transition:transform .15s var(--ease),box-shadow .15s var(--ease)}
 .stat-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md)}
-.stat-card .stat-lbl{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
-.stat-card .stat-val{font-family:var(--disp);font-size:24px;font-weight:700;color:var(--ink);letter-spacing:-.01em}
+.stat-card .stat-lbl{font-size:12.5px;font-weight:500;color:var(--muted);margin-bottom:6px}
+.stat-card .stat-val{font-family:var(--disp);font-size:21px;font-weight:600;color:var(--ink);letter-spacing:-.02em;line-height:1.25}
 .stat-card .stat-sub{font-size:12px;color:var(--muted);margin-top:2px}
 .aging-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
 .aging-cell{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;text-align:center;transition:box-shadow .15s var(--ease)}
@@ -150,7 +162,7 @@ tbody tr:hover{background:var(--bg)}
 .sortable:hover{color:var(--accent-ink)}
 
 /* ── Invoice / Quotation Drawer (replaces centred modal) ── */
-.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.45);backdrop-filter:blur(2px);z-index:100}
+.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(2px);z-index:100}
 .drawer-overlay.active{display:block;animation:overlayin .15s var(--ease)}
 .drawer-panel{position:fixed;top:0;right:0;width:min(520px,100vw);height:100%;background:var(--card);box-shadow:-4px 0 32px rgba(0,0,0,.18);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}
 .drawer-overlay.active .drawer-panel{transform:translateX(0)}
@@ -198,18 +210,37 @@ tbody tr:hover{background:var(--bg)}
 .doc-status-sel{font-size:11px;padding:4px 7px;border:1.5px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-family:var(--body);cursor:pointer;transition:border-color .15s var(--ease)}
 .doc-status-sel:focus{outline:none;border-color:var(--accent)}
 
-/* ── Layout: grouped left sidebar on PC, horizontal tab strip on phones/tablets ── */
+/* ── Layout: left sidebar on PC, scrollable pill strip on phones/tablets ── */
 #accLayout{flex:1;display:flex;flex-direction:column;min-height:0}
-.nav-head{display:none}
 .acc-legacy{display:none}
 @media(min-width:1024px){
   #accLayout{flex-direction:row}
-  #tabs{flex-direction:column;width:236px;flex-shrink:0;padding:12px 10px 20px;overflow-y:auto;overflow-x:hidden;border-bottom:none;border-right:1px solid var(--line);gap:2px}
-  #tabs .tab{text-align:left;border-bottom:none;margin:0;border-radius:10px;padding:9px 12px;font-size:13.5px}
-  #tabs .tab.active{background:var(--accent-soft);color:var(--accent-ink);box-shadow:inset 3px 0 0 var(--accent)}
-  .nav-head{display:block;font-family:var(--disp);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:14px 12px 4px}
+  #tabs{flex-direction:column;width:228px;flex-shrink:0;padding:16px 12px;overflow-y:auto;overflow-x:hidden;border-bottom:none;border-right:1px solid var(--line);gap:4px}
+  #tabs .tab{border-radius:10px;padding:10px 12px;font-size:14px}
+  #tabs .tab.active{background:var(--accent-soft);color:var(--accent-ink)}
   main{flex:1;min-width:0}
 }
+/* ── Section heading + grouped sub-menu ── */
+.acc-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.acc-h1{font-family:var(--disp);font-size:24px;font-weight:600;letter-spacing:-.02em;color:var(--ink);line-height:1.2}
+.acc-hsub{font-size:13.5px;color:var(--muted);margin-top:4px}
+.acc-subnav{display:flex;gap:6px 18px;flex-wrap:wrap;align-items:center;margin:0;padding:6px 0 2px;border-bottom:1px solid var(--line);padding-bottom:12px}
+.acc-sub-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.acc-sub-glabel{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-right:2px;white-space:nowrap}
+@media(max-width:860px){
+  .acc-subnav{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -14px;padding:4px 14px 12px}
+  .acc-subnav::-webkit-scrollbar{display:none}
+  .acc-sub-group{flex-wrap:nowrap}
+  .acc-h1{font-size:20px}
+  .acc-head{align-items:center}
+}
+@media(max-width:640px){ header .brand{display:none} .acc-title{border-left:none;padding-left:0;color:var(--ink)} }
+/* ── Home ── */
+.acc-quick{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.acc-quick button{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-family:var(--body);font-size:13.5px;font-weight:600;color:var(--ink);cursor:pointer;box-shadow:var(--shadow);transition:border-color .15s var(--ease),transform .1s var(--ease),box-shadow .15s var(--ease)}
+.acc-quick button:hover{border-color:var(--accent);box-shadow:var(--shadow-md)}
+.acc-quick button:active{transform:scale(.98)}
+.acc-quick button span{font-size:18px}
 /* ── Ledger tabs (accounting-ledger.js) ── */
 .acc-root,.acc-sub-body{display:flex;flex-direction:column;gap:18px}
 .acc-root>.fp-subnav{margin-bottom:0}
@@ -264,57 +295,51 @@ td.neg{color:var(--red)}
 <div id="app" style="display:none;height:100%;display:flex;flex-direction:column">
   <header>
     <span class="brand">Leadvyne<span>.</span></span>
-    <span class="chip">💰 Accounting</span>
+    <span class="acc-title">Accounting</span>
     <span class="chip currency-chip" id="headerCurrencyChip" style="display:none"></span>
-    <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+    <div class="acc-new">
+      <button class="save-btn acc-new-btn" id="accNewBtn" onclick="toggleNewMenu(event)" aria-haspopup="true" aria-expanded="false">＋ New</button>
+      <div class="acc-new-menu" id="accNewMenu" role="menu">
+        <button role="menuitem" onclick="newMenuGo(()=>openDocTypeModal('invoice'))"><span>🧾</span>Invoice</button>
+        <button role="menuitem" onclick="newMenuGo(()=>openDocTypeModal('quotation'))"><span>📝</span>Quotation</button>
+        <button role="menuitem" onclick="newMenuGo(()=>openExpenseModal())"><span>💸</span>Expense</button>
+        <button role="menuitem" onclick="newMenuGo(()=>openVendorBillModal())"><span>📥</span>Vendor bill</button>
+        <button role="menuitem" onclick="newMenuGo(()=>openPaymentEntryModal())"><span>💳</span>Payment entry</button>
+        <button role="menuitem" onclick="newMenuGo(()=>AccLedger.quickJournal())"><span>✍️</span>Journal</button>
+      </div>
+    </div>
+    <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← CRM</button>
   </header>
 
   <div id="accLayout">
   <nav id="tabs" aria-label="Accounting sections">
-    <button class="tab active" data-tab="overview" onclick="showTab('overview')">🏠 Overview</button>
-    <div class="nav-head">Sales</div>
-    <button class="tab" data-tab="documents" onclick="showTab('documents')">🧾 Invoices &amp; Quotes</button>
-    <button class="tab" data-tab="subscriptions" onclick="showTab('subscriptions')">🔁 Recurring &amp; Subscriptions</button>
-    <button class="tab" data-tab="customers" onclick="showTab('customers')">👥 Customers</button>
-    <button class="tab" data-tab="collections" onclick="showTab('collections')">📨 Collections</button>
-    <div class="nav-head">Purchases</div>
-    <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expenses</button>
-    <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
-    <button class="tab" data-tab="suppliers" onclick="showTab('suppliers')">🏭 Suppliers</button>
-    <div class="nav-head">Banking</div>
-    <button class="tab" data-tab="bankcash" onclick="showTab('bankcash')">🏦 Bank &amp; Cash</button>
-    <div class="nav-head">Accounting</div>
-    <button class="tab" data-tab="books" onclick="showTab('books')">📒 Books</button>
-    <button class="tab" data-tab="reports" onclick="showTab('reports')">📊 Reports</button>
-    <button class="tab" data-tab="tax" onclick="showTab('tax')">🏛️ Tax &amp; GST</button>
-    <button class="tab" data-tab="payroll" onclick="showTab('payroll')">👩‍💼 Payroll</button>
-    <div class="nav-head">Setup</div>
-    <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+    <button class="tab active" data-tab="overview" onclick="showTab('overview')"><span class="tab-ic">🏠</span>Home</button>
+    <button class="tab" data-tab="sales" onclick="showTab('sales')"><span class="tab-ic">💰</span>Sales</button>
+    <button class="tab" data-tab="purchases" onclick="showTab('purchases')"><span class="tab-ic">🧾</span>Purchases</button>
+    <button class="tab" data-tab="banking" onclick="showTab('banking')"><span class="tab-ic">🏦</span>Banking</button>
+    <button class="tab" data-tab="reports" onclick="showTab('reports')"><span class="tab-ic">📊</span>Reports &amp; tax</button>
+    <button class="tab" data-tab="books" onclick="showTab('books')"><span class="tab-ic">📒</span>Books &amp; payroll</button>
+    <button class="tab" data-tab="settings" onclick="showTab('settings')"><span class="tab-ic">⚙️</span>Settings</button>
   </nav>
 
   <main>
   <div class="inner">
 
-    <!-- Ledger tabs — rendered by accounting-ledger.js the first time each is opened -->
+    <!-- Sections — rendered by accounting-ledger.js the first time each is opened -->
     <div id="tabOverview" class="page active"><div class="acc-root"></div></div>
-    <div id="tabSubscriptions" class="page"><div class="acc-root"></div></div>
-    <div id="tabCustomers" class="page"><div class="acc-root"></div></div>
-    <div id="tabCollections" class="page"><div class="acc-root"></div></div>
-    <div id="tabExpenses" class="page"><div class="acc-root"></div></div>
-    <div id="tabSuppliers" class="page"><div class="acc-root"></div></div>
-    <div id="tabBankcash" class="page"><div class="acc-root"></div></div>
-    <div id="tabBooks" class="page"><div class="acc-root"></div></div>
+    <div id="tabSales" class="page"><div class="acc-root"></div></div>
+    <div id="tabPurchases" class="page"><div class="acc-root"></div></div>
+    <div id="tabBanking" class="page"><div class="acc-root"></div></div>
     <div id="tabReports" class="page"><div class="acc-root"></div></div>
-    <div id="tabTax" class="page"><div class="acc-root"></div></div>
-    <div id="tabPayroll" class="page"><div class="acc-root"></div></div>
+    <div id="tabBooks" class="page"><div class="acc-root"></div></div>
     <div id="tabSettings" class="page"><div class="acc-root"></div></div>
     <!-- The legacy Financial Planning / Expense Entry / Reports / Bank & Cash pages below are no
          longer pages of their own: accounting-ledger.js mounts their panels inside the pages above
          (see LEGACY panels there), so every screen exists in exactly one place. -->
 
     <!-- DOCUMENTS: Quotation → Invoice → Receipt, all tied to an existing lead -->
-    <div id="tabDocuments" class="page">
-      <div class="card">
+    <div id="legacyDocuments" class="acc-legacy">
+      <div class="card" id="docsPanel">
         <div class="card-title-row">
           <div class="card-title">Quotations, Invoices &amp; Receipts</div>
           <div class="card-actions">
@@ -585,8 +610,8 @@ td.neg{color:var(--red)}
 
     <!-- VENDOR BILLS — accounts-payable counterpart to Documents: what a client's own supplier
          billed them, tracked entirely in this account's own local ledger until marked paid. -->
-    <div id="tabVendorbills" class="page">
-      <div class="card">
+    <div id="legacyVendorbills" class="acc-legacy">
+      <div class="card" id="billsPanel">
         <div class="card-title-row">
           <div class="card-title">Vendor Bills</div>
           <div class="card-actions">
@@ -1480,6 +1505,17 @@ async function loadVendorBills(){
   allVendorBills=data.list||[];
 }
 
+// Header "+ New" menu — the everyday actions from any screen. Closes on pick, outside tap or Esc.
+function toggleNewMenu(ev){
+  ev?.stopPropagation();
+  const m=document.getElementById('accNewMenu'), btn=document.getElementById('accNewBtn');
+  const open=!m.classList.contains('open');
+  m.classList.toggle('open', open); btn.setAttribute('aria-expanded', String(open));
+}
+function newMenuGo(fn){ document.getElementById('accNewMenu').classList.remove('open'); document.getElementById('accNewBtn').setAttribute('aria-expanded','false'); fn(); }
+document.addEventListener('click', e=>{ if(!e.target.closest('.acc-new')) document.getElementById('accNewMenu')?.classList.remove('open'); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') document.getElementById('accNewMenu')?.classList.remove('open'); });
+
 function showTab(name){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
@@ -1622,10 +1658,10 @@ function renderFpTrendChart(){
     type:'bar',
     data:{labels,datasets:[
       {label:'Expected',data:(d.trend||[]).map(t=>t.expected),backgroundColor:'#FDBA74'},
-      {label:'Collected',data:(d.trend||[]).map(t=>t.collected),backgroundColor:'#C2410C'},
-      {label:'Expenses',data:(d.trend||[]).map(t=>t.expenses),backgroundColor:'#8A6D4B'},
+      {label:'Collected',data:(d.trend||[]).map(t=>t.collected),backgroundColor:'#0D9C93'},
+      {label:'Expenses',data:(d.trend||[]).map(t=>t.expenses),backgroundColor:'#94A3B8'},
     ]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11}}}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{beginAtZero:true,grid:{color:'#FDE8CE'},ticks:{font:{size:10}}}}}
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:11}}}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{beginAtZero:true,grid:{color:'#E5E9F0'},ticks:{font:{size:10}}}}}
   });
 }
 
@@ -3451,7 +3487,7 @@ init();
 <!-- ?v= changes with every accounting release: the old service worker (sw.js ≤ lv-v16) served
      same-origin scripts cache-first forever, so a phone kept its first-ever copy of this file
      under a new accounting.html. A new URL is never in that cache, so fresh code loads at once. -->
-<script src="accounting-ledger.js?v=2026-10-28"></script>
+<script src="accounting-ledger.js?v=2026-10-28-r2"></script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>
