@@ -4505,10 +4505,25 @@ function escAttr(str) {
 let wsStatus = null;
 function wsHeaders() { return { 'Content-Type': 'application/json', ...(ecomSessionToken ? { Authorization: 'Bearer ' + ecomSessionToken } : {}) }; }
 async function wsCall(path, body) {
-  const r = await fetch(`${WORKER_BASE}/ecom/wa-shop/${path}`, body === undefined ? { headers: wsHeaders() } : { method: 'POST', headers: wsHeaders(), body: JSON.stringify(body) });
+  let r;
+  try {
+    r = await fetch(`${WORKER_BASE}/ecom/wa-shop/${path}`, body === undefined ? { headers: wsHeaders() } : { method: 'POST', headers: wsHeaders(), body: JSON.stringify(body) });
+  } catch (e) {
+    // The browser's bare "Failed to fetch": no answer at all from Leadvyne's server.
+    throw new Error('Couldn’t reach Leadvyne’s server (“' + (e.message || 'network error') + '”). Check your internet connection, reload the dashboard from app.leadvyne.com, and try again.');
+  }
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  if (!r.ok) { const err = new Error(d.message || d.error || `HTTP ${r.status}`); err.status = r.status; err.data = d; throw err; }
   return d;
+}
+// Messages here stay until the next action — a Meta error that vanished after a few seconds read
+// as "nothing happened".
+function wsSetMsg(id, text, tone) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = tone === 'err' ? '#B91C1C' : tone === 'ok' ? '#047857' : '';
+  el.style.whiteSpace = 'normal';
 }
 async function loadWaShop() {
   if (!ecomSessionToken) {
@@ -4523,23 +4538,25 @@ async function loadWaShop() {
 }
 function renderWaShop() {
   const s = wsStatus, cfg = s.config;
-  const linked = !!cfg.linked_at, synced = !!cfg.synced_at, live = linked && synced;
+  const linked = !!cfg.linked_at, synced = !!cfg.synced_at, live = linked && (synced || (cfg.meta_items || []).length > 0);
   document.getElementById('wsState').textContent = live ? (cfg.carts ? '● Live — taking orders' : '● Catalog live') : 'Setup needed';
   const b = document.getElementById('wsBanner');
   if (!s.whatsapp) { b.style.display = ''; b.innerHTML = 'Connect your WhatsApp number first — <b>Settings → Channels</b> in the dashboard.'; } else b.style.display = 'none';
   const cur = '₹';
   document.getElementById('wsStats').innerHTML = [
-    ['Products in catalog', synced ? cfg.synced_count : '—'],
+    ['Products in catalog', synced ? cfg.synced_count : (cfg.catalog_count != null ? cfg.catalog_count : '—')],
     ['WhatsApp carts (30 days)', s.stats.carts],
     ['Cart value (30 days)', cur + Number(s.stats.revenue || 0).toLocaleString('en-IN')],
     ['Paid in WhatsApp', s.stats.paid],
   ].map(([l, v]) => `<div class="stat"><div class="stat-val">${esc(String(v))}</div><div class="stat-lbl">${esc(l)}</div></div>`).join('');
   document.getElementById('wsCatalogId').value = cfg.catalog_id || '';
   document.getElementById('wsCatalogToken').placeholder = s.has_catalog_token ? 'Saved — paste a new one to replace' : 'EAAG…';
-  document.getElementById('wsDone1').textContent = linked ? '✓ Linked' : '';
-  document.getElementById('wsDone2').textContent = synced ? `✓ ${cfg.synced_count} products · ${new Date(cfg.synced_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : '';
+  document.getElementById('wsDone1').textContent = linked ? `✓ Linked${cfg.catalog_name ? ' — ' + cfg.catalog_name : ''}` : '';
+  const metaN = (cfg.meta_items || []).length;
+  document.getElementById('wsDone2').textContent = synced ? `✓ ${cfg.synced_count} products · ${new Date(cfg.synced_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`
+    : (linked && metaN ? `✓ Using the ${cfg.catalog_count || metaN} products already in your Meta catalog` : '');
   document.getElementById('wsDone3').textContent = cfg.carts ? '✓ On' : '';
-  ['wsStep1', 'wsStep2', 'wsStep3'].forEach((id, i) => document.getElementById(id).classList.toggle('ok', [linked, synced, cfg.carts][i]));
+  ['wsStep1', 'wsStep2', 'wsStep3'].forEach((id, i) => document.getElementById(id).classList.toggle('ok', [linked, synced || (linked && metaN > 0), cfg.carts][i]));
   document.getElementById('wsSkipped').innerHTML = (cfg.skipped || []).length
     ? `<div class="ws-skip"><b>${cfg.skipped.length} product${cfg.skipped.length === 1 ? '' : 's'} couldn't go in the catalog</b> — add the missing detail on the Products page:<ul>${cfg.skipped.slice(0, 8).map(x => `<li>${esc(x.name)} — ${esc(x.reason)}</li>`).join('')}</ul></div>` : '';
   document.getElementById('wsCarts').checked = !!cfg.carts;
@@ -4560,15 +4577,21 @@ function wsPayChanged() {
   const v = document.querySelector('input[name="wsPay"]:checked')?.value;
   document.getElementById('wsPayCfg').style.display = v === 'whatsapp_pay' ? '' : 'none';
 }
-async function wsRun(btn, msgId, fn, okText) {
+async function wsRun(btn, msgId, fn, okText, busyText) {
   if (btn) btn.disabled = true;
-  try { const d = await fn(); showMsg(msgId, typeof okText === 'function' ? okText(d) : okText, 6000); await loadWaShop(); return d; }
-  catch (e) { showMsg(msgId, '⚠ ' + e.message, 9000); }
+  if (busyText) wsSetMsg(msgId, busyText);
+  try { const d = await fn(); wsSetMsg(msgId, typeof okText === 'function' ? okText(d) : okText, 'ok'); await loadWaShop(); return d; }
+  catch (e) { wsSetMsg(msgId, '⚠ ' + e.message, 'err'); }
   finally { if (btn) btn.disabled = false; }
 }
 function wsSaveConfig(body, msgId) { return wsRun(null, msgId, () => wsCall('config', body), '✓ Saved'); }
 function wsConnect(btn) {
-  return wsRun(btn, 'wsMsg1', async () => { await wsCall('config', { catalog_id: document.getElementById('wsCatalogId').value }); return wsCall('connect', {}); }, '✓ Catalog linked and cart switched on');
+  const id = document.getElementById('wsCatalogId').value.replace(/\D/g, '');
+  if (!id) { wsSetMsg('wsMsg1', '⚠ Enter the catalog ID — the long number shown in Commerce Manager.', 'err'); return; }
+  return wsRun(btn, 'wsMsg1', () => wsCall('connect', { catalog_id: id }),
+    d => `✓ ${d.already_linked ? 'Catalog was already connected — now' : 'Catalog linked and'} shown on your WhatsApp number with the cart on` +
+      (d.catalog_name ? ` · “${d.catalog_name}”` : '') + (d.product_count != null ? ` · ${d.product_count} products` : '') + (d.warning ? ` (${d.warning})` : ''),
+    'Linking… checking with Meta');
 }
 function wsSaveToken(btn) {
   const v = document.getElementById('wsCatalogToken').value.trim();
@@ -4576,7 +4599,14 @@ function wsSaveToken(btn) {
   return wsRun(btn, 'wsMsgTok', () => wsCall('config', { catalog_token: v }), () => { document.getElementById('wsCatalogToken').value = ''; return '✓ Token saved'; });
 }
 function wsSync(btn) {
-  return wsRun(btn, 'wsMsg2', () => wsCall('sync', {}), d => `✓ ${d.synced} products sent${d.removed ? `, ${d.removed} removed` : ''} — Meta takes a few minutes to show them`);
+  return wsRun(btn, 'wsMsg2', async () => {
+    try { return await wsCall('sync', {}); }
+    catch (e) {
+      // The catalog already has products added in Meta — syncing would add Leadvyne's on top.
+      if (e.status === 409 && e.data?.error === 'meta_managed' && confirm(e.message)) return wsCall('sync', { confirm: true });
+      throw e;
+    }
+  }, d => `✓ ${d.synced} products sent${d.removed ? `, ${d.removed} removed` : ''} — Meta takes a few minutes to show them`, 'Syncing…');
 }
 function wsToggleCarts(el) {
   const on = el.checked;

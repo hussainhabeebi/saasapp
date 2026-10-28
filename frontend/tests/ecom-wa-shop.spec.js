@@ -16,7 +16,7 @@ function statusFor(over = {}) {
   };
 }
 
-async function boot(page, { token = 'tok', status = statusFor() } = {}) {
+async function boot(page, { token = 'tok', status = statusFor(), connect = null, sync = null, network = false } = {}) {
   const calls = [];
   let current = status;
   await page.route('**/*', async (route) => {
@@ -30,7 +30,12 @@ async function boot(page, { token = 'tok', status = statusFor() } = {}) {
       if (u.pathname === '/ecom/client') return route.fulfill({ json: { Id: 7, ecom_table_ids: JSON.stringify({ orders: 'o', products: 'p' }) } });
       if (u.pathname === '/ecom/products') return route.fulfill({ json: { list: [{ Id: 1, name: 'Kurta', category: 'Kurtas', price: 599 }] } });
       if (u.pathname === '/ecom/wa-shop/status') return route.fulfill({ json: current });
-      if (u.pathname === '/ecom/wa-shop/connect') { current = statusFor({ ...current.config, linked_at: '2026-10-24T10:00:00Z' }); return route.fulfill({ json: { ok: true } }); }
+      if (u.pathname === '/ecom/wa-shop/connect') {
+        if (network) return route.abort('failed');
+        if (connect) { const r = connect(body); if (r.status >= 400) return route.fulfill({ status: r.status, json: r.json }); current = statusFor({ ...current.config, ...(r.config || {}) }); return route.fulfill({ json: r.json }); }
+        current = statusFor({ ...current.config, catalog_id: body.catalog_id, linked_at: '2026-10-24T10:00:00Z' }); return route.fulfill({ json: { ok: true } });
+      }
+      if (u.pathname === '/ecom/wa-shop/sync' && sync) { const r = sync(body); if (r.status >= 400) return route.fulfill({ status: r.status, json: r.json }); current = statusFor({ ...current.config, ...(r.config || {}) }); return route.fulfill({ json: r.json }); }
       if (u.pathname === '/ecom/wa-shop/sync') { current = statusFor({ ...current.config, synced_at: '2026-10-24T10:00:00Z', synced_count: 12, skipped: [{ id: 3, name: 'Dupatta', reason: 'no photo' }] }); return route.fulfill({ json: { ok: true, synced: 12, removed: 1, skipped: [] } }); }
       if (u.pathname === '/ecom/wa-shop/carts') { current = statusFor({ ...current.config, carts: body.enable }); return route.fulfill({ json: { ok: true, carts: body.enable } }); }
       if (u.pathname === '/ecom/wa-shop/send') return route.fulfill({ json: { ok: true, count: 9 } });
@@ -56,7 +61,7 @@ test('setup walks through catalog link, product sync and cart orders with the st
   await page.locator('#wsCatalogId').fill('1234567890');
   await page.getByRole('button', { name: 'Link to my WhatsApp' }).click();
   await expect(page.locator('#wsDone1')).toHaveText('✓ Linked');
-  expect(calls.find(c => c.path === '/ecom/wa-shop/config').body).toEqual({ catalog_id: '1234567890' });
+  expect(calls.find(c => c.path === '/ecom/wa-shop/connect').body).toEqual({ catalog_id: '1234567890' });
   expect(calls.every(c => c.auth === 'Bearer tok')).toBe(true);
 
   await page.getByRole('button', { name: /Sync products now/ }).click();
@@ -99,4 +104,52 @@ test('without the dashboard sign-in it asks to open Ecom from the dashboard', as
   await expect(page.locator('#wsState')).toHaveText('Sign in needed');
   await expect(page.locator('#wsBanner')).toContainText('Open Ecommerce from your Leadvyne dashboard');
   expect(calls.length).toBe(0);
+});
+
+// Couplo (Oct 2026): catalog already connected in WhatsApp Manager, 24 products added in Meta.
+test('an already-connected Meta catalog links, shows its name and product count, and needs no sync', async ({ page }) => {
+  const items = Array.from({ length: 24 }, (_, i) => ({ rid: 'SKU' + i, name: 'Set ' + i, price: 899, category: 'Baby Sets' }));
+  const calls = await boot(page, { connect: (b) => ({ json: { ok: true, already_linked: true, catalog_name: 'Couplo catalog', product_count: 24 },
+    config: { catalog_id: b.catalog_id, linked_at: '2026-10-28T10:00:00Z', catalog_name: 'Couplo catalog', catalog_count: 24, meta_items: items } }) });
+  await page.locator('#wsCatalogId').fill('1484032813531427');
+  await page.getByRole('button', { name: 'Link to my WhatsApp' }).click();
+  await expect(page.locator('#wsMsg1')).toContainText('Catalog was already connected');
+  await expect(page.locator('#wsMsg1')).toContainText('“Couplo catalog” · 24 products');
+  await expect(page.locator('#wsDone1')).toHaveText('✓ Linked — Couplo catalog');
+  await expect(page.locator('#wsStats .stat').first()).toContainText('24');
+  await expect(page.locator('#wsDone2')).toContainText('Using the 24 products already in your Meta catalog');
+  await expect(page.locator('#wsState')).toHaveText('● Catalog live');
+  expect(calls.find(c => c.path === '/ecom/wa-shop/connect').body).toEqual({ catalog_id: '1484032813531427' });
+});
+
+test('a Meta refusal stays on screen instead of fading out', async ({ page }) => {
+  await boot(page, { connect: () => ({ status: 502, json: { error: 'Meta says the token isn\'t allowed to connect this catalog (#200)' } }) });
+  await page.locator('#wsCatalogId').fill('1484032813531427');
+  await page.getByRole('button', { name: 'Link to my WhatsApp' }).click();
+  await expect(page.locator('#wsMsg1')).toContainText('⚠ Meta says the token');
+  await page.waitForTimeout(3500);
+  await expect(page.locator('#wsMsg1')).toContainText('⚠ Meta says the token');
+});
+
+test('no answer from the server ("Failed to fetch") is explained, and an empty ID is caught first', async ({ page }) => {
+  const calls = await boot(page, { network: true });
+  await page.getByRole('button', { name: 'Link to my WhatsApp' }).click();
+  await expect(page.locator('#wsMsg1')).toContainText('Enter the catalog ID');
+  expect(calls.some(c => c.path === '/ecom/wa-shop/connect')).toBe(false);
+  await page.locator('#wsCatalogId').fill('1484032813531427');
+  await page.getByRole('button', { name: 'Link to my WhatsApp' }).click();
+  await expect(page.locator('#wsMsg1')).toContainText('Couldn’t reach Leadvyne’s server');
+});
+
+test('syncing into a Meta-managed catalog asks first', async ({ page }) => {
+  const calls = await boot(page, { sync: (b) => (!b.confirm
+    ? { status: 409, json: { error: 'meta_managed', message: 'Your catalog already has 24 products added in Meta. Sync anyway?' } }
+    : { json: { ok: true, synced: 5, removed: 0, skipped: [] }, config: { synced_at: '2026-10-28T10:00:00Z', synced_count: 5 } }) });
+  page.once('dialog', d => d.dismiss());
+  await page.getByRole('button', { name: /Sync products now/ }).click();
+  await expect(page.locator('#wsMsg2')).toContainText('24 products added in Meta');
+  page.once('dialog', d => d.accept());
+  await page.getByRole('button', { name: /Sync products now/ }).click();
+  await expect(page.locator('#wsMsg2')).toContainText('5 products sent');
+  expect(calls.filter(c => c.path === '/ecom/wa-shop/sync').map(c => c.body)).toEqual([{}, {}, { confirm: true }]);
 });

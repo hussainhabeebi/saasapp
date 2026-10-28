@@ -50,11 +50,26 @@ export function waShopConfig(c){
     gateway:WA_SHOP_GATEWAYS.includes(cfg.gateway)?cfg.gateway:'razorpay',
     payment_config:String(cfg.payment_config||''), chatwoot_webhook_url:String(cfg.chatwoot_webhook_url||''),
     linked_at:cfg.linked_at||'', synced_at:cfg.synced_at||'', synced_count:num(cfg.synced_count), skipped:Array.isArray(cfg.skipped)?cfg.skipped:[],
+    // The catalog as Meta reports it (refreshed on Link and daily) — a catalog whose products were
+    // added in Commerce Manager itself, not by Leadvyne's sync, is used as it is.
+    catalog_name:String(cfg.catalog_name||''), catalog_count:cfg.catalog_count===undefined||cfg.catalog_count===null?null:num(cfg.catalog_count),
+    meta_items:Array.isArray(cfg.meta_items)?cfg.meta_items:[], meta_items_at:cfg.meta_items_at||'',
   };
+}
+// Products to show in WhatsApp: Leadvyne-synced ones, else the Meta catalog's own items.
+export function waShopHasProducts(cfg){ return !!cfg.synced_at || (cfg.meta_items||[]).length>0; }
+// A Meta catalog item → the product shape the payload / cart helpers use (retailer id kept as is).
+export function waShopMetaItemProduct(it){
+  return {_rid:String(it.rid||''), sku:String(it.rid||''), name:String(it.name||it.rid||''), price:num(it.price), category:String(it.category||''), image_url:'meta', currency:it.currency||'INR'};
+}
+// "₹899.00" / "INR 899" / "899,00 €" → 899
+export function waShopParseMetaPrice(v){
+  const m=String(v||'').replace(/,(?=\d{3}\b)/g,'').match(/(\d+(?:[.,]\d+)?)/);
+  return m?num(m[1].replace(',', '.')):0;
 }
 
 /* ── Pure helpers (exported for tests) ────────────────────────────────────────────────────── */
-export function waShopRetailerId(p){ return RID_PREFIX+String(p?.nocodb_id??p?.Id??p?.id??''); }
+export function waShopRetailerId(p){ return p?._rid?String(p._rid):RID_PREFIX+String(p?.nocodb_id??p?.Id??p?.id??''); }
 // Our own `lv_<id>`, or a Shopify "Facebook & Instagram" channel id (shopify_<CC>_<product>_<variant>)
 // for a store that linked the catalog Shopify itself keeps in sync.
 export function waShopParseRetailerId(rid){
@@ -203,10 +218,41 @@ export function waShopChatwootTarget(c, cfg, creds){
 function creds(deps, c, cfg){
   return deps.resolveMetaCredentials(c, cfg.inbox_id?{inbox_id:cfg.inbox_id}:{});
 }
+// 15s cap: a hung Meta call used to hold the request until the platform cut it off, which the
+// browser only reports as "Failed to fetch" — now it comes back as a readable error.
 async function graph(path, token, {method='GET', body}={}){
-  const r=await fetch(`${WA_SHOP_GRAPH}/${path}`, {method, headers:{Authorization:`Bearer ${token}`, ...(body?{'Content-Type':'application/json'}:{})}, body:body?JSON.stringify(body):undefined});
-  const data=await r.json().catch(()=>({}));
-  return {ok:r.ok, status:r.status, data, error:data?.error?.error_user_msg||data?.error?.message||(r.ok?'':`HTTP ${r.status}`)};
+  const ctl=new AbortController(); const timer=setTimeout(()=>ctl.abort(), 15000);
+  try{
+    const r=await fetch(`${WA_SHOP_GRAPH}/${path}`, {method, headers:{Authorization:`Bearer ${token}`, ...(body?{'Content-Type':'application/json'}:{})}, body:body?JSON.stringify(body):undefined, signal:ctl.signal});
+    const data=await r.json().catch(()=>({}));
+    return {ok:r.ok, status:r.status, data, code:data?.error?.code, error:data?.error?.error_user_msg||data?.error?.message||(r.ok?'':`HTTP ${r.status}`)};
+  }catch(e){
+    return {ok:false, status:0, data:{}, error:e?.name==='AbortError'?'Meta did not answer in time — try again in a minute.':`Could not reach Meta: ${e?.message||e}`};
+  }finally{ clearTimeout(timer); }
+}
+// Tries each token in turn (the catalog System User token first for catalog calls, then the
+// WhatsApp token) — returns the first success, else the most useful failure.
+async function graphAny(path, tokens, opts){
+  let last={ok:false, error:'No access token saved.'};
+  for(const t of tokens){ const r=await graph(path, t, opts); if(r.ok) return {...r, token:t}; last=r; }
+  return last;
+}
+export function waShopTokens(c, cr, prefer='catalog'){
+  const cat=String(c?.[WA_SHOP_TOKEN_FIELD]||'').trim(), wa=String(cr?.wa_token||'').trim();
+  return [...new Set(prefer==='catalog'?[cat, wa]:[wa, cat])].filter(Boolean);
+}
+// Name, product count and up to 200 items of the catalog, straight from Meta.
+async function fetchCatalogInfo(catalogId, tokens){
+  const head=await graphAny(`${catalogId}?fields=name,product_count`, tokens);
+  if(!head.ok) return {ok:false, error:head.error};
+  const items=[]; let path=`${catalogId}/products?fields=retailer_id,name,price,currency,category,availability&limit=100`;
+  for(let page=0; page<2 && path; page++){
+    const r=await graph(path, head.token);
+    if(!r.ok) break;
+    for(const it of r.data?.data||[]) if(it.retailer_id) items.push({rid:String(it.retailer_id), name:String(it.name||'').slice(0,80), price:waShopParseMetaPrice(it.price), currency:String(it.currency||'INR').toUpperCase(), category:String(it.category||'').slice(0,60), available:String(it.availability||'in stock')!=='out of stock'});
+    const next=r.data?.paging?.next||''; path=next?next.replace(`${WA_SHOP_GRAPH}/`, ''):'';
+  }
+  return {ok:true, name:String(head.data?.name||''), count:num(head.data?.product_count)||items.length, items};
 }
 async function sendWa(cr, payload){ return graph(`${cr.wa_phone_id}/messages`, cr.wa_token, {method:'POST', body:payload}); }
 function storedConfig(c){ try{ return JSON.parse(c?.[WA_SHOP_CONFIG_FIELD]||'{}')||{}; }catch(e){ return {}; } }
@@ -299,21 +345,60 @@ async function handleConfig(request, env, deps){
 }
 
 // Links the catalog to the WhatsApp Business account and shows it (with the cart) on the number.
+// Couplo (Oct 2026): catalog already connected in WhatsApp Manager + a System User token saved
+// here, and "Link to my WhatsApp" did nothing. It only ever used the WhatsApp messaging token
+// (not the saved catalog_management token) and treated Meta's "this catalog is already connected"
+// refusal as a failure unless the text said "already". Now: an already-connected catalog counts
+// as linked, both tokens are tried, and the catalog's real name / product count is read back.
 async function handleConnect(request, env, deps){
   const {c, error}=await session(request, env, deps); if(error) return error;
+  const b=await request.json().catch(()=>({}));
   const cfg=waShopConfig(c), cr=creds(deps, c, cfg);
+  // The ID typed in the box wins (and is saved below), so a just-saved setting can't be missed.
+  if(b.catalog_id!==undefined){ const id=digits(b.catalog_id); if(!id) return deps.json({error:'Enter the catalog ID — the long number shown in Commerce Manager.'}, 400); cfg.catalog_id=id; }
   if(!cfg.catalog_id) return deps.json({error:'Add your Meta catalog ID first.'}, 400);
-  if(!cr?.wa_token||!cr.wa_phone_id||!cr.waba_id) return deps.json({error:'Connect WhatsApp first (Settings → Channels).'}, 400);
-  const link=await graph(`${cr.waba_id}/product_catalogs`, cr.wa_token, {method:'POST', body:{catalog_id:cfg.catalog_id}});
-  if(!link.ok&&!/already/i.test(link.error)) return deps.json({error:`Couldn't link the catalog to your WhatsApp account: ${link.error}`}, 502);
-  const show=await graph(`${cr.wa_phone_id}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`, cr.wa_token, {method:'POST'});
-  if(!show.ok) return deps.json({error:`Catalog linked, but turning on the cart failed: ${show.error}`}, 502);
-  await saveConfig(env, deps, c, {linked_at:new Date().toISOString()});
-  return deps.json({ok:true});
+  if(!cr?.wa_phone_id||!cr.waba_id) return deps.json({error:'Connect WhatsApp first (Settings → Channels).'}, 400);
+  const tokens=waShopTokens(c, cr, 'catalog');
+  if(!tokens.length) return deps.json({error:'No Meta access token — connect WhatsApp (Settings → Channels) or save a catalog access token below.'}, 400);
+  // 1. Is it already connected to this WhatsApp Business account (e.g. done in WhatsApp Manager)?
+  const list=await graphAny(`${cr.waba_id}/product_catalogs?fields=id,name`, tokens);
+  let alreadyLinked=list.ok && (list.data?.data||[]).some(x=>String(x.id)===cfg.catalog_id);
+  const otherCatalog=list.ok ? (list.data?.data||[]).find(x=>String(x.id)!==cfg.catalog_id) : null;
+  // 2. If not, connect it.
+  if(!alreadyLinked){
+    const link=await graphAny(`${cr.waba_id}/product_catalogs`, tokens, {method:'POST', body:{catalog_id:cfg.catalog_id}});
+    // Meta's "already connected to this account" refusal = done; anything else (e.g. a different
+    // catalog holds the WhatsApp account's one slot) is a real failure.
+    if(link.ok || (!otherCatalog && /\balready\b/i.test(link.error))) alreadyLinked=!link.ok;
+    else return deps.json({error:waShopLinkError(link, otherCatalog)}, 502);
+  }
+  // 3. Show the catalog and the cart on the number.
+  const show=await graphAny(`${cr.wa_phone_id}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`, waShopTokens(c, cr, 'whatsapp'), {method:'POST'});
+  if(!show.ok) return deps.json({error:`The catalog is connected, but showing it on your WhatsApp number failed: ${show.error}`}, 502);
+  // 4. What's in it, as Meta sees it.
+  const info=await fetchCatalogInfo(cfg.catalog_id, tokens);
+  await saveConfig(env, deps, c, {catalog_id:cfg.catalog_id, linked_at:new Date().toISOString(),
+    ...(info.ok?{catalog_name:info.name, catalog_count:info.count, meta_items:info.items.slice(0,100), meta_items_at:new Date().toISOString()}:{})});
+  return deps.json({ok:true, already_linked:alreadyLinked, catalog_name:info.ok?info.name:'', product_count:info.ok?info.count:null,
+    ...(info.ok?{}:{warning:`Linked, but the catalog's products couldn't be read: ${info.error}`})});
+}
+// A Meta refusal in words the merchant can act on.
+export function waShopLinkError(r, otherCatalog=null){
+  const e=String(r?.error||'');
+  if(otherCatalog) return `Your WhatsApp account already has another catalog connected (${otherCatalog.name||otherCatalog.id}). Disconnect it in WhatsApp Manager → Catalog, or enter that catalog's ID here.`;
+  if(/permission|not authori[sz]ed|\(#10\)|\(#200\)|catalog_management|whatsapp_business_management/i.test(e))
+    return `Meta says the token isn't allowed to connect this catalog (${e}). The System User needs catalog_management and whatsapp_business_management, and must be assigned to both the catalog and the WhatsApp account in Business Settings.`;
+  if(/does not exist|unsupported get request|invalid/i.test(e)) return `Meta can't find that catalog — check the Catalog ID in Commerce Manager (${e}).`;
+  return `Couldn't link the catalog to your WhatsApp account: ${e}`;
 }
 
 async function handleSync(request, env, deps){
   const {c, error}=await session(request, env, deps); if(error) return error;
+  const b=await request.json().catch(()=>({}));
+  const cfg=waShopConfig(c);
+  const managed=cfg.meta_items.filter(it=>!String(it.rid).startsWith(RID_PREFIX)).length;
+  if(managed && !cfg.synced_at && b.confirm!==true)
+    return deps.json({error:'meta_managed', message:`Your catalog already has ${managed} products added in Meta, and they are already used in WhatsApp. Syncing adds your Leadvyne products to it as well, which can show the same product twice. Sync anyway?`, managed}, 409);
   try{ return deps.json({ok:true, ...await syncCatalog(env, deps, c)}); }
   catch(e){ return deps.json({error:e.message}, 400); }
 }
@@ -348,11 +433,13 @@ async function handleSend(request, env, deps){
 
 async function sendCatalog(env, deps, c, phone, {category='', inboxId=''}={}){
   const cfg=waShopConfig(c);
-  if(!cfg.catalog_id||!cfg.synced_at) return {ok:false, error:'Sync your products to the WhatsApp catalog first.'};
+  if(!cfg.catalog_id||!waShopHasProducts(cfg)) return {ok:false, error:'Link your catalog (or sync your products to it) first.'};
   const cr=deps.resolveMetaCredentials(c, inboxId?{inbox_id:inboxId}:cfg.inbox_id?{inbox_id:cfg.inbox_id}:{});
   if(!cr?.wa_token||!cr.wa_phone_id) return {ok:false, error:'WhatsApp is not connected for this number.'};
   const skippedIds=new Set(cfg.skipped.map(s=>String(s.id)));
-  const products=(await deps.ecomListActiveProducts(env, c.Id)||[]).filter(p=>!skippedIds.has(String(p.nocodb_id??p.Id))&&num(p.price)>0&&p.image_url&&!(p.stock!==null&&p.stock!==''&&p.stock!==undefined&&num(p.stock)<=0));
+  const products=cfg.synced_at
+    ? (await deps.ecomListActiveProducts(env, c.Id)||[]).filter(p=>!skippedIds.has(String(p.nocodb_id??p.Id))&&num(p.price)>0&&p.image_url&&!(p.stock!==null&&p.stock!==''&&p.stock!==undefined&&num(p.stock)<=0))
+    : cfg.meta_items.filter(it=>it.available!==false).map(waShopMetaItemProduct);
   const payload=waShopProductListPayload(phone, cfg.catalog_id, products, {category, header:category?String(category):'Our collection'});
   if(!payload) return {ok:false, error:category?`No products in “${category}” to show.`:'No products to show yet.'};
   const r=await sendWa(cr, payload);
@@ -364,7 +451,7 @@ async function sendCatalog(env, deps, c, phone, {category='', inboxId=''}={}){
 // list instead of photos. Returns the history text, or null when it doesn't apply.
 export async function waShopMaybeSendCatalog(env, deps, c, {phone, convId, inboxId, text, categories=[]}){
   const cfg=waShopConfig(c);
-  if(!cfg.send_in_chat||!cfg.catalog_id||!cfg.synced_at||!cfg.linked_at||!waShopIsCatalogAsk(text)) return null;
+  if(!cfg.send_in_chat||!cfg.catalog_id||!waShopHasProducts(cfg)||!cfg.linked_at||!waShopIsCatalogAsk(text)) return null;
   const low=` ${String(text||'').toLowerCase()} `;
   const category=(categories||[]).find(n=>{ const k=String(n||'').trim().toLowerCase(); return k.length>=3&&low.includes(` ${k} `); })||'';
   const r=await sendCatalog(env, deps, c, phone, {category, inboxId});
@@ -427,7 +514,8 @@ async function handleCart(env, deps, c, cr, m, name){
   if(!cart?.items.length) return;
   const cfg=waShopConfig(c);
   const tableId=await deps.ecomResolveTable(env, c.Id, 'products');
-  const products=tableId?await deps.ecomListClientRows(env, tableId, c.Id):[];
+  // Meta-managed catalog items (retailer ids not ours) resolve by their retailer id → name.
+  const products=[...(tableId?await deps.ecomListClientRows(env, tableId, c.Id):[]), ...cfg.meta_items.map(waShopMetaItemProduct)];
   const order=waShopOrderFields(c.Id, cart, products, {phone:m.from, name});
   if(!await claimEvent(env, {id:m.id, client_id:c.Id, kind:'cart', order_ref:order.order_id, phone:order.customer_phone, total:order.total, currency:order.currency})) return;
   const lines=JSON.parse(order.line_items_json);
@@ -489,6 +577,10 @@ async function handlePayment(env, deps, c, cr, st, pay){
 // Daily: keep price, stock and photos in the WhatsApp catalog in step with Ecom Products.
 export async function waShopDailySync(env, deps, c){
   const cfg=waShopConfig(c);
+  if(cfg.catalog_id && cfg.linked_at){
+    const info=await fetchCatalogInfo(cfg.catalog_id, waShopTokens(c, creds(deps, c, cfg), 'catalog')).catch(()=>null);
+    if(info?.ok) await saveConfig(env, deps, c, {catalog_name:info.name, catalog_count:info.count, meta_items:info.items.slice(0,100), meta_items_at:new Date().toISOString()}).catch(()=>{});
+  }
   if(!cfg.catalog_id||!cfg.synced_at) return;
   try{ await syncCatalog(env, deps, c); }catch(e){ await deps.reportOpsError(env, 'wa shop daily catalog sync', e, {clientId:c.Id}); }
 }
