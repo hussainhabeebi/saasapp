@@ -228,14 +228,14 @@ async function fetchRzpSub(env, id){
     if(r.ok) emails.push(r.data?.email);
   }
   return {gateway:'razorpay', sub:data, owner:data.notes?.client_id||'', emails:emails.filter(Boolean),
-    terminal:RZP_TERMINAL.includes(data.status), field:'razorpay_subscription_id'};
+    terminal:RZP_TERMINAL.includes(data.status), unpaid:data.status==='created', pay_url:data.short_url||'', field:'razorpay_subscription_id'};
 }
 async function fetchStripeSub(env, deps, id){
   if(!deps.stripeConfigured(env)) return null;
   const {ok, data}=await deps.stripeFetch(env, 'GET', `subscriptions/${id}`, {expand:['customer']});
   if(!ok||!data?.id) return null;
   return {gateway:'stripe', sub:data, owner:data.metadata?.client_id||'', emails:[data.customer?.email].filter(Boolean),
-    terminal:['canceled','incomplete_expired'].includes(data.status), field:'stripe_subscription_id'};
+    terminal:['canceled','incomplete_expired'].includes(data.status), unpaid:data.status==='incomplete', pay_url:'', field:'stripe_subscription_id'};
 }
 
 export async function linkSubscription(env, deps, cid, body, {admin=false}={}){
@@ -264,6 +264,10 @@ export async function linkSubscription(env, deps, cid, body, {admin=false}={}){
         :'We couldn\'t confirm that subscription is yours (no email on it). Contact support and we\'ll link it for you.'};
     if(found.terminal) return {ok:false, status:400, error:`That subscription has already ended (${found.sub.status}). Subscribe again from the plans below.`};
   }
+  // Not paid / authorised yet: linking it would change nothing a customer can see (the page only
+  // counts a subscription once its mandate or first payment is through), so say what to do instead.
+  if(!admin && found.unpaid) return {ok:false, status:400, unpaid:true, pay_url:found.pay_url,
+    error:`That subscription hasn't been paid yet (${found.gateway==='razorpay'?'Razorpay':'Stripe'} status: ${found.sub.status}).${found.pay_url?' Complete the payment from its link, then link it again.':' Complete the payment first, then link it again.'} If you've already paid, check you used the subscription ID from the payment receipt.`};
 
   // Linking the same ID again just re-syncs it; the history row is written once (event_id dedupe).
   let price=null;
@@ -280,7 +284,7 @@ export async function linkSubscription(env, deps, cid, body, {admin=false}={}){
   await logBillingEvent(env, {provider:found.gateway, event_id:`link:${cid}:${id}`, event_type:'subscription.linked', client_id:cid, object_id:id,
     amount:price?.amount??null, currency:price?.currency||null, status:found.sub.status||'',
     note:admin?'linked by admin':`linked by customer${found.emails[0]?` (${found.emails[0]})`:''}`});
-  return {ok:true, gateway:found.gateway, subscription_id:id, status:found.sub.status, plan_name:price?.name||''};
+  return {ok:true, gateway:found.gateway, subscription_id:id, status:found.sub.status, plan_name:price?.name||'', unpaid:!!found.unpaid};
 }
 
 export const CANCEL_REASONS={too_expensive:'Too expensive', missing_features:'Missing features I need', not_using:'Not using it enough',
@@ -288,7 +292,7 @@ export const CANCEL_REASONS={too_expensive:'Too expensive', missing_features:'Mi
 
 export async function billingPortalHandleRoute(request, env, deps, url){
   const json=deps.json, p=url.pathname, m=request.method;
-  const out=r=>r.ok?json(r):json({error:r.error}, r.status||400);
+  const out=r=>r.ok?json(r):json({error:r.error, ...(r.pay_url?{pay_url:r.pay_url}:{})}, r.status||400);
   if(p==='/admin/billing/link-subscription' && m==='POST'){
     if(!await deps.requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
     const body=await request.json().catch(()=>({}));

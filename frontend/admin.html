@@ -1637,7 +1637,7 @@ async function adminLinkSubscription(clientId) {
   if (!confirm(`Link ${subscription_id} to this client? Its plan and status replace what's on the account now.`)) return;
   try {
     const d = await adminApi('/admin/billing/link-subscription', { method: 'POST', body: { client_id: clientId, subscription_id, gateway: document.getElementById('bm-link-gw').value } });
-    showToast(`Linked ${d.gateway} subscription — ${d.status}`, 'success');
+    showToast(d.unpaid ? `Linked, but it isn't paid yet (${d.status}) — the plan activates once the customer completes the payment` : `Linked ${d.gateway} subscription — ${d.status}`, d.unpaid ? 'error' : 'success');
     await loadBillingOverview();
     if (billModalId == clientId) openBillModal(clientId);
   } catch (e) { showToast(e.message, 'error'); }
