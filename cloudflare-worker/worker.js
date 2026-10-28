@@ -12,7 +12,7 @@ import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSett
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines} from './ta-properties.js';
-import {TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
+import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -20176,17 +20176,93 @@ async function taSendItineraryPdf(env,c,clientId,convId,pkg,itin){
   }catch(e){await reportOpsError(env,'Travel itinerary PDF — send failed',e,{clientId,convId});return false;}
 }
 
-// Travel agencies: a message naming one of the agency's packages ("hyderabad train package"), a
-// "details" / "itinerary" / "pdf" follow-up about the package just described, or a tap on one of
-// these buttons is answered here with the package laid out like an agent's hand-typed itinerary,
-// plus 📄 PDF Itinerary / ✅ Book Now buttons. Returns null for anything else.
-export async function engineHandleTravelPackage(env,c,clientId,state,userText,mediaType){
+// One package photo / brochure into the chat as a real attachment. Images go through
+// hospitalityFetchMediaBlob (Drive thumbnail, always under WhatsApp's 5 MB cap); a PDF is the
+// Drive file itself or any direct PDF link. False (never throws) when it can't be fetched or sent.
+async function taSendPackageMediaItem(env,c,convId,item){
+  try{
+    let blob=null,filename='';
+    if(item.kind==='image'){
+      blob=await hospitalityFetchMediaBlob(env,item.url,false);
+      if(blob)filename=/png/.test(blob.type)?'photo.png':'photo.jpg';
+    }else{
+      const fileId=driveFileId(item.url);
+      if(fileId){
+        const fetched=await driveFetchFile(fileId,item.url);
+        if(fetched&&/pdf/i.test(fetched.contentType||fetched.blob?.type||''))blob=fetched.blob;
+      }else{
+        const r=await fetch(item.url);
+        if(r.ok&&/pdf/i.test(r.headers.get('content-type')||''))blob=await r.blob();
+      }
+      if(blob&&blob.size>WA_PDF_LIMIT)blob=null;
+      filename=item.filename||'brochure.pdf';
+    }
+    if(!blob||!blob.size)return false;
+    const fd=new FormData();
+    fd.append('content',item.caption||'');
+    fd.append('message_type','outgoing');
+    fd.append('private','false');
+    fd.append('attachments[]',blob,filename);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+    return r.ok;
+  }catch(e){return false;}
+}
+const WA_PDF_LIMIT=25*1024*1024;
+
+// One row per (lead, package, day) whose photos / brochure the bot sent unasked — a package the
+// lead keeps naming must not re-send its gallery every message. A tap or a PDF ask ignores this.
+let _taPkgMediaSchemaEnsured=false;
+async function taClaimPackageMediaForToday(env,clientId,leadId,pkgId){
+  if(!leadId||!env.DB)return true;
+  try{
+    if(!_taPkgMediaSchemaEnsured){
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ta_package_media_sent(client_id TEXT NOT NULL,lead_id TEXT NOT NULL,package_id TEXT NOT NULL,sent_date TEXT NOT NULL,sent_at TEXT NOT NULL,PRIMARY KEY(client_id,lead_id,package_id,sent_date))`).run();
+      _taPkgMediaSchemaEnsured=true;
+    }
+    const now=new Date().toISOString();
+    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO ta_package_media_sent (client_id,lead_id,package_id,sent_date,sent_at) VALUES (?,?,?,?,?)`)
+      .bind(String(clientId),String(leadId),String(pkgId),now.slice(0,10),now).run();
+    return !!ins?.meta?.changes;
+  }catch(e){await reportOpsError(env,'taClaimPackageMediaForToday',e,{clientId,leadId,pkgId});return true;}
+}
+
+// Sends each package's photos and PDF brochure (dashboard → Packages → Photos & PDF for WhatsApp)
+// into the chat. A file that can't be fetched (not shared publicly, too large) goes as its link
+// instead, so the lead still gets it. Returns true when anything was sent.
+async function taDeliverPackageMedia(env,c,clientId,convId,pkgs,{explicit=false,leadId='',full=true,images=true,pdf=true}={}){
+  if(c.bot_reply_disabled==='Yes'||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!convId)return false;
+  let any=false;
+  for(const p of pkgs||[]){
+    const items=taPackageMediaItems(p,{full,images,pdf});
+    if(!items.length)continue;
+    if(!explicit&&!await taClaimPackageMediaForToday(env,clientId,leadId,taPkgId(p)))continue;
+    const failed=[];
+    for(const item of items){
+      if(await taSendPackageMediaItem(env,c,convId,item))any=true;
+      else failed.push(item);
+    }
+    if(failed.length){
+      const lines=failed.map(i=>`${i.kind==='pdf'?'📄 Brochure':'📷 Photo'}: ${i.url}`);
+      await engineSendChatwootReply(env,c,clientId,convId,`${failed[0].caption?`${failed[0].caption}\n\n`:`*${String(p.name||'').trim()}*\n`}${lines.join('\n')}`);
+      any=true;
+    }
+  }
+  return any;
+}
+
+// Travel agencies: a message naming one of the agency's packages ("hyderabad train package") or a
+// package's destination ("bali trip?"), a "details" / "itinerary" / "pdf" follow-up about the
+// package just described, or a tap on one of these buttons is answered here with the package laid
+// out like an agent's hand-typed itinerary, plus 📄 PDF Itinerary / ✅ Book Now buttons. The
+// package's own photos and PDF brochure go straight into the chat with it — the lead never has to
+// open the menu first. Returns null for anything else.
+export async function engineHandleTravelPackage(env,c,clientId,state,userText,mediaType,phone=''){
   if(mediaType!=='text'||!ltLiveAgencyEnabled(c)||!taResolveTable(c,'packages'))return null;
   const text=String(userText||'').trim();
-  if(!text||text.length>200)return null;
+  if(!text||text.length>300)return null;
   const tap=/^(TPKG|TPKGPDF|TPKGENQ):(.+)$/i.exec(text);
   const follow=tap?null:taPackageFollowUp(text);
-  if(!tap&&!follow&&text.split(/\s+/).length>12)return null;
+  if(!tap&&!follow&&text.split(/\s+/).length>20)return null;
   const lastBot=[...(state.activeHistory||state.history||[])].reverse().find(h=>h?.role==='assistant');
   const lastBotText=String(lastBot?.content||lastBot?.text||'');
   // The customer is answering the booking questions (date, travellers, name) — leave that to the
@@ -20203,9 +20279,31 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
     if(!pkg&&follow)pkg=taFindPackageInText(packages,lastBotText);
     if(pkg)mode=follow==='pdf'?'pdf':'details';
   }
-  const lang=c.language||'en',convId=state.convId;
+  const lang=c.language||'en',convId=state.convId,leadId=state.leadId||'';
   const human=c.handover_enabled!=='No'?[{title:'👤 Talk to Agent',value:'INTRO_HUMAN'}]:[];
   const base={route:'travel_package',next:state.stage||'new',preserveCrmStage:true,lang,serviceCategory:'Package'};
+  // No package named — a destination one or more packages go to ("bali", "kashmir trip") gets
+  // those packages, unless the lead is in the middle of a live flight search.
+  let inLocation=[];
+  if(!pkg&&!tap&&!follow){
+    inLocation=taPackagesForLocation(packages,text);
+    if(inLocation.length&&phone&&await ltLoadChatSearchDraft(env,clientId,phone).catch(()=>null))inLocation=[];
+    if(inLocation.length===1){pkg=inLocation[0];mode='details';}
+  }
+  if(!pkg&&inLocation.length>1){
+    const shown=inLocation.slice(0,10),where=String(shown[0].destination||'').split(/[,/&;|]/)[0].trim();
+    const lines=shown.map((p,i)=>{
+      const price=taMoney(taPackagePrice(p),p.currency),n=Number(p.nights)||0;
+      return `${i+1}. *${String(p.name).trim()}*${n?` — ${n}N/${n+1}D`:''}${price?` — ${price}`:''}`;
+    });
+    const reply=`🏝️ We have ${inLocation.length} packages${where?` for *${where}*`:''}:\n\n${lines.join('\n')}\n\nTap a package below (or type its name) for the full itinerary.`;
+    const buttons=shown.slice(0,3).map(p=>({title:engineTruncateButtonTitle(String(p.name).trim(),20),value:TA_PKG_PREFIX+taPkgId(p)}));
+    return {turn:{...base,historyUserText:text,text:reply,
+      deliver:async()=>{
+        await taDeliverPackageMedia(env,c,clientId,convId,shown.filter(taPackageHasMedia).slice(0,3),{leadId,full:false});
+        return engineSendChatwootQuickReply(env,c,clientId,convId,reply,buttons);
+      }}};
+  }
   if(!pkg){
     if(!tap)return null;
     return {turn:{...base,historyUserText:'Package',text:'Sorry, that package is no longer available. Tell us where you would like to go and our team will suggest the best options.',buttons:human}};
@@ -20221,7 +20319,9 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
     const prompt=`Would you like to book *${name}*?`;
     return {turn:{...base,historyUserText:tap?`PDF itinerary: ${name}`:text,text:`📄 Itinerary PDF — ${name}\n\n${prompt}`,
       deliver:async()=>{
-        const sent=await taSendItineraryPdf(env,c,clientId,convId,pkg,itin);
+        // The agency's own brochure when the package has one, else the itinerary PDF built here.
+        const own=String(pkg.pdf_url||'').trim()?await taDeliverPackageMedia(env,c,clientId,convId,[pkg],{explicit:true,images:false}):false;
+        const sent=own||await taSendItineraryPdf(env,c,clientId,convId,pkg,itin);
         if(!sent)await engineSendChatwootReply(env,c,clientId,convId,`Sorry, we couldn't create the PDF right now. Here are the details:\n\n${taPackageItineraryText(pkg,itin)}`);
         return engineSendChatwootQuickReply(env,c,clientId,convId,prompt,[bookBtn,...human]);
       }}};
@@ -20229,7 +20329,10 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
   const details=taPackageItineraryText(pkg,itin);
   const buttons=[{title:'📄 PDF Itinerary',value:TA_PKG_PDF_PREFIX+id},bookBtn,...human].slice(0,3);
   return {turn:{...base,historyUserText:tap?name:text,text:details,
-    deliver:()=>taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like this itinerary as a PDF, or shall we book it for you?')}};
+    deliver:async()=>{
+      await taDeliverPackageMedia(env,c,clientId,convId,[pkg],{explicit:!!tap,leadId});
+      return taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like this itinerary as a PDF, or shall we book it for you?');
+    }}};
 }
 
 // "hi" / "menu" / a menu tap. Returns null for anything else so the message continues down the
@@ -20262,7 +20365,11 @@ export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,
       if(pkg){
         const details=`${taPackageItineraryText(pkg,taMatchItinerary(pkg,await taReadRecords(env,c,clientId,'itineraries')))}\n\nWould you like to book this package?`;
         const buttons=[{title:'✅ Enquire Now',value:`${LT_ENQUIRE_PREFIX}${source}:${row.id}`},{title:'📄 PDF Itinerary',value:TA_PKG_PDF_PREFIX+row.id},help[0]];
-        return {turn:{...base,historyUserText:row.title,text:details,deliver:()=>taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like to book this package?')}};
+        // Picked from the menu → the package's photos and PDF brochure go with its details.
+        return {turn:{...base,historyUserText:row.title,text:details,deliver:async()=>{
+          await taDeliverPackageMedia(env,c,clientId,convId,[pkg],{explicit:true});
+          return taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like to book this package?');
+        }}};
       }
     }
     return {turn:{...base,historyUserText:row.title,text:`${row.detail}\n\nWould you like to book this ${meta.noun}?`,
@@ -24926,10 +25033,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }
       if(travelMenu?.introAction){introAction=travelMenu.introAction;userText=introAction.text;}
     }
-    // Travel agencies: a package named in the message (or a details / PDF follow-up, or a package
-    // button tap) gets the package as a day-wise itinerary with a 📄 PDF Itinerary button.
+    // Travel agencies: a package or its destination named in the message (or a details / PDF
+    // follow-up, or a package button tap) gets the package as a day-wise itinerary with a 📄 PDF
+    // Itinerary button, plus the package's own photos and PDF brochure — no menu needed first.
     if(!introAction){
-      const pkgTurn=await engineHandleTravelPackage(env,c,clientId,state,userText,mediaType).catch(e=>{reportOpsError(env,'Travel package details failed',e,{clientId}).catch(()=>{});return null;});
+      const pkgTurn=await engineHandleTravelPackage(env,c,clientId,state,userText,mediaType,phone).catch(e=>{reportOpsError(env,'Travel package details failed',e,{clientId}).catch(()=>{});return null;});
       if(pkgTurn?.turn){
         await enginePersistFirstGreetingTurn(env,c,clientId,state,pkgTurn.turn.historyUserText||userText,messageId,isNewLead,pkgTurn.turn,startMs,mediaType,ctx);
         return json({ok:true,route:'travel_package',sent:c.bot_reply_disabled!=='Yes'});

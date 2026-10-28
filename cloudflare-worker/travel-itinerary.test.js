@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { taFindPackageInText, taPackageFollowUp, taMatchItinerary, taPackageItineraryText, taBuildItineraryPdf, taItineraryPdfName, taPackagePrice, taParseNotesPlan, taPrepareImage, taFetchItineraryAssets } from './travel-itinerary.js';
+import { taFindPackageInText, taPackagesForLocation, taPackageMediaItems, taPackageFollowUp, taMatchItinerary, taPackageItineraryText, taBuildItineraryPdf, taItineraryPdfName, taPackagePrice, taParseNotesPlan, taPrepareImage, taFetchItineraryAssets } from './travel-itinerary.js';
 import { deflateSync } from 'node:zlib';
 import { engineHandleTravelPackage } from './worker.js';
 
@@ -194,4 +194,81 @@ test('child rates and per-day details from the detailed itinerary builder', () =
   assert.match(text, /📍 16:00 Charminar/);
   assert.match(text, /🍽️ Breakfast, Dinner/);
   assert.match(text, /🌙 Overnight: Hotel Sitara/);
+});
+
+test('a destination named in the message finds its packages; flight routes and visa asks do not', () => {
+  const list = [...pkgs, { Id: 5, name: 'Bali Honeymoon 5N', destination: 'Bali, Indonesia' }];
+  assert.deepEqual(taPackagesForLocation(list, 'bali').map(p => p.Id), [5]);
+  assert.deepEqual(taPackagesForLocation(list, 'Any trip to Bali?').map(p => p.Id), [5]);
+  assert.deepEqual(taPackagesForLocation(list, 'I want to go to bali in december').map(p => p.Id), [5]);
+  assert.deepEqual(taPackagesForLocation(list, 'hyderabad package').map(p => p.Id), [1, 2, 3]);
+  assert.deepEqual(taPackagesForLocation(list, 'Kochi to Bali'), []);
+  assert.deepEqual(taPackagesForLocation(list, 'bali flight tickets'), []);
+  assert.deepEqual(taPackagesForLocation(list, 'bali visa'), []);
+  assert.deepEqual(taPackagesForLocation(list, 'indonesian food'), []);
+});
+
+test('package media: photos then brochure, caption on the first; cover only when not full', () => {
+  const p = { name: 'Bali Honeymoon 5N', destination: 'Bali', nights: 5, currency: 'INR', sell_price: 45000,
+    image_url: 'https://drive.google.com/file/d/i1/view', image_url_3: 'https://drive.google.com/file/d/i3/view', pdf_url: 'https://drive.google.com/file/d/p1/view' };
+  const items = taPackageMediaItems(p);
+  assert.deepEqual(items.map(i => i.kind), ['image', 'image', 'pdf']);
+  assert.match(items[0].caption, /Bali Honeymoon 5N\* — Bali\n5 nights \/ 6 days · From INR 45,000 per person/);
+  assert.equal(items[2].filename, 'Bali-Honeymoon-5N.pdf');
+  assert.deepEqual(taPackageMediaItems(p, { full: false }).map(i => i.kind), ['image', 'pdf']);
+  assert.deepEqual(taPackageMediaItems({ name: 'x' }), []);
+});
+
+const JPEG_BYTES = new Uint8Array([0xFF, 0xD8, 0xFF, 0xD9]);
+function mediaEnv(calls, list) {
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    calls.push({ url: u, opts });
+    if (u.includes('/tables/tpk/')) return Response.json({ list });
+    if (u.includes('/tables/tit/')) return Response.json({ list: [] });
+    if (u.includes('/messages')) return Response.json({ id: 1 });
+    if (u.includes('drive.google.com/thumbnail?id=good')) return new Response(new Blob([JPEG_BYTES], { type: 'image/jpeg' }));
+    if (u.includes('drive.google.com/uc?export=download&id=pdf1')) return new Response(new Blob(['%PDF-1.4'], { type: 'application/pdf' }), { headers: { 'content-type': 'application/pdf' } });
+    return new Response('nope', { status: 404 });
+  };
+  return { NOCODB_BASE: 'https://nc.test', NOCODB_TOKEN: 't' };
+}
+const sent = calls => calls.filter(c => c.url.includes('/messages')).map(c => c.opts.body instanceof FormData
+  ? { file: c.opts.body.get('attachments[]')?.name, content: c.opts.body.get('content'), text: c.opts.body.get('attachments[]') ? undefined : c.opts.body.get('content') }
+  : { text: JSON.parse(c.opts.body).content });
+
+test('naming a package or its destination sends its photos and PDF straight into the chat', async () => {
+  const bali = { Id: 5, name: 'Bali Honeymoon 5N', destination: 'Bali, Indonesia', nights: 5, currency: 'INR', sell_price: 45000,
+    image_url: 'https://drive.google.com/file/d/good/view', image_url_2: 'https://drive.google.com/file/d/private/view', pdf_url: 'https://drive.google.com/file/d/pdf1/view' };
+  const calls = [];
+  const env = mediaEnv(calls, [...pkgs, bali]);
+  const state = { convId: 55, stage: 'new', activeHistory: [] };
+
+  const r = await engineHandleTravelPackage(env, client, 7, state, 'Hi, any bali trip?', 'text');
+  assert.equal(r.turn.route, 'travel_package');
+  await r.turn.deliver();
+  const out = sent(calls);
+  assert.equal(out[0].file, 'photo.jpg');
+  assert.match(out[0].content, /Bali Honeymoon 5N/);
+  // the photo that couldn't be fetched goes as its link, the PDF as a real attachment
+  assert.equal(out[1].file, 'Bali-Honeymoon-5N.pdf');
+  assert.ok(out.some(o => /📷 Photo: https:\/\/drive.google.com\/file\/d\/private/.test(o.text || '')));
+  assert.ok(out.some(o => /Day|Bali Honeymoon 5N/.test(o.text || o.content || '')));
+
+  // several packages for one destination → a list with a button per package
+  calls.length = 0;
+  const many = await engineHandleTravelPackage(env, client, 7, state, 'hyderabad', 'text');
+  assert.match(many.turn.text, /3 packages for \*HYDERABAD\*/);
+  const offered = await many.turn.deliver();
+  assert.deepEqual(offered.map(o => o.value), ['TPKG:1', 'TPKG:2', 'TPKG:3']);
+
+  // a flight route mentioning the destination is left to the flight path
+  assert.equal(await engineHandleTravelPackage(env, client, 7, state, 'Kochi to Bali 12 Dec', 'text'), null);
+
+  // the PDF button sends the agency's own brochure rather than the generated itinerary
+  calls.length = 0;
+  const pdf = await engineHandleTravelPackage(env, client, 7, state, 'TPKGPDF:5', 'text');
+  await pdf.turn.deliver();
+  const files = sent(calls).filter(o => o.file).map(o => o.file);
+  assert.deepEqual(files, ['Bali-Honeymoon-5N.pdf']);
 });
