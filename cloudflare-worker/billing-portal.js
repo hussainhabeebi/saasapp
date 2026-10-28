@@ -16,7 +16,7 @@
 // deps (from worker.js): { json, requireSession, requireAdminSession, getClientById, findClientByField,
 //   stripeFetch, stripeConfigured(env), stripePlanPrices(env), planTiers, planGatedModules,
 //   supportContacts(env)→{email,whatsapp}, linkStripeSubscription(env, cid, sub),
-//   rzpDeps()→RZP_DEPS }
+//   rzpDeps()→RZP_DEPS, freshClient(env, cid)→client (uncached, re-cached) }
 
 import {rzpFetch, rzpConfigured, rzpListPlans, rzpEnsureSchema, rzpLinkSubscription, logBillingEvent, guessPlanTier, RZP_TERMINAL} from './razorpay-billing.js';
 
@@ -208,6 +208,8 @@ async function history(env, cid){
 // A customer can only link a subscription that is theirs: not already on another account, not
 // created for another client, and paid with one of this account's emails (login, teammates or
 // billing email). Admin skips the email/ownership checks (the team verified it some other way).
+const LINKED_FIELDS=['billing_provider','plan_status','plan_name','plan_tier','plan_renews_at','plan_cancel_at_period_end',
+  'razorpay_subscription_id','razorpay_plan_id','razorpay_status','razorpay_customer_id','stripe_subscription_id','stripe_customer_id'];
 const SUB_ID_RE=/^sub_[A-Za-z0-9]{8,64}$/;
 export function accountEmails(c){
   return new Set([c.authentik_email, c.billing_email, ...String(c.team_emails||'').split(',')]
@@ -284,7 +286,10 @@ export async function linkSubscription(env, deps, cid, body, {admin=false}={}){
   await logBillingEvent(env, {provider:found.gateway, event_id:`link:${cid}:${id}`, event_type:'subscription.linked', client_id:cid, object_id:id,
     amount:price?.amount??null, currency:price?.currency||null, status:found.sub.status||'',
     note:admin?'linked by admin':`linked by customer${found.emails[0]?` (${found.emails[0]})`:''}`});
-  return {ok:true, gateway:found.gateway, subscription_id:id, status:found.sub.status, plan_name:price?.name||'', unpaid:!!found.unpaid};
+  // The billing fields as saved, so the page can show the plan without another (possibly cached) read.
+  const fresh=await deps.freshClient(env, cid).catch(()=>null);
+  const client=fresh?Object.fromEntries(LINKED_FIELDS.map(k=>[k, fresh[k]??''])):null;
+  return {ok:true, gateway:found.gateway, subscription_id:id, status:found.sub.status, plan_name:price?.name||'', unpaid:!!found.unpaid, client};
 }
 
 export const CANCEL_REASONS={too_expensive:'Too expensive', missing_features:'Missing features I need', not_using:'Not using it enough',
