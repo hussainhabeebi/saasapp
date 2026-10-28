@@ -4,8 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leadvyne · Hospitality</title>
-<!-- Hospitality workspace — the desktop home for every Hospitality client (dashboard.html sends
-     them here on a PC; phones keep m.html and the Android app is untouched). Built to open fast:
+<!-- Hospitality workspace — the 🛎️ Front Desk screens of the CRM. dashboard.html opens first and
+     embeds this page (?embed=1, hospitality-view.js) for each Front Desk menu item, so the CRM's own
+     menu replaces the sidebar here and Chats / leads open in the CRM — never in a new tab. Opened on
+     its own (not embedded) it sends you to the CRM. Built to open fast:
      no web fonts, no chart / PDF libraries, one data request (/hospitality/desk/bootstrap) painted
      from a local cache first, and every heavier screen (Pro Suite pages, Direct Sales, Chats)
      loaded only when it is opened. Pro Suite screens only appear once their switch is on in
@@ -13,9 +15,11 @@
      bump their ?v= below when changing them — sw.js serves scripts cache-first. -->
 <script>
 (function(){try{
-  // Phones keep the light app; no session → the CRM owns sign-in.
-  if(matchMedia('(max-width:700px)').matches){ location.replace('m.html'); return; }
-  if(!localStorage.getItem('lv_cid')||!localStorage.getItem('lv_session')){ location.replace('dashboard.html?full=1'); }
+  // The CRM is always the first view: outside its Front Desk frame this page hands over to it
+  // (phones to the light app). No session → the CRM owns sign-in.
+  var embed=new URLSearchParams(location.search).get('embed')==='1';
+  if(!embed){ location.replace(matchMedia('(max-width:700px)').matches?'m.html':'dashboard.html'); return; }
+  if(!localStorage.getItem('lv_cid')||!localStorage.getItem('lv_session')){ window.top.location.replace('dashboard.html'); }
 }catch(e){}})();
 </script>
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
@@ -58,10 +62,14 @@ a{color:var(--blue)}
 .iconbtn{position:relative;border:1px solid var(--line);background:var(--card);border-radius:9px;height:34px;min-width:34px;padding:0 9px;cursor:pointer}
 .iconbtn .dot{position:absolute;top:-5px;right:-5px;background:#E11D48;color:#fff;border-radius:9px;font-size:10.5px;padding:0 5px;font-weight:700}
 #view{flex:1;overflow:auto;padding:20px 22px 40px;position:relative}
-#chatsHost{position:absolute;inset:0;display:none;background:#fff}
-#chatsHost iframe{width:100%;height:100%;border:0}
-.chats-on #view{overflow:hidden;padding:0}
+#chatsHost{flex:1;min-height:0;display:none;background:#fff}
+#chatsHost iframe{width:100%;height:100%;border:0;display:block}
+.chats-on #view{display:none}
 .chats-on #chatsHost{display:block}
+/* Embedded in the CRM: its menu replaces this sidebar. */
+html.embed #app{grid-template-columns:1fr;height:100%}
+html.embed #side{display:none}
+html.embed #top{height:52px}
 /* Design system (also the class names hospitality-pro.js uses) */
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;box-shadow:var(--shadow);margin-bottom:14px}
 .card-title{font-weight:700;font-size:14.5px;margin-bottom:10px;display:flex;align-items:center;gap:8px}

@@ -15,10 +15,6 @@
   window.LV_LITE=phone;
   var q=new URLSearchParams(location.search),other=[];q.forEach(function(v,k){if(k!=='client')other.push(k)});
   if(phone&&!other.length&&localStorage.getItem('lv_cid')&&localStorage.getItem('lv_session'))location.replace('m.html'+location.hash);
-  // Hospitality clients on a PC open their own workspace (hospitality.html) instead. lv_hosp_desk
-  // is set by hospitalityDeskRedirect() below once /session/me confirms the client; phones and
-  // the Android app (sessionStorage lv_twa, see twa.js) never take this path.
-  else if(!phone&&!other.length&&localStorage.getItem('lv_hosp_desk')==='1'&&localStorage.getItem('lv_cid')&&localStorage.getItem('lv_session')&&sessionStorage.getItem('lv_twa')!=='1')location.replace('hospitality.html');
 }catch(e){}})();
 </script>
 <!-- Android app (TWA) pop-up handling — inert in a normal browser, see twa.js -->
@@ -5643,24 +5639,6 @@ function showLastLoginToast(){
   setTimeout(()=>showToast(`🔒 Welcome back — last signed in ${when}`),600);
 }
 
-// Hospitality workspace (hospitality.html) — the PC home for Hospitality clients. Remembers the
-// choice for the early redirect at the top of this file and, on a plain open (no ?full=1 / ?page=
-// …), goes there now. Phones (LV_LITE → m.html), the Android app (LV_TWA), new sign-ups (welcome
-// setup) and teammates whose permissions leave out the Hospitality module stay here.
-function hospitalityDeskRedirect(isFreshSignup, ignoreOAuthParams){
-  try{
-    let hosp=clientRecord?.hospitality_enabled==='Yes';
-    const mine=(!myEmail||isAccountOwner())?null:getTeamPermissions()[myEmail];
-    if(hosp && mine && Array.isArray(mine.modules) && !mine.modules.includes('hospitality')) hosp=false;
-    if(hosp) localStorage.setItem('lv_hosp_desk','1'); else localStorage.removeItem('lv_hosp_desk');
-    if(!hosp || isFreshSignup || window.LV_LITE || window.LV_TWA) return false;
-    const skip=new Set(['client', ...(ignoreOAuthParams?['code','state','session_state','iss']:[])]);
-    let other=false; new URLSearchParams(location.search).forEach((v,k)=>{ if(!skip.has(k)) other=true; });
-    if(other) return false;
-    location.replace('hospitality.html');
-    return true;
-  }catch(e){ return false; }
-}
 function completeLoginResult(session){
   clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
   myEmail=(session.email||'').toLowerCase();
@@ -5674,7 +5652,6 @@ function completeLoginResult(session){
   // Signed in from the Android app on a phone: back to the app's Home (m.html). New sign-ups stay
   // here for the welcome setup.
   if(window.LV_TWA && window.LV_LITE && !session.isFreshSignup){ location.replace('m.html'); return; }
-  if(hospitalityDeskRedirect(session.isFreshSignup, true)) return;
   showApp();
   if(!session.isFreshSignup) showLastLoginToast();
   if(session.isFreshSignup){
@@ -5911,7 +5888,6 @@ async function resumeSession(id){
     if(data.session_token){ sessionToken=data.session_token; localStorage.setItem('lv_session',sessionToken); }
     if(data.email){ myEmail=String(data.email).trim().toLowerCase(); localStorage.setItem('lv_me_email',myEmail); }
     if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
-    if(hospitalityDeskRedirect(false, false)) return;
     showApp();
   }catch(e){
     localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); localStorage.removeItem('lv_me_email'); sessionToken=''; myEmail='';
@@ -6111,6 +6087,7 @@ function navigate(page){
   if(page==='billing') billingInit();
   if(typeof tvOnNavigate==='function') tvOnNavigate(page); // travel workspace pages (travel-view.js)
   if(typeof cvOnNavigate==='function') cvOnNavigate(page); // ecommerce store workspace (commerce-view.js)
+  if(typeof hvOnNavigate==='function') hvOnNavigate(page); // hospitality Front Desk + Home (hospitality-view.js)
 }
 
 function openMoreSheet(){
@@ -18805,6 +18782,8 @@ function applyTheme(industryKey){
   if(typeof tvApply==='function') tvApply();
   // Ecommerce clients get a store-admin shell on desktop (commerce-view.js)
   if(typeof cvApply==='function') cvApply();
+  // Hospitality clients on a PC get the 🛎️ Front Desk menu and the new Home (hospitality-view.js)
+  if(typeof hvApply==='function') hvApply();
 }
 
 function previewTheme(val){
@@ -23820,6 +23799,8 @@ async function deleteHospBooking(id){
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=5"></script>
 <script src="travel-view.js?v=7"></script>
+<!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
+<script src="hospitality-view.js?v=1"></script>
 <script src="commerce-view.js?v=3"></script>
 <script src="staff-performance.js?v=1"></script>
 <script src="ads-report.js?v=4"></script>

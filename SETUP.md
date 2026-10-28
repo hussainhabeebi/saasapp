@@ -1608,37 +1608,38 @@ under 🏨 Hospitality → ⭐ Pro → ⚙️ Settings.
 `GET/PATCH /hospitality/pro/registrations`, `GET/PATCH /hospitality/pro/groups`,
 `GET /hospitality/pro/recovery`. The one public route is the Razorpay webhook.
 
-## Hospitality workspace (`frontend/hospitality.html`) — the PC home for Hospitality clients
-On a PC, every client with `hospitality_enabled='Yes'` opens a separate, lighter workspace instead
-of the full CRM: Today (arrivals, departures, in-house, occupancy), Bookings, a Calendar tape chart
-(book / block / set a rate by clicking a day), Chats (`chats.html` embedded), Rooms or Boats,
-Guests and Settings.
-- **Phones and the Android app are unchanged.** Phones still go to `m.html`, and the TWA
-  (`sessionStorage lv_twa`) never redirects.
-- **Classic CRM stays one click away.** Any query parameter keeps `dashboard.html`, so the
-  workspace's *Classic CRM* and *Leads* links (`dashboard.html?full=1…`) open the full CRM as
-  before.
-- **Teammates without the module stay in the CRM.** A teammate whose saved module permissions leave
-  out 🏨 Hospitality is never redirected.
-- **How the redirect works.** `hospitalityDeskRedirect()` in `dashboard.html` runs after
-  `/session/me` and sets `localStorage lv_hosp_desk`. The early script at the top of
-  `dashboard.html` uses that flag to redirect before the CRM's libraries download.
+## Hospitality Front Desk in the CRM (`frontend/hospitality-view.js` + `frontend/hospitality.html`)
+The CRM (`dashboard.html`) is always the first view. For clients with `hospitality_enabled='Yes'` on a
+PC, `hospitality-view.js` (called from `applyTheme` / `navigate`, like `travel-view.js`) adds:
+- **🛎️ Front Desk ▾ menu** in the desktop nav: Today, Bookings, Calendar, Rooms/Boats, Guests,
+  ⭐ Direct Sales (Pro) and every Pro Suite screen whose switch is on, plus Front Desk Settings.
+  Each opens **inside the CRM**: `#pageHospdesk` embeds `hospitality.html?embed=1#<screen>`.
+- **New Home layout.** A hospitality block sits on top: greeting, today's arrivals / departures /
+  in-house with Check in / Check out, occupancy, revenue, Pro to-dos and the daily insight. The
+  CRM's own 🏆 Weekly Arena, Staff Performance and lead cards follow. The classic hero, AI row,
+  briefing strip and NBA strip are hidden while `html.hv-mode` is on.
+- **No new tabs.** Embedded screens hand Chats, lead details and other CRM pages to the CRM by
+  `postMessage({source:'lv-hospdesk', type:'chat'|'lead'|'crm'})`. A guest chat opens in the CRM's
+  Chats, matched by lead id or phone; a prepared message is copied for pasting.
 
-**Why it loads faster:**
-- No web fonts and no Chart.js / PDF libraries.
-- One request (`GET /hospitality/desk/bootstrap`: units, a −45/+150-day booking window, today's
-  numbers, Pro counts), painted from a localStorage cache first.
-- The calendar is one request too (`GET /hospitality/desk/calendar?start&end`, up to 92 days).
-- Heavier screens load only when opened: `hospitality-desk-suite.js` for Pro Suite, the existing
-  `hospitality-pro.js` for ⭐ Direct Sales (reused unchanged), and the Chats iframe.
+**Unchanged:**
+- Phones (`LV_LITE` → `m.html`).
+- Non-hospitality clients.
+- Teammates whose module permissions leave out 🏨 Hospitality.
 
-Bump the `?v=` on `hospitality-desk.js` / `hospitality-desk-suite.js` when changing them, because
-`sw.js` serves scripts cache-first.
+`hospitality.html` opened on its own (without `?embed=1`) hands over to the CRM. Data for the
+menu and Home is one `GET /hospitality/desk/bootstrap`. The calendar is one
+`GET /hospitality/desk/calendar?start&end`. Pro Suite screens (`hospitality-desk-suite.js`)
+and Direct Sales (`hospitality-pro.js`, unchanged) load only when opened.
+
+Bump the `?v=` on `hospitality-view.js` (in `dashboard.html`) and on `hospitality-desk.js` /
+`hospitality-desk-suite.js` (in `hospitality.html`) when changing them, because `sw.js` serves
+scripts cache-first.
 
 ## Hospitality Pro Suite (`cloudflare-worker/hospitality-suite.js`)
-Six modules on top of Hospitality Pro with **30 features, each its own switch** in the workspace's
-⚙️ Settings. **Every switch starts off**, so nothing changes for an existing client until they turn
-one on. A screen appears in the workspace menu only once its feature is on. Everything also
+Six modules on top of Hospitality Pro with **30 features, each its own switch** in
+🛎️ Front Desk → ⚙️ Front Desk Settings. **Every switch starts off**, so nothing changes for an existing client until they turn
+one on. A screen appears in the 🛎️ Front Desk menu only once its feature is on. Everything also
 requires `hpEnabled(c)`.
 
 **Enable:** apply `migrations/0123_hospitality_suite.sql` once

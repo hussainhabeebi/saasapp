@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const deskUrl = 'file://' + path.resolve(__dirname, '../hospitality.html');
+const deskFile = 'file://' + path.resolve(__dirname, '../hospitality.html');
+const deskUrl = deskFile + '?embed=1'; // the Front Desk screens run embedded in the CRM
+const goTo = (page, k) => page.evaluate(k => go(k), k);
 const WORKER = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const TODAY = '2026-10-03';
 
@@ -81,30 +83,30 @@ test('front desk for a non-Pro hospitality client: one bootstrap call, Today, no
   await page.getByRole('button', { name: 'Check in' }).click();
   await expect.poll(() => calls.find(c => c.path === '/hospitality/bookings' && c.method === 'PATCH')?.body).toEqual({ id: 41, status: 'checked_in' });
 
-  await page.locator('.ni[data-k="settings"]').click();
+  await goTo(page, 'settings');
   await expect(page.getByText('Hospitality Pro is not switched on')).toBeVisible();
 });
 
 test('Pro client: only switched-on suite screens are in the menu; a switch adds its screen', async ({ page }) => {
   const calls = await openDesk(page, { pro: { housekeeping: true, staff_tasks: false, pricing_rules: false, balance_reminders: false, web_checkin: false } });
-  await expect(page.locator('.ni[data-k="sales"]')).toBeVisible();
-  await expect(page.locator('.ni[data-k="housekeeping"]')).toBeVisible();
+  await expect(page.locator('.ni[data-k="sales"]')).toHaveCount(1);
+  await expect(page.locator('.ni[data-k="housekeeping"]')).toHaveCount(1);
   await expect(page.locator('.ni[data-k="pricing"]')).toHaveCount(0);
   await expect(page.locator('.ni[data-k="journey"]')).toHaveCount(0);
 
-  await page.locator('.ni[data-k="housekeeping"]').click();
+  await goTo(page, 'housekeeping');
   await expect(page.getByText('Clean Kayal Queen after check-out')).toBeVisible();
 
-  await page.locator('.ni[data-k="settings"]').click();
+  await goTo(page, 'settings');
   await expect(page.getByText('Smart pricing suggestions')).toBeVisible();
   await page.locator('.feat', { hasText: 'Smart pricing suggestions' }).locator('.sw span').click();
   await expect.poll(() => calls.find(c => c.path === '/hospitality/suite/settings' && c.method === 'PATCH')?.body).toEqual({ config: { features: { pricing_rules: true } } });
-  await expect(page.locator('.ni[data-k="pricing"]')).toBeVisible();
+  await expect(page.locator('.ni[data-k="pricing"]')).toHaveCount(1);
 });
 
 test('calendar draws bookings, blocks and special rates from one call', async ({ page }) => {
   const calls = await openDesk(page);
-  await page.locator('.ni[data-k="calendar"]').click();
+  await goTo(page, 'calendar');
   await expect(page.locator('.bar', { hasText: 'Anu Thomas' })).toBeVisible();
   await expect(page.locator('.bar.inquiry', { hasText: 'Meera' })).toBeVisible();
   await expect(page.locator('td.blk')).toHaveCount(1);
@@ -125,7 +127,7 @@ test('new booking from the top bar posts to the existing bookings API', async ({
 
 test('Direct Sales reuses the existing Hospitality Pro screens', async ({ page }) => {
   await openDesk(page, { pro: { housekeeping: false } });
-  await page.locator('.ni[data-k="sales"]').click();
+  await goTo(page, 'sales');
   await expect(page.locator('.hp-chip', { hasText: 'Holds' })).toBeVisible();
 });
 
@@ -133,7 +135,7 @@ test('phones keep the light app — hospitality.html sends them to m.html', asyn
   await page.setViewportSize({ width: 390, height: 800 });
   await page.addInitScript(() => { localStorage.setItem('lv_cid', '7'); localStorage.setItem('lv_session', 'tok'); });
   await page.route('**/*', route => route.request().url().startsWith('file://') ? route.continue() : route.abort());
-  await page.goto(deskUrl, { waitUntil: 'commit' });
+  await page.goto(deskFile, { waitUntil: 'commit' });
   await page.waitForURL(/m\.html/);
 });
 
@@ -157,17 +159,17 @@ test('with every feature on, every screen opens without an error', async ({ page
   const keys = await page.locator('.ni[data-k]').evaluateAll(els => els.map(e => e.dataset.k));
   expect(keys).toEqual(expect.arrayContaining(['journey', 'agents', 'housekeeping', 'tasks', 'cruise', 'fleet', 'meals', 'pricing', 'channels', 'competitors', 'insights', 'feedback', 'reviews', 'alerts']));
   for (const k of keys.filter(k => k !== 'chats')) {
-    await page.locator(`.ni[data-k="${k}"]`).click();
+    await goTo(page, k);
     await expect(page.locator('#view .skel')).toHaveCount(0);
     await expect(page.locator('#view')).not.toContainText("Couldn't load");
   }
   for (const [k, tab] of [['tasks', 'Staff & crew'], ['tasks', 'Crew assignment'], ['fleet', 'Jetties & cruise hours'], ['fleet', 'Fuel & maintenance'], ['fleet', 'Weather'], ['meals', 'Menu'], ['pricing', 'Rules'], ['agents', 'Bookings & commissions'], ['agents', 'Allotments']]) {
-    await page.locator(`.ni[data-k="${k}"]`).click();
+    await goTo(page, k);
     await page.locator('.tab', { hasText: tab }).click();
     await expect(page.locator('#view .skel')).toHaveCount(0);
     await expect(page.locator('#view')).not.toContainText("Couldn't load");
   }
-  await page.locator('.ni[data-k="journey"]').click();
+  await goTo(page, 'journey');
   await page.getByText('Anu Thomas').click();
   await expect(page.locator('#mBody')).toContainText('Balance');
   expect(errors).toEqual([]);
@@ -184,26 +186,84 @@ async function openDashboard(page, { width, flag, search = '', twa = false }) {
   await page.route('**/*', route => route.request().url().startsWith('file://') ? route.continue() : route.abort());
   await page.goto(dashboardUrl + search, { waitUntil: 'commit' });
 }
-test('dashboard on a PC sends a Hospitality client to the workspace', async ({ page }) => {
+test('the CRM is the first view on a PC — no redirect, even with the old workspace flag', async ({ page }) => {
   await openDashboard(page, { width: 1400, flag: true });
-  await page.waitForURL(/hospitality\.html/);
-});
-test('?full=1 (Classic CRM link) keeps the classic dashboard', async ({ page }) => {
-  await openDashboard(page, { width: 1400, flag: true, search: '?full=1' });
-  await page.waitForLoadState('domcontentloaded');
-  expect(page.url()).toMatch(/dashboard\.html\?full=1$/);
-});
-test('non-Hospitality clients are not redirected', async ({ page }) => {
-  await openDashboard(page, { width: 1400, flag: false });
   await page.waitForLoadState('domcontentloaded');
   expect(page.url()).toMatch(/dashboard\.html$/);
 });
-test('Android app on a large screen stays on the dashboard', async ({ page }) => {
-  await openDashboard(page, { width: 1400, flag: true, twa: true });
-  await page.waitForLoadState('domcontentloaded');
-  expect(page.url()).toMatch(/dashboard\.html$/);
+test('hospitality.html opened on its own hands over to the CRM', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.addInitScript(() => { localStorage.setItem('lv_cid', '7'); localStorage.setItem('lv_session', 'tok'); });
+  await page.route('**/*', route => route.request().url().startsWith('file://') ? route.continue() : route.abort());
+  await page.goto(deskFile, { waitUntil: 'commit' });
+  await page.waitForURL(/dashboard\.html$/);
 });
-test('phones still go to the light app, not the workspace', async ({ page }) => {
+test('phones still go to the light app', async ({ page }) => {
   await openDashboard(page, { width: 390, flag: true });
   await page.waitForURL(/m\.html/);
+});
+
+// ── CRM side (hospitality-view.js): 🛎️ Front Desk menu, new Home, chats inside the CRM ──
+async function openCrmHome(page, { pro = null } = {}) {
+  const calls = [];
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.addInitScript(() => { localStorage.setItem('lv_cid', '7'); localStorage.setItem('lv_session', 'tok'); });
+  await page.route('**/*', async (route) => {
+    const req = route.request(); const url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.startsWith(WORKER)) {
+      const p = new URL(url).pathname;
+      calls.push({ path: p, method: req.method(), body: req.postData() ? JSON.parse(req.postData()) : null });
+      if (p === '/hospitality/desk/bootstrap') return route.fulfill({ json: bootstrap(pro) });
+      if (p === '/hospitality/bookings') return route.fulfill({ json: req.method() === 'GET' ? { list: BOOKINGS } : { ok: true } });
+      return route.fulfill({ json: { list: [] } });
+    }
+    return route.abort();
+  });
+  await page.goto(dashboardUrl + '?full=1', { waitUntil: 'domcontentloaded' });
+  await page.evaluate((rec) => {
+    document.getElementById('app').classList.add('show');
+    document.getElementById('gate')?.style.setProperty('display', 'none');
+    // @ts-ignore
+    clientId = 7; clientRecord = rec; sessionToken = 'tok'; allLeads = [{ Id: 900, Name: 'Anu Thomas', Phone: '+91 98470 00707' }];
+    // @ts-ignore
+    hvApply(); navigate('home');
+  }, { Id: 7, client_name: 'Lake Resort', hospitality_enabled: 'Yes', hospitality_style: 'houseboat', hospitality_pro_enabled: pro ? 'Yes' : 'No' });
+  return calls;
+}
+test('CRM Home: new hospitality block on top, Weekly Arena and Staff Performance kept', async ({ page }) => {
+  const calls = await openCrmHome(page);
+  await expect(page.locator('#hvHome .hv-hero')).toContainText('Lake Resort');
+  await expect(page.locator('#hvHome')).toContainText('Arriving today');
+  await expect(page.locator('#pageHome .home-hero')).toBeHidden();
+  const order = await page.evaluate(() => [...document.querySelectorAll('#hvHome,#homeArena,#homeStaffPerfCard')].map(e => e.id));
+  expect(order).toEqual(['hvHome', 'homeArena', 'homeStaffPerfCard']);
+  await expect(page.locator('#homeStaffPerfCard')).toBeVisible();
+  await page.locator('#hvHome .hv-btn.pri', { hasText: 'Check in' }).click();
+  await expect.poll(() => calls.find(c => c.path === '/hospitality/bookings' && c.method === 'PATCH')?.body).toEqual({ id: 41, status: 'checked_in' });
+});
+test('🛎️ Front Desk menu lists the switched-on screens and opens them inside the CRM', async ({ page }) => {
+  await openCrmHome(page, { pro: { housekeeping: true, pricing_rules: false } });
+  const items = page.locator('#dnHvGroup .dnTab');
+  await expect(items.filter({ hasText: 'Housekeeping' })).toHaveCount(1);
+  await expect(items.filter({ hasText: 'Smart Pricing' })).toHaveCount(0);
+  await expect(items.filter({ hasText: 'Boats' })).toHaveCount(1);
+  await page.locator('#dnHvGroup .dnGroupBtn').hover();
+  await items.filter({ hasText: 'Calendar' }).click();
+  await expect(page.locator('#pageHospdesk')).toBeVisible();
+  await expect(page.locator('#hospDeskFrame')).toHaveAttribute('src', /hospitality\.html\?embed=1#calendar/);
+  expect(page.context().pages()).toHaveLength(1); // no new tab
+});
+test('a chat requested by a Front Desk screen opens in the CRM Chats, matched by phone', async ({ page }) => {
+  await openCrmHome(page);
+  await page.evaluate(() => { /* @ts-ignore */ hvGo('bookings'); });
+  await expect(page.frameLocator('#hospDeskFrame').locator('body')).toContainText('Anu Thomas');
+  // @ts-ignore
+  await page.evaluate(() => { window._sel = []; const o = chatSelectLead; chatSelectLead = id => { window._sel.push(id); o(id); }; });
+  // @ts-ignore
+  await page.frame({ url: /hospitality\.html/ }).evaluate(() => openChat(null, '9847000707'));
+  await expect(page.locator('#pageChats')).toBeVisible();
+  // @ts-ignore
+  await expect.poll(() => page.evaluate(() => window._sel)).toEqual([900]);
+  expect(page.context().pages()).toHaveLength(1);
 });
