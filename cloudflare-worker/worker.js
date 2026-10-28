@@ -1,5 +1,6 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
+import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -35004,6 +35005,14 @@ const HS_DEPS={
   razorpayLink:hpRazorpayLink,
 };
 
+// ── Hospitality → API Import glue (hospitality-import.js) ── API keys are encrypted the same way
+// AI provider keys are (AI_KEY_ENC_SECRET).
+const HI_DEPS={
+  json, requireSession, getClientById, reportOpsError,
+  encrypt:async(env, plain)=>{ if(!env.AI_KEY_ENC_SECRET) throw new Error('AI_KEY_ENC_SECRET is not configured'); return aiEncryptSecret(env, plain); },
+  decrypt:async(env, stored)=>env.AI_KEY_ENC_SECRET?aiDecryptSecret(env, stored):null,
+};
+
 // ── CEO Bot glue (ceo-bot.js) ──
 // Everything ceo-bot.js needs from this file. Its WhatsApp traffic goes straight to the Graph API
 // on the client's separate CEO number — never through Chatwoot or the lead engine.
@@ -39401,6 +39410,8 @@ export default {
       // Hospitality desktop workspace (frontend/hospitality.html) + Pro Suite modules (hospitality-suite.js):
       // /hospitality/desk/* needs Hospitality on; /hospitality/suite/* needs Pro and 403s per feature switch.
       else if(url.pathname.startsWith('/hospitality/desk/') || url.pathname.startsWith('/hospitality/suite/')){ res=await hsHandleRoute(request, env, HS_DEPS, url); }
+      // Hospitality → API Import (properties + units pulled from another system's API, kept in sync).
+      else if(url.pathname.startsWith('/hospitality/import/')){ res=await hiHandleRoute(request, env, HI_DEPS, url); }
       // Public per-unit iCal feed for OTAs — unguessable token, and only while iCal sync is switched on.
       else if(url.pathname.startsWith('/hospitality/ical/') && request.method==='GET'){ res=await hsIcalExportRoute(env, url); }
       // CEO Bot (ceo-bot.js) — session-gated, owner-only and 403 unless ceo_bot_enabled, except its
@@ -39695,6 +39706,8 @@ export default {
       // Hospitality Pro Suite — guest journey messages, housekeeping, iCal, pricing, summary…;
       // only clients with a suite feature switched on. See hsRunForAllClients.
       ctx.waitUntil(hsRunForAllClients(env, HS_DEPS).catch(e=>reportOpsError(env, 'hospitality suite sweep', e)));
+      // Hospitality → API Import — re-sync each API link whose own interval is up; see hiRunDue.
+      ctx.waitUntil(hiRunDue(env, HI_DEPS).catch(e=>reportOpsError(env, 'hospitality api import sync', e)));
       // CEO Bot — briefs, staff reminders, standups, escalations, wrap, weekly report; only clients
       // with a connected CEO number, and nothing unless ceo_bot_enabled + active. See ceo-bot.js.
       ctx.waitUntil(ceoRunForAllClients(env, CEO_DEPS));

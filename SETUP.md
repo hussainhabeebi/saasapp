@@ -1532,6 +1532,30 @@ etc. — this app's actual client base), truncating the calendar's last day. Wor
 this module grows more date logic — Cloudflare Workers themselves have no such trap (there's no
 "local timezone" server-side, `Date` is always UTC there), but browser-side JS very much does.
 
+## Hospitality API Import (`cloudflare-worker/hospitality-import.js` — 🏨 Hospitality → 🔗 API Import)
+
+Imports properties and their units/rooms from another system's REST API — e.g. a property site that
+offers `GET https://example.com/api/v1/properties` with `Authorization: Bearer <key>` (or `X-API-Key`)
+— and keeps them in live sync.
+
+- **Setup:** none beyond `AI_KEY_ENC_SECRET` (already used for AI provider keys) — API keys are stored
+  encrypted with it. The tables (`migrations/0125_hospitality_api_import.sql`) are also created on first
+  use, so applying the migration is optional.
+- **Using it:** paste the link and key, **🔍 Test link** to preview what will be imported, then
+  **Import & keep in sync**. Each link has its own live-sync interval (15 min – daily) and a
+  **⟳ Sync now** button. Add filters to the link itself (e.g. `?destination=Munnar`) to import part of a
+  catalogue.
+- **Sync rules:** the feed is the source of truth for the fields it fills (name, location, description,
+  amenities, photos/videos, unit prices/capacity), so edit those at the source. Records that leave the
+  feed are switched off, never deleted (bookings keep their unit), and switched back on if they return.
+  A record deleted here stays deleted. An empty response switches nothing off.
+- **Feed shapes:** a bare array or `{data|properties|items|results: […]}`; paging via `?page=&limit=`,
+  `meta.total_pages`, `has_more` or a same-origin `next` link (max 20 pages per sync). Rooms are read from
+  `units` / `rooms` / `room_types` / …; a property with no rooms list is imported as a single unit.
+- **Cron:** the `*/15` tick syncs up to 5 due links (`hiRunDue`), only for clients with Hospitality on.
+- **Safety:** https only, no private/internal hosts, the key is only ever sent to the link's own origin
+  (redirects and `next` links included), 20 s timeout, 5 MB response cap.
+
 ## Hospitality Pro (`cloudflare-worker/hospitality-pro.js` — 🏨 Hospitality → ⭐ Pro)
 An add-on on top of the Hospitality module that makes the WhatsApp bot *sell* stays, not just
 answer questions. **Off by default and invisible to every existing client**: it only does

@@ -2389,6 +2389,8 @@ const ROLES = {
         <button class="hosp-tab" data-hosp="units">🏠 Units</button>
         <button class="hosp-tab" data-hosp="availability">📅 Availability</button>
         <button class="hosp-tab" data-hosp="bookings">📖 Bookings</button>
+        <!-- Import properties + units from another system's API, kept in sync (hospitality-import.js). -->
+        <button class="hosp-tab" data-hosp="import">🔗 API Import</button>
         <!-- Hospitality Pro add-on (hospitality-pro.js) — only shown when hospitality_pro_enabled==='Yes'. -->
         <button class="hosp-tab" data-hosp="pro" id="hospProTab" style="display:none">⭐ Pro</button>
       </div>
@@ -23276,6 +23278,7 @@ function renderHospSubPage(page){
     case'availability':renderHospAvailability();break;
     case'bookings':renderHospBookings();break;
     case'pro':if(typeof renderHospPro==='function') renderHospPro($id('hospContent'));break;
+    case'import':if(typeof renderHospImport==='function') renderHospImport();break;
   }
 }
 document.addEventListener('click',e=>{
@@ -23892,6 +23895,7 @@ async function deleteHospBooking(id){
 </script>
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
+<script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=5"></script>
