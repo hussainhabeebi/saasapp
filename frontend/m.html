@@ -79,6 +79,10 @@ button:active{transform:scale(.98)}
 .item.danger{color:var(--red)}.item.danger i{background:var(--red-soft);color:var(--red)}.item.danger span::after{content:""}
 #chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
 .loading{flex:1;display:grid;place-items:center;color:var(--muted);font-size:14px}
+/* Over the Chats iframe, not beside it — the frame keeps its full height while it loads underneath. */
+#chatsLoading{position:absolute;inset:0;z-index:1;background:#fff;text-align:center;padding:0 24px}
+#chatsLoading .btn-row{display:flex;gap:10px;justify-content:center;margin-top:14px}
+#chatsLoading button,#chatsLoading a{padding:10px 16px;border-radius:12px;font-weight:600;font-size:14px;background:var(--green-soft);color:var(--green);text-decoration:none}
 /* Floating tab bar */
 #nav{position:absolute;left:12px;right:12px;bottom:calc(var(--navgap) + env(safe-area-inset-bottom));height:var(--nav);display:flex;padding:6px;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:24px;box-shadow:0 10px 30px rgba(11,37,69,.14);z-index:5}
 #nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:11.5px;font-weight:600;color:var(--muted);position:relative;border-radius:18px;transition:background .15s,color .15s}
@@ -267,12 +271,25 @@ addEventListener('popstate',()=>{
 let chatsReady=false,pending=null;
 const frame=()=>$('chatsFrame');
 const origin=()=>location.protocol==='file:'?'*':location.origin;
+// The cover comes off on Chats' own 'ready' message or the frame's load event, whichever is first —
+// load alone waits for every image and script in chats.html, so one stalled request on a phone's
+// network left "Opening Chats…" up for good. If neither arrives, offer Retry instead of waiting forever.
+const CHATS_SLOW_MS=15000;let chatsSlowTimer=0;
+const chatsUrl=extra=>'chats.html?'+new URLSearchParams({client:clientId,token:sessionToken,...extra});
+function chatsShown(){clearTimeout(chatsSlowTimer);$('chatsLoading')?.remove()}
 function ensureChats(){
  if(frame())return;
  const f=document.createElement('iframe');f.id='chatsFrame';f.title='Chats';f.allow='microphone; clipboard-write; autoplay';
- f.src='chats.html?'+new URLSearchParams({client:clientId,token:sessionToken,embed:'1',skin:'m'}); // skin=m: this app's colours
- f.onload=()=>$('chatsLoading')?.remove();
+ f.src=chatsUrl({embed:'1',skin:'m'}); // skin=m: this app's colours
+ f.onload=chatsShown;
  $('tabChats').appendChild(f);
+ clearTimeout(chatsSlowTimer);
+ chatsSlowTimer=setTimeout(()=>{const l=$('chatsLoading');if(l)l.innerHTML=`<div>Chats is taking longer than usual.<div class="btn-row"><button onclick="retryChats()">Retry</button><a href="${esc(chatsUrl({}))}">Open Chats page</a></div></div>`},CHATS_SLOW_MS);
+}
+function retryChats(){
+ frame()?.remove();chatsReady=false;
+ let l=$('chatsLoading');if(!l){l=document.createElement('div');l.id='chatsLoading';l.className='loading';$('tabChats').prepend(l)}
+ l.textContent='Opening Chats…';ensureChats();
 }
 function post(msg){pending={...pending,...msg};flush()}
 function flush(){const f=frame();if(!chatsReady||!pending||!f?.contentWindow)return;try{f.contentWindow.postMessage({source:'lv-dashboard',...pending},origin());pending=null}catch{}}
@@ -280,7 +297,7 @@ function openChats(msg){if(msg)post(msg);go('chats')}
 addEventListener('message',e=>{
  const f=frame();if(!f||e.source!==f.contentWindow||e.data?.source!=='lv-chats')return;
  const d=e.data;
- if(d.type==='ready'){chatsReady=true;flush()}
+ if(d.type==='ready'){chatsReady=true;chatsShown();flush()}
  else if(d.type==='thread'){
   const open=!!d.leadId;
   if(open&&!threadOpen&&!history.state?.lvThread)history.pushState({lvTab:'chats',lvThread:1},'','#chats');
