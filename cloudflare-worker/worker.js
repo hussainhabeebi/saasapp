@@ -8086,17 +8086,14 @@ async function handleEcomOrderPhones(request, env){
   const tableId=await ecomResolveTable(env, payload.cid, 'orders');
   if(!tableId) return json({has_orders_table:false, phones:{}});
   const phones={};
-  for(let page=1; page<=25; page++){
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,notes,items`);
-    if(!r.ok) break;
-    const list=(await r.json().catch(()=>({})))?.list||[];
+  {
+    const list=await ecomReadOrderRows(env, tableId, payload.cid, 'customer_phone,status,order_date,notes,items', {max:5000})||[];
     for(const o of list){
       if(!ecomOrderIsConversion(o)) continue;
       const phone=String(o.customer_phone||'').replace(/\D/g,''); if(!phone) continue;
       const date=String(o.order_date||'');
       if(!(phone in phones) || (date && (!phones[phone] || date<phones[phone]))) phones[phone]=date;
     }
-    if(list.length<200) break;
   }
   return json({has_orders_table:true, phones});
 }
@@ -12591,21 +12588,55 @@ async function ecomStaffFromRequest(request, env, c, clientId){
   return ecomStaffTakenBy(c, payload.email);
 }
 const _ecomTakenByFieldsEnsured=new Set();
+// Couplo (Oct 2026): this used to list columns with GET …/meta/tables/{id}/fields, which isn't the
+// table-meta read the rest of the Worker relies on (ncTableMeta: GET …/meta/tables/{id} →
+// columns) — when it didn't answer, it quietly gave up, the staff columns were never created, every
+// "taken by / assigned to" write was silently ignored by NocoDB, and reports that asked for those
+// columns failed. Now: the proven meta read, a case-insensitive match on title and column_name,
+// creation with column_name + title, and every failure reported. Returns {ok, missing}.
 async function ensureEcomOrderTakenByFields(env, tableId){
-  if(!tableId || _ecomTakenByFieldsEnsured.has(tableId)) return;
+  if(!tableId) return {ok:false, missing:ECOM_ORDER_STAFF_FIELDS};
+  if(_ecomTakenByFieldsEnsured.has(tableId)) return {ok:true, missing:[]};
   try{
-    const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok) return;
-    const names=new Set((d.list||[]).map(f=>f.title));
-    let ok=true;
+    const {info}=await ncTableMeta(env, tableId);
+    const cols=Array.isArray(info?.columns)?info.columns:null;
+    if(!cols){ await reportOpsError(env, 'ensureEcomOrderTakenByFields — could not read the orders table columns', new Error(JSON.stringify(info).slice(0,300)), {tableId}); return {ok:false, missing:ECOM_ORDER_STAFF_FIELDS}; }
+    const have=new Set(cols.flatMap(c=>[c.title, c.column_name]).filter(Boolean).map(x=>String(x).toLowerCase()));
+    const missing=[];
     for(const title of ECOM_ORDER_STAFF_FIELDS){
-      if(names.has(title)) continue;
-      const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
-      if(!cr.ok) ok=false;
+      if(have.has(title.toLowerCase())) continue;
+      const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{column_name:title, title, uidt:'SingleLineText'}});
+      if(!cr.ok){
+        const detail=await cr.text().catch(()=>'');
+        missing.push(title);
+        await reportOpsError(env, `ensureEcomOrderTakenByFields — could not create column ${title}`, new Error(`NocoDB ${cr.status} ${detail.slice(0,200)}`), {tableId}).catch(()=>{});
+      }
     }
-    if(ok) _ecomTakenByFieldsEnsured.add(tableId);
-  }catch(e){ await reportOpsError(env, 'ensureEcomOrderTakenByFields', e, {tableId}); }
+    if(!missing.length) _ecomTakenByFieldsEnsured.add(tableId);
+    return {ok:!missing.length, missing};
+  }catch(e){ await reportOpsError(env, 'ensureEcomOrderTakenByFields', e, {tableId}); return {ok:false, missing:ECOM_ORDER_STAFF_FIELDS}; }
+}
+// Saves assignment / staff fields on many orders, 100 at a time. If NocoDB refuses (a staff column
+// missing on this table), the columns are (re)created once and the batch retried; the NocoDB
+// reason is returned instead of a vague failure.
+async function ecomPatchOrders(env, ordersTable, rows){
+  for(let i=0; i<rows.length; i+=100){
+    const batch=rows.slice(i, i+100);
+    let r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:batch});
+    if(!r.ok){
+      _ecomTakenByFieldsEnsured.delete(ordersTable);
+      const ens=await ensureEcomOrderTakenByFields(env, ordersTable);
+      r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:batch});
+      if(!r.ok){
+        const detail=(await r.text().catch(()=>'')).slice(0,200);
+        await reportOpsError(env, 'ecomPatchOrders', new Error(`NocoDB ${r.status} ${detail}`), {ordersTable}).catch(()=>{});
+        return {ok:false, saved:i, error:ens.missing?.length
+          ? `Could not save — the orders table is missing the column(s) ${ens.missing.join(', ')} and they couldn't be added automatically. Add them in NocoDB as Single line text, or give the NocoDB token Creator access.`
+          : `Could not save the assignment (NocoDB ${r.status}${detail?': '+detail:''}).`};
+      }
+    }
+  }
+  return {ok:true, saved:rows.length};
 }
 // Staff-wise order report: one row per taker (drafts and cancelled orders counted apart, not as
 // orders taken), most orders first. `from`/`to` are inclusive YYYY-MM-DD on order_date.
@@ -12663,19 +12694,38 @@ async function handleEcomStaffOrderReport(request, env){
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
   if(!ordersTable) return json({error:'orders table not configured for this client'},400);
   await ensureEcomOrderTakenByFields(env, ordersTable);
-  const all=[];
-  for(let page=0; page<20; page++){
-    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_date,CreatedAt,status,total,taken_by,taken_by_name,assigned_to,assigned_to_name&limit=1000&offset=${page*1000}`);
-    if(!r.ok) return json({error:'Could not read orders'},502);
-    const list=(await r.json().catch(()=>({})))?.list||[];
-    all.push(...list);
-    if(list.length<1000) break;
-  }
+  const all=await ecomReadOrderRows(env, ordersTable, clientId, 'Id,order_date,CreatedAt,status,total,taken_by,taken_by_name,assigned_to,assigned_to_name', {max:20000});
+  if(!all) return json({error:'Could not read orders — try again in a minute'},502);
   const report=ecomStaffOrderReport(all, {from, to});
   report.assigned_rows=ecomAssignedOrderReport(all, {from, to});
   const me=String(auth.payload.email||'').trim().toLowerCase();
   if(!auth.fullAccess){ report.rows=report.rows.filter(r=>r.taken_by===me); report.assigned_rows=report.assigned_rows.filter(r=>r.assigned_to===me); }
   return json({ok:true, from, to, full_access:auth.fullAccess, me, ...report});
+}
+/* One tolerant reader for a client's order rows (Couplo, Oct 2026: "Staff report unavailable: Could
+   not read orders"). The reports asked NocoDB for 1,000 rows with a fixed column list
+   (CreatedAt, taken_by, assigned_to …); a base where one of those columns doesn't exist under
+   that exact title, or with a lower page-size cap, refuses the whole request. Now: pages of 200,
+   and if the column list is refused the same page is read with every column instead. Returns
+   null only when nothing could be read (the NocoDB error goes to ops). */
+export async function ecomReadOrderRows(env, ordersTable, clientId, fields='', {max=10000}={}){
+  const where=encodeURIComponent(`(client_id,eq,${clientId})`);
+  let useFields=fields;
+  const out=[];
+  for(let offset=0; offset<max; offset+=200){
+    const url=f=>`api/v2/tables/${ordersTable}/records?where=${where}&limit=200&offset=${offset}${f?`&fields=${encodeURIComponent(f)}`:''}`;
+    let r=await ncFetch(env, url(useFields));
+    if(!r.ok && useFields){ useFields=''; r=await ncFetch(env, url('')); }
+    if(!r.ok){
+      const detail=await r.text().catch(()=>'');
+      await reportOpsError(env, 'ecomReadOrderRows', new Error(`NocoDB ${r.status} ${detail.slice(0,200)}`), {clientId, ordersTable}).catch(()=>{});
+      return offset?out:null;
+    }
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    out.push(...list);
+    if(list.length<200) break;
+  }
+  return out;
 }
 async function ecomRecentOrdersForPhone(env, ordersTable, clientId, phone){
   const key=ecomPhoneKey(phone);
@@ -12789,12 +12839,24 @@ async function handleEcomOrdersInsights(request, env){
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
   let orders=[];
   if(ordersTable){
-    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_id,customer_phone,status&limit=1000`);
-    orders=r.ok?((await r.json().catch(()=>({})))?.list||[]):[];
+    orders=await ecomReadOrderRows(env, ordersTable, clientId, 'Id,order_id,customer_phone,status')||[];
   }
   return json({ok:true, leads:insights, warm_leads:ecomWarmLeads(insights, orders), warm_min_interactions:ECOM_WARM_MIN_INTERACTIONS,
     ...(leads?{}:{leads_error:'Could not read leads — try ↻ in a minute'}), assign_mode:ecomOrderAssignMode(auth.c),
     team:ecomTeamList(auth.c), me:String(auth.payload.email||'').trim().toLowerCase(), full_access:auth.fullAccess});
+}
+// GET /ecom/orders/team?client_id= — the assignment picker's team list + mode, on its own so the
+// "Assign to" dropdowns never depend on reading leads. Also makes sure the staff columns exist.
+async function handleEcomOrdersTeam(request, env){
+  const clientId=String(new URL(request.url).searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const auth=await ecomRequireOrdersSession(request, env, clientId);
+  if(auth.error) return auth.error;
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  const cols=ordersTable?await ensureEcomOrderTakenByFields(env, ordersTable):{ok:false, missing:[]};
+  return json({ok:true, team:ecomTeamList(auth.c), assign_mode:ecomOrderAssignMode(auth.c),
+    me:String(auth.payload.email||'').trim().toLowerCase(), full_access:auth.fullAccess,
+    ...(cols.ok?{}:{columns_missing:cols.missing})});
 }
 // Every lead owner of this client by phone key (for bulk auto-assign) — one paged read.
 async function ecomLeadOwnersByPhone(env, c, clientId){
@@ -12823,18 +12885,14 @@ async function handleEcomOrdersBulkAssign(request, env){
   if(!ordersTable) return json({error:'orders table not configured for this client'},400);
   await ensureEcomOrderTakenByFields(env, ordersTable);
   // Only this client's orders: read its order ids and keep the requested ones.
-  const want=new Set(ids), mine=[];
-  for(let page=0; page<10; page++){
-    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id&limit=1000&offset=${page*1000}`);
-    if(!r.ok) return json({error:'Could not read orders'},502);
-    const list=(await r.json().catch(()=>({})))?.list||[];
-    for(const o of list) if(want.has(o.Id)) mine.push(o.Id);
-    if(list.length<1000 || mine.length===want.size) break;
-  }
+  const want=new Set(ids);
+  const rows=await ecomReadOrderRows(env, ordersTable, clientId, 'Id');
+  if(!rows) return json({error:'Could not read orders — try again in a minute'},502);
+  const mine=rows.map(o=>o.Id).filter(id=>want.has(id));
   if(!mine.length) return json({error:'No matching orders'},404);
   const fields=ecomAssignFields(auth.c, to, String(auth.payload.email||'').trim().toLowerCase());
-  const pr=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:mine.map(Id=>({Id, ...fields}))});
-  if(!pr.ok) return json({error:'Could not save the assignment'},502);
+  const saved=await ecomPatchOrders(env, ordersTable, mine.map(Id=>({Id, ...fields})));
+  if(!saved.ok) return json({error:saved.error},502);
   return json({ok:true, assigned:mine.length, ...fields});
 }
 // Which orders auto-assign touches: unassigned, not cancelled/delivered (or exactly the given ids,
@@ -12865,21 +12923,12 @@ async function handleEcomOrdersAutoAssign(request, env){
   const only=new Set((Array.isArray(body.ids)?body.ids:[]).map(x=>parseInt(x,10)).filter(Boolean));
   const owners=await ecomLeadOwnersByPhone(env, auth.c, clientId);
   if(!owners) return json({error:'Could not read leads'},502);
-  const orders=[];
-  for(let page=0; page<10; page++){
-    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,customer_phone,status,assigned_to&limit=1000&offset=${page*1000}`);
-    if(!r.ok) return json({error:'Could not read orders'},502);
-    const list=(await r.json().catch(()=>({})))?.list||[];
-    orders.push(...list);
-    if(list.length<1000) break;
-  }
+  const orders=await ecomReadOrderRows(env, ordersTable, clientId, 'Id,customer_phone,status,assigned_to');
+  if(!orders) return json({error:'Could not read orders — try again in a minute'},502);
   const plan=ecomAutoAssignPlan(orders, owners, only.size?only:null);
   const by=String(auth.payload.email||'').trim().toLowerCase();
-  for(let i=0; i<plan.assign.length; i+=100){
-    const batch=plan.assign.slice(i, i+100).map(({Id, to})=>({Id, ...ecomAssignFields(auth.c, to, `auto (by ${by})`)}));
-    const pr=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:batch});
-    if(!pr.ok) return json({error:'Could not save the assignment', assigned:i},502);
-  }
+  const saved=await ecomPatchOrders(env, ordersTable, plan.assign.map(({Id, to})=>({Id, ...ecomAssignFields(auth.c, to, `auto (by ${by})`)})));
+  if(!saved.ok) return json({error:saved.error, assigned:saved.saved},502);
   return json({ok:true, assigned:plan.assign.length, no_owner:plan.noOwner, skipped:plan.skipped});
 }
 // GET /ecom/orders/session?client_id=&Id= — the chat session behind one order: when it started,
@@ -34804,7 +34853,10 @@ async function fv3OrderPhones(env, c, {fresh=false}={}){
   if(!tableId) return null;
   const map={};
   for(let page=1; page<=25; page++){
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${c.Id})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,total,CreatedAt,notes,items`);
+    const q=f=>`api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${c.Id})`)}&limit=200&offset=${(page-1)*200}${f?`&fields=${f}`:''}`;
+    let r=await ncFetch(env, q('customer_phone,status,order_date,total,CreatedAt,notes,items'));
+    // A base without one of those columns (e.g. CreatedAt) refuses the list — read every column instead.
+    if(!r.ok) r=await ncFetch(env, q(''));
     if(!r.ok) throw new Error('Order safety check failed: HTTP '+r.status);
     const data=await r.json();
     if(!Array.isArray(data.list)) throw new Error('Order safety check returned invalid data');
@@ -38754,6 +38806,7 @@ export default {
       else if(url.pathname==='/ecom/orders/session' && request.method==='GET'){ res=await handleEcomOrderSession(request, env); }
       else if(url.pathname==='/ecom/orders/staff-report' && request.method==='GET'){ res=await handleEcomStaffOrderReport(request, env); }
       else if(url.pathname==='/ecom/orders/assign' && request.method==='POST'){ res=await handleEcomOrdersBulkAssign(request, env); }
+      else if(url.pathname==='/ecom/orders/team' && request.method==='GET'){ res=await handleEcomOrdersTeam(request, env); }
       else if(url.pathname==='/ecom/orders/auto-assign' && request.method==='POST'){ res=await handleEcomOrdersAutoAssign(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='GET'){ res=await handleEcomCategoriesList(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='POST'){ res=await handleEcomCategoryCreate(request, env); }

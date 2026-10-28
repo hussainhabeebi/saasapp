@@ -95,3 +95,23 @@ test('auto-assign plan: unassigned open orders go to the customer lead owner', (
   // picked orders: a finished one can still be assigned, an assigned one is never overwritten
   assert.deepEqual(ecomAutoAssignPlan(orders, owners, new Set([2, 4])).assign, [{ Id: 4, to: 'sam@shop.in' }]);
 });
+
+import { ecomReadOrderRows } from './worker.js';
+
+test('order reader: pages of 200, retries without the column list when NocoDB refuses it', async () => {
+  const urls = [];
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url); urls.push(u);
+    if (u.includes('fields=')) return new Response(JSON.stringify({ msg: "Field 'CreatedAt' not found" }), { status: 422 });
+    const offset = Number(new URL(u).searchParams.get('offset'));
+    const n = offset === 0 ? 200 : 37;
+    return new Response(JSON.stringify({ list: Array.from({ length: n }, (_, i) => ({ Id: offset + i + 1 })) }));
+  };
+  try {
+    const rows = await ecomReadOrderRows({ NOCODB_BASE: 'https://noco.test', NOCODB_TOKEN: 'x' }, 'tbl', 7, 'Id,CreatedAt,assigned_to');
+    assert.equal(rows.length, 237);
+    assert.ok(urls.every(u => /limit=200/.test(u)));
+    assert.equal(urls.filter(u => u.includes('fields=')).length, 1, 'column list dropped after the first refusal');
+  } finally { globalThis.fetch = orig; }
+});
