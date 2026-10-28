@@ -23,6 +23,14 @@
   window.LV_TWA=inApp;
   if(!inApp) return;
   document.documentElement.classList.add('in-twa');
+  // viewport-fit=cover makes Chrome (Android 15+) draw the app edge-to-edge, under the system
+  // navigation bar — but safe-area-inset-bottom isn't reliably reported in the app, so the bottom
+  // nav sat behind the system bar and its buttons couldn't be tapped. Without it Chrome lays the
+  // page out above the system bars. This script runs in <head> right after the viewport meta.
+  try{
+    var vp=document.querySelector('meta[name=viewport]');
+    if(vp) vp.setAttribute('content',vp.getAttribute('content').replace(/,?\s*viewport-fit=cover/,''));
+  }catch(e){}
 
   var nativeOpen=window.open.bind(window);
   var Z=2147483000;
