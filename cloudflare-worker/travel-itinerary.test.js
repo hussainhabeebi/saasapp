@@ -228,7 +228,11 @@ function mediaEnv(calls, list) {
     if (u.includes('/tables/tit/')) return Response.json({ list: [] });
     if (u.includes('/messages')) return Response.json({ id: 1 });
     if (u.includes('drive.google.com/thumbnail?id=good')) return new Response(new Blob([JPEG_BYTES], { type: 'image/jpeg' }));
-    if (u.includes('drive.google.com/uc?export=download&id=pdf1')) return new Response(new Blob(['%PDF-1.4'], { type: 'application/pdf' }), { headers: { 'content-type': 'application/pdf' } });
+    // Drive labels the PDF octet-stream; the %PDF header is what counts
+    if (u.includes('drive.google.com/uc?export=download&id=pdf1')) return new Response(new Blob(['%PDF-1.4'], { type: 'application/octet-stream' }), { headers: { 'content-type': 'application/octet-stream' } });
+    // larger file: Drive's newer "can't scan for viruses" form, then the real download
+    if (u.includes('drive.google.com/uc?export=download&id=big1')) return new Response('<form id="download-form" action="https://drive.usercontent.google.com/download" method="get"><input type="hidden" name="id" value="big1"><input type="hidden" name="export" value="download"><input type="hidden" name="confirm" value="t"><input type="hidden" name="uuid" value="u-1"></form>', { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    if (u.startsWith('https://drive.usercontent.google.com/download?id=big1&export=download&confirm=t&uuid=u-1')) return new Response(new Blob(['%PDF-1.7 big'], { type: 'application/octet-stream' }), { headers: { 'content-type': 'application/octet-stream' } });
     return new Response('nope', { status: 404 });
   };
   return { NOCODB_BASE: 'https://nc.test', NOCODB_TOKEN: 't' };
@@ -271,4 +275,16 @@ test('naming a package or its destination sends its photos and PDF straight into
   await pdf.turn.deliver();
   const files = sent(calls).filter(o => o.file).map(o => o.file);
   assert.deepEqual(files, ['Bali-Honeymoon-5N.pdf']);
+  const att = calls.find(c => c.opts.body instanceof FormData && c.opts.body.get('attachments[]')).opts.body.get('attachments[]');
+  assert.equal(att.type, 'application/pdf');
+
+  // a PDF behind Drive's virus-scan page still goes as the file, not its link
+  const georgia = { Id: 6, name: 'GEORGIA TRIP', destination: 'Georgia', pdf_url: 'https://drive.google.com/file/d/big1/view?usp=sharing' };
+  const env2 = mediaEnv(calls, [georgia]);
+  calls.length = 0;
+  const g = await engineHandleTravelPackage(env2, client, 7, state, 'georgia trip', 'text');
+  await g.turn.deliver();
+  const out2 = sent(calls);
+  assert.equal(out2[0].file, 'GEORGIA-TRIP.pdf');
+  assert.ok(!out2.some(o => /Brochure: https/.test(o.text || '')));
 });
