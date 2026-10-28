@@ -1574,6 +1574,15 @@ function openBillModal(clientId) {
     </dl>
     ${actions}
     <div class="card-box">
+      <h3>🔗 Link subscription by ID</h3>
+      <div class="muted small">Customer subscribed through a Razorpay subscription link or Stripe payment link, so the webhooks never matched this client? Paste its <code>sub_…</code> ID to link and sync it. Admin linking skips the customer email check.</div>
+      <div class="card-form">
+        <input id="bm-link-sub" placeholder="sub_…" autocomplete="off" spellcheck="false" style="flex:1;min-width:200px;font-family:monospace">
+        <select id="bm-link-gw"><option value="">Detect gateway</option><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select>
+        <button class="btn-mini primary" onclick="adminLinkSubscription(${c.Id})">Link &amp; sync</button>
+      </div>
+    </div>
+    <div class="card-box">
       <h3>✍️ Manual plan / override</h3>
       <div class="muted small">For bank transfer / offline customers, comps and corrections. ${c.provider === 'stripe' || (c.provider === 'razorpay' && rzpLive) ? '<b>This client has a live gateway subscription — its next webhook will overwrite status and renewal.</b> Use it to change the plan tier (limits) only.' : ''}</div>
       <div class="card-form">
@@ -1617,6 +1626,18 @@ async function rzpAdminAction(clientId, action) {
   try {
     const d = await adminApi('/admin/razorpay/subscription', { method: 'POST', body });
     showToast(action === 'sync' ? `Synced — ${d.subscription?.status || 'ok'}` : d.scheduled ? 'Plan change scheduled for next cycle' : 'Done', 'success');
+    await loadBillingOverview();
+    if (billModalId == clientId) openBillModal(clientId);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function adminLinkSubscription(clientId) {
+  const subscription_id = document.getElementById('bm-link-sub').value.trim();
+  if (!subscription_id) return showToast('Paste the subscription ID (sub_…)', 'error');
+  if (!confirm(`Link ${subscription_id} to this client? Its plan and status replace what's on the account now.`)) return;
+  try {
+    const d = await adminApi('/admin/billing/link-subscription', { method: 'POST', body: { client_id: clientId, subscription_id, gateway: document.getElementById('bm-link-gw').value } });
+    showToast(`Linked ${d.gateway} subscription — ${d.status}`, 'success');
     await loadBillingOverview();
     if (billModalId == clientId) openBillModal(clientId);
   } catch (e) { showToast(e.message, 'error'); }

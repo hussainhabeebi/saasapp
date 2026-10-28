@@ -366,6 +366,29 @@ async function pullSubscription(env, deps, clientId){
   return {ok:true, sub:data};
 }
 
+// Links a subscription started outside the app (a subscription link made in the Razorpay Dashboard)
+// to this client — billing-portal.js has already checked it belongs to them. Its plan is imported
+// (inactive, so it's never offered in the plan picker) when it isn't in rzp_plans yet, so the tier
+// and price still resolve; an abandoned, never-authorised link from our own checkout is cancelled
+// so it can't be approved later and charge twice.
+export async function rzpLinkSubscription(env, deps, clientId, sub){
+  const c=await deps.getClientById(env, clientId);
+  if(!c) return {ok:false, status:404, error:'Client not found'};
+  if(sub.plan_id && !await getPlanRow(env, sub.plan_id)){
+    const {ok, data}=await rzpFetch(env, 'GET', `plans/${encodeURIComponent(sub.plan_id)}`);
+    if(ok && data?.id){
+      const row=planFromRazorpay(data);
+      row.plan_tier=deps.planTiers[row.plan_tier]?row.plan_tier:guessPlanTier(deps.planTiers, row.name, data.notes);
+      await upsertPlan(env, {...row, active:false, sort_order:99});
+    }
+  }
+  const old=String(c.razorpay_subscription_id||'');
+  if(old && old!==sub.id && c.razorpay_status==='created')
+    await rzpFetch(env, 'POST', `subscriptions/${old}/cancel`, {cancel_at_cycle_end:0}).catch(()=>{});
+  const res=await rzpSyncSubscription(env, deps, clientId, sub, {force:true});
+  return {...res, plan:await getPlanRow(env, sub.plan_id)};
+}
+
 function subSummary(sub, plan){
   return {id:sub.id, status:sub.status, plan_status:rzpPlanStatus(sub), plan_id:sub.plan_id, plan_name:plan?.name||sub.plan_id,
     amount:plan?.amount??null, currency:plan?.currency||'INR', period:plan?.period||'', interval_count:plan?.interval_count||1,

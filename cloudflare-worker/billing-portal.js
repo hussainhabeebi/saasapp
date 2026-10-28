@@ -8,13 +8,17 @@
 //   GET  /billing/portal/history         billing timeline built from billing_events
 //   POST /billing/portal/cancel-feedback why a customer is leaving (Admin → event log)
 //   POST /billing/portal/stripe-change   Stripe Portal deep link to confirm a specific plan
+//   POST /billing/portal/link-subscription  link a subscription paid outside the app (by its ID)
+//   POST /admin/billing/link-subscription   same, for any client, from Admin → Billing
 // Gateway state still comes from the existing syncs (worker.js Stripe module, razorpay-billing.js);
 // this file only reads it, except cancel-feedback (an audit row) and stripe-change (a Portal link).
 //
-// deps (from worker.js): { json, requireSession, getClientById, stripeFetch, stripeConfigured(env),
-//   stripePlanPrices(env), planTiers, planGatedModules, supportContacts(env)→{email,whatsapp} }
+// deps (from worker.js): { json, requireSession, requireAdminSession, getClientById, findClientByField,
+//   stripeFetch, stripeConfigured(env), stripePlanPrices(env), planTiers, planGatedModules,
+//   supportContacts(env)→{email,whatsapp}, linkStripeSubscription(env, cid, sub),
+//   rzpDeps()→RZP_DEPS }
 
-import {rzpFetch, rzpConfigured, rzpListPlans, rzpEnsureSchema, logBillingEvent, guessPlanTier, RZP_TERMINAL} from './razorpay-billing.js';
+import {rzpFetch, rzpConfigured, rzpListPlans, rzpEnsureSchema, rzpLinkSubscription, logBillingEvent, guessPlanTier, RZP_TERMINAL} from './razorpay-billing.js';
 
 const STRIPE_INTERVAL={day:'daily', week:'weekly', month:'monthly', year:'yearly'};
 
@@ -167,6 +171,8 @@ const HISTORY_MAP={
   'razorpay:subscription.completed':['Subscription completed', 'info'],
   'razorpay:subscription.cancel_requested':['Cancellation requested', 'info'],
   'razorpay:subscription.change_requested':['Plan change requested', 'info'],
+  'razorpay:subscription.linked':['Subscription linked to your account', 'ok'],
+  'stripe:subscription.linked':['Subscription linked to your account', 'ok'],
   'stripe:checkout.session.completed':['Checkout completed', 'ok'],
   'stripe:invoice.payment_succeeded':['Payment received', 'ok'],
   'stripe:invoice.payment_failed':['Payment failed', 'warn'],
@@ -193,11 +199,102 @@ async function history(env, cid){
   return (results||[]).map(historyEntry).filter(Boolean).slice(0, 40);
 }
 
+// ── Link a subscription by its ID ────────────────────────────────────────────────────────────────
+// A subscription started outside the app — a Razorpay subscription link or a Stripe payment link
+// the team sent — carries no client_id, so its webhooks match no account and the Billing page keeps
+// saying "no plan". The customer pastes the subscription ID (sub_…) and it's linked here.
+// Both gateways use the sub_ prefix, so the gateway is whichever one knows the ID.
+//
+// A customer can only link a subscription that is theirs: not already on another account, not
+// created for another client, and paid with one of this account's emails (login, teammates or
+// billing email). Admin skips the email/ownership checks (the team verified it some other way).
+const SUB_ID_RE=/^sub_[A-Za-z0-9]{8,64}$/;
+export function accountEmails(c){
+  return new Set([c.authentik_email, c.billing_email, ...String(c.team_emails||'').split(',')]
+    .map(e=>String(e||'').trim().toLowerCase()).filter(Boolean));
+}
+export function maskEmail(e){
+  const [u, d]=String(e||'').split('@');
+  if(!d) return '';
+  return `${u.slice(0, 2)}${'*'.repeat(Math.max(1, Math.min(6, u.length-2)))}@${d}`;
+}
+async function fetchRzpSub(env, id){
+  if(!rzpConfigured(env)) return null;
+  const {ok, data}=await rzpFetch(env, 'GET', `subscriptions/${encodeURIComponent(id)}`);
+  if(!ok||!data?.id) return null;
+  const emails=[data.notify_info?.notify_email];
+  if(data.customer_id){
+    const r=await rzpFetch(env, 'GET', `customers/${encodeURIComponent(data.customer_id)}`);
+    if(r.ok) emails.push(r.data?.email);
+  }
+  return {gateway:'razorpay', sub:data, owner:data.notes?.client_id||'', emails:emails.filter(Boolean),
+    terminal:RZP_TERMINAL.includes(data.status), field:'razorpay_subscription_id'};
+}
+async function fetchStripeSub(env, deps, id){
+  if(!deps.stripeConfigured(env)) return null;
+  const {ok, data}=await deps.stripeFetch(env, 'GET', `subscriptions/${id}`, {expand:['customer']});
+  if(!ok||!data?.id) return null;
+  return {gateway:'stripe', sub:data, owner:data.metadata?.client_id||'', emails:[data.customer?.email].filter(Boolean),
+    terminal:['canceled','incomplete_expired'].includes(data.status), field:'stripe_subscription_id'};
+}
+
+export async function linkSubscription(env, deps, cid, body, {admin=false}={}){
+  const id=String(body?.subscription_id||'').trim();
+  if(!SUB_ID_RE.test(id)) return {ok:false, status:400, error:'Enter the subscription ID — it starts with sub_ (find it in the Razorpay / Stripe email or receipt).'};
+  const c=await deps.getClientById(env, cid);
+  if(!c) return {ok:false, status:404, error:'Client not found'};
+  const want=['razorpay', 'stripe'].includes(body?.gateway)?body.gateway:'';
+  // Razorpay IDs are sub_ + 14 characters, Stripe's are longer — try the likelier one first.
+  const order=want?[want]:(id.length<=18?['razorpay', 'stripe']:['stripe', 'razorpay']);
+  let found=null;
+  for(const g of order){
+    found=g==='razorpay'?await fetchRzpSub(env, id):await fetchStripeSub(env, deps, id);
+    if(found) break;
+  }
+  if(!found) return {ok:false, status:404, error:`No subscription ${id} found${want?` on ${want==='razorpay'?'Razorpay':'Stripe'}`:''}. Check the ID and try again.`};
+
+  const other=await deps.findClientByField(env, found.field, id);
+  if(other && String(other.Id)!==String(cid)) return {ok:false, status:409, error:'That subscription is already linked to another account. Contact support if this is wrong.'};
+  if(!admin){
+    if(found.owner && String(found.owner)!==String(cid)) return {ok:false, status:403, error:'That subscription was started for another account. Contact support if this is wrong.'};
+    const mine=accountEmails(c);
+    if(!found.emails.some(e=>mine.has(String(e).trim().toLowerCase())))
+      return {ok:false, status:403, error:found.emails.length
+        ?`That subscription was paid with ${maskEmail(found.emails[0])}, which isn't one of this account's emails. Set it as your Billing Email (Company & GST details below) and try again, or contact support.`
+        :'We couldn\'t confirm that subscription is yours (no email on it). Contact support and we\'ll link it for you.'};
+    if(found.terminal) return {ok:false, status:400, error:`That subscription has already ended (${found.sub.status}). Subscribe again from the plans below.`};
+  }
+
+  // Linking the same ID again just re-syncs it; the history row is written once (event_id dedupe).
+  let price=null;
+  if(found.gateway==='razorpay'){
+    const r=await rzpLinkSubscription(env, deps.rzpDeps(), cid, found.sub);
+    if(!r.ok) return {ok:false, status:r.status||502, error:r.error||'Could not link the subscription.'};
+    if(r.plan) price={name:r.plan.name, amount:r.plan.amount, currency:r.plan.currency};
+  }else{
+    const r=await deps.linkStripeSubscription(env, cid, found.sub);
+    if(r && r.ok===false) return {ok:false, status:502, error:r.error||'Could not link the subscription.'};
+    const p=found.sub.items?.data?.[0]?.price;
+    if(p) price={name:p.nickname||'', amount:p.unit_amount, currency:p.currency};
+  }
+  await logBillingEvent(env, {provider:found.gateway, event_id:`link:${cid}:${id}`, event_type:'subscription.linked', client_id:cid, object_id:id,
+    amount:price?.amount??null, currency:price?.currency||null, status:found.sub.status||'',
+    note:admin?'linked by admin':`linked by customer${found.emails[0]?` (${found.emails[0]})`:''}`});
+  return {ok:true, gateway:found.gateway, subscription_id:id, status:found.sub.status, plan_name:price?.name||''};
+}
+
 export const CANCEL_REASONS={too_expensive:'Too expensive', missing_features:'Missing features I need', not_using:'Not using it enough',
   switching:'Switching to another product', temporary:'Only needed it for a while', support:'Problems / support', other:'Other'};
 
 export async function billingPortalHandleRoute(request, env, deps, url){
   const json=deps.json, p=url.pathname, m=request.method;
+  const out=r=>r.ok?json(r):json({error:r.error}, r.status||400);
+  if(p==='/admin/billing/link-subscription' && m==='POST'){
+    if(!await deps.requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+    const body=await request.json().catch(()=>({}));
+    if(!Number(body.client_id)) return json({error:'client_id required'}, 400);
+    return out(await linkSubscription(env, deps, Number(body.client_id), body, {admin:true}));
+  }
   if(!p.startsWith('/billing/portal/')) return null;
   const payload=await deps.requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -208,6 +305,7 @@ export async function billingPortalHandleRoute(request, env, deps, url){
   }
   if(p==='/billing/portal/invoices' && m==='GET') return json({ok:true, invoices:await invoices(env, deps, payload.cid)});
   if(p==='/billing/portal/history' && m==='GET') return json({ok:true, events:await history(env, payload.cid)});
+  if(p==='/billing/portal/link-subscription' && m==='POST') return out(await linkSubscription(env, deps, payload.cid, await request.json().catch(()=>({}))));
   if(p==='/billing/portal/cancel-feedback' && m==='POST'){
     const {reason, detail, outcome}=await request.json().catch(()=>({}));
     if(!CANCEL_REASONS[reason]) return json({error:'Pick a reason.'}, 400);

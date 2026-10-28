@@ -8908,11 +8908,22 @@ async function stripePlanPrices(env){
   }));
   return rows.filter(Boolean);
 }
+// Billing page → "Already paid via a link?" — a Stripe subscription started outside our checkout
+// (a payment link) linked by its ID. billing_provider is set first: syncSubscriptionFields skips
+// accounts marked as moved to Razorpay, which an abandoned Razorpay checkout would have left behind.
+async function linkStripeSubscription(env, clientId, sub){
+  await ensureBillingProviderColumn(env);
+  const customerId=typeof sub.customer==='object'?sub.customer?.id:sub.customer;
+  await patchClientFields(env, clientId, {billing_provider:'stripe', ...(customerId?{stripe_customer_id:customerId}:{})});
+  await syncSubscriptionFields(env, clientId, sub);
+  return {ok:true};
+}
 const BILLING_PORTAL_DEPS={
-  json, requireSession, getClientById, stripeFetch, stripeConfigured:env=>!!env.STRIPE_SECRET_KEY, stripePlanPrices,
+  json, requireSession, requireAdminSession, getClientById, findClientByField, stripeFetch, stripeConfigured:env=>!!env.STRIPE_SECRET_KEY, stripePlanPrices,
   planTiers:PLAN_TIERS, planGatedModules:PLAN_GATED_MODULES,
   // Billing page → "Need help with billing?" — either can be left unset to hide that button.
   supportContacts:env=>({email:env.BILLING_SUPPORT_EMAIL||'', whatsapp:String(env.BILLING_SUPPORT_WHATSAPP||'').replace(/\D/g,'')}),
+  linkStripeSubscription, rzpDeps:()=>RZP_DEPS,
 };
 // Accounting ledger (accounting-ledger.js and friends) — everything it needs from this file.
 const ACC_LEDGER_DEPS={
@@ -39100,7 +39111,7 @@ export default {
       else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
-      else if(url.pathname.startsWith('/billing/portal/')){ res=await billingPortalHandleRoute(request, env, BILLING_PORTAL_DEPS, url); }
+      else if(url.pathname.startsWith('/billing/portal/')||url.pathname==='/admin/billing/link-subscription'){ res=await billingPortalHandleRoute(request, env, BILLING_PORTAL_DEPS, url); }
       else if(url.pathname.startsWith('/accounting/ledger/')||url.pathname.startsWith('/accounting/portal/')){ res=await accLedgerHandleRoute(request, env, ACC_LEDGER_DEPS, url); }
       else if(url.pathname.startsWith('/billing/razorpay/')||url.pathname.startsWith('/admin/razorpay/')||url.pathname.startsWith('/admin/billing/')||url.pathname==='/admin/api-status'){
         res=(await rzpHandleRoute(request, env, RZP_DEPS, url))||json({error:'Not found'}, 404);

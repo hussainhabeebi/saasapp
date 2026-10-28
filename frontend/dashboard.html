@@ -1280,6 +1280,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .bp-table td{padding:9px 6px;border-bottom:1px solid var(--line)}
 .bp-mono{font-family:ui-monospace,monospace;font-size:12px}
 .bp-links a{font-weight:600;margin-right:6px}
+.bp-link{margin-top:14px;border-top:1px solid var(--line,#E5E7EB);padding-top:12px;font-size:13px}
+.bp-link summary{cursor:pointer;font-weight:600;color:var(--accent-ink)}
 .bp-empty{font-size:13px;color:var(--muted);padding:14px;background:#F8FAF9;border-radius:10px;text-align:center}
 .bp-timeline{list-style:none;margin:0;padding:0 0 0 18px;border-left:2px solid var(--line)}
 .bp-timeline li{position:relative;padding:0 0 14px 12px}
@@ -4397,6 +4399,20 @@ const ROLES = {
               <div class="s-note" id="billingEmailNotice"></div>
               <div id="billingPricingTableWrap" style="margin-top:8px"></div>
             </div>
+            <!-- Subscribed through a Razorpay subscription link / Stripe payment link instead of the
+                 plans here → link it by its ID (POST /billing/portal/link-subscription). -->
+            <details class="bp-link" id="billingLinkSub">
+              <summary>🔗 Paid through a Razorpay or Stripe link? Link your subscription</summary>
+              <div class="s-note" style="margin:8px 0">If you subscribed from a payment link we sent you, it may not show up here on its own. Paste the subscription ID from the Razorpay / Stripe email or receipt — it starts with <code>sub_</code>. It must have been paid with your login or billing email.</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <input class="form-input" id="billingLinkSubId" placeholder="sub_…" autocomplete="off" spellcheck="false" style="max-width:300px;font-family:var(--mono)" onkeydown="if(event.key==='Enter') billingLinkSubscription()">
+                <select class="form-input" id="billingLinkSubGateway" style="max-width:170px">
+                  <option value="">Detect gateway</option><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option>
+                </select>
+                <button class="bp-btn" id="billingLinkSubBtn" onclick="billingLinkSubscription()">Link &amp; sync</button>
+              </div>
+              <div class="save-msg" id="billingLinkSubMsg" style="margin-top:6px"></div>
+            </details>
           </div>
         </div>
 
@@ -16697,6 +16713,19 @@ async function billingSyncNow(){
     await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingHistory();
     billingSetMsg('Up to date — '+(BILLING_PAST_DUE_COPY[clientRecord.plan_status]?'payment still needs attention.':'status: '+(clientRecord.plan_status||'—')));
   }catch(e){ billingSetMsg('Error: '+e.message); }
+}
+
+async function billingLinkSubscription(){
+  const id=$id('billingLinkSubId').value.trim(), msg=$id('billingLinkSubMsg'), btn=$id('billingLinkSubBtn');
+  if(!/^sub_[A-Za-z0-9]+$/.test(id)){ msg.textContent='Enter the subscription ID — it starts with sub_.'; return; }
+  btn.disabled=true; msg.textContent='Looking it up…';
+  try{
+    const d=await billingApi('/billing/portal/link-subscription',{method:'POST',body:JSON.stringify({subscription_id:id, gateway:$id('billingLinkSubGateway').value})});
+    await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingPlanStatus(); loadBillingInvoices(); loadBillingHistory();
+    msg.textContent=`✅ Linked your ${d.gateway==='razorpay'?'Razorpay':'Stripe'} subscription${d.plan_name?` (${d.plan_name})`:''} — status: ${clientRecord.plan_status||d.status}.`;
+    $id('billingLinkSubId').value='';
+  }catch(e){ msg.textContent='Error: '+e.message; }
+  finally{ btn.disabled=false; }
 }
 
 // ── GST: state list + auto-fill from the GSTIN's 2-digit state code ──
