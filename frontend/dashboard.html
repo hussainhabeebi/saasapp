@@ -6595,12 +6595,13 @@ async function onLiveLeadUpdatedEvent(msg){
   if(typeof tsRefreshCategoryViews==='function') tsRefreshCategoryViews();
   if(_reportsPage==='category'&&!$id('pageReports')?.classList.contains('hidden')) renderReportsCategory();
 }
-// Hot-lead auto-reassign (worker.js hotReallocProcessClient) — only the new owner is alerted.
+// Hot / not-called / unanswered auto-reassign (worker.js hotReallocProcessClient,
+// idleReallocProcessClient) — only the new owner is alerted.
 async function onLiveReassignEvent(msg){
   await liveRefresh();
   if(!myEmail || !sameEmail(msg.to,myEmail)) return;
   notifyNewLead({...msg, reassigned:true});
-  window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, 'reassigned');
+  window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, msg.reason?'reassigned-idle':'reassigned');
 }
 function notifyNewLead(msg){
   // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
@@ -6610,7 +6611,7 @@ function notifyNewLead(msg){
   // as requestChatNotifyPermission; never auto-prompted on load).
   if('Notification' in window && Notification.permission==='granted'){
     try{
-      const n=new Notification(msg.reassigned?`🔥 Hot lead for you: ${msg.lead_name||'New Lead'}`:`🔔 New lead: ${msg.lead_name||'New Lead'}`, {
+      const n=new Notification(msg.reassigned?`${msg.reason?'📞 Lead':'🔥 Hot lead'} for you: ${msg.lead_name||'New Lead'}`:`🔔 New lead: ${msg.lead_name||'New Lead'}`, {
         body:msg.reassigned?'Reassigned to you — call them now':'Call within 5 minutes for 2× points — tap to open',
         tag:'lv-new-lead-'+msg.lead_id
       });
@@ -12146,6 +12147,8 @@ function renderLeadRoutingSettings(){
   const cold={enabled:coldRaw.enabled===true, days:Number(coldRaw.days)||7, maxHops:Number(coldRaw.maxHops)||3};
   const hotRaw=rt.hotRealloc||{};
   const hot={enabled:hotRaw.enabled===true, minutes:Number(hotRaw.minutes)||20};
+  const idleRaw=rt.idleRealloc||{};
+  const idle={enabled:idleRaw.enabled===true, hours:Number(idleRaw.hours)||24};
   const babyCare=isBabyCareClient();
   const unRaw=rt.unattended||{};
   const unattended={enabled:unRaw.enabled===true, hours:Number(unRaw.hours)||4};
@@ -12228,6 +12231,14 @@ function renderLeadRoutingSettings(){
 
       <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
+          <input type="checkbox" id="lrIdleEnabled" ${idle.enabled?' checked':''}> 📞 Reassign not-called &amp; unanswered leads
+        </label>
+        <div class="s-note" style="margin-bottom:8px">A lead its owner still <strong>hasn't called</strong>, or whose last call went <strong>unanswered</strong> (No Answer / Voicemail), once they've had it for the set time moves to the next teammate (same pool as below), who gets an alert and an email. Leads already waiting when you switch this on get the full window from that moment; only leads active in the last 30 days. At most 3 moves per lead, never back to someone who had it. Checked every 15 minutes.</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">After <select class="form-input" id="lrIdleHours" style="width:auto;padding:4px 8px">${[4,8,12,24,48,72].map(h=>`<option value="${h}"${idle.hours===h?' selected':''}>${h===24?'24 (1 day)':h===48?'48 (2 days)':h===72?'72 (3 days)':h}</option>`).join('')}</select> hours with the owner</label>
+      </div>
+
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
           <input type="checkbox" id="lrColdEnabled" ${cold.enabled?' checked':''}> 🔁 Auto-reallocate cold leads
         </label>
         <div class="s-note" style="margin-bottom:8px">A <strong>Cold</strong> lead whose owner adds no note on it for the set number of days moves to the next teammate (Round-Robin "In pool" members, or everyone if fewer than two are ticked). The owner gets an email 2 days before, and a lead never returns to someone who already had it. Checked once a day.</div>
@@ -12285,7 +12296,14 @@ async function saveLeadRouting(){
       minutes:clampInt($id('lrHotMinutes')?.value,10,240,20),
       enabledAt:hotEnabled?(prevHot.enabled&&prevHot.enabledAt?prevHot.enabledAt:new Date().toISOString()):''
     };
-    const newRouting={...existing, enabled, modes, catchall, rules, coldRealloc, hotRealloc};
+    const prevIdle=existing.idleRealloc||{};
+    const idleEnabled=$id('lrIdleEnabled')?.checked||false;
+    const idleRealloc={
+      enabled:idleEnabled,
+      hours:clampInt($id('lrIdleHours')?.value,1,168,24),
+      enabledAt:idleEnabled?(prevIdle.enabled&&prevIdle.enabledAt?prevIdle.enabledAt:new Date().toISOString()):''
+    };
+    const newRouting={...existing, enabled, modes, catchall, rules, coldRealloc, hotRealloc, idleRealloc};
     if($id('lrUnattendedEnabled')){
       const prevUn=existing.unattended||{};
       const unEnabled=$id('lrUnattendedEnabled').checked;

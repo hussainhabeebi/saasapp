@@ -17825,6 +17825,143 @@ export async function runHotLeadReassignForAllClients(env, now=new Date()){
   }
 }
 
+/* ── NOT-CALLED / UNANSWERED LEAD AUTO-REASSIGN ────────────────────────────────────────────────
+   Settings → 🔀 Lead Routing → "Reassign not-called & unanswered leads". The mobile Home's
+   "Prime attention" list (m.html isNotCalled / isUnanswered) as a rule: an open lead its owner has
+   held for `hours` (default 24) and still hasn't called, or whose latest call went unanswered (No
+   Answer / Voicemail, or tagged "No Answer"), moves to the next teammate. Same pool rules as the
+   other sweeps (round-robin "In pool" members when two or more are available, otherwise every
+   routable teammate; Baby Care staff On leave are skipped), never back to someone who already had
+   it, at most IDLE_REALLOC_MAX_HOPS moves per lead, shared lead_owner_tracking for owner_since. A
+   lead the sweep first sees is clocked from its arrival if that was after the option was switched
+   on, otherwise from that moment — so an existing backlog gets a full window before anything
+   moves. Only leads active in the last IDLE_REALLOC_ACTIVE_DAYS days are considered, and at most
+   IDLE_REALLOC_MAX_PER_RUN move per client per 15-minute tick, so a large backlog drains over a
+   few hours. Each new owner gets one email per tick listing their leads. Stored as
+   lead_routing.idleRealloc = {enabled, hours, enabledAt}. ── */
+export const IDLE_REALLOC_MAX_HOPS=3;
+export const IDLE_REALLOC_ACTIVE_DAYS=30;
+export const IDLE_REALLOC_MAX_PER_RUN=25;
+const IDLE_REALLOC_NO_ANSWER=new Set(['No Answer','Voicemail']);
+export function idleReallocSettings(routing){
+  const r=routing?.idleRealloc||{};
+  const hours=Math.round(Number(r.hours));
+  return {enabled:r.enabled===true, hours:hours>=1&&hours<=168?hours:24, enabledAt:r.enabledAt||''};
+}
+// Latest logged call {ms, outcome}, or null. Entries carry an ISO `at`; older ones only a locale date.
+export function idleReallocLastCall(callLogRaw){
+  let calls=[]; try{ calls=JSON.parse(callLogRaw||'[]'); }catch(e){}
+  if(!Array.isArray(calls)) return null;
+  let last=null;
+  for(const c of calls){
+    const t=Date.parse(c?.at||c?.date||'');
+    if(Number.isFinite(t) && (!last || t>last.ms)) last={ms:t, outcome:String(c?.outcome||'')};
+  }
+  return last;
+}
+// 'not_called' (no call since the owner got it), 'unanswered' (latest call went unanswered) or 'none'.
+export function idleReallocDecide({lead, track, cfg, nowMs}){
+  if(!cfg?.enabled) return 'none';
+  if(!String(lead?.Owner||'').trim() || PIPELINE_TERMINAL_STAGES.has(lead?.Stage||'')) return 'none';
+  if(lead?.OptOut==='Yes' || lead?.HandoverOutcome==='Spam') return 'none';
+  if((Number(track?.realloc_count)||0)>=IDLE_REALLOC_MAX_HOPS) return 'none';
+  const active=Math.max(Date.parse(lead?.LastMsgAt||'')||0, Date.parse(lead?.CreatedAt||lead?.Date||'')||0, Date.parse(track?.owner_since||'')||0);
+  if(!active || nowMs-active>IDLE_REALLOC_ACTIVE_DAYS*DAY_MS) return 'none';
+  const since=Date.parse(track?.owner_since||'')||nowMs;
+  if(nowMs-since<cfg.hours*3600000) return 'none';
+  const last=idleReallocLastCall(lead?.CallLog);
+  if(!last || last.ms<since) return 'not_called';
+  const noAnswerTag=String(lead?.Tags||'').split(',').some(t=>t.trim().toLowerCase()==='no answer');
+  return IDLE_REALLOC_NO_ANSWER.has(last.outcome)||noAnswerTag ? 'unanswered' : 'none';
+}
+export async function idleReallocProcessClient(env, c, now=new Date()){
+  const routing=engineGetLeadRouting(c);
+  const cfg=idleReallocSettings(routing);
+  if(!cfg.enabled || !env.DB) return {moved:0};
+  const pool=unattendedPool(c, routing);
+  if(!pool.length) return {moved:0};
+  const clientId=Number(c.Id);
+  const staff=engineRoutableStaffEmails(c);
+  const nowMs=now.getTime(), nowIso=now.toISOString();
+  const enabledAtMs=Date.parse(cfg.enabledAt)||Infinity;
+  const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Owner,notblank)`);
+  let leads=[];
+  for(let page=1; page<=10; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=-Id&limit=200&offset=${(page-1)*200}&fields=Id,Name,Phone,Owner,Stage,OptOut,HandoverOutcome,Tags,CallLog,NotesList,Date,CreatedAt,LastMsgAt`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    leads=leads.concat(list);
+    if(list.length<200) break;
+  }
+  const {results}=await env.DB.prepare(`SELECT * FROM lead_owner_tracking WHERE client_id=?`).bind(clientId).all();
+  const byLead=new Map((results||[]).map(t=>[Number(t.lead_id), t]));
+  const digest=new Map();
+  let moved=0;
+
+  for(const lead of leads){
+    if(moved>=IDLE_REALLOC_MAX_PER_RUN) break;
+    const owner=String(lead.Owner||'').trim().toLowerCase();
+    if(!owner || !staff.has(owner) || PIPELINE_TERMINAL_STAGES.has(lead.Stage||'')) continue;
+    const leadId=Number(lead.Id);
+    let track=byLead.get(leadId);
+    if(!track || track.owner!==owner){
+      // First sighting (clock from arrival if after switch-on, else now) or a manual reassignment (now)
+      let prev=[]; try{ prev=JSON.parse(track?.previous_owners||'[]'); }catch(e){}
+      if(track && track.owner && !prev.includes(track.owner)) prev.push(track.owner);
+      const created=Date.parse(lead.CreatedAt||lead.Date||'');
+      const since=!track && Number.isFinite(created) && created>=enabledAtMs && created<=nowMs?new Date(created).toISOString():nowIso;
+      track={owner, owner_since:since, previous_owners:JSON.stringify(prev), realloc_count:Number(track?.realloc_count)||0};
+      await env.DB.prepare(`INSERT INTO lead_owner_tracking (client_id, lead_id, owner, owner_since, previous_owners, realloc_count, warned_at, last_realloc_at, updated_at) VALUES (?,?,?,?,?,?,NULL,NULL,?)
+        ON CONFLICT(client_id, lead_id) DO UPDATE SET owner=excluded.owner, owner_since=excluded.owner_since, previous_owners=excluded.previous_owners, warned_at=NULL, updated_at=excluded.updated_at`)
+        .bind(clientId, leadId, owner, since, track.previous_owners, track.realloc_count, nowIso).run();
+    }
+    const reason=idleReallocDecide({lead, track, cfg, nowMs});
+    if(reason==='none') continue;
+
+    let prev=[]; try{ prev=JSON.parse(track.previous_owners||'[]'); }catch(e){}
+    const next=coldReallocPickNext(pool, owner, prev);
+    if(!next) continue;
+    const win=`${cfg.hours} hour${cfg.hours===1?'':'s'}`;
+    const why=reason==='unanswered'?`last call unanswered, not reached by ${owner} within ${win}`:`not called by ${owner} within ${win}`;
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    notes.unshift({text:`📞 Auto-reassigned from ${owner} to ${next}: ${why}.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
+    if(!pr.ok){ console.error('[idle-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
+    await chatsV2ApplyLeadPatch(env, leadId, {Owner:next}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+    prev.push(owner);
+    await env.DB.prepare(`UPDATE lead_owner_tracking SET owner=?, owner_since=?, previous_owners=?, realloc_count=realloc_count+1, last_realloc_at=?, updated_at=? WHERE client_id=? AND lead_id=?`)
+      .bind(next, nowIso, JSON.stringify([...new Set(prev)]), nowIso, nowIso, clientId, leadId).run();
+    const leadName=lead.Name||lead.Phone||`Lead #${leadId}`;
+    await engineBroadcastUpdate(env, clientId, {type:'lead_reassigned', reason, lead_id:leadId, lead_name:leadName, to:next, from:owner, at:nowIso});
+    if(!digest.has(next)) digest.set(next, []);
+    digest.get(next).push({name:leadName, reason});
+    moved++;
+  }
+  for(const [to, list] of digest){
+    const items=list.map(l=>`<li><strong>${esc(l.name)}</strong> — ${l.reason==='unanswered'?'last call unanswered':'never called'}</li>`).join('');
+    await coldReallocEmail(env, to, list.length===1?`📞 Lead reassigned to you: ${list[0].name}`:`📞 ${list.length} leads reassigned to you`,
+      `<p>These leads weren't reached by their previous owner within ${cfg.hours} hour${cfg.hours===1?'':'s'}, so they've been reassigned to you. Please call them — open Leads to see the chat.</p><ul>${items}</ul>`);
+  }
+  return {moved};
+}
+export async function runIdleLeadReassignForAllClients(env, now=new Date()){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!idleReallocSettings(engineGetLeadRouting(c)).enabled) continue;
+      try{ await idleReallocProcessClient(env, c, now); }
+      catch(e){ console.error('[idle-realloc] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 /* ── BABY CARE: UNATTENDED-LEAD REASSIGN + STAFF ON LEAVE ───────────────────────────────────────
    Couplo (Oct 2026): a lead assigned to a teammate who is on leave, or who simply never opens it,
    sat unattended. Baby Care stores (ecom_communication_style 'baby_care') now get, in Settings →
@@ -39221,6 +39358,8 @@ export default {
       ctx.waitUntil(runHotLeadReassignForAllClients(env));
       // Baby Care: leads with a teammate on leave / not opened in time (Settings → 🔀 Lead Routing).
       ctx.waitUntil(runUnattendedLeadReassignForAllClients(env));
+      // Not-called / unanswered leads past their window (Settings → 🔀 Lead Routing) — see runIdleLeadReassignForAllClients.
+      ctx.waitUntil(runIdleLeadReassignForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
       // Follow-up V3 — only clients who switched it on (the classic sweep above skips them). See followup-v3.js.
       ctx.waitUntil(fv3RunForAllClients(env, FOLLOWUP_V3_DEPS).catch(e=>reportOpsError(env, 'followup v3 sweep', e)));
