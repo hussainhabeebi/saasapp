@@ -4410,6 +4410,7 @@ const ROLES = {
                   <option value="">Detect gateway</option><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option>
                 </select>
                 <button class="bp-btn" id="billingLinkSubBtn" onclick="billingLinkSubscription()">Link &amp; sync</button>
+                <button class="bp-btn secondary" onclick="billingRefreshFromLink(this)">🔄 Refresh status</button>
               </div>
               <div class="save-msg" id="billingLinkSubMsg" style="margin-top:6px"></div>
             </details>
@@ -16715,6 +16716,20 @@ async function billingSyncNow(){
   }catch(e){ billingSetMsg('Error: '+e.message); }
 }
 
+// "Refresh status" while the plan picker shows (the plan card's own button only appears once a
+// plan is active) — pulls the gateway again and re-renders.
+async function billingRefreshFromLink(btn){
+  const msg=$id('billingLinkSubMsg');
+  btn.disabled=true; msg.textContent='Checking…';
+  try{
+    const provider=billingProviderOf(clientRecord);
+    if(provider==='razorpay'&&clientRecord.razorpay_subscription_id) await billingApi('/billing/razorpay/status');
+    else if(provider==='stripe') await billingApi('/billing/sync-now');
+    await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingPlanStatus(); loadBillingInvoices(); loadBillingHistory();
+    msg.textContent=billingHasActivePlan(clientRecord)?'✅ Your plan is active.':`Status: ${clientRecord.plan_status||'no plan yet'}${clientRecord.razorpay_status?` (Razorpay: ${clientRecord.razorpay_status})`:''}.`;
+  }catch(e){ msg.textContent='Error: '+e.message; }
+  finally{ btn.disabled=false; }
+}
 async function billingLinkSubscription(){
   const id=$id('billingLinkSubId').value.trim(), msg=$id('billingLinkSubMsg'), btn=$id('billingLinkSubBtn');
   if(!/^sub_[A-Za-z0-9]+$/.test(id)){ msg.textContent='Enter the subscription ID — it starts with sub_.'; return; }
@@ -16728,7 +16743,10 @@ async function billingLinkSubscription(){
       msg.innerHTML=esc('Error: '+(d.error||'HTTP '+r.status))+(d.pay_url?` <a href="${escAttr(d.pay_url)}" target="_blank" rel="noopener">Complete payment ↗</a>`:'');
       return;
     }
-    await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingPlanStatus(); loadBillingInvoices(); loadBillingHistory();
+    await refreshClientRecord();
+    // The link response carries the saved billing fields; the session read can still be a cached copy.
+    if(d.client) Object.assign(clientRecord, d.client);
+    renderBillingPage(); loadBillingOverview(); loadBillingPlanStatus(); loadBillingInvoices(); loadBillingHistory();
     msg.textContent=`✅ Linked your ${d.gateway==='razorpay'?'Razorpay':'Stripe'} subscription${d.plan_name?` (${d.plan_name})`:''} — status: ${clientRecord.plan_status||d.status}.`;
     $id('billingLinkSubId').value='';
   }catch(e){ msg.textContent='Error: '+e.message; }

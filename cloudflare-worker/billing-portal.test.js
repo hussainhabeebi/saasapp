@@ -186,6 +186,7 @@ describe('link a subscription by ID', ()=>{
     deps.findClientByField=async (env, field, value)=>others[`${field}:${value}`]||null;
     deps.requireAdminSession=async req=>req.headers.get('X-Admin')==='yes';
     deps.linkStripeSubscription=async (env, cid, sub)=>{ stripeLinked={cid, sub}; return {ok:true}; };
+    deps.freshClient=async()=>({...client});
     deps.rzpDeps=()=>({
       getClientById:async()=>({...client}),
       patchClientFields:async (env, cid, patch)=>{ patches.push(patch); Object.assign(client, patch); },
@@ -205,6 +206,9 @@ describe('link a subscription by ID', ()=>{
     assert.equal(client.billing_provider, 'razorpay');
     assert.equal(client.plan_status, 'active');
     assert.equal(client.plan_tier, 'basic');
+    // The saved billing fields come back, so the page doesn't depend on a cached re-read.
+    assert.equal(r.data.client.razorpay_status, 'active');
+    assert.equal(r.data.client.plan_status, 'active');
     // The plan wasn't in rzp_plans: imported, but never offered in the picker.
     const plan=db.prepare(`SELECT * FROM rzp_plans WHERE plan_id='plan_link'`).get();
     assert.equal(plan.active, 0);

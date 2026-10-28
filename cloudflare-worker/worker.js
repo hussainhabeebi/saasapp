@@ -8924,6 +8924,15 @@ const BILLING_PORTAL_DEPS={
   // Billing page → "Need help with billing?" — either can be left unset to hide that button.
   supportContacts:env=>({email:env.BILLING_SUPPORT_EMAIL||'', whatsapp:String(env.BILLING_SUPPORT_WHATSAPP||'').replace(/\D/g,'')}),
   linkStripeSubscription, rzpDeps:()=>RZP_DEPS,
+  // Straight from NocoDB, then re-cached: a KV delete can take a while to show at the edge, so the
+  // page's next read could otherwise still get the pre-link record and show "no plan".
+  freshClient:async (env, clientId)=>{
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>null);
+    if(data?.Id) await kvSetClient(env, data);
+    return data;
+  },
 };
 // Accounting ledger (accounting-ledger.js and friends) — everything it needs from this file.
 const ACC_LEDGER_DEPS={
