@@ -1,9 +1,8 @@
-/* Accounting ledger UI — the 🏠 Overview / 📒 Books / 🔁 Subscriptions / 🧾 Tax / ⚙️ Operations tabs of
-   accounting.html, talking to the Worker's /accounting/ledger/* routes (cloudflare-worker/
-   accounting-ledger.js). Loaded after accounting.html's inline script and reuses its globals
-   (acctFetch, esc, escAttr, clientId, WORKER_BASE, Chart, jspdf). Each tab renders lazily the
-   first time it's opened. Reports → P&L / Trial Balance / Cash Flow are re-pointed at the ledger
-   at the bottom of this file so there's only one set of numbers in the app. */
+/* Accounting UI — the seven sections of accounting.html (Home · Sales · Purchases · Banking ·
+   Reports & tax · Books & payroll · Settings), talking to the Worker's /accounting/ledger/* routes
+   (cloudflare-worker/accounting-ledger.js). Loaded after accounting.html's inline script and reuses
+   its globals (acctFetch, esc, escAttr, clientId, WORKER_BASE, Chart, jspdf). Each section renders
+   lazily the first time it's opened; SECTIONS at the bottom lists every sub-section. */
 (function(){
 'use strict';
 const L={meta:null, loaded:{}, charts:{}};
@@ -63,10 +62,20 @@ function mountLegacy(body, id, onFirst){
   if(onFirst && !el._accLoaded){ el._accLoaded=true; try{ onFirst(); }catch(e){ console.error(e); } }
 }
 function parkLegacy(container){ container.querySelectorAll('[data-acc-mounted]').forEach(el=>{ delete el.dataset.accMounted; el._accHome.appendChild(el); }); }
-const legacy=(id, onFirst)=>b=>mountLegacy(b, id, onFirst);
-function subnav(root, key, items, onShow){
+// Legacy panels render from data accounting.html already loaded, so they never wait for the ledger
+// settings call (noMeta) — a slow or failed ledger request can't blank Expenses, Bank or Reports.
+const legacy=(id, onFirst)=>{ const f=b=>mountLegacy(b, id, onFirst); f.noMeta=true; return f; };
+// items: [key, label, group?] — consecutive items sharing a group sit together under a small label.
+// One scrollable row on phones, wrapped groups on PC.
+function subnav(root, key, items, onShow, head){
   parkLegacy(root);
-  root.innerHTML=`${items.length>1?`<div class="fp-subnav">${items.map(([k,label],i)=>`<button class="fp-pill ${i?'':'active'}" data-k="${k}">${label}</button>`).join('')}</div>`:''}<div class="acc-sub-body"></div>`;
+  let groups='', cur=null, open=false;
+  items.forEach(([k,label,g],i)=>{
+    if(g!==cur || !open){ if(open) groups+='</div>'; groups+=`<div class="acc-sub-group">${g?`<span class="acc-sub-glabel">${esc(g)}</span>`:''}`; cur=g; open=true; }
+    groups+=`<button class="fp-pill ${i?'':'active'}" data-k="${k}">${label}</button>`;
+  });
+  if(open) groups+='</div>';
+  root.innerHTML=`${head||''}${items.length>1?`<div class="fp-subnav acc-subnav">${groups}</div>`:''}<div class="acc-sub-body"></div>`;
   const body=root.querySelector('.acc-sub-body');
   const show=k=>{ root.querySelectorAll('.fp-pill').forEach(p=>p.classList.toggle('active', p.dataset.k===k)); parkLegacy(body); body.innerHTML=spinner; onShow(k, body); try{ localStorage.setItem('acc_sub_'+key, k); }catch(_){} };
   root.querySelectorAll('.fp-pill').forEach(p=>p.onclick=()=>show(p.dataset.k));
@@ -131,7 +140,14 @@ L.lineTotals=()=>{ const ls=readLines(); const d=ls.reduce((s,l)=>s+l.debit,0), 
 function readLines(){ return [...document.querySelectorAll('#accLinesBody .acc-line')].map(r=>({account_id:r.querySelector('.acc-l-acct').value, debit:Number(r.querySelector('.acc-l-dr').value)||0, credit:Number(r.querySelector('.acc-l-cr').value)||0, party_name:r.querySelector('.acc-l-party').value.trim()})).filter(l=>l.account_id&&(l.debit||l.credit)); }
 
 /* ══════════ 🏠 OVERVIEW ══════════ */
-async function renderOverview(root){
+// Heading and quick actions render at once (they need no data); the figures fill in below.
+const QUICK=[['🧾','New invoice',"openDocTypeModal('invoice')"],['📝','New quotation',"openDocTypeModal('quotation')"],['💸','Record expense','openExpenseModal()'],
+  ['📥','Vendor bill','openVendorBillModal()'],['💳','Payment entry','openPaymentEntryModal()'],['📊','Profit & loss',"AccLedger.open('reports','pl')"]];
+async function renderOverview(page){
+  page.innerHTML=`<div class="acc-head"><div><h1 class="acc-h1">Home</h1><div class="acc-hsub">Where your money stands today</div></div></div>
+    <div class="acc-quick">${QUICK.map(([ic,label,fn])=>`<button onclick="${fn}"><span>${ic}</span>${label}</button>`).join('')}</div>
+    <div class="acc-root" id="accHomeBody"></div>`;
+  const root=page.querySelector('#accHomeBody');
   root.innerHTML=spinner;
   try{
     const [, d]=await Promise.all([loadMeta(), api('dashboard')]);
@@ -156,7 +172,7 @@ async function renderOverview(root){
     if(window.Chart){
       if(L.charts.trend) L.charts.trend.destroy();
       L.charts.trend=new Chart(document.getElementById('accTrendChart'), {type:'bar', data:{labels:d.trend.map(t=>t.month), datasets:[
-        {label:'Revenue', data:d.trend.map(t=>t.revenue), backgroundColor:'#F97316'}, {label:'Expenses', data:d.trend.map(t=>t.expenses), backgroundColor:'#FBCFA0'},
+        {label:'Revenue', data:d.trend.map(t=>t.revenue), backgroundColor:'#0D9C93'}, {label:'Expenses', data:d.trend.map(t=>t.expenses), backgroundColor:'#CBD5E1'},
         {label:'Net', data:d.trend.map(t=>t.net), type:'line', borderColor:'#059669', backgroundColor:'#059669', tension:.3}]},
         options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{y:{ticks:{callback:v=>Number(v).toLocaleString('en-IN')}}}}});
     }
@@ -299,7 +315,7 @@ function booksJournals(body){
   L.runJournals();
 }
 L.runJournals=async()=>{
-  const out=document.getElementById('accJOut'); out.innerHTML=spinner;
+  const out=document.getElementById('accJOut'); if(!out) return; out.innerHTML=spinner;
   try{
     const d=await api(`journals?${qs({from:val('accJFrom'), to:val('accJTo'), source_type:val('accJType'), q:val('accJQ')})}`);
     L.journals=d.list;
@@ -420,10 +436,17 @@ L.runAudit=async()=>{
   }catch(e){ out.innerHTML=errBox(e); }
 };
 
+// Old page names (links, bookmarks, the previous 14-tab layout) → [section, default sub-section].
+L.ALIASES={documents:['sales','docs'], vendorbills:['purchases','bills'], customers:['sales','customers'], subscriptions:['sales','subs'], collections:['sales','reminders'],
+  expenses:['purchases','expenses'], suppliers:['purchases','suppliers'], bankcash:['banking','accounts'], tax:['reports','gstr1'], payroll:['books','payroll']};
+// Open a section, optionally at a sub-section. Sub keys are unique across sections, so a sub alone
+// finds its section even when the caller still uses an old page name.
 L.open=(page, sub)=>{
-  try{ localStorage.setItem('acc_sub_'+page, sub); }catch(_){}
+  if(L.ALIASES[page]){ sub=sub||L.ALIASES[page][1]; page=L.ALIASES[page][0]; }
+  if(sub && L.SUBS && L.SUBS[sub] && L.SUBS[sub]!==page) page=L.SUBS[sub];
+  if(sub) try{ localStorage.setItem('acc_sub_'+page, sub); }catch(_){}
   showTab(page);
-  setTimeout(()=>{ const b=document.querySelector(`#tab${page.charAt(0).toUpperCase()+page.slice(1)} .fp-pill[data-k="${sub}"]`); if(b && !b.classList.contains('active')) b.click(); }, 60);
+  if(sub) setTimeout(()=>{ const b=document.querySelector(`#tab${page.charAt(0).toUpperCase()+page.slice(1)} .fp-pill[data-k="${sub}"]`); if(b && !b.classList.contains('active')) b.click(); }, 60);
 };
 Object.assign(L, {api, post, qs, today, fyStart, money, m0, pct, numCell, empty, spinner, errBox, can, toast, act, download, toCsv, exportXlsx, accountOptions, cashAccounts, accName, subnav, card, dateRangeInputs, val, form, loadMeta, linesEditor, readLines, warnList, portalUrl, addDays, monthStart,
   renderOverview, renderRecurringCard, plTable, legacy, reportForecast, reportClients,
@@ -458,7 +481,7 @@ async function subsMetrics(b){
     if(window.Chart){ if(L.charts.mrr) L.charts.mrr.destroy(); L.charts.mrr=new Chart(document.getElementById('accMrrChart'), {type:'bar', data:{labels:d.movement.map(m=>m.month), datasets:[
       {label:'New', data:d.movement.map(m=>m.new), backgroundColor:'#059669', stack:'s'}, {label:'Expansion', data:d.movement.map(m=>m.expansion+m.reactivation), backgroundColor:'#34D399', stack:'s'},
       {label:'Contraction', data:d.movement.map(m=>m.contraction), backgroundColor:'#FBBF24', stack:'s'}, {label:'Churn', data:d.movement.map(m=>m.churn), backgroundColor:'#DC2626', stack:'s'},
-      {label:'MRR', data:d.movement.map(m=>m.mrr_end), type:'line', borderColor:'#C2410C', yAxisID:'y1', tension:.3}]}, options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{x:{stacked:true}, y:{stacked:true}, y1:{position:'right', grid:{display:false}}}}}); }
+      {label:'MRR', data:d.movement.map(m=>m.mrr_end), type:'line', borderColor:'#0B766F', yAxisID:'y1', tension:.3}]}, options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{x:{stacked:true}, y:{stacked:true}, y1:{position:'right', grid:{display:false}}}}}); }
   }catch(e){ b.innerHTML=errBox(e); }
 }
 async function subsList(b){
@@ -841,41 +864,64 @@ L.saveDefRole=()=>act(()=>post('settings', {default_role:val('accDefRole')}), 'S
 
 Object.assign(L, {download});
 
-/* ── Pages (left sidebar on PC, tab strip on phones) → sections. Every screen lives in exactly one
-   place: legacy panels are mounted with L.legacy(), ledger views render fresh. ── */
-// A spinner goes up straight away; if the settings call fails the page says so with a Retry
-// button instead of staying blank (it used to wait silently and never recover).
-const page=(key, items)=>async root=>{
-  root.innerHTML=spinner;
+/* ── Sections (left sidebar on PC, scrollable strip on phones). Seven places instead of the old
+   fourteen; each has a heading, one primary action and a grouped sub-menu. Every screen lives in
+   exactly one place: legacy panels are mounted with L.legacy(), ledger views render fresh. ── */
+const SECTION_INFO={
+  sales:{title:'Sales', sub:'Invoices, customers, recurring billing and getting paid', action:['+ New invoice', "openDocTypeModal('invoice')"]},
+  purchases:{title:'Purchases', sub:'Expenses, vendor bills and suppliers', action:['+ Record expense', 'openExpenseModal()']},
+  banking:{title:'Banking', sub:'Bank & cash accounts, payments and reconciliation', action:['+ Payment entry', 'openPaymentEntryModal()']},
+  reports:{title:'Reports & tax', sub:'Financial statements, business reports and GST / TDS returns'},
+  books:{title:'Books & payroll', sub:'Journals, chart of accounts, assets, payroll and period close', action:['+ Journal', 'AccLedger.quickJournal()']},
+  settings:{title:'Settings', sub:'Business details, tax, payments, automation and access'},
+};
+const sectionHead=key=>{ const i=SECTION_INFO[key]; if(!i) return '';
+  return `<div class="acc-head"><div><h1 class="acc-h1">${esc(i.title)}</h1><div class="acc-hsub">${esc(i.sub)}</div></div>${i.action?`<button class="save-btn" onclick="${i.action[1]}">${esc(i.action[0])}</button>`:''}</div>`; };
+// A sub-section that reads the ledger waits for its settings first (shared request, spinner on
+// screen); on failure it shows the error with Retry in place — the rest of the section keeps working.
+const withMeta=fn=>{ if(fn.noMeta) return fn; return async b=>{
+  b.innerHTML=spinner;
   try{ await loadMeta(); }
-  catch(e){
-    root.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message||e)}<br><button class="save-btn sec" style="margin-top:10px" onclick="AccLedger.refresh('${key}')">Retry</button></div>`;
-    L.loaded[key]=false;
-    return;
-  }
-  subnav(root, key, items.map(([k,l])=>[k,l]), (k,b)=>items.find(i=>i[0]===k)[2](b));
+  catch(e){ b.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message||e)}<br><button class="save-btn sec" style="margin-top:10px" onclick="AccLedger.retrySub()">Retry</button></div>`; return; }
+  return fn(b);
+}; };
+L.retrySub=()=>document.querySelector('.page.active .acc-subnav .fp-pill.active')?.click() || L.refresh(document.querySelector('.tab.active')?.dataset.tab);
+const page=(key, items)=>root=>{
+  subnav(root, key, items.map(([k,l,,g])=>[k,l,g]), (k,b)=>withMeta(items.find(i=>i[0]===k)[2])(b), sectionHead(key));
 };
-const PAGES={
-  subscriptions:page('subscriptions', [['metrics','📊 SaaS Metrics',subsMetrics],['subs','🔁 Subscriptions',subsList],['plans','📦 Plans & Coupons',subsPlans],['usage','📈 Usage',subsUsage],['revrec','🗓️ Revenue Recognition',subsRevrec],
-    ['fpcust','👥 Recurring Customers',L.legacy('fpSubCustomers')],['fpdues','💵 Expected Funds',L.legacy('fpSubDues')]]),
-  customers:page('customers', [['ledgers','👥 Customers',b=>L.booksParties(b,'customer')]]),
-  collections:page('collections', [['reminders','📨 Reminders & Dunning',subsCollect],['links','🔗 Payment Links & Portal',opsLinks],['fplog','📋 Recurring-dues Reminder Log',L.legacy('fpReminderLogCard',()=>loadFpReminderLog())]]),
-  expenses:page('expenses', [['all','💸 All Expenses',L.legacy('legacyExpensesCard')],['fixed','📌 Fixed Monthly',L.legacy('fpSubExpenses')],['approvals','✅ Approvals',opsApprovals],['categorise','🏷️ Categorise',opsCategorise],['allocations','🎯 Cost Allocation',opsAlloc]]),
-  suppliers:page('suppliers', [['list','🏭 Suppliers',L.legacy('fpSubSuppliers')],['ledgers','📄 Supplier Balances',b=>L.booksParties(b,'supplier')]]),
-  bankcash:page('bankcash', [['accounts','🏦 Accounts',L.legacy('bcSubAccounts')],['payments','💳 Payment Entries',L.legacy('bcSubPayments',()=>loadPaymentEntries())],['recon','🔄 Reconciliation',L.legacy('bcSubRecon',()=>loadReconSessions())],
-    ['rules','🧩 Bank Rules & Unmatched',opsBank],['settle','💳 Gateway Settlements',subsSettle]]),
-  books:page('books', [['journals','✍️ Journals',L.booksJournals],['recurring','🔁 Recurring Journals',opsRecurring],['coa','🗂️ Chart of Accounts',L.booksCoa],['notes','↩️ Credit / Debit Notes',L.booksNotes],
-    ['assets','🖥️ Fixed Assets',opsAssets],['close','🔒 Period Close',L.booksClose],['audit','🕵️ Audit Trail',L.booksAudit]]),
-  reports:page('reports', [['pl','📈 Profit & Loss',L.booksPL],['bs','⚖️ Balance Sheet',L.booksBS],['tb','🧮 Trial Balance',L.booksTB],['cf','🌊 Cash Flow',L.booksCF],['gl','📖 General Ledger',L.booksGL],
-    ['ar','📥 Receivables Aging',L.legacy('repSubAr',()=>loadReportArAging())],['ap','📤 Payables Aging',L.legacy('repSubAp',()=>loadReportApAging())],['expbreak','🧾 Expense Breakdown',L.legacy('repSubExpbreak',()=>loadReportExpenseBreakdown())],
-    ['sales','🧮 Sales Summary',L.legacy('repSubSales')],['budget','🎯 Budget vs Actual',opsBudget],['clients','💼 Client Profitability',L.reportClients],['forecast','🔮 13-week Cash Forecast',L.reportForecast]]),
-  tax:page('tax', [['gstr1','📤 GSTR-1',taxGstr1],['gstr3b','🧾 GSTR-3B',taxGstr3b],['purchases','📥 Purchase Tax & ITC',taxPurchases],['tds','🏛️ TDS',taxTds],['einv','🔏 E-invoice',taxEinv],['fx','💱 FX Rates',taxFx]]),
-  payroll:page('payroll', [['payroll','👩‍💼 Payroll',opsPayroll]]),
-  settings:page('settings', [['general','🏢 Business & Tax',opsSettings],['payments','💳 Payments & Automation',L.legacy('fpSettingsCard')],['roles','👥 Roles',opsRoles],['exports','⬇ Exports',opsExports]]),
+const SECTIONS={
+  sales:[
+    ['docs','🧾 Invoices & quotes',L.legacy('docsPanel'),'Invoicing'], ['customers','👥 Customers',b=>L.booksParties(b,'customer'),'Invoicing'],
+    ['fpdues','💵 Expected funds',L.legacy('fpSubDues'),'Recurring'], ['fpcust','🗂️ Recurring customers',L.legacy('fpSubCustomers'),'Recurring'], ['subs','🔁 Subscriptions',subsList,'Recurring'], ['plans','📦 Plans & coupons',subsPlans,'Recurring'], ['usage','📈 Usage',subsUsage,'Recurring'],
+    ['reminders','📨 Reminders & dunning',subsCollect,'Get paid'], ['links','🔗 Payment links & portal',opsLinks,'Get paid'], ['fplog','📋 Reminder log',L.legacy('fpReminderLogCard',()=>loadFpReminderLog()),'Get paid'],
+    ['metrics','📊 SaaS metrics',subsMetrics,'Insights'], ['revrec','🗓️ Revenue recognition',subsRevrec,'Insights']],
+  purchases:[
+    ['expenses','💸 Expenses',L.legacy('legacyExpensesCard'),'Spend'], ['bills','📥 Vendor bills',L.legacy('billsPanel'),'Spend'], ['fixed','📌 Fixed monthly',L.legacy('fpSubExpenses'),'Spend'],
+    ['suppliers','🏭 Suppliers',L.legacy('fpSubSuppliers'),'Suppliers'], ['supbal','📄 Supplier balances',b=>L.booksParties(b,'supplier'),'Suppliers'],
+    ['approvals','✅ Approvals',opsApprovals,'Controls'], ['categorise','🏷️ Categorise',opsCategorise,'Controls'], ['allocations','🎯 Cost allocation',opsAlloc,'Controls']],
+  banking:[
+    ['accounts','🏦 Accounts',L.legacy('bcSubAccounts'),''], ['payments','💳 Payment entries',L.legacy('bcSubPayments',()=>loadPaymentEntries()),''], ['recon','🔄 Reconciliation',L.legacy('bcSubRecon',()=>loadReconSessions()),''],
+    ['rules','🧩 Bank rules',opsBank,''], ['settle','💳 Gateway settlements',subsSettle,'']],
+  reports:[
+    ['pl','📈 Profit & loss',L.booksPL,'Statements'], ['bs','⚖️ Balance sheet',L.booksBS,'Statements'], ['cf','🌊 Cash flow',L.booksCF,'Statements'], ['tb','🧮 Trial balance',L.booksTB,'Statements'], ['gl','📖 General ledger',L.booksGL,'Statements'],
+    ['ar','📥 Receivables aging',L.legacy('repSubAr',()=>loadReportArAging()),'Who owes what'], ['ap','📤 Payables aging',L.legacy('repSubAp',()=>loadReportApAging()),'Who owes what'],
+    ['salessum','🧮 Sales summary',L.legacy('repSubSales'),'Business'], ['expbreak','🧾 Expense breakdown',L.legacy('repSubExpbreak',()=>loadReportExpenseBreakdown()),'Business'], ['clients','💼 Client profitability',L.reportClients,'Business'], ['budget','🎯 Budget vs actual',opsBudget,'Business'], ['forecast','🔮 Cash forecast',L.reportForecast,'Business'],
+    ['gstr1','📤 GSTR-1',taxGstr1,'Tax'], ['gstr3b','🧾 GSTR-3B',taxGstr3b,'Tax'], ['itc','📥 Purchase tax & ITC',taxPurchases,'Tax'], ['tds','🏛️ TDS',taxTds,'Tax'], ['einv','🔏 E-invoice',taxEinv,'Tax'], ['fx','💱 FX rates',taxFx,'Tax']],
+  books:[
+    ['journals','✍️ Journals',L.booksJournals,'Ledger'], ['recurring','🔁 Recurring journals',opsRecurring,'Ledger'], ['coa','🗂️ Chart of accounts',L.booksCoa,'Ledger'], ['notes','↩️ Credit / debit notes',L.booksNotes,'Ledger'], ['assets','🖥️ Fixed assets',opsAssets,'Ledger'],
+    ['payroll','👩‍💼 Payroll',opsPayroll,'Payroll'],
+    ['close','🔒 Period close',L.booksClose,'Close & audit'], ['audit','🕵️ Audit trail',L.booksAudit,'Close & audit']],
+  settings:[['general','🏢 Business & tax',opsSettings,''], ['automation','💳 Payments & automation',L.legacy('fpSettingsCard'),''], ['roles','👥 Roles',opsRoles,''], ['exports','⬇ Exports',opsExports,'']],
 };
+L.SECTIONS=SECTIONS;
+L.SUBS={}; for(const [sec, items] of Object.entries(SECTIONS)) for(const [k] of items) L.SUBS[k]=sec;
+const PAGES={}; for(const [sec, items] of Object.entries(SECTIONS)) PAGES[sec]=page(sec, items);
 const RENDER={overview:L.renderOverview, ...PAGES};
+// Quick "+ Journal": open Books → Journals, then the form once the ledger settings are in.
+L.quickJournal=async()=>{ try{ await loadMeta(); }catch(e){ toast(e.message, true); return; } L.open('books','journals'); L.newJournal(); };
 const origShowTab=window.showTab;
 window.showTab=function(name){
+  if(L.ALIASES[name]) return L.open(name); // old page name → its new section
   origShowTab(name);
   try{ document.querySelector(`.tab[data-tab="${name}"]`)?.scrollIntoView({block:'nearest', inline:'nearest'}); }catch(_){} // phones: keep the active tab visible in the strip
   if(RENDER[name] && !L.loaded[name]){ L.loaded[name]=true; const root=document.getElementById('tab'+name.charAt(0).toUpperCase()+name.slice(1)); RENDER[name](root.querySelector('.acc-root')||root); }

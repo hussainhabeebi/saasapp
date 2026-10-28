@@ -7680,13 +7680,20 @@ updating preview.
 A double-entry General Ledger under the existing Documents / Expense Entry / Vendor Bills / Bank &
 Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and operations tooling.
 
-- **Layout.** A grouped left sidebar on PC (≥1024px), a horizontal tab strip on phones:
-  Overview · Sales (Invoices & Quotes, Recurring & Subscriptions, Customers, Collections) ·
-  Purchases (Expenses, Vendor Bills, Suppliers) · Banking (Bank & Cash) · Accounting (Books,
-  Reports, Tax & GST, Payroll) · Setup (Settings). Every screen exists once: the older Financial
-  Planning / Expense Entry / Reports / Bank & Cash pages are hidden containers whose panels
-  `accounting-ledger.js` mounts into those pages (`L.legacy(id)`), parking them back (still in the
-  DOM) when you switch away. Settings → Business & Tax writes currency + GST to both `acc_settings`
+- **Layout.** Seven sections — a left sidebar on PC (≥1024px), a scrollable pill strip on phones:
+  Home (figures + quick actions) · Sales (invoices & quotes, customers, recurring billing,
+  subscriptions, reminders, payment links, SaaS insights) · Purchases (expenses, vendor bills, fixed
+  monthly, suppliers, approvals, categorise, cost allocation) · Banking · Reports & tax (statements,
+  aging, business reports, GSTR-1/3B, ITC, TDS, e-invoice, FX) · Books & payroll (journals, chart of
+  accounts, notes, assets, payroll, period close, audit) · Settings. Each section has a heading, one
+  primary action and a grouped sub-menu (`SECTIONS` in `accounting-ledger.js`; sub keys are unique,
+  and `L.ALIASES` maps the old 14-tab names so old links still land). A header "＋ New" menu opens
+  invoice / quotation / expense / bill / payment / journal forms from anywhere. Every screen exists
+  once: the older Documents / Vendor Bills / Financial Planning / Expense Entry / Reports / Bank &
+  Cash panels are hidden containers that `accounting-ledger.js` mounts into a section
+  (`L.legacy(id)`), parking them back (still in the DOM) when you switch away. Those panels never
+  wait for the ledger settings call; only ledger sub-sections do, and they show the error with Retry
+  in place if it fails. Settings → Business & Tax writes currency + GST to both `acc_settings`
   and `fp_config`, so invoices and the books never disagree. No AI or receipt OCR in this module.
 - **Enabling it.** Off by default per client. Turn it on in **Leadvyne admin → Edit client → 💰
   Accounting module** (`POST /admin/accounting-module`, admin session only). The switch is stored
