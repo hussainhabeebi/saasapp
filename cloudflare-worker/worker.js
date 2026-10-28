@@ -18427,7 +18427,10 @@ export function engineIsNonHandoverSmallTalk(text){
 // customer had already said how. Such turns skip the intro short-circuits and go to the AI,
 // whose new-lead prompt answers first and then adds a one-line intro. Plain greetings, language
 // preferences and the generic ad opener ("Can I get more info on this?") still get the intro.
-const ENGINE_SPECIFIC_ASK_RE=/\?|\b(?:price|prices|pricing|cost|costs|rate|rates|how\s+much|charges?|fees?|rs\.?|inr|₹|photos?|pics?|pictures?|images?|videos?|catalog(?:ue)?|samples?|designs?|sizes?|colou?rs?|available|availability|stock|deliver(?:y|ies)?|shipping|courier|cod|cash\s+on\s+delivery|discount|offers?|order|buy|purchase|book(?:ing)?|appointment|address|location|where|when|what|which|how|timings?|hours|open|do\s+you|can\s+you|can\s+i|is\s+there|are\s+there|details?|send|show|want|need|looking\s+for|i'?d\s+like|interested)\b/i;
+// Tripcod (Oct 2026): "We are travelling in January" carried none of these keywords and got only
+// "Welcome to Tripcod Travels… How can I help you today?" — so any opener that says something
+// (three or more words after the greeting, or a travel word) is now answered too.
+const ENGINE_SPECIFIC_ASK_RE=/\?|\b(?:travel(?:l?ing|l?ers?)?|trips?|tours?|packages?|holidays?|honeymoon|vacation|visas?|tickets?|flights?|hotels?|resorts?|umrah|hajj|price|prices|pricing|cost|costs|rate|rates|how\s+much|charges?|fees?|rs\.?|inr|₹|photos?|pics?|pictures?|images?|videos?|catalog(?:ue)?|samples?|designs?|sizes?|colou?rs?|available|availability|stock|deliver(?:y|ies)?|shipping|courier|cod|cash\s+on\s+delivery|discount|offers?|order|buy|purchase|book(?:ing)?|appointment|address|location|where|when|what|which|how|timings?|hours|open|do\s+you|can\s+you|can\s+i|is\s+there|are\s+there|details?|send|show|want|need|looking\s+for|i'?d\s+like|interested)\b/i;
 export function engineIsSpecificFirstQuestion(text){
   const t=String(text||'').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').replace(/[’']/g,"'").trim();
   if(!t||engineIsNonHandoverSmallTalk(t)||ecomIsGeneralBusinessInfoQuery(t)) return false;
@@ -18435,9 +18438,9 @@ export function engineIsSpecificFirstQuestion(text){
   const rest=t.replace(/^(?:hi+|hy+|hai+|hey+|hlo+|hel+o+|hola|salam|salaam|namaste|good\s+(?:morning|afternoon|evening|night|noon))(?:\s+(?:there|all|team|sir|madam|mam|maam))?[\s!.,?-]*/i,'').trim();
   if(!rest) return false;
   if(ENGINE_SPECIFIC_ASK_RE.test(rest)) return true;
-  // Non-Latin scripts (Malayalam, Arabic, Hindi…) — the keyword list can't see them, so any
-  // multi-word non-greeting message counts as a real ask.
-  return /[^\u0000-ɏ]/.test(rest) && rest.split(/\s+/).length>=3;
+  // Anything else with some substance ("We are travelling in January", or Malayalam / Arabic /
+  // Hindi the keyword list can't see) counts as a real ask; "ok", "thanks", "yes please" don't.
+  return rest.split(/\s+/).filter(w=>/[\p{L}\p{N}]/u.test(w)).length>=3;
 }
 export function engineTextSimilarity(a, b){
   const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
