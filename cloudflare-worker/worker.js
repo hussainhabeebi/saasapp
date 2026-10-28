@@ -18011,6 +18011,107 @@ export async function runIdleLeadReassignForAllClients(env, now=new Date()){
   }
 }
 
+/* ── UNASSIGNED-LEAD AUTO-ASSIGN ───────────────────────────────────────────────────────────────
+   Settings → 🔀 Lead Routing → "Auto-assign unassigned leads to the pool". New-lead routing only
+   runs when a lead arrives, so a lead that matched no rule, or came in through an import, a lead
+   ad or by hand, sat in Chats → Unassigned for good. On the 15-minute cron every open lead with no
+   Owner goes to the next teammate in the round-robin pool ("In pool" members, or every routable
+   teammate when none are ticked; Baby Care staff On leave are skipped), sharing the new-lead
+   rotation counter so the two never hand consecutive leads to the same person. A lead from a
+   channel assigned to someone (Channels → inbox assignment) goes to that person instead. At most
+   UNASSIGNED_ASSIGN_MAX_PER_RUN per client per tick; each teammate gets one email per tick listing
+   their leads. Stored as lead_routing.assignUnassigned = {enabled}. ── */
+export const UNASSIGNED_ASSIGN_MAX_PER_RUN=50;
+export function assignUnassignedSettings(routing){
+  return {enabled:routing?.assignUnassigned?.enabled===true};
+}
+// Who unassigned leads go to: "In pool" teammates (minus anyone on leave), else every routable one.
+export function assignUnassignedPool(c, routing=engineGetLeadRouting(c)){
+  const away=staffOnLeave(c, routing);
+  const staff=[...engineRoutableStaffEmails(c)].filter(e=>!away.has(e));
+  const inPool=Object.entries(routing?.rules||{}).filter(([e,r])=>r?.inPool && staff.includes(String(e).trim().toLowerCase())).map(([e])=>String(e).trim().toLowerCase());
+  return (inPool.length?inPool:staff).sort();
+}
+export function assignUnassignedEligible(lead){
+  if(String(lead?.Owner||'').trim()) return false;
+  if(lead?.OptOut==='Yes' || lead?.HandoverOutcome==='Spam') return false;
+  return !PIPELINE_TERMINAL_STAGES.has(lead?.Stage||'');
+}
+export async function assignUnassignedProcessClient(env, c, now=new Date()){
+  const routing=engineGetLeadRouting(c);
+  if(!assignUnassignedSettings(routing).enabled) return {assigned:0};
+  const pool=assignUnassignedPool(c, routing);
+  if(!pool.length) return {assigned:0};
+  const clientId=Number(c.Id);
+  const nowIso=now.toISOString();
+  const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Owner,blank)`);
+  let leads=[];
+  for(let page=1; page<=5 && leads.length<UNASSIGNED_ASSIGN_MAX_PER_RUN*2; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=-Id&limit=200&offset=${(page-1)*200}&fields=Id,Name,Phone,Owner,Stage,OptOut,HandoverOutcome,InboxId,ConversationID,NotesList`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    leads=leads.concat(list);
+    if(list.length<200) break;
+  }
+  leads=leads.filter(assignUnassignedEligible).slice(0, UNASSIGNED_ASSIGN_MAX_PER_RUN);
+  if(!leads.length) return {assigned:0};
+  const away=staffOnLeave(c, routing);
+  const staff=engineRoutableStaffEmails(c);
+  const channelOwners=new Map();
+  if(env.DB){
+    try{
+      const {results}=await env.DB.prepare(`SELECT inbox_id, assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`).bind(clientId).all();
+      for(const row of results||[]){
+        const e=String(row.assigned_email||'').trim().toLowerCase();
+        if(staff.has(e) && !away.has(e)) channelOwners.set(String(row.inbox_id), e);
+      }
+    }catch(e){}
+  }
+  const digest=new Map();
+  let assigned=0;
+  for(const lead of leads){
+    const leadId=Number(lead.Id);
+    let to=channelOwners.get(String(lead.InboxId||''));
+    if(!to){
+      const slot=await engineNextRoundRobinSlot(env, clientId, routing);
+      to=pool[(slot===null?assigned:slot)%pool.length];
+    }
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    notes.unshift({text:`🎯 Auto-assigned to ${to}: was unassigned.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:to, NotesList:JSON.stringify(notes)}});
+    if(!pr.ok){ console.error('[assign-unassigned] lead patch failed', clientId, leadId, pr.status); continue; }
+    await chatsV2ApplyLeadPatch(env, leadId, {Owner:to}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+    await engineSyncChatwootAssignee(c, lead.ConversationID, to);
+    const leadName=lead.Name||lead.Phone||`Lead #${leadId}`;
+    await engineBroadcastUpdate(env, clientId, {type:'lead_reassigned', reason:'unassigned', lead_id:leadId, lead_name:leadName, to, from:'', at:nowIso});
+    if(!digest.has(to)) digest.set(to, []);
+    digest.get(to).push(leadName);
+    assigned++;
+  }
+  for(const [to, names] of digest){
+    await coldReallocEmail(env, to, names.length===1?`🎯 Lead assigned to you: ${names[0]}`:`🎯 ${names.length} leads assigned to you`,
+      `<p>These leads had no owner, so they've been assigned to you. Please call them — open Leads to see the chat.</p><ul>${names.map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>`);
+  }
+  return {assigned};
+}
+export async function runAssignUnassignedForAllClients(env, now=new Date()){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!assignUnassignedSettings(engineGetLeadRouting(c)).enabled) continue;
+      try{ await assignUnassignedProcessClient(env, c, now); }
+      catch(e){ console.error('[assign-unassigned] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 /* ── BABY CARE: UNATTENDED-LEAD REASSIGN + STAFF ON LEAVE ───────────────────────────────────────
    Couplo (Oct 2026): a lead assigned to a teammate who is on leave, or who simply never opens it,
    sat unattended. Baby Care stores (ecom_communication_style 'baby_care') now get, in Settings →
@@ -39413,6 +39514,8 @@ export default {
       ctx.waitUntil(runUnattendedLeadReassignForAllClients(env));
       // Not-called / unanswered leads past their window (Settings → 🔀 Lead Routing) — see runIdleLeadReassignForAllClients.
       ctx.waitUntil(runIdleLeadReassignForAllClients(env));
+      // Leads with no owner → the round-robin pool (Settings → 🔀 Lead Routing) — see runAssignUnassignedForAllClients.
+      ctx.waitUntil(runAssignUnassignedForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
       // Follow-up V3 — only clients who switched it on (the classic sweep above skips them). See followup-v3.js.
       ctx.waitUntil(fv3RunForAllClients(env, FOLLOWUP_V3_DEPS).catch(e=>reportOpsError(env, 'followup v3 sweep', e)));
