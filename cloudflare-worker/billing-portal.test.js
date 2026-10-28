@@ -246,6 +246,15 @@ describe('link a subscription by ID', ()=>{
     assert.equal(r.status, 404);
   });
 
+  test('refuses a subscription that was never paid, with its payment link', async()=>{
+    Object.assign(rzpGet[`subscriptions/${RZP_ID}`], {status:'created', customer_id:null, notify_info:{notify_email:'o@x.in'}, short_url:'https://rzp.io/i/pay'});
+    const r=await call('POST', '/billing/portal/link-subscription', {subscription_id:RZP_ID});
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /hasn't been paid yet/);
+    assert.equal(r.data.pay_url, 'https://rzp.io/i/pay');
+    assert.equal(patches.length, 0);
+  });
+
   test('links a Stripe subscription (payment link) by its customer email', async()=>{
     const orig=deps.stripeFetch;
     deps.stripeFetch=async (e, m, p, params)=>p===`subscriptions/${STRIPE_ID}`

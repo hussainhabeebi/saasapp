@@ -16720,7 +16720,14 @@ async function billingLinkSubscription(){
   if(!/^sub_[A-Za-z0-9]+$/.test(id)){ msg.textContent='Enter the subscription ID — it starts with sub_.'; return; }
   btn.disabled=true; msg.textContent='Looking it up…';
   try{
-    const d=await billingApi('/billing/portal/link-subscription',{method:'POST',body:JSON.stringify({subscription_id:id, gateway:$id('billingLinkSubGateway').value})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/portal/link-subscription`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({subscription_id:id, gateway:$id('billingLinkSubGateway').value})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      // Not paid yet → the error carries the gateway's payment link.
+      msg.innerHTML=esc('Error: '+(d.error||'HTTP '+r.status))+(d.pay_url?` <a href="${escAttr(d.pay_url)}" target="_blank" rel="noopener">Complete payment ↗</a>`:'');
+      return;
+    }
     await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingPlanStatus(); loadBillingInvoices(); loadBillingHistory();
     msg.textContent=`✅ Linked your ${d.gateway==='razorpay'?'Razorpay':'Stripe'} subscription${d.plan_name?` (${d.plan_name})`:''} — status: ${clientRecord.plan_status||d.status}.`;
     $id('billingLinkSubId').value='';
