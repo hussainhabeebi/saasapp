@@ -301,13 +301,13 @@ function csNewLeadAlert(lead, reason){
   let el=$id('csLeadAlert');
   if(!el){ el=document.createElement('div'); el.id='csLeadAlert'; el.className='cs-alert'; document.body.appendChild(el); }
   clearInterval(_csAlertTimer);
-  const arrived=reason==='reassigned'?Date.now()-CS_FAST_MS:(Date.parse(lead.Date||'')||Date.now());
+  const arrived=reason==='reassigned'||reason==='reassigned-idle'?Date.now()-CS_FAST_MS:(Date.parse(lead.Date||'')||Date.now());
   const askPerm=('Notification' in window) && Notification.permission==='default';
   const paint=()=>{
     const left=CS_FAST_MS-(Date.now()-arrived);
     const timer=left>0?`<span class="cs-alert-timer">⏱ ${Math.floor(left/60000)}:${String(Math.floor(left%60000/1000)).padStart(2,'0')}</span>`:'';
     el.innerHTML=`<div class="cs-alert-main" onclick="openDetail(${lead.Id})">
-        <div class="cs-alert-title">${reason==='reassigned'?'🔥 Hot lead reassigned to you':'🔔 New lead'} · <b>${esc(lead.Name||lead.Phone||'New enquiry')}</b></div>
+        <div class="cs-alert-title">${reason==='reassigned'?'🔥 Hot lead reassigned to you':reason==='reassigned-idle'?'📞 Lead reassigned to you':'🔔 New lead'} · <b>${esc(lead.Name||lead.Phone||'New enquiry')}</b></div>
         <div class="cs-alert-sub">${left>0?`Call within the timer for <b>2× points</b>`:'Call now while they’re interested'}${askPerm?` · <a href="#" onclick="event.stopPropagation();Notification.requestPermission();this.remove();return false">Turn on alerts</a>`:''}</div>
       </div>
       ${timer}
