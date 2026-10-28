@@ -126,6 +126,49 @@ export function taPackageFollowUp(text){
   return null;
 }
 
+// Packages whose destination the message names ("bali", "kashmir trip", "any munnar tour?").
+// Each comma / slash / "&" separated part of the destination counts on its own, so "Bali,
+// Indonesia" is found by "bali". A message that reads like a flight route or a ticket / visa
+// question is never a destination match — those belong to the live-flight and visa paths.
+const FLIGHTISH=/\b(?:flights?|tickets?|air ?fares?|airlines?|fly|flying|one ?way|round ?trip|return ticket|visas?|airport|pnr|boarding)\b/;
+const PACKAGEISH=/\b(?:packages?|pkg|tours?|trips?|holidays?|honeymoon|vacation|itinerary|sightseeing)\b/;
+const ROUTE_VERBS=new Set(['go','going','travel','travelling','traveling','trip','tour','visit','visiting','come','coming','want','like','plan','planning','move','way','holiday','honeymoon','package','packages']);
+export function taPackagesForLocation(packages,text){
+  const t=norm(text);
+  if(!t||FLIGHTISH.test(t))return [];
+  if(!PACKAGEISH.test(t)){
+    const route=/(?:^| )from /.test(t)||[...t.matchAll(/(\p{L}{2,}) to \p{L}{2,}/gu)].some(m=>!ROUTE_VERBS.has(m[1]));
+    if(route)return [];
+  }
+  const hay=` ${t} `;
+  return (packages||[]).filter(p=>String(p?.destination||'').split(/[,/&;|]|\s+-\s+|\s+and\s+/i)
+    .map(norm).some(part=>part.length>=3&&!GENERIC.has(part)&&hay.includes(` ${part} `)));
+}
+
+// Photos and the agency's own PDF brochure set on a package (dashboard → Packages → Photos & PDF
+// for WhatsApp), in send order. `full` false keeps only the cover photo — used when several
+// packages for one destination go out together, so the chat isn't flooded.
+export const TA_PKG_MEDIA_FIELDS=['image_url','image_url_2','image_url_3','pdf_url'];
+export function taPackageHasMedia(p){
+  return TA_PKG_MEDIA_FIELDS.some(f=>String(p?.[f]||'').trim());
+}
+export function taPackageMediaItems(p,{images=true,pdf=true,full=true}={}){
+  const items=[];
+  if(images)['image_url','image_url_2','image_url_3'].forEach(f=>{
+    const url=String(p?.[f]||'').trim();
+    if(url&&(full||!items.length))items.push({kind:'image',url});
+  });
+  const pdfUrl=String(p?.pdf_url||'').trim();
+  if(pdf&&pdfUrl)items.push({kind:'pdf',url:pdfUrl,filename:`${String(p?.name||'package').trim().replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'').slice(0,60)||'package'}.pdf`});
+  if(items.length)items[0].caption=taPackageCaption(p);
+  return items;
+}
+export function taPackageCaption(p){
+  const where=p?.destination?` — ${String(p.destination).trim()}`:'';
+  const bits=[nightsLine(p?.nights),taMoney(taPackagePrice(p),p?.currency)?`From ${taMoney(taPackagePrice(p),p?.currency)} per person`:''].filter(Boolean);
+  return `🏝️ *${String(p?.name||'').trim()}*${where}${bits.length?`\n${bits.join(' · ')}`:''}`;
+}
+
 function nightsLine(n){
   const v=Number(n)||0;
   return v>0?`${v} night${v===1?'':'s'} / ${v+1} days`:'';

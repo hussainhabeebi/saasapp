@@ -339,6 +339,11 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Inclusions (one per line)</label><textarea class="form-input" id="pkgInclusions" rows="4" placeholder="Visa&#10;Return flights&#10;4-star hotel&#10;Airport transfers"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Exclusions (one per line)</label><textarea class="form-input" id="pkgExclusions" rows="3" placeholder="Travel insurance&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="pkgNotes" rows="2"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1;margin-bottom:0"><label class="form-label">Photos &amp; PDF for WhatsApp</label><div style="font-size:11.5px;color:var(--muted)">Paste Google Drive file links shared as "Anyone with the link can view" (or any direct image / PDF link). When a lead names this package, its destination, or picks it from the menu, the bot sends these straight into the chat.</div></div>
+        <div class="form-group"><label class="form-label">Photo 1 (cover)</label><input class="form-input" id="pkgImage1" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="form-group"><label class="form-label">Photo 2</label><input class="form-input" id="pkgImage2" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="form-group"><label class="form-label">Photo 3</label><input class="form-input" id="pkgImage3" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="form-group"><label class="form-label">PDF Brochure</label><input class="form-input" id="pkgPdfUrl" placeholder="https://drive.google.com/file/d/…"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1094,6 +1099,8 @@ async function taUpdate(key,rowId,record){
 const TA_ADDED_COLUMNS={
   packages:[
     {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},{title:'infant_price',uidt:'Decimal'},
+    {title:'image_url',uidt:'LongText'},{title:'image_url_2',uidt:'LongText'},{title:'image_url_3',uidt:'LongText'},
+    {title:'pdf_url',uidt:'LongText'},
   ],
   itineraries:[
     {title:'nights',uidt:'Number'},{title:'departure_city',uidt:'SingleLineText'},
@@ -1671,7 +1678,7 @@ function renderPkgCard(p) {
       </div>
     </div>
     <div class="pkg-name">${esc(p.name||'—')}</div>
-    <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax</div>
+    <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax${p.image_url||p.image_url_2||p.image_url_3?' · 📷':''}${p.pdf_url?' · 📄':''}</div>
     ${inc.length ? `<div style="margin-bottom:12px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${incArr.length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${incArr.length-3} more</div>`:''}</div>` : ''}
     <div style="display:flex;align-items:baseline;gap:4px;margin-top:auto">
       <span class="pkg-price">${esc(p.currency||'AED')} ${(parseFloat(p.sell_price||p.base_price)||0).toLocaleString()}</span>
@@ -1691,6 +1698,17 @@ function filterPkgs(type) {
 }
 
 let _editPkgId=null;
+// Package photos / brochure the bot forwards into WhatsApp (worker.js taDeliverPackageMedia).
+const PKG_MEDIA_INPUTS=[['image_url','pkgImage1','Photo 1'],['image_url_2','pkgImage2','Photo 2'],['image_url_3','pkgImage3','Photo 3'],['pdf_url','pkgPdfUrl','PDF Brochure']];
+// Same checks as the Resorts & Hotels links (ta-properties.js taPropertyMediaUrlError): a Drive
+// folder or a Drive link with no file id can't be forwarded, so it's caught here at save time.
+function pkgMediaUrlError(label,url){
+  if(!url) return '';
+  if(!/^https?:\/\//i.test(url)) return `${label}: paste a full link starting with https://`;
+  if(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(url)) return `${label}: paste the Google Drive link of the file itself, not a folder.`;
+  if(/(?:drive|docs)\.google\.com/i.test(url)&&!/\/(?:file|document|presentation|spreadsheets)\/d\/[\w-]+|[?&]id=[\w-]+/.test(url)) return `${label}: this doesn't look like a Google Drive file share link.`;
+  return '';
+}
 function openPkgModal(id){
   _editPkgId=id||null;
   const p=id?(_taPackages.find(x=>String(x.Id)===String(id))||{}):{};
@@ -1704,6 +1722,7 @@ function openPkgModal(id){
   $id('pkgInclusions').value=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]).join('\n');
   $id('pkgExclusions').value=safeJson(p.exclusions,p.exclusions instanceof Array?p.exclusions:[]).join('\n');
   $id('pkgNotes').value=p.notes||'';
+  PKG_MEDIA_INPUTS.forEach(([f,elId])=>{ $id(elId).value=p[f]||''; });
   openModal('modalPkg');
 }
 
@@ -1714,6 +1733,11 @@ async function savePkg(){
   const exc=$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
   if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
+  for(const [f,elId,label] of PKG_MEDIA_INPUTS){
+    p[f]=$id(elId).value.trim();
+    const err=pkgMediaUrlError(label,p[f]);
+    if(err){msg.textContent=err;msg.className='save-msg err';btn.disabled=false;return;}
+  }
   try{
     await taEnsureColumns('packages');
     if(_editPkgId) await taUpdate('packages',_editPkgId,p); else await taCreate('packages',p);
