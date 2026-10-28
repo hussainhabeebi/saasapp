@@ -66,6 +66,11 @@ async function setup(page, { enabled = true, slowMs = 0, failSettings = 0 } = {}
     if (p.includes('/records/7')) return route.fulfill({ json: { Id: 7, client_name: 'Acme Digital', deal_currency: 'INR' } });
     if (p.includes('/records')) return route.fulfill({ json: { list: [] } });
     if (p === '/accounting/documents') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_documents`).all().map((r) => ({ ...r, Id: r.id })) } });
+    if (p === '/accounting/expenses' && req.method() === 'POST') {
+      const b = JSON.parse(req.postData());
+      const r = db.prepare(`INSERT INTO accounting_expenses (client_id, expense_account, amount, currency, expense_date, category, vendor, created_at) VALUES (7,?,?,?,?,?,?,?)`).run(b.expense_account, b.amount, b.currency, b.expense_date, b.category, b.vendor, T);
+      return route.fulfill({ json: { ok: true, Id: Number(r.lastInsertRowid) } });
+    }
     if (p === '/accounting/expenses') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_expenses`).all().map((r) => ({ ...r, Id: r.id })) } });
     if (p === '/accounting/vendor-bills') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_vendor_bills`).all().map((r) => ({ ...r, Id: r.id })) } });
     if (p.startsWith('/financial/reports/')) return route.fulfill({ json: { currency: 'INR', buckets: [], items: [], categories: [], by_type: [], total: 0, total_documents: 0, since: '2026-01-01', from: '2026-01-01', to: '2026-12-31' } });
@@ -243,5 +248,22 @@ test('phone: a failed settings call shows Retry instead of a blank page, and Ret
   await retry.click();
   await expect(page.locator('#tabPayroll')).toContainText('Payroll runs');
   await expect(page.locator('#tabPayroll')).toContainText('Employees');
+  expect(errors).toEqual([]);
+});
+
+test('an expense entered on the Expenses page saves and is listed', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 900 });
+  const { db, errors } = await setup(page);
+  await page.click('.tab[data-tab="expenses"]');
+  await expect(page.locator('#tabExpenses')).toContainText('Figma');
+  await page.click('#tabExpenses button:has-text("+ New Expense")');
+  await expect(page.locator('#expenseModal')).toBeVisible();
+  await page.fill('#expAmount', '2500');
+  await page.fill('#expCategory', 'Travel');
+  await page.fill('#expVendor', 'Uber');
+  await page.click('#expenseModal button:has-text("Save")');
+  await expect(page.locator('#expenseModal')).toBeHidden();
+  await expect(page.locator('#tabExpenses')).toContainText('Uber');
+  expect(db.prepare(`SELECT amount FROM accounting_expenses WHERE vendor='Uber'`).get().amount).toBe(2500);
   expect(errors).toEqual([]);
 });

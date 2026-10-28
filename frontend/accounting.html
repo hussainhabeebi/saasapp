@@ -3448,7 +3448,10 @@ init=async function(){
 init();
 </script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="accounting-ledger.js"></script>
+<!-- ?v= changes with every accounting release: the old service worker (sw.js ≤ lv-v16) served
+     same-origin scripts cache-first forever, so a phone kept its first-ever copy of this file
+     under a new accounting.html. A new URL is never in that cache, so fresh code loads at once. -->
+<script src="accounting-ledger.js?v=2026-10-28"></script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>
