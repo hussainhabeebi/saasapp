@@ -7688,8 +7688,13 @@ Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and ope
   DOM) when you switch away. Settings → Business & Tax writes currency + GST to both `acc_settings`
   and `fp_config`, so invoices and the books never disagree. No AI or receipt OCR in this module.
 - **Enabling it.** Off by default per client. Turn it on in **Leadvyne admin → Edit client → 💰
-  Accounting module** (`POST /admin/accounting-module`, admin session only; `accounting_enabled` is
-  in `PLAN_MANAGED_FIELDS` so a client can't set it). Until then: the dashboard's Accounting tab is
+  Accounting module** (`POST /admin/accounting-module`, admin session only). The switch is stored
+  in D1 (`client_modules`, migrations/0124 — also created on first use), not in NocoDB: no column to
+  add. `GET /admin/accounting-module` lists it for admin, `GET /accounting/module-status` returns it
+  for the signed-in client (dashboard tab + `accounting.html`), and `isAccountingEnabled()` in
+  worker.js gates everything else (memoised ~30 s per isolate). A client with no D1 row yet falls
+  back once to the old NocoDB `clients.accounting_enabled` value, which is then copied into D1.
+  Until it's on: the dashboard's Accounting tab is
   hidden and the page shows a lock message, `accounting.html` refuses to load, every
   `/accounting/ledger/*` route returns 403, portal links return 404, and the daily accounting jobs
   (ledger billing / recurring journals / reminders, Financial Planning monthly dues and WhatsApp

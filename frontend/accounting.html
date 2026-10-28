@@ -1423,9 +1423,14 @@ async function init(){
   // The deferred CDN libraries and accounting-ledger.js have all run by DOMContentLoaded.
   const domReady=document.readyState==='loading'?new Promise(r=>document.addEventListener('DOMContentLoaded', r, {once:true})):Promise.resolve();
   try{
-    clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
-    // Switched on per client by the Leadvyne admin (clients.accounting_enabled, admin-only) — nothing
-    // below loads otherwise, and the Worker's ledger routes and accounting daily jobs check the same flag.
+    // Switched on per client by the Leadvyne admin — the switch lives in D1 (GET /accounting/module-status,
+    // worker.js isAccountingEnabled), and the Worker's ledger routes and accounting daily jobs check the
+    // same flag. Fetched together with the client record (branding, currency) rather than after it.
+    const [rec, status]=await Promise.all([
+      ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`),
+      acctFetch('/accounting/module-status',{method:'GET'}),
+    ]);
+    clientRecord={...rec, accounting_enabled:status.accounting_enabled};
     if(clientRecord.accounting_enabled!=='Yes'){
       document.getElementById('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>The Accounting module isn\'t enabled for your account.<br>Contact Leadvyne to turn it on.</div>';
       return;
