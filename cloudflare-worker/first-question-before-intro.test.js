@@ -13,11 +13,14 @@ test('specific first asks skip the canned intro', () => {
     'Where is your shop',
     'Is COD available',
     'ഈ സെറ്റിന്റെ വില എത്രയാണ്',
+    'We are travelling in January',
+    'Hi, 2 adults and 1 kid',
+    'Bali trip',
   ]) assert.equal(engineIsSpecificFirstQuestion(t), true, t);
 });
 
 test('greetings and the generic ad opener still get the intro', () => {
-  for (const t of ['Hi', 'Hy', 'Hello!', 'Good morning', 'Only English', 'Hello! Can I get more info on this?', '👋', ''])
+  for (const t of ['Hi', 'Hy', 'Hello!', 'Good morning', 'Only English', 'Hello! Can I get more info on this?', '👋', '', 'ok', 'Thank you', 'Hi, yes please'])
     assert.equal(engineIsSpecificFirstQuestion(t), false, t);
 });
 
