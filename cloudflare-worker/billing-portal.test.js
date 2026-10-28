@@ -172,3 +172,107 @@ describe('routes', ()=>{
     assert.equal(res.status, 401);
   });
 });
+
+describe('link a subscription by ID', ()=>{
+  const RZP_ID='sub_AbCdEfGhIjKlMn';
+  const STRIPE_ID='sub_1Tq7ChAbCdEfGhIjKlMnOp';
+  let patches, others, stripeLinked;
+  beforeEach(()=>{
+    env.RAZORPAY_KEY_ID='rzp_test_x'; env.RAZORPAY_KEY_SECRET='s';
+    Object.assign(client, {authentik_email:'o@x.in', billing_email:'accounts@x.in', billing_provider:'razorpay', stripe_subscription_id:'',
+      razorpay_subscription_id:'sub_abandoned', razorpay_status:'created', plan_status:'incomplete'});
+    patches=[]; others={}; stripeLinked=null;
+    deps.getClientById=async()=>({...client});
+    deps.findClientByField=async (env, field, value)=>others[`${field}:${value}`]||null;
+    deps.requireAdminSession=async req=>req.headers.get('X-Admin')==='yes';
+    deps.linkStripeSubscription=async (env, cid, sub)=>{ stripeLinked={cid, sub}; return {ok:true}; };
+    deps.rzpDeps=()=>({
+      getClientById:async()=>({...client}),
+      patchClientFields:async (env, cid, patch)=>{ patches.push(patch); Object.assign(client, patch); },
+      ensureClientColumns:async()=>{}, planTiers:PLAN_TIERS,
+      cancelStripeSubscription:async()=>({ok:true}),
+    });
+    rzpGet[`subscriptions/${RZP_ID}`]={id:RZP_ID, status:'active', plan_id:'plan_link', customer_id:'cust_1', current_end:1790000000, notes:{}};
+    rzpGet['customers/cust_1']={id:'cust_1', email:'Accounts@x.in'};
+    rzpGet['plans/plan_link']={id:'plan_link', period:'monthly', interval:1, item:{name:'Basic monthly', amount:199900, currency:'INR'}, notes:{}};
+  });
+
+  test('links a Razorpay subscription paid with the billing email', async()=>{
+    const r=await call('POST', '/billing/portal/link-subscription', {subscription_id:` ${RZP_ID} `});
+    assert.equal(r.status, 200);
+    assert.equal(r.data.gateway, 'razorpay');
+    assert.equal(client.razorpay_subscription_id, RZP_ID);
+    assert.equal(client.billing_provider, 'razorpay');
+    assert.equal(client.plan_status, 'active');
+    assert.equal(client.plan_tier, 'basic');
+    // The plan wasn't in rzp_plans: imported, but never offered in the picker.
+    const plan=db.prepare(`SELECT * FROM rzp_plans WHERE plan_id='plan_link'`).get();
+    assert.equal(plan.active, 0);
+    assert.equal(plan.plan_tier, 'basic');
+    const h=await call('GET', '/billing/portal/history');
+    assert.equal(h.data.events[0].title, 'Subscription linked to your account');
+    assert.equal(h.data.events[0].amount, 199900);
+    // Again → re-sync, one history row.
+    await call('POST', '/billing/portal/link-subscription', {subscription_id:RZP_ID});
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM billing_events WHERE event_type='subscription.linked'`).get().n, 1);
+  });
+
+  test('refuses a subscription paid with an email that isn\'t the account\'s', async()=>{
+    rzpGet['customers/cust_1']={id:'cust_1', email:'someone@else.com'};
+    const r=await call('POST', '/billing/portal/link-subscription', {subscription_id:RZP_ID});
+    assert.equal(r.status, 403);
+    assert.match(r.data.error, /so\*+@else\.com/);
+    assert.equal(patches.length, 0);
+  });
+
+  test('refuses one on another account or started for another client', async()=>{
+    others[`razorpay_subscription_id:${RZP_ID}`]={Id:99};
+    let r=await call('POST', '/billing/portal/link-subscription', {subscription_id:RZP_ID});
+    assert.equal(r.status, 409);
+    delete others[`razorpay_subscription_id:${RZP_ID}`];
+    rzpGet[`subscriptions/${RZP_ID}`].notes={client_id:'99'};
+    r=await call('POST', '/billing/portal/link-subscription', {subscription_id:RZP_ID});
+    assert.equal(r.status, 403);
+    assert.equal(patches.length, 0);
+  });
+
+  test('refuses an ended subscription and a malformed ID', async()=>{
+    rzpGet[`subscriptions/${RZP_ID}`].status='cancelled';
+    let r=await call('POST', '/billing/portal/link-subscription', {subscription_id:RZP_ID});
+    assert.equal(r.status, 400);
+    r=await call('POST', '/billing/portal/link-subscription', {subscription_id:'plan_123'});
+    assert.equal(r.status, 400);
+    r=await call('POST', '/billing/portal/link-subscription', {subscription_id:'sub_NotOnEitherGw1'});
+    assert.equal(r.status, 404);
+  });
+
+  test('links a Stripe subscription (payment link) by its customer email', async()=>{
+    const orig=deps.stripeFetch;
+    deps.stripeFetch=async (e, m, p, params)=>p===`subscriptions/${STRIPE_ID}`
+      ?{ok:true, data:{id:STRIPE_ID, status:'active', metadata:{}, customer:{id:'cus_9', email:'O@X.in'},
+        items:{data:[{price:{nickname:'Basic', unit_amount:99900, currency:'inr'}}]}}}
+      :orig(e, m, p, params);
+    const r=await call('POST', '/billing/portal/link-subscription', {subscription_id:STRIPE_ID});
+    assert.equal(r.status, 200);
+    assert.equal(r.data.gateway, 'stripe');
+    assert.equal(stripeLinked.sub.id, STRIPE_ID);
+    const row=db.prepare(`SELECT * FROM billing_events WHERE event_type='subscription.linked'`).get();
+    assert.equal(row.provider, 'stripe');
+    assert.equal(row.amount, 99900);
+  });
+
+  test('admin links for any client without the email check', async()=>{
+    rzpGet['customers/cust_1']={id:'cust_1', email:'someone@else.com'};
+    const admin=async (headers, body)=>{
+      const req=new Request('https://api/admin/billing/link-subscription', {method:'POST', headers:{'Content-Type':'application/json', ...headers}, body:JSON.stringify(body)});
+      const res=await billingPortalHandleRoute(req, env, deps, new URL(req.url));
+      return {status:res.status, data:await res.json()};
+    };
+    assert.equal((await admin({}, {client_id:7, subscription_id:RZP_ID})).status, 401);
+    assert.equal((await admin({'X-Admin':'yes'}, {subscription_id:RZP_ID})).status, 400);
+    const r=await admin({'X-Admin':'yes'}, {client_id:7, subscription_id:RZP_ID, gateway:'razorpay'});
+    assert.equal(r.status, 200);
+    assert.equal(client.razorpay_subscription_id, RZP_ID);
+    assert.match(db.prepare(`SELECT note FROM billing_events WHERE event_type='subscription.linked'`).get().note, /by admin/);
+  });
+});
