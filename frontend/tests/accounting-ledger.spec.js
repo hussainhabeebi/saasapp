@@ -34,7 +34,7 @@ const deps = {
   isAccountingEnabled: async () => true,
 };
 
-async function setup(page, { enabled = true, slowMs = 0 } = {}) {
+async function setup(page, { enabled = true, slowMs = 0, failSettings = 0 } = {}) {
   const db = new DatabaseSync(':memory:');
   for (const m of MIGRATIONS) db.exec(readFileSync(path.resolve(__dirname, `../../cloudflare-worker/migrations/${m}.sql`), 'utf8'));
   const env = { DB: d1(db) };
@@ -52,6 +52,8 @@ async function setup(page, { enabled = true, slowMs = 0 } = {}) {
     if (url.startsWith('file://')) return route.continue();
     if (!url.startsWith(WORKER)) return route.abort();
     const u = new URL(url), p = u.pathname;
+    // failSettings: the first N ledger settings calls fail, as a dropped mobile request would.
+    if (p === '/accounting/ledger/settings' && failSettings > 0) { failSettings--; return route.fulfill({ status: 502, json: { error: 'Bad gateway' } }); }
     if (p.startsWith('/accounting/ledger/') || p.startsWith('/accounting/portal/')) {
       const r = new Request(url, { method: req.method(), headers: req.headers(), body: ['GET', 'HEAD'].includes(req.method()) ? undefined : req.postData() });
       const res = await accLedgerHandleRoute(r, env, deps, u);
@@ -59,7 +61,9 @@ async function setup(page, { enabled = true, slowMs = 0 } = {}) {
     }
     // slowMs: hold back the CRM leads list and the Documents list, the two biggest loads.
     if (slowMs && ((p.includes('/records') && !p.includes('/records/7')) || p === '/accounting/documents')) await new Promise((r) => setTimeout(r, slowMs));
-    if (p.includes('/records/7')) return route.fulfill({ json: { Id: 7, client_name: 'Acme Digital', deal_currency: 'INR', accounting_enabled: enabled ? 'Yes' : 'No' } });
+    // The switch comes from D1 via the Worker now — the NocoDB record no longer carries it.
+    if (p === '/accounting/module-status') return route.fulfill({ json: { accounting_enabled: enabled ? 'Yes' : 'No' } });
+    if (p.includes('/records/7')) return route.fulfill({ json: { Id: 7, client_name: 'Acme Digital', deal_currency: 'INR' } });
     if (p.includes('/records')) return route.fulfill({ json: { list: [] } });
     if (p === '/accounting/documents') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_documents`).all().map((r) => ({ ...r, Id: r.id })) } });
     if (p === '/accounting/expenses') return route.fulfill({ json: { list: db.prepare(`SELECT * FROM accounting_expenses`).all().map((r) => ({ ...r, Id: r.id })) } });
@@ -225,5 +229,19 @@ test('the Overview shows without waiting for the slow leads and documents lists'
   // …and Documents fills in once its list does arrive.
   await page.click('.tab[data-tab="documents"]');
   await expect(page.locator('#tabDocuments')).toContainText('Beta Foods', { timeout: 15000 });
+  expect(errors).toEqual([]);
+});
+
+test('phone: a failed settings call shows Retry instead of a blank page, and Retry loads Payroll', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const { errors } = await setup(page, { failSettings: 2 }); // the Overview's call and Payroll's first call both fail
+  await expect(page.locator('#tabOverview button', { hasText: 'Retry' })).toBeVisible();
+  await page.click('.tab[data-tab="payroll"]');
+  const retry = page.locator('#tabPayroll button', { hasText: 'Retry' });
+  await expect(retry).toBeVisible();
+  await expect(page.locator('#tabPayroll')).toContainText('Bad gateway');
+  await retry.click();
+  await expect(page.locator('#tabPayroll')).toContainText('Payroll runs');
+  await expect(page.locator('#tabPayroll')).toContainText('Employees');
   expect(errors).toEqual([]);
 });

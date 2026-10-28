@@ -1,50 +1,80 @@
-// Admin → Edit client → 💰 Accounting module (worker.js handleAdminAccountingToggle): the flag must
-// really be stored before admin is told it saved — NocoDB can silently ignore a PATCH to a column
-// that was created a moment earlier, which is exactly what the first-ever enable does.
+// Admin → Edit client → 💰 Accounting module: the switch is stored in D1 (client_modules) and read
+// back by GET /accounting/module-status (dashboard tab + accounting.html) and the ledger routes. A
+// client switched on under the old NocoDB column (clients.accounting_enabled) stays on — the first
+// read copies that value into D1. Each test uses its own client id: the Worker memoises the flag
+// per isolate for a short while.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import worker from './worker.js';
 
 const CLIENTS='mxl33bg4wi70fqj';
-const env={SESSION_SIGNING_KEY:'s', NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t'};
-async function adminToken(secret){
-  const body=btoa(JSON.stringify({role:'admin', exp:Math.floor(Date.now()/1000)+3600}));
+function d1(db){
+  const prepare=(sql)=>{ let args=[]; const st={
+    bind(...a){ args=a.map(v=>v===undefined?null:v); return st; },
+    async run(){ const r=db.prepare(sql).run(...args); return {meta:{changes:Number(r.changes), last_row_id:Number(r.lastInsertRowid)}}; },
+    async all(){ return {results:db.prepare(sql).all(...args)}; },
+    async first(){ return db.prepare(sql).get(...args)||null; } }; return st; };
+  return {prepare, async batch(stmts){ const out=[]; for(const s of stmts) out.push(await s.run()); return out; }};
+}
+async function sign(secret, payload){
+  const body=btoa(JSON.stringify({...payload, exp:Math.floor(Date.now()/1000)+3600}));
   const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
   const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
   return `${body}.${btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}`;
 }
-async function toggle({ignorePatches}, enabled='Yes'){
-  const record={Id:7, client_name:'Acme'}; let columns=[{title:'client_name'}], patches=0, created=[];
-  const realFetch=globalThis.fetch, realSetTimeout=globalThis.setTimeout;
-  globalThis.setTimeout=(fn)=>realSetTimeout(fn, 0);
+// records: NocoDB client rows by id (the legacy column). Every NocoDB write is counted — the toggle
+// must not depend on NocoDB any more.
+async function run(records, fn){
+  const db=new DatabaseSync(':memory:');
+  const env={SESSION_SIGNING_KEY:'s', NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t', DB:d1(db)};
+  const nc={writes:0};
+  const realFetch=globalThis.fetch;
   globalThis.fetch=async (url, opts={})=>{
     const u=String(url);
-    if(u.includes(`/api/v2/meta/tables/${CLIENTS}/fields`)){ const b=JSON.parse(opts.body); created.push(b.title); columns.push({title:b.title}); return Response.json({}); }
-    if(u.includes(`/api/v2/meta/tables/${CLIENTS}`)) return Response.json({columns});
-    if(u.includes(`/tables/${CLIENTS}/records`) && opts.method==='PATCH'){ patches++; if(patches>ignorePatches) Object.assign(record, JSON.parse(opts.body)); return Response.json({Id:7}); }
-    if(u.includes(`/tables/${CLIENTS}/records/7`)) return Response.json({...record});
+    if(opts.method && opts.method!=='GET'){ nc.writes++; return Response.json({}); }
+    const m=u.match(new RegExp(`/tables/${CLIENTS}/records/(\\d+)`));
+    if(m) return records[m[1]]?Response.json(records[m[1]]):new Response('{}', {status:404});
     return Response.json({list:[]});
   };
-  try{
-    const r=await worker.fetch(new Request('https://worker.test/admin/accounting-module', {method:'POST',
-      headers:{Authorization:`Bearer ${await adminToken(env.SESSION_SIGNING_KEY)}`, 'Content-Type':'application/json'}, body:JSON.stringify({client_id:7, enabled})}), env, {waitUntil(){}});
-    return {status:r.status, data:await r.json(), record, patches, created};
-  }finally{ globalThis.fetch=realFetch; globalThis.setTimeout=realSetTimeout; }
+  const call=async (path, {method='GET', token, body}={})=>{
+    const r=await worker.fetch(new Request('https://worker.test'+path, {method, headers:{...(token?{Authorization:`Bearer ${token}`}:{}), 'Content-Type':'application/json'}, ...(body?{body:JSON.stringify(body)}:{})}), env, {waitUntil(){}});
+    return {status:r.status, data:await r.json()};
+  };
+  try{ return await fn({env, db, nc, call, admin:await sign(env.SESSION_SIGNING_KEY, {role:'admin'}), client:cid=>sign(env.SESSION_SIGNING_KEY, {cid})}); }
+  finally{ globalThis.fetch=realFetch; }
 }
 
-test('first enable creates the column and retries until the value is really stored', async ()=>{
-  const r=await toggle({ignorePatches:1});
-  assert.equal(r.status, 200, JSON.stringify(r.data));
-  assert.deepEqual(r.created, ['accounting_enabled']);
-  assert.equal(r.record.accounting_enabled, 'Yes');
-  assert.equal(r.patches, 2);
+test('admin switches Accounting on and off in D1 — no NocoDB column or write needed', async ()=>{
+  await run({101:{Id:101, client_name:'Acme'}}, async ({db, nc, call, admin, client})=>{
+    const tok=await client(101);
+    assert.equal((await call('/accounting/module-status', {token:tok})).data.accounting_enabled, 'No');
+    const on=await call('/admin/accounting-module', {method:'POST', token:admin, body:{client_id:101, enabled:'Yes'}});
+    assert.equal(on.status, 200, JSON.stringify(on.data));
+    assert.equal(db.prepare(`SELECT accounting_enabled FROM client_modules WHERE client_id=101`).get().accounting_enabled, 1);
+    assert.equal((await call('/accounting/module-status', {token:tok})).data.accounting_enabled, 'Yes');
+    assert.deepEqual((await call('/admin/accounting-module', {token:admin})).data.modules, [{client_id:101, accounting_enabled:'Yes'}]);
+    await call('/admin/accounting-module', {method:'POST', token:admin, body:{client_id:101, enabled:'No'}});
+    assert.equal((await call('/accounting/module-status', {token:tok})).data.accounting_enabled, 'No');
+    assert.equal(nc.writes, 0);
+  });
 });
-test('a write that never sticks is reported as a failure, not "saved"', async ()=>{
-  const r=await toggle({ignorePatches:99});
-  assert.notEqual(r.status, 200);
-  assert.match(r.data.error, /accounting_enabled/);
+test('a client switched on under the old NocoDB column stays on and is copied into D1', async ()=>{
+  await run({102:{Id:102, client_name:'Aiingo', accounting_enabled:'Yes'}}, async ({db, call, client})=>{
+    assert.equal((await call('/accounting/module-status', {token:await client(102)})).data.accounting_enabled, 'Yes');
+    assert.deepEqual({...db.prepare(`SELECT accounting_enabled, updated_by FROM client_modules WHERE client_id=102`).get()}, {accounting_enabled:1, updated_by:'migrated-from-nocodb'});
+  });
 });
-test('needs an admin session', async ()=>{
-  const r=await worker.fetch(new Request('https://worker.test/admin/accounting-module', {method:'POST', body:'{}'}), env, {waitUntil(){}});
-  assert.equal(r.status, 401);
+test('the D1 value wins over the old column once admin has set it', async ()=>{
+  await run({103:{Id:103, client_name:'Beta', accounting_enabled:'Yes'}}, async ({call, admin, client})=>{
+    await call('/admin/accounting-module', {method:'POST', token:admin, body:{client_id:103, enabled:'No'}});
+    assert.equal((await call('/accounting/module-status', {token:await client(103)})).data.accounting_enabled, 'No');
+  });
+});
+test('the switch and the list need an admin session; the status needs a client session', async ()=>{
+  await run({}, async ({call, client})=>{
+    assert.equal((await call('/admin/accounting-module', {method:'POST', body:{client_id:1, enabled:'Yes'}})).status, 401);
+    assert.equal((await call('/admin/accounting-module', {token:await client(104)})).status, 401);
+    assert.equal((await call('/accounting/module-status')).status, 401);
+  });
 });

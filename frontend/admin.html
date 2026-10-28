@@ -885,11 +885,17 @@ async function loadClients() {
   renderSkeletons(6);
   try {
     const list = [];
+    // The Accounting switch lives in D1, not on the NocoDB record — fetched alongside the client pages.
+    const modulesReq = fetch(`${CONFIG.WORKER_BASE}/admin/accounting-module`, { headers: { 'Authorization': 'Bearer ' + adminSessionToken } })
+      .then(r => r.ok ? r.json() : { modules: [] }).catch(() => ({ modules: [] }));
     for (let offset = 0; offset < 5000; offset += 200) {
       const data = await apiGet(`${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=200&offset=${offset}`, cfg.token);
       list.push(...(data.list || []));
       if (data.pageInfo?.isLastPage !== false || !(data.list || []).length) break;
     }
+    // A client with no D1 row yet keeps its old NocoDB value (the Worker copies it over on first use).
+    const { modules } = await modulesReq;
+    for (const m of modules || []) { const c = list.find(x => x.Id == m.client_id); if (c) c.accounting_enabled = m.accounting_enabled; }
     allClients = list;
     countBadge.textContent = `${allClients.length} client${allClients.length !== 1 ? 's' : ''}`;
     renderClientsView();

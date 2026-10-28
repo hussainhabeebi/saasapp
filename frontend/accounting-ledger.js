@@ -109,10 +109,14 @@ function form({title, fields, submit='Save', onSave, wide, extraHtml}){
   return ov;
 }
 
+// One shared request: every page needs these settings first, and several can open at once (the
+// Overview at start-up, then whichever tab is tapped) — they all wait on the same call. A failed
+// call is forgotten so the next page (or Retry) asks again.
+let metaReq=null;
 async function loadMeta(force){
   if(L.meta && !force) return L.meta;
-  L.meta=await api('settings');
-  return L.meta;
+  if(!metaReq || force) metaReq=api('settings').then(m=>{ L.meta=m; return m; }, e=>{ metaReq=null; throw e; });
+  return metaReq;
 }
 
 /* Journal line editor shared by manual + recurring journals */
@@ -157,7 +161,7 @@ async function renderOverview(root){
         options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{y:{ticks:{callback:v=>Number(v).toLocaleString('en-IN')}}}}});
     }
     renderRecurringCard();
-  }catch(e){ root.innerHTML=errBox(e); }
+  }catch(e){ root.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message||e)}<br><button class="save-btn sec" style="margin-top:10px" onclick="AccLedger.refresh('overview')">Retry</button></div>`; L.loaded.overview=false; }
 }
 // Recurring billing (Financial Planning's Expected Funds) isn't invoiced, so it isn't in the
 // receivables above — show this month's position here instead of on a second dashboard. Called
@@ -839,7 +843,18 @@ Object.assign(L, {download});
 
 /* ── Pages (left sidebar on PC, tab strip on phones) → sections. Every screen lives in exactly one
    place: legacy panels are mounted with L.legacy(), ledger views render fresh. ── */
-const page=(key, items)=>async root=>{ await loadMeta(); subnav(root, key, items.map(([k,l])=>[k,l]), (k,b)=>items.find(i=>i[0]===k)[2](b)); };
+// A spinner goes up straight away; if the settings call fails the page says so with a Retry
+// button instead of staying blank (it used to wait silently and never recover).
+const page=(key, items)=>async root=>{
+  root.innerHTML=spinner;
+  try{ await loadMeta(); }
+  catch(e){
+    root.innerHTML=`<div class="empty-state">⚠️ ${esc(e.message||e)}<br><button class="save-btn sec" style="margin-top:10px" onclick="AccLedger.refresh('${key}')">Retry</button></div>`;
+    L.loaded[key]=false;
+    return;
+  }
+  subnav(root, key, items.map(([k,l])=>[k,l]), (k,b)=>items.find(i=>i[0]===k)[2](b));
+};
 const PAGES={
   subscriptions:page('subscriptions', [['metrics','📊 SaaS Metrics',subsMetrics],['subs','🔁 Subscriptions',subsList],['plans','📦 Plans & Coupons',subsPlans],['usage','📈 Usage',subsUsage],['revrec','🗓️ Revenue Recognition',subsRevrec],
     ['fpcust','👥 Recurring Customers',L.legacy('fpSubCustomers')],['fpdues','💵 Expected Funds',L.legacy('fpSubDues')]]),

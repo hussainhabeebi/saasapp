@@ -34739,7 +34739,7 @@ const META_ADS_REPORT_DEPS={
   leadsTable:DEFAULT_LEADS_TABLE,
   metaCreds:c=>resolveMetaCredentials(c, {})||(c?.wa_token&&c?.wa_phone_id?{waba_id:c.waba_id, wa_phone_id:c.wa_phone_id, wa_token:c.wa_token}:null),
   sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
-  isAccountingEnabled:c=>isAccountingEnabledRecord(c),
+  isAccountingEnabled:(c, env)=>isAccountingEnabled(env, c?.Id, c),
   onExpenseCreated:(env, cid, expenseId)=>accLedgerOnExpenseCreated(env, cid, expenseId, 'ads-roi'),
   logTemplateSend:(env, cid, info)=>logWaTemplateSend(env, cid, 'ads_summary', info),
 };
@@ -34758,27 +34758,72 @@ const CEO_DEPS={
 };
 // POST /admin/ceo-bot {client_id, enabled:'Yes'|'No'} — super-admin only. ceo_bot_enabled is in
 // PLAN_MANAGED_FIELDS, so this is the only way it can be switched on.
-// Accounting module on/off per client — Leadvyne admin only (Admin → Edit client). Same shape as the
-// CEO Bot toggle below. Off by default: the dashboard tab, accounting.html, the /accounting/ledger/*
-// API and the accounting daily jobs (ledger billing/reminders, Financial Planning dues/reminders)
-// all require accounting_enabled === 'Yes'.
+// Accounting module on/off per client — Leadvyne admin only (Admin → Edit client). Off by default:
+// the dashboard tab, accounting.html, the /accounting/ledger/* API and the accounting daily jobs
+// (ledger billing/reminders, Financial Planning dues/reminders) all check isAccountingEnabled().
+// The switch lives in D1 (client_modules, migrations/0124) — it used to be a NocoDB column, which
+// needed adding by hand and could silently drop writes. A client with no D1 row yet falls back to
+// that legacy column once and the value is copied into D1, so clients already switched on stay on.
 function isAccountingEnabledRecord(c){ return String(c?.accounting_enabled||'')==='Yes'; }
-async function isAccountingEnabled(env, clientId){
-  try{ return isAccountingEnabledRecord(await getClientById(env, clientId)); }catch(e){ return false; }
+const CLIENT_MODULES_DDL=`CREATE TABLE IF NOT EXISTS client_modules (client_id INTEGER PRIMARY KEY, accounting_enabled INTEGER NOT NULL DEFAULT 0, updated_at TEXT, updated_by TEXT)`;
+const _clientModulesReady=new WeakMap();
+function ensureClientModules(env){
+  let p=_clientModulesReady.get(env.DB);
+  if(!p){ p=env.DB.prepare(CLIENT_MODULES_DDL).run().catch(e=>{ _clientModulesReady.delete(env.DB); throw e; }); _clientModulesReady.set(env.DB, p); }
+  return p;
+}
+// Checked on every accounting request, so a short per-isolate memo saves a D1 round trip each time;
+// the admin toggle clears it, and another isolate picks a change up within ACC_FLAG_TTL_MS.
+const ACC_FLAG_TTL_MS=30000;
+const _accFlagMemo=new Map();
+async function isAccountingEnabled(env, clientId, record){
+  const cid=Number(clientId);
+  if(!cid) return false;
+  const hit=_accFlagMemo.get(cid);
+  if(hit && Date.now()-hit.at<ACC_FLAG_TTL_MS) return hit.on;
+  let on=null;
+  if(env?.DB){
+    try{ const row=await env.DB.prepare(`SELECT accounting_enabled FROM client_modules WHERE client_id=?`).bind(cid).first(); if(row) on=Number(row.accounting_enabled)===1; }
+    catch(e){} // table not created yet — use the legacy column below
+  }
+  if(on===null){
+    let c=record;
+    if(!c){ try{ c=await getClientById(env, cid); }catch(e){ c=null; } }
+    if(!c) return false; // can't tell — don't memoise or migrate a guess
+    on=isAccountingEnabledRecord(c);
+    if(env?.DB){
+      try{ await ensureClientModules(env); await env.DB.prepare(`INSERT OR IGNORE INTO client_modules (client_id, accounting_enabled, updated_at, updated_by) VALUES (?,?,?,?)`).bind(cid, on?1:0, new Date().toISOString(), 'migrated-from-nocodb').run(); }catch(e){}
+    }
+  }
+  _accFlagMemo.set(cid, {on, at:Date.now()});
+  return on;
 }
 async function handleAdminAccountingToggle(request, env){
   if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
   const {client_id, enabled}=await request.json().catch(()=>({}));
   const cid=Number(client_id);
   if(!cid) return json({error:'client_id required'}, 400);
-  const val=enabled==='Yes'?'Yes':'No';
-  await ensureClientColumns(env, ['accounting_enabled']);
-  // Verified write: the very first enable creates the column, and NocoDB can silently ignore a
-  // PATCH to a column created moments earlier — re-read and retry instead of reporting a save
-  // that never happened (which left the module hidden while admin showed it as enabled).
-  const r=await ncPatchVerified(env, cid, {accounting_enabled:val});
-  if(!r.ok) return json({error:r.data?.error||`Save failed: HTTP ${r.status}`}, r.status||502);
-  return json({ok:true, accounting_enabled:val});
+  if(!env.DB) return json({error:'Database not configured'}, 500);
+  const on=enabled==='Yes';
+  await ensureClientModules(env);
+  await env.DB.prepare(`INSERT INTO client_modules (client_id, accounting_enabled, updated_at, updated_by) VALUES (?,?,?,'admin')
+    ON CONFLICT(client_id) DO UPDATE SET accounting_enabled=excluded.accounting_enabled, updated_at=excluded.updated_at, updated_by=excluded.updated_by`).bind(cid, on?1:0, new Date().toISOString()).run();
+  _accFlagMemo.delete(cid);
+  return json({ok:true, accounting_enabled:on?'Yes':'No'});
+}
+// GET /admin/accounting-module — which clients have Accounting switched on (admin's client list and
+// edit form). Includes clients still on the legacy NocoDB column, which admin.html already has.
+async function handleAdminAccountingList(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  if(!env.DB) return json({modules:[]});
+  try{ const {results}=await env.DB.prepare(`SELECT client_id, accounting_enabled FROM client_modules`).all(); return json({modules:(results||[]).map(r=>({client_id:r.client_id, accounting_enabled:Number(r.accounting_enabled)===1?'Yes':'No'}))}); }
+  catch(e){ return json({modules:[]}); }
+}
+// GET /accounting/module-status — is Accounting on for the signed-in client (dashboard tab + accounting.html gate).
+async function handleAccountingModuleStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({accounting_enabled:await isAccountingEnabled(env, payload.cid)?'Yes':'No'});
 }
 async function handleAdminCeoBotToggle(request, env){
   if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
@@ -38779,6 +38824,8 @@ export default {
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/ceo-bot' && request.method==='POST'){ res=await handleAdminCeoBotToggle(request, env); }
       else if(url.pathname==='/admin/accounting-module' && request.method==='POST'){ res=await handleAdminAccountingToggle(request, env); }
+      else if(url.pathname==='/admin/accounting-module' && request.method==='GET'){ res=await handleAdminAccountingList(request, env); }
+      else if(url.pathname==='/accounting/module-status' && request.method==='GET'){ res=await handleAccountingModuleStatus(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
       else if(url.pathname==='/b2b/stock' && request.method==='GET'){ res=await handleB2bStockGet(request, env); }

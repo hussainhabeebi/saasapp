@@ -21,7 +21,7 @@
 // This file imports nothing from worker.js; worker.js passes helpers in as `deps` (META_ADS_REPORT_DEPS):
 // { json, requireSession, getClientById, isClientOwner, ncFetch, ensureLeadsColumns, leadsTable,
 //   parseTeamWhatsapp, metaCreds(c)→{wa_phone_id,wa_token}|null, sendEmail(env,to,subject,html),
-//   isAccountingEnabled(c), onExpenseCreated(env,cid,expenseId), logTemplateSend(env,cid,info),
+//   isAccountingEnabled(c, env)→bool|Promise<bool>, onExpenseCreated(env,cid,expenseId), logTemplateSend(env,cid,info),
 //   reportOpsError }
 
 const GRAPH='https://graph.facebook.com/v23.0';
@@ -648,7 +648,7 @@ export async function marSendSummary(env, deps, c, st, day, {force=false}={}){
 export async function marPostExpenses(env, deps, c, st, {today}={}){
   const cid=Number(c.Id);
   const cfg=marSettings(st?.config_json);
-  if(!cfg.accounting_post || !deps.isAccountingEnabled(c)) return {skipped:'off'};
+  if(!cfg.accounting_post || !await deps.isAccountingEnabled(c, env)) return {skipped:'off'};
   today=today||marDay(Date.now(), Number(st?.tz_offset_min)||0);
   const months=[today.slice(0,7)];
   if(Number(today.slice(8,10))<=5) months.unshift(marAddDays(today.slice(0,7)+'-01', -1).slice(0,7)); // finalise last month
@@ -980,7 +980,7 @@ export async function marHandleRoute(request, env, deps, url){
     const {results:aud}=await env.DB.prepare(`SELECT key, audience_id, lookalike_id, size, last_run_at, last_error FROM meta_ads_audiences WHERE client_id=?`).bind(cid).all();
     const {results:acts}=await env.DB.prepare(`SELECT id, at, actor, target_type, target_id, target_name, action, before_json, after_json, reason, status, error, undone_at FROM meta_ads_actions WHERE client_id=? ORDER BY id DESC LIMIT 25`).bind(cid).all();
     return json({audiences:MAR_AUDIENCES.map(d=>({...d, ...((aud||[]).find(a=>a.key===d.key)||{})})), actions:acts||[],
-      config:marSettings(st?.config_json), defaults:MAR_DEFAULTS, can_edit:owner, accounting_enabled:!!deps.isAccountingEnabled(c),
+      config:marSettings(st?.config_json), defaults:MAR_DEFAULTS, can_edit:owner, accounting_enabled:!!await deps.isAccountingEnabled(c, env),
       whatsapp_users:Object.keys(phones), whatsapp_connected:!!deps.metaCreds(c)?.wa_token, sends:sends||[], expense_posts:posts||[], ...stateOut(st)});
   }
   if(path==='/settings' && method==='POST'){
@@ -988,7 +988,7 @@ export async function marHandleRoute(request, env, deps, url){
     const body=await request.json().catch(()=>({}));
     await ensureState(env, cid);
     const cfg=marSettings({...marSettings((await getState(env, cid))?.config_json), ...(body.config||{})});
-    if(cfg.accounting_post && !deps.isAccountingEnabled(c)) return json({error:'The Accounting module is off for this account — ask LeadVyne to switch it on first.'}, 400);
+    if(cfg.accounting_post && !await deps.isAccountingEnabled(c, env)) return json({error:'The Accounting module is off for this account — ask LeadVyne to switch it on first.'}, 400);
     await patchState(env, cid, {config_json:JSON.stringify(cfg)});
     return json({ok:true, config:cfg});
   }

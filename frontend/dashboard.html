@@ -7089,8 +7089,8 @@ function renderB2b(){
 
 // Same pattern as renderB2b above — accounting.html needs the session token too, for the same
 // reason (reads/writes Leads through the bearer-token-gated /nocodb/* passthrough).
-// Accounting is switched on per client by the Leadvyne admin (clients.accounting_enabled) — the
-// page never loads otherwise, even if reached by URL/hash instead of the (hidden) tab.
+// Accounting is switched on per client by the Leadvyne admin (D1 client_modules, folded into
+// clientRecord.accounting_enabled by loadAccountingModuleStatus) — the page never loads otherwise, even if reached by URL/hash instead of the (hidden) tab.
 function renderAccounting(){
   const frame=$id('accountingFrame');
   if(clientRecord?.accounting_enabled!=='Yes'){
@@ -21384,6 +21384,21 @@ const _populateAccountingTab=setupFeatureTabToggle({field:'feat_accounting_enabl
 function updateFeatureTabVisibility(){
   _populateHandoverEnabled();
   _populateCampaignsTab(); _populateTeamTab(); _populateReportsTab(); _populateKbTab(); _populateAccountingTab();
+  loadAccountingModuleStatus();
+}
+// The Leadvyne admin's Accounting switch lives in D1 (worker.js isAccountingEnabled), not on the
+// client record — fetch it once per session and fold it into clientRecord.accounting_enabled, which
+// the tab toggle above and renderAccounting() read.
+let _accModuleStatusLoaded=false;
+function loadAccountingModuleStatus(){
+  if(_accModuleStatusLoaded || !sessionToken) return;
+  _accModuleStatusLoaded=true;
+  fetch(`${WORKER_BASE}/accounting/module-status`,{headers:ncAuthHeaders()}).then(r=>r.ok?r.json():null).then(d=>{
+    if(!d?.accounting_enabled || !clientRecord) return;
+    clientRecord.accounting_enabled=d.accounting_enabled;
+    _populateAccountingTab();
+    if(_curPage==='accounting') renderAccounting();
+  }).catch(()=>{ _accModuleStatusLoaded=false; });
 }
 
 // Populates the whole "🧩 Modules" page — both cards. The Industry Modules card reuses the exact
