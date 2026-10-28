@@ -21,7 +21,7 @@ const REPORT = { ok: true, full_access: true, me: 'boss@x.com', total_orders: 3,
 ] };
 const row = (page, id) => page.locator('#ordersTbody tr').filter({ has: page.locator('td', { hasText: new RegExp('^#' + id + '$') }) });
 
-async function boot(page, { style = 'baby_care', token = 'tok', insights = null, mode } = {}) {
+async function boot(page, { style = 'baby_care', token = 'tok', insights = null, mode, team = null, assignFail = null } = {}) {
   const calls = [];
   await page.route('**/*', async (route) => {
     const req = route.request();
@@ -33,12 +33,13 @@ async function boot(page, { style = 'baby_care', token = 'tok', insights = null,
       calls.push({ path: u.pathname, method: req.method(), body, auth: req.headers()['authorization'] || '' });
       if (u.pathname === '/ecom/client' && req.method() === 'GET') return route.fulfill({ json: { Id: 7, bot_config: JSON.stringify({ ecom_communication_style: style, ...(mode ? { ecom_order_assign_mode: mode } : {}) }), ecom_table_ids: JSON.stringify({ orders: 'tbl' }) } });
       if (u.pathname === '/ecom/client') return route.fulfill({ json: {} });
-      if (u.pathname === '/ecom/orders/assign') return route.fulfill({ json: { ok: true, assigned: body.ids.length } });
+      if (u.pathname === '/ecom/orders/assign') return assignFail ? route.fulfill({ status: 502, json: { error: assignFail } }) : route.fulfill({ json: { ok: true, assigned: body.ids.length } });
+      if (u.pathname === '/ecom/orders/team') return route.fulfill(team || { json: { ok: true, team: TEAM, me: 'boss@x.com', assign_mode: mode || 'auto' } });
       if (u.pathname === '/ecom/orders/auto-assign') return route.fulfill({ json: { ok: true, assigned: 4, no_owner: 2 } });
       if (u.pathname === '/ecom/orders' && req.method() === 'GET') return route.fulfill({ json: { list: ORDERS.map(o => ({ ...o })) } });
       if (u.pathname === '/ecom/orders') return route.fulfill({ json: { Id: 99 } });
       if (u.pathname === '/ecom/orders/staff-report') return route.fulfill({ json: REPORT });
-      if (u.pathname === '/ecom/orders/insights') return route.fulfill({ json: insights || { ok: true, leads: [], warm_leads: [], team: TEAM } });
+      if (u.pathname === '/ecom/orders/insights') return route.fulfill({ status: insights?.ok === false ? 502 : 200, json: insights || { ok: true, leads: [], warm_leads: [], team: TEAM } });
       return route.fulfill({ json: { list: [] } });
     }
     return route.abort();
@@ -98,8 +99,8 @@ test('other ecom styles: no Assigned To column', async ({ page }) => {
 
 test('choose Auto or Manual assignment for new orders', async ({ page }) => {
   const calls = await boot(page);
-  await expect(page.locator('#orderAssignMode')).toHaveValue('auto');
-  await page.locator('#orderAssignMode').selectOption('manual');
+  await expect(page.locator('input[name="orderAssignMode"][value="auto"]')).toBeChecked();
+  await page.locator('input[name="orderAssignMode"][value="manual"]').check();
   await expect.poll(() => calls.find(c => c.path === '/ecom/client' && c.method === 'PATCH')?.body?.bot_config).toBeTruthy();
   const cfg = JSON.parse(calls.find(c => c.path === '/ecom/client' && c.method === 'PATCH').body.bot_config);
   expect(cfg).toMatchObject({ ecom_order_assign_mode: 'manual', ecom_communication_style: 'baby_care' });
@@ -108,13 +109,13 @@ test('choose Auto or Manual assignment for new orders', async ({ page }) => {
 
 test('saved Manual mode is shown', async ({ page }) => {
   await boot(page, { mode: 'manual' });
-  await expect(page.locator('#orderAssignMode')).toHaveValue('manual');
+  await expect(page.locator('input[name="orderAssignMode"][value="manual"]')).toBeChecked();
 });
 
 test('auto-assign existing orders from the lead owner', async ({ page }) => {
   const calls = await boot(page);
-  await page.getByRole('button', { name: '⚡ Auto-assign from lead owner' }).click();
-  await expect(page.locator('#orderAssignMsg')).toContainText('4 orders assigned to the lead owner · 2 with no lead owner');
+  await page.getByRole('button', { name: '⚡ Auto-assign to lead owners' }).click();
+  await expect(page.locator('#orderAssignMsg')).toContainText('4 orders assigned to their lead owner · 2 customers have no lead owner');
   const c = calls.find(c => c.path === '/ecom/orders/auto-assign');
   expect(c.body).toEqual({ client_id: '7' });
   expect(c.auth).toBe('Bearer tok');
@@ -125,7 +126,8 @@ test('tick orders and assign them to one person', async ({ page }) => {
   await expect(page.locator('#bulkAssignBtn')).toBeDisabled();
   await row(page, 'ORD-1').locator('input[type=checkbox]').check();
   await row(page, 'ORD-2').locator('input[type=checkbox]').check();
-  await expect(page.locator('#bulkAssignBtn')).toHaveText('Assign 2 selected');
+  await expect(page.locator('#bulkAssignBtn')).toHaveText('Assign 2 orders');
+  await expect(page.locator('#assignHow')).toContainText('2 orders ticked');
   await page.locator('#bulkAssignTo').selectOption('b@x.com');
   await page.locator('#bulkAssignBtn').click();
   await expect(page.locator('#orderAssignMsg')).toContainText('2 orders assigned to Bilal');
@@ -133,8 +135,44 @@ test('tick orders and assign them to one person', async ({ page }) => {
 });
 
 test('a failed lead read still leaves the assignment picker working', async ({ page }) => {
-  await boot(page, { insights: { ok: true, leads: [], warm_leads: [], team: TEAM, leads_error: 'Could not read leads — try ↻ in a minute' } });
-  await expect(page.locator('#warmLeadsTbody')).toContainText('Could not read leads');
+  await boot(page, { insights: { ok: false, error: 'Could not read leads' } });
+  await expect(page.locator('#warmLeadsTbody')).toContainText('unavailable');
   await expect(row(page, 'ORD-2').locator('.assign-sel')).toBeVisible();
   await expect(row(page, 'ORD-2').locator('.assign-sel option')).toHaveCount(4);
+});
+
+test('the panel shows who has how many orders; chips filter; unassigned rows invite "＋ Assign…"', async ({ page }) => {
+  await boot(page);
+  const chips = page.locator('#assignChips');
+  await expect(chips.locator('[data-assignee=""] b')).toHaveText('1');
+  await expect(chips.locator('[data-assignee="a@x.com"]')).toContainText('Anu');
+  await expect(row(page, 'ORD-2').locator('.assign-sel option:checked')).toHaveText('＋ Assign…');
+  await expect(row(page, 'ORD-1').locator('.assign-sel option').first()).toHaveText('✕ Remove assignment');
+  await chips.locator('[data-assignee=""]').click();
+  await expect(page.locator('#ordersTbody tr')).toHaveCount(1);
+  await expect(row(page, 'ORD-2')).toBeVisible();
+  await page.getByRole('button', { name: '✕ Show all' }).click();
+  await expect(page.locator('#ordersTbody tr')).toHaveCount(3);
+});
+
+test('one-click assign on a row says what happened', async ({ page }) => {
+  await boot(page);
+  await row(page, 'ORD-2').locator('.assign-sel').selectOption('b@x.com');
+  await expect(page.locator('#orderAssignMsg')).toContainText('#ORD-2 assigned to Bilal');
+  await expect(page.locator('#assignChips [data-assignee="b@x.com"] b')).toHaveText('2');
+});
+
+test('assign needs a name, and a server refusal is shown in full', async ({ page }) => {
+  await boot(page, { assignFail: 'Could not save — the orders table is missing the column(s) assigned_to' });
+  await row(page, 'ORD-2').locator('input[type=checkbox]').check();
+  await page.locator('#bulkAssignBtn').click();
+  await expect(page.locator('#orderAssignMsg')).toContainText('Choose who to assign them to');
+  await page.locator('#bulkAssignTo').selectOption('b@x.com');
+  await page.locator('#bulkAssignBtn').click();
+  await expect(page.locator('#orderAssignMsg')).toContainText('missing the column(s) assigned_to');
+});
+
+test('missing columns on the orders table are explained up front', async ({ page }) => {
+  await boot(page, { team: { json: { ok: true, team: TEAM, me: 'boss@x.com', assign_mode: 'auto', columns_missing: ['assigned_to', 'assigned_to_name'] } } });
+  await expect(page.locator('#orderAssignBar .assign-warn')).toContainText('missing assigned_to, assigned_to_name');
 });
