@@ -440,10 +440,18 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Child Price</label><input class="form-input" type="number" id="visaChildPrice" placeholder="0"></div>
         <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="visaCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
         <div class="form-group"><label class="form-label">Processing Time</label><input class="form-input" id="visaProcessingTime" placeholder="e.g. 3-5 working days"></div>
-        <div class="form-group"><label class="form-label">Visa Validity</label><input class="form-input" id="visaValidity" placeholder="e.g. 6 months from issue"></div>
         <div class="form-group"><label class="form-label">Entry Type</label><input class="form-input" id="visaEntryType" placeholder="e.g. Tourist, Business"></div>
         <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="visaStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+      </div>
+      <div class="sec-hd" style="margin-top:16px">Services Included</div>
+      <div style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px">Tick what this visa package includes and add the details. The WhatsApp bot shows this list when a lead asks about the visa.</div>
+      <div id="visaServicesRows" style="display:grid;gap:8px"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:12px">
+        <div class="form-group"><label class="form-label">⏳ Visa Validity</label><input class="form-input" id="visaValidity" placeholder="e.g. 60 days from issue"></div>
+        <div class="form-group"><label class="form-label">Other Services Included (one per line)</label><textarea class="form-input" id="visaOtherServices" rows="2" placeholder="Sightseeing tour&#10;SIM card"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Not Included (one per line)</label><textarea class="form-input" id="visaNotIncluded" rows="2" placeholder="Flight tickets&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Documents</label><textarea class="form-input" id="visaRequiredDocs" rows="3" placeholder="Passport copy&#10;Photo&#10;Bank statement"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="visaNotes" rows="2" placeholder="e.g. Border crossing at Oman Hatta, return the same day"></textarea></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -977,6 +985,17 @@ async function init(){
       taUpdateMissingBanner();
       return;
     }
+    // Paint the last loaded copy straight away, then swap in the fresh one when it arrives.
+    if(taApplySnapshot()){
+      _taReady = true;
+      renderAgencySubPage(_taPage);
+      taUpdateMissingBanner();
+      _taFreshPromise=taLoad();
+      _taFreshPromise.then(()=>{ if(!document.querySelector('.modal.open')) renderAgencySubPage(_taPage); })
+        .catch(e=>console.warn('Travel Agency refresh failed',e));
+      if(_taPendingNew){ _taPendingNew = false; taOpenNew(_taPage); }
+      return;
+    }
     await taLoad();
     taUpdateMissingBanner();
     _taReady = true;
@@ -1102,6 +1121,9 @@ const TA_ADDED_COLUMNS={
     {title:'image_url',uidt:'LongText'},{title:'image_url_2',uidt:'LongText'},{title:'image_url_3',uidt:'LongText'},
     {title:'pdf_url',uidt:'LongText'},
   ],
+  visas:[
+    {title:'services_included',uidt:'LongText'},{title:'not_included',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+  ],
   itineraries:[
     {title:'nights',uidt:'Number'},{title:'departure_city',uidt:'SingleLineText'},
     {title:'hotel_category',uidt:'SingleLineText'},{title:'meal_plan',uidt:'SingleLineText'},
@@ -1152,6 +1174,39 @@ const TA_IMPORT_SCHEMAS={
     list:()=>_taPackages, renderRow:r=>({c1:r.name||'—',c2:(r.currency||'AED')+' '+(r.sell_price||r.base_price||0)}),
     afterImport:()=>renderAgencySubPage('packages'),
   },
+  // Visa packages straight from the agency's Google Sheet (File → Download → CSV). Service columns
+  // (transportation, hotel_stay, meals, border_fees, insurance, other_services) become the visa's
+  // Services Included list. One row per country + type + duration, so a 30- and a 60-day visa
+  // for the same country stay separate records.
+  visas:{
+    label:'Visas', taKey:'visas', matchKey:'visa_country', col1:'Visa', col2:'Price',
+    matchLabel:'country + visa type + duration',
+    hint:' In the service columns write the details (e.g. "1 night 3★"), "Yes" when included, or leave blank / "No". Several documents or exclusions in one cell are separated by ";". Your sheet\'s own headers (Hotel, Transport, Validity, Price …) are recognised too.',
+    matchOf:r=>[r.visa_country,visaTypeKey(r.visa_type)||'single_entry',visaDurationKey(r.duration)].map(x=>String(x||'').trim().toLowerCase()).join('|'),
+    fields:[
+      {key:'visa_country',label:'Country',required:true,aliases:['visa country','destination','visa']},{key:'visa_type',label:'Visa Type',aliases:['type','entry']},
+      {key:'duration',label:'Duration',aliases:['stay','stay duration','days']},{key:'entry_type',label:'Entry Type',aliases:['purpose']},
+      {key:'adult_price',label:'Adult Price',type:'float',aliases:['price','adult','adult rate','rate','cost']},{key:'child_price',label:'Child Price',type:'float',aliases:['child','child rate']},
+      {key:'currency',label:'Currency'},{key:'processing_time',label:'Processing Time',aliases:['processing','processing days']},{key:'visa_validity',label:'Visa Validity',aliases:['validity']},
+      {key:'transportation',label:'Transportation',aliases:['transport','transfer','transfers']},{key:'hotel_stay',label:'Hotel Stay',aliases:['hotel','accommodation','stay hotel']},
+      {key:'meals',label:'Meals',aliases:['meal','food','meal plan']},{key:'border_fees',label:'Border Fees',aliases:['border fee','border charges','border']},
+      {key:'insurance',label:'Travel Insurance',aliases:['insurance']},{key:'other_services',label:'Other Services',aliases:['services included','service included','others','other inclusions','inclusions']},
+      {key:'not_included',label:'Not Included',type:'lines',aliases:['exclusions','excludes']},{key:'required_documents',label:'Required Documents',type:'lines',aliases:['documents','documents required']},
+      {key:'notes',label:'Notes'},{key:'status',label:'Status'},
+    ],
+    sample:['Oman','single_entry','30 Days','Tourist','350','300','AED','2-3 working days','30 days from entry','Dubai ⇄ Oman border, AC bus','1 night 3-star','Breakfast','Exit & entry fees paid','','Sightseeing: Khasab city tour','Flight tickets','Passport copy;Photo;Emirates ID','Same-day border crossing','active'],
+    toRecord:d=>{
+      const svc=[['transportation','Transportation'],['hotel_stay','Hotel Stay'],['meals','Meals'],['border_fees','Border Fees'],['insurance','Travel Insurance']]
+        .map(([k,label])=>{const val=String(d[k]||'').trim();delete d[k];if(!val||/^(?:no|none|not included|n\/a|-|0)$/i.test(val))return null;return {item:label,detail:/^(?:yes|y|included|✓|✔)$/i.test(val)?'':val};}).filter(Boolean);
+      visaLines(d.other_services).forEach(line=>{const m=/^([^:]{2,40}):\s*(.+)$/.exec(line);svc.push(m?{item:m[1].trim(),detail:m[2].trim()}:{item:line,detail:''});});
+      delete d.other_services;
+      // A blank Status cell leaves an existing visa's status as it is.
+      if(d.status) d.status=/^inactive$/i.test(d.status)?'inactive':'active'; else delete d.status;
+      return {...d,visa_type:visaTypeKey(d.visa_type)||'single_entry',duration:visaDurationKey(d.duration),currency:(d.currency||'AED').toUpperCase(),services_included:JSON.stringify(svc)};
+    },
+    list:()=>_taVisas, renderRow:r=>({c1:[r.visa_country,VISA_TYPE_LABELS[r.visa_type]||r.visa_type,VISA_DURATION_LABELS[r.duration]||r.duration].filter(Boolean).join(' · ')||'—',c2:(r.currency||'AED')+' '+(r.adult_price||0)}),
+    afterImport:()=>renderAgencySubPage('visas'),
+  },
   cases:{
     label:'Service Cases', taKey:'cases', matchKey:'ref_no', col1:'Client', col2:'Type',
     fields:[
@@ -1181,7 +1236,7 @@ function taOpenImport(entity){
   _taImportEntity=entity; _taImportRows=[];
   const schema=TA_IMPORT_SCHEMAS[entity];
   $id('taImportTitle').textContent=`Upload ${schema.label} CSV`;
-  $id('taImportHint').innerHTML=`Use the same headers as the <a href="#" onclick="taDownloadTemplate('${entity}');return false">CSV template</a>: <code style="font-family:var(--mono);font-size:11px">${schema.fields.map(f=>f.key).join(', ')}</code>. Only <strong>${schema.fields.find(f=>f.required).label}</strong> is required.${schema.fields.some(f=>f.type==='list')?' List fields (inclusions/exclusions) use ";" to separate items within a cell.':''} Rows whose <strong>${schema.matchKey}</strong> matches an existing record update it in place — everything else is created as new.`;
+  $id('taImportHint').innerHTML=`Use the same headers as the <a href="#" onclick="taDownloadTemplate('${entity}');return false">CSV template</a>: <code style="font-family:var(--mono);font-size:11px">${schema.fields.map(f=>f.key).join(', ')}</code>. Only <strong>${schema.fields.find(f=>f.required).label}</strong> is required.${schema.fields.some(f=>f.type==='list')?' List fields (inclusions/exclusions) use ";" to separate items within a cell.':''}${schema.hint||''} Rows whose <strong>${esc(schema.matchLabel||schema.matchKey)}</strong> matches an existing record update it in place — everything else is created as new.`;
   $id('taImportCol1').textContent=schema.col1; $id('taImportCol2').textContent=schema.col2;
   $id('taImportFile').value='';
   $id('taImportPreviewWrap').style.display='none';
@@ -1208,12 +1263,14 @@ function taParseImportRows(text,schema){
   schema.fields.forEach(f=>{
     let idx=headerRow.indexOf(f.key);
     if(idx===-1) idx=headerRow.indexOf(f.label.toLowerCase());
+    for(const a of f.aliases||[]) if(idx===-1) idx=headerRow.indexOf(a);
     if(idx!==-1) colIndex[f.key]=idx;
   });
   const requiredField=schema.fields.find(f=>f.required);
   if(colIndex[requiredField.key]===undefined) throw new Error(`CSV must have a "${requiredField.key}" column`);
 
-  const existingByKey=new Map(schema.list().filter(r=>r[schema.matchKey]).map(r=>[String(r[schema.matchKey]).trim().toLowerCase(),r]));
+  const keyOf=schema.matchOf||(r=>String(r[schema.matchKey]||'').trim().toLowerCase());
+  const existingByKey=new Map(schema.list().filter(r=>r[schema.matchKey]).map(r=>[keyOf(r),r]));
 
   return lines.slice(1).map((line,i)=>{
     const cells=parseCSVLine(line);
@@ -1224,11 +1281,13 @@ function taParseImportRows(text,schema){
       if(f.type==='int') data[f.key]=parseInt(raw,10)||0;
       else if(f.type==='float') data[f.key]=parseFloat(raw)||0;
       else if(f.type==='list') data[f.key]=JSON.stringify(raw?raw.split(';').map(s=>s.trim()).filter(Boolean):[]);
+      else if(f.type==='lines') data[f.key]=raw.split(';').map(s=>s.trim()).filter(Boolean).join('\n');
       else data[f.key]=raw;
     });
+    const record=schema.toRecord?schema.toRecord({...data}):data;
     const matchVal=get(schema.matchKey);
-    const existing=matchVal?existingByKey.get(matchVal.toLowerCase()):null;
-    return { rowNum:i+2, valid:!!get(requiredField.key), action:existing?'update':'create', existingId:existing?existing.Id:null, data };
+    const existing=matchVal?existingByKey.get(keyOf(record)):null;
+    return { rowNum:i+2, valid:!!get(requiredField.key), action:existing?'update':'create', existingId:existing?existing.Id:null, data:record };
   });
 }
 
@@ -1256,6 +1315,7 @@ async function taConfirmImport(){
   if(!valid.length) return;
   const btn=$id('taImportConfirmBtn'), msg=$id('taImportMsg');
   btn.disabled=true;
+  try{ await taEnsureColumns(schema.taKey); }catch(e){ msg.textContent=e.message; btn.disabled=false; return; }
   let done=0, failed=0;
   for(const r of valid){
     msg.textContent=`Importing… ${done+failed}/${valid.length}`;
@@ -1268,30 +1328,62 @@ async function taConfirmImport(){
   btn.disabled=false;
   msg.textContent=failed?`Done — ${done} imported, ${failed} failed`:`✓ Imported ${done} record(s)`;
   _taLoaded=false;
-  await taLoad();
+  await taLoad([schema.taKey]);
   schema.afterImport();
   if(!failed) setTimeout(()=>closeModal('modalTaImport'),1200);
 }
 
-async function taLoad(){
+// Every list the Agency module shows: how to fetch it and where it lives. taLoad() fetches them
+// all in parallel; taLoad(['visas']) after a visa save refetches just that one instead of all 12.
+const TA_SOURCES={
+  packages:{get:()=>taFetch('packages'),set:v=>{_taPackages=v;},cur:()=>_taPackages},
+  bookings:{get:()=>taFetch('bookings'),set:v=>{_taBookings=v;},cur:()=>_taBookings},
+  cases:{get:()=>taFetch('cases'),set:v=>{_taCases=v;},cur:()=>_taCases},
+  itineraries:{get:()=>taFetch('itineraries'),set:v=>{_taItineraries=v.map(r=>({...r,days:safeJson(r.days)}));},cur:()=>_taItineraries},
+  umrah_groups:{get:()=>taFetch('umrah_groups'),set:v=>{_taUmrahGroups=v.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));},cur:()=>_taUmrahGroups},
+  cars:{get:()=>taFetch('cars'),set:v=>{_taCars=v;},cur:()=>_taCars},
+  car_bookings:{get:()=>taFetch('car_bookings'),set:v=>{_taCarBookings=v;},cur:()=>_taCarBookings},
+  visas:{get:()=>taFetch('visas'),set:v=>{_taVisas=v;},cur:()=>_taVisas},
+  group_fares:{get:()=>taFetch('group_fares'),set:v=>{_taGroupFares=v;},cur:()=>_taGroupFares},
+  special_fares:{get:()=>taFetch('special_fares'),set:v=>{_taSpecialFares=v;},cur:()=>_taSpecialFares},
+  attest:{get:()=>fetch(`${WORKER_BASE}/attest/services?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).then(d=>d.list||[]).catch(()=>[]),set:v=>{_attestServices=v;},cur:()=>_attestServices},
+  properties:{get:()=>fetch(`${WORKER_BASE}/ta/properties?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).then(d=>d.list||[]).catch(()=>[]),set:v=>{_taProperties=v;},cur:()=>_taProperties},
+};
+async function taLoad(keys){
   if(!taTablesReady())return;
-  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares,attestData,propData]=await Promise.all([
-    taFetch('packages'),taFetch('bookings'),taFetch('cases'),
-    taFetch('itineraries'),taFetch('umrah_groups'),
-    taFetch('cars'),taFetch('car_bookings'),
-    taFetch('visas'),taFetch('group_fares'),taFetch('special_fares'),
-    fetch(`${WORKER_BASE}/attest/services?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).catch(()=>({list:[]})),
-    fetch(`${WORKER_BASE}/ta/properties?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).catch(()=>({list:[]}))
-  ]);
-  _taPackages=pkgs; _taBookings=bks; _taCases=cs;
-  _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
-  _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
-  _taCars=cars; _taCarBookings=carbks;
-  _taVisas=visas; _taGroupFares=gfares; _taSpecialFares=sfares;
-  _attestServices=attestData.list||[];
-  _taProperties=propData.list||[];
+  const want=keys&&keys.length?keys.filter(k=>TA_SOURCES[k]):Object.keys(TA_SOURCES);
+  const lists=await Promise.all(want.map(k=>TA_SOURCES[k].get()));
+  want.forEach((k,i)=>TA_SOURCES[k].set(lists[i]));
   _taLoaded=true;
+  _taFresh=true;
+  taSaveSnapshot();
   sendTaBadgeCount();
+}
+
+// Last loaded copy of every list, per account, so reopening the module paints at once while the
+// fresh copy loads behind it (taBoot). Per-browser convenience only — never the source of truth:
+// anything that edits a record waits for the fresh copy first (see openItinModal). Itinerary logos
+// (base64 images) are left out to keep it small.
+let _taFresh=false, _taFreshPromise=null;
+const TA_SNAPSHOT_VERSION=1;
+function taSnapshotKey(){ return `ta_snapshot_v${TA_SNAPSHOT_VERSION}_${clientId}`; }
+function taSaveSnapshot(){
+  try{
+    const data={};
+    for(const k of Object.keys(TA_SOURCES)){
+      const v=TA_SOURCES[k].cur();
+      data[k]=k==='itineraries'?v.map(r=>{const {logo_url,...rest}=r;return {...rest,days:JSON.stringify(r.days||[])};}):k==='umrah_groups'?v.map(r=>({...r,pilgrims:JSON.stringify(r.pilgrims||[])})):v;
+    }
+    localStorage.setItem(taSnapshotKey(),JSON.stringify({at:Date.now(),data}));
+  }catch(e){}
+}
+function taApplySnapshot(){
+  try{
+    const snap=JSON.parse(localStorage.getItem(taSnapshotKey())||'null');
+    if(!snap||!snap.data||Date.now()-snap.at>7*86400000) return false;
+    for(const k of Object.keys(TA_SOURCES)) if(Array.isArray(snap.data[k])) TA_SOURCES[k].set(snap.data[k]);
+    return true;
+  }catch(e){ return false; }
 }
 
 // Notifies the parent dashboard.html (notification bell/nav badge) of how many bookings have a
@@ -1391,6 +1483,7 @@ async function taSetupTables(){
         {title:'currency',uidt:'SingleLineText'},{title:'required_documents',uidt:'LongText'},
         {title:'processing_time',uidt:'SingleLineText'},{title:'visa_validity',uidt:'SingleLineText'},
         {title:'entry_type',uidt:'SingleLineText'},{title:'status',uidt:'SingleLineText'},
+        ...TA_ADDED_COLUMNS.visas,
       ]},
       group_fares:{title:'ta_group_fares',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'sector',uidt:'SingleLineText'},
@@ -1743,14 +1836,14 @@ async function savePkg(){
     if(_editPkgId) await taUpdate('packages',_editPkgId,p); else await taCreate('packages',p);
     msg.textContent='✓ Saved';
     _taLoaded=false;
-    setTimeout(async()=>{closeModal('modalPkg');await taLoad();renderAgencySubPage('packages');},600);
+    setTimeout(async()=>{closeModal('modalPkg');await taLoad(['packages']);renderAgencySubPage('packages');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deletePkg(id){
   if(!confirm('Delete this package?'))return;
-  await taDeleteRow('packages',id);_taLoaded=false;await taLoad();renderAgencySubPage('packages');
+  await taDeleteRow('packages',id);_taLoaded=false;await taLoad(['packages']);renderAgencySubPage('packages');
 }
 
 /* ── TA: ITINERARIES ── */
@@ -1902,6 +1995,8 @@ function itinUpdateRateTotal(){
 // pre-populated itinerary instead of a blank one. Only used when `id` is falsy — an existing
 // itinerary always wins over a stale prefill.
 function openItinModal(id, prefill) {
+  // The quick-load copy has no itinerary logos — wait for the fresh one so a save keeps the logo.
+  if(id&&!_taFresh&&_taFreshPromise){ _taFreshPromise.then(()=>openItinModal(id,prefill)).catch(()=>{}); return; }
   _editItinId = id||null;
   const it = id?(_taItineraries.find(x=>String(x.Id)===String(id))||{}):(prefill||{});
   _itinDays = JSON.parse(JSON.stringify(it.days||[]));
@@ -2110,7 +2205,7 @@ async function saveItin() {
   try{
     await taEnsureColumns('itineraries');
     if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad();renderAgencySubPage('itineraries');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad(['itineraries']);renderAgencySubPage('itineraries');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
@@ -2124,7 +2219,7 @@ function duplicateItin(id){
 
 async function deleteItin(id){
   if(!confirm('Delete this itinerary?'))return;
-  await taDeleteRow('itineraries',id);_taLoaded=false;await taLoad();renderAgencySubPage('itineraries');
+  await taDeleteRow('itineraries',id);_taLoaded=false;await taLoad(['itineraries']);renderAgencySubPage('itineraries');
 }
 
 /* ── TA: SEND QUOTATION TO LEADS ──
@@ -3194,14 +3289,14 @@ async function saveCase(){
   if(!c.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editCaseId) await taUpdate('cases',_editCaseId,c); else await taCreate('cases',c);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCase');await taLoad();renderAgencySubPage('services');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCase');await taLoad(['cases']);renderAgencySubPage('services');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteCase(id){
   if(!confirm('Delete this case?'))return;
-  await taDeleteRow('cases',id);_taLoaded=false;await taLoad();renderAgencySubPage('services');
+  await taDeleteRow('cases',id);_taLoaded=false;await taLoad(['cases']);renderAgencySubPage('services');
 }
 
 /* ── TA: VISA ── */
@@ -3209,12 +3304,64 @@ let _editVisaId=null;
 const VISA_TYPE_LABELS={single_entry:'Single Entry',multiple_entry:'Multiple Entry',transit:'Transit'};
 const VISA_DURATION_LABELS={'10_days':'10 Days','14_days':'14 Days','30_days':'30 Days','60_days':'60 Days','90_days':'90 Days','1_year':'1 Year'};
 
+// "Services Included" on a visa package (Tripcod's sheet: transportation, hotel stay, meals,
+// border fees ...), stored on the record as services_included = [{item,detail}] — the same list
+// the WhatsApp bot shows (live-travel-wa-menu.js ltPortalRows). Visa validity keeps its own column.
+const VISA_SERVICE_ITEMS=[
+  {key:'transport',icon:'🚌',label:'Transportation',hint:'e.g. Dubai ⇄ Oman border, AC bus'},
+  {key:'hotel',icon:'🏨',label:'Hotel Stay',hint:'e.g. 1 night 3★, twin sharing'},
+  {key:'meals',icon:'🍽️',label:'Meals',hint:'e.g. Breakfast & dinner'},
+  {key:'border_fees',icon:'🛃',label:'Border Fees',hint:'e.g. Exit & entry fees paid'},
+  {key:'insurance',icon:'🛡️',label:'Travel Insurance',hint:'e.g. Medical cover'},
+];
+function visaServicesList(v){
+  const raw=safeJson(v?.services_included,Array.isArray(v?.services_included)?v.services_included:[]);
+  return (Array.isArray(raw)?raw:[]).map(x=>typeof x==='string'?{item:x,detail:''}:{item:String(x?.item||'').trim(),detail:String(x?.detail||'').trim()}).filter(x=>x.item);
+}
+function visaLines(v){ return String(v||'').split(/\n|;/).map(x=>x.trim()).filter(Boolean); }
+function visaRenderServiceRows(list){
+  const byItem=new Map(list.map(x=>[x.item.toLowerCase(),x]));
+  $id('visaServicesRows').innerHTML=VISA_SERVICE_ITEMS.map(it=>{
+    const have=byItem.get(it.label.toLowerCase());
+    return `<div style="display:grid;grid-template-columns:170px 1fr;gap:10px;align-items:center">
+      <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer"><input type="checkbox" id="visaSvc_${it.key}" ${have?'checked':''}> ${it.icon} ${esc(it.label)}</label>
+      <input class="form-input" id="visaSvcDetail_${it.key}" value="${esc(have?.detail||'')}" placeholder="${esc(it.hint)}" oninput="if(this.value.trim())$id('visaSvc_${it.key}').checked=true">
+    </div>`;
+  }).join('');
+  const std=new Set(VISA_SERVICE_ITEMS.map(it=>it.label.toLowerCase()));
+  $id('visaOtherServices').value=list.filter(x=>!std.has(x.item.toLowerCase())).map(x=>x.detail?`${x.item}: ${x.detail}`:x.item).join('\n');
+}
+function visaCollectServices(){
+  const out=VISA_SERVICE_ITEMS.filter(it=>$id('visaSvc_'+it.key).checked).map(it=>({item:it.label,detail:$id('visaSvcDetail_'+it.key).value.trim()}));
+  visaLines($id('visaOtherServices').value).forEach(line=>{
+    const m=/^([^:]{2,40}):\s*(.+)$/.exec(line);
+    out.push(m?{item:m[1].trim(),detail:m[2].trim()}:{item:line,detail:''});
+  });
+  return out;
+}
+// Sheet / CSV text → the select values the visa form uses ("30 Days" → 30_days, "Multiple" → multiple_entry).
+function visaDurationKey(v){
+  const t=String(v||'').trim(); if(!t) return '';
+  const hit=Object.entries(VISA_DURATION_LABELS).find(([k,l])=>k===t||l.toLowerCase()===t.toLowerCase());
+  return hit?hit[0]:t;
+}
+function visaTypeKey(v){
+  const t=String(v||'').trim().toLowerCase(); if(!t) return '';
+  if(/multi/.test(t)) return 'multiple_entry';
+  if(/transit/.test(t)) return 'transit';
+  if(/single/.test(t)) return 'single_entry';
+  return String(v).trim();
+}
+
 function renderTaVisas(){
   const active=_taVisas.filter(v=>v.status!=='inactive').length;
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🛂 Visa Catalogue</div>
-    <button class="btn btn-primary btn-sm" onclick="openVisaModal()">+ New Visa</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="taOpenImport('visas')">⬆ Upload CSV</button>
+      <button class="btn btn-primary btn-sm" onclick="openVisaModal()">+ New Visa</button>
+    </div>
   </div>
   <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Visas</div><div class="stat-val">${_taVisas.length}</div></div>
@@ -3233,7 +3380,9 @@ function renderVisaRow(v){
     <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🛂</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.visa_country||'—')}</div>
-      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(VISA_TYPE_LABELS[v.visa_type]||v.visa_type||'—')} · ${esc(VISA_DURATION_LABELS[v.duration]||v.duration||'—')} · ${esc(v.entry_type||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(VISA_TYPE_LABELS[v.visa_type]||v.visa_type||'—')} · ${esc(VISA_DURATION_LABELS[v.duration]||v.duration||'—')} · ${esc(v.entry_type||'—')}${v.processing_time?` · ⏱️ ${esc(v.processing_time)}`:''}${v.visa_validity?` · ⏳ ${esc(v.visa_validity)}`:''}</div>
+      ${(()=>{const svc=visaServicesList(v);if(!svc.length)return '';const icon=i=>(VISA_SERVICE_ITEMS.find(x=>x.label.toLowerCase()===i.toLowerCase())||{}).icon||'✓';
+        return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${svc.slice(0,6).map(x=>`<span title="${esc(x.detail)}" style="font-size:10.5px;padding:2px 7px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);white-space:nowrap">${icon(x.item)} ${esc(x.item)}${x.detail?': '+esc(x.detail.length>28?x.detail.slice(0,27)+'…':x.detail):''}</span>`).join('')}${svc.length>6?`<span style="font-size:10.5px;color:var(--muted)">+${svc.length-6} more</span>`:''}</div>`;})()}
     </div>
     <div style="text-align:right;flex-shrink:0">
       <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(v.currency||'AED')} ${(parseFloat(v.adult_price)||0).toLocaleString()}</div>
@@ -3253,24 +3402,28 @@ function openVisaModal(id){
   $id('visaProcessingTime').value=v.processing_time||''; $id('visaValidity').value=v.visa_validity||'';
   $id('visaEntryType').value=v.entry_type||''; $id('visaStatus').value=v.status||'active';
   $id('visaRequiredDocs').value=v.required_documents||'';
+  $id('visaNotIncluded').value=v.not_included||''; $id('visaNotes').value=v.notes||'';
+  visaRenderServiceRows(visaServicesList(v));
   openModal('modalVisa');
 }
 
 async function saveVisa(){
   const btn=$id('saveVisaBtn'),msg=$id('saveVisaMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  const v={visa_country:$id('visaCountry').value.trim(),visa_type:$id('visaType').value,duration:$id('visaDuration').value,adult_price:parseFloat($id('visaAdultPrice').value)||0,child_price:parseFloat($id('visaChildPrice').value)||0,currency:$id('visaCurrency').value,required_documents:$id('visaRequiredDocs').value.trim(),processing_time:$id('visaProcessingTime').value.trim(),visa_validity:$id('visaValidity').value.trim(),entry_type:$id('visaEntryType').value.trim(),status:$id('visaStatus').value};
+  const v={visa_country:$id('visaCountry').value.trim(),visa_type:$id('visaType').value,duration:$id('visaDuration').value,adult_price:parseFloat($id('visaAdultPrice').value)||0,child_price:parseFloat($id('visaChildPrice').value)||0,currency:$id('visaCurrency').value,required_documents:$id('visaRequiredDocs').value.trim(),processing_time:$id('visaProcessingTime').value.trim(),visa_validity:$id('visaValidity').value.trim(),entry_type:$id('visaEntryType').value.trim(),status:$id('visaStatus').value,
+    services_included:JSON.stringify(visaCollectServices()),not_included:$id('visaNotIncluded').value.trim(),notes:$id('visaNotes').value.trim()};
   if(!v.visa_country){msg.textContent='Visa country required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
+    await taEnsureColumns('visas');
     if(_editVisaId) await taUpdate('visas',_editVisaId,v); else await taCreate('visas',v);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalVisa');await taLoad();renderAgencySubPage('visas');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalVisa');await taLoad(['visas']);renderAgencySubPage('visas');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteVisa(id){
   if(!confirm('Delete this visa?'))return;
-  await taDeleteRow('visas',id);_taLoaded=false;await taLoad();renderAgencySubPage('visas');
+  await taDeleteRow('visas',id);_taLoaded=false;await taLoad(['visas']);renderAgencySubPage('visas');
 }
 
 /* ── TA: GROUP FARE ── */
@@ -3337,14 +3490,14 @@ async function saveGroupFare(){
   if(!g.sector){msg.textContent='Sector required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editGroupFareId) await taUpdate('group_fares',_editGroupFareId,g); else await taCreate('group_fares',g);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalGroupFare');await taLoad();renderAgencySubPage('groupfares');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalGroupFare');await taLoad(['group_fares']);renderAgencySubPage('groupfares');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteGroupFare(id){
   if(!confirm('Delete this group fare?'))return;
-  await taDeleteRow('group_fares',id);_taLoaded=false;await taLoad();renderAgencySubPage('groupfares');
+  await taDeleteRow('group_fares',id);_taLoaded=false;await taLoad(['group_fares']);renderAgencySubPage('groupfares');
 }
 
 /* ── TA: SPECIAL FARE ── */
@@ -3412,14 +3565,14 @@ async function saveSpecialFare(){
   if(!s.sector){msg.textContent='Sector required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editSpecialFareId) await taUpdate('special_fares',_editSpecialFareId,s); else await taCreate('special_fares',s);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalSpecialFare');await taLoad();renderAgencySubPage('specialfares');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalSpecialFare');await taLoad(['special_fares']);renderAgencySubPage('specialfares');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteSpecialFare(id){
   if(!confirm('Delete this special fare?'))return;
-  await taDeleteRow('special_fares',id);_taLoaded=false;await taLoad();renderAgencySubPage('specialfares');
+  await taDeleteRow('special_fares',id);_taLoaded=false;await taLoad(['special_fares']);renderAgencySubPage('specialfares');
 }
 
 /* ── TA: UMRAH ── */
@@ -3492,14 +3645,14 @@ async function saveUmrah(){
   if(!g.name){msg.textContent='Group name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editUmrahId) await taUpdate('umrah_groups',_editUmrahId,g); else await taCreate('umrah_groups',g);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalUmrah');await taLoad();renderAgencySubPage('umrah');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalUmrah');await taLoad(['umrah_groups']);renderAgencySubPage('umrah');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteUmrahGroup(id){
   if(!confirm('Delete this group?'))return;
-  await taDeleteRow('umrah_groups',id);_taLoaded=false;await taLoad();renderAgencySubPage('umrah');
+  await taDeleteRow('umrah_groups',id);_taLoaded=false;await taLoad(['umrah_groups']);renderAgencySubPage('umrah');
 }
 
 function openAddPilgrimModal(groupId){
@@ -3520,7 +3673,7 @@ async function savePilgrim(){
     if(!grp)throw new Error('Group not found');
     const pilgrims=[...(grp.pilgrims||[]),p];
     await taUpdate('umrah_groups',_editPilgrimGroupId,{pilgrims:JSON.stringify(pilgrims)});
-    msg.textContent='✓ Added';_taLoaded=false;setTimeout(async()=>{closeModal('modalPilgrim');await taLoad();renderAgencySubPage('umrah');},600);
+    msg.textContent='✓ Added';_taLoaded=false;setTimeout(async()=>{closeModal('modalPilgrim');await taLoad(['umrah_groups']);renderAgencySubPage('umrah');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
@@ -3592,14 +3745,14 @@ async function saveBooking(){
   if(!b.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editBookingId) await taUpdate('bookings',_editBookingId,b); else await taCreate('bookings',b);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalBooking');await taLoad();renderAgencySubPage('bookings');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalBooking');await taLoad(['bookings']);renderAgencySubPage('bookings');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteBooking(id){
   if(!confirm('Delete this booking?'))return;
-  await taDeleteRow('bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('bookings');
+  await taDeleteRow('bookings',id);_taLoaded=false;await taLoad(['bookings']);renderAgencySubPage('bookings');
 }
 
 /* ── TA: CARS ── */
@@ -3780,14 +3933,14 @@ async function saveCar(){
   if(!c.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editCarId) await taUpdate('cars',_editCarId,c); else await taCreate('cars',c);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCar');await taLoad();renderAgencySubPage('cars');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCar');await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteCar(id){
   if(!confirm('Delete this car? All its bookings will remain.'))return;
-  await taDeleteRow('cars',id);_taLoaded=false;await taLoad();renderAgencySubPage('cars');
+  await taDeleteRow('cars',id);_taLoaded=false;await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');
 }
 
 function populateCarSelect(selectedCarId){
@@ -3837,14 +3990,14 @@ async function saveCarBooking(){
   if(!b.customer_name||!b.car_id||!b.pickup_date||!b.dropoff_date){msg.textContent='Customer, car and dates required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editCarBkId) await taUpdate('car_bookings',_editCarBkId,b); else await taCreate('car_bookings',b);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCarBooking');await taLoad();renderAgencySubPage('cars');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCarBooking');await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteCarBooking(id){
   if(!confirm('Delete this booking?'))return;
-  await taDeleteRow('car_bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('cars');
+  await taDeleteRow('car_bookings',id);_taLoaded=false;await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');
 }
 
 /* ── TA: FINANCE ── */
@@ -4308,7 +4461,7 @@ async function saveProperty(){
     const data=await res.json().catch(()=>({}));
     if(!res.ok||data.error) throw new Error(data.error||'Save failed');
     msg.textContent='✓ Saved';
-    setTimeout(async()=>{closeModal('modalProperty');_taLoaded=false;await taLoad();renderAgencySubPage('properties');},600);
+    setTimeout(async()=>{closeModal('modalProperty');_taLoaded=false;await taLoad(['properties']);renderAgencySubPage('properties');},600);
   }catch(e){msg.textContent=e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
@@ -4316,7 +4469,7 @@ async function saveProperty(){
 async function deleteProperty(){
   if(!_editPropId||!confirm('Delete this property?'))return;
   await fetch(`${WORKER_BASE}/ta/properties`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,Id:_editPropId})});
-  closeModal('modalProperty');_taLoaded=false;await taLoad();renderAgencySubPage('properties');
+  closeModal('modalProperty');_taLoaded=false;await taLoad(['properties']);renderAgencySubPage('properties');
 }
 
 /* ── TA: ATTESTATION SERVICES ── */
@@ -4423,7 +4576,7 @@ async function saveAttestService(){
       await fetch(`${WORKER_BASE}/attest/services`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
     }
     msg.textContent='✓ Saved';
-    setTimeout(async()=>{closeModal('modalAttest');_taLoaded=false;await taLoad();renderAgencySubPage('attestation');},600);
+    setTimeout(async()=>{closeModal('modalAttest');_taLoaded=false;await taLoad(['attest']);renderAgencySubPage('attestation');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
@@ -4431,7 +4584,7 @@ async function saveAttestService(){
 async function deleteAttestService(){
   if(!_editAttestId||!confirm('Delete this service?'))return;
   await fetch(`${WORKER_BASE}/attest/services`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,Id:_editAttestId})});
-  closeModal('modalAttest');_taLoaded=false;await taLoad();renderAgencySubPage('attestation');
+  closeModal('modalAttest');_taLoaded=false;await taLoad(['attest']);renderAgencySubPage('attestation');
 }
 
 async function seedAttestDefaults(){
@@ -4441,7 +4594,7 @@ async function seedAttestDefaults(){
     for(const s of ATTEST_DEFAULTS){
       await fetch(`${WORKER_BASE}/attest/services`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,...s})});
     }
-    _taLoaded=false;await taLoad();renderAgencySubPage('attestation');
+    _taLoaded=false;await taLoad(['attest']);renderAgencySubPage('attestation');
   }catch(e){alert('Seed failed: '+e.message);}
   finally{btn.disabled=false;}
 }

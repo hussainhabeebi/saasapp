@@ -287,6 +287,31 @@ const money=(n,cur)=>{const v=Number(n);return Number.isFinite(v)&&v>0?`${String
 const shortDate=v=>{const d=new Date(String(v||'').slice(0,10)+'T00:00:00Z');return Number.isNaN(d.getTime())?'':`${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;};
 const list=v=>{if(Array.isArray(v))return v.map(String).filter(Boolean);try{const a=JSON.parse(v);if(Array.isArray(a))return a.map(String).filter(Boolean);}catch(e){}return String(v||'').split(/\n|;|,/).map(x=>x.trim()).filter(Boolean);};
 const join=(...parts)=>parts.filter(Boolean).join(' · ');
+const lines=v=>String(v||'').split(/\n|;/).map(x=>x.trim()).filter(Boolean);
+const STAY={'10_days':'10 days','14_days':'14 days','30_days':'30 days','60_days':'60 days','90_days':'90 days','1_year':'1 year'};
+const VISA_TYPE={single_entry:'Single Entry',multiple_entry:'Multiple Entry',transit:'Transit'};
+const SERVICE_ICON={transportation:'🚌',transport:'🚌','hotel stay':'🏨',hotel:'🏨',meals:'🍽️',meal:'🍽️','border fees':'🛃','border fee':'🛃','travel insurance':'🛡️',insurance:'🛡️'};
+
+// A visa package's "Services Included" (dashboard → Visa → Services Included, or the sheet
+// import): [{item,detail}] stored as JSON; a plain "a; b" list from older records also works.
+export function ltVisaServicesIncluded(r){
+  let v=r?.services_included;
+  if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){v=lines(v).map(item=>({item}));}}
+  return (Array.isArray(v)?v:[]).map(x=>typeof x==='string'?{item:x.trim(),detail:''}:{item:String(x?.item||'').trim(),detail:String(x?.detail||'').trim()}).filter(x=>x.item);
+}
+export function ltVisaServiceLine(x){
+  return `${SERVICE_ICON[x.item.toLowerCase()]||'✅'} ${x.item}${x.detail?`: ${x.detail}`:''}`;
+}
+// One visa for the bot's grounded travel context.
+export function ltVisaContextLine(r){
+  const name=join(r.visa_country,VISA_TYPE[r.visa_type]||r.visa_type).replace(' · ',' ');
+  const svc=ltVisaServicesIncluded(r);
+  const parts=[`- ${name} visa`,STAY[r.duration]||r.duration?`stay ${STAY[r.duration]||r.duration}`:'',r.visa_validity?`validity ${r.visa_validity}`:'',r.entry_type?`entry ${r.entry_type}`:'',
+    r.processing_time?`processing ${r.processing_time}`:'',money(r.adult_price,r.currency)?`${money(r.adult_price,r.currency)} adult${money(r.child_price,r.currency)?` / ${money(r.child_price,r.currency)} child`:''}`:'price on request',
+    svc.length?`includes: ${svc.map(x=>x.detail?`${x.item} (${x.detail})`:x.item).join(', ')}`:'',lines(r.not_included).length?`not included: ${lines(r.not_included).join(', ')}`:'',
+    lines(r.required_documents).length?`documents: ${lines(r.required_documents).slice(0,8).join(', ')}`:'',r.notes?String(r.notes).replace(/\s+/g,' ').slice(0,200):''];
+  return parts.filter(Boolean).join(' — ').slice(0,700);
+}
 const CLOSED=/^(?:inactive|sold[_ -]?out|closed|expired|cancelled|canceled|full|unavailable|hidden|draft)$/i;
 
 // Raw Travel Portal records → menu rows {id,title,description,detail}. Only what a customer can
@@ -318,12 +343,16 @@ export function ltPortalRows(source,records,{today=new Date().toISOString().slic
           r.transport?`🚌 ${r.transport}`:'',left?`💺 ${left} seats left`:'',price?`💰 *${price}* per person`:'',r.notes?`\n${String(r.notes).slice(0,300)}`:''].filter(Boolean).join('\n')};
     }
     if(source==='visas'&&r.visa_country){
-      const name=join(r.visa_country,r.visa_type).replace(' · ',' ');
+      const type=VISA_TYPE[r.visa_type]||r.visa_type,stay=STAY[r.duration]||r.duration;
+      const name=join(r.visa_country,type).replace(' · ',' ');
       const adult=money(r.adult_price,r.currency),child=money(r.child_price,r.currency),docs=list(r.required_documents).slice(0,10);
-      row={title:`${name} Visa`.replace(/visa visa$/i,'Visa'),description:join(r.duration,adult,r.processing_time),
-        detail:[`🛂 *${name} visa*`,r.duration?`📅 Stay: ${r.duration}`:'',r.visa_validity?`⏳ Validity: ${r.visa_validity}`:'',r.entry_type?`🚪 Entry: ${r.entry_type}`:'',
+      const svc=ltVisaServicesIncluded(r),exc=lines(r.not_included).slice(0,6);
+      row={title:`${name} Visa`.replace(/visa visa$/i,'Visa'),description:join(stay,adult,svc.length?`${svc.length} services incl.`:r.processing_time),
+        detail:[`🛂 *${name} visa*`,stay?`📅 Stay: ${stay}`:'',r.visa_validity?`⏳ Validity: ${r.visa_validity}`:'',r.entry_type?`🚪 Entry: ${r.entry_type}`:'',
           r.processing_time?`⏱️ Processing: ${r.processing_time}`:'',adult?`💰 *${adult}* adult${child?` · ${child} child`:''}`:'',
-          docs.length?`\n📎 *Documents needed*\n${docs.map(x=>'• '+x).join('\n')}`:''].filter(Boolean).join('\n')};
+          svc.length?`\n✅ *Services included*\n${svc.slice(0,10).map(ltVisaServiceLine).join('\n')}`:'',
+          exc.length?`\n❌ *Not included*\n${exc.map(x=>'• '+x).join('\n')}`:'',
+          docs.length?`\n📎 *Documents needed*\n${docs.map(x=>'• '+x).join('\n')}`:'',r.notes?`\n${String(r.notes).slice(0,300)}`:''].filter(Boolean).join('\n')};
     }
     if(source==='cars'&&(r.name||r.make)){
       if(r.status&&!/^available$/i.test(r.status))continue;
