@@ -1177,8 +1177,11 @@ them exactly like ones added by hand. `shopify-sync.js` hands every product/orde
 - **Products** — one Ecom product per Shopify product (`shopifyEcomProductFields`), keyed by a
   self-provisioned `shopify_product_id` column. Shopify owns name, SKU (first variant's), price
   (lowest variant), stock (tracked variants summed; any untracked variant → 999, "always
-  available"), status (`active` and `unlisted` → `active`, since unlisted products still sell from
-  a direct link; anything else → `inactive`) and `shopify_product_url` (the bot's order link).
+  available"), status (only `active` **and** published to the Online Store → `active`; draft, unlisted,
+  archived, or `published_at: null` → `inactive`, so the bot never offers or links them; an
+  inactive product's semantic-memory chunks are dropped too, `engineMemoryForgetProduct`) and
+  `shopify_product_url` (the bot's order link). Existing rows are corrected on the product's next
+  `products/update` webhook or a Resync.
   **Photos:** Shopify CDN image URLs are shared by the bot like any product photo — every send path
   (`engineResolveDirectImageUrl`, and `sendDriveMediaToChatwoot` for extra angles) asks Shopify's
   CDN for a 1200px JPEG (`shopifyCdnImageUrl`: `width=1200&format=jpg`), since originals can be over

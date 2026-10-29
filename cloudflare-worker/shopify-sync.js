@@ -201,9 +201,10 @@ export function shopifyEcomProductFields(shop, p){
   const images=(p?.images||[]).map(i=>i?.src).filter(Boolean);
   if(!images.length && p?.image?.src) images.push(p.image.src);
   const prices=variants.map(v=>num(v.price)).filter(n=>n>0);
-  // Unlisted products are still sold — hidden from the storefront's search and collections, but
-  // their product page opens from a direct link, which is exactly what the bot shares.
-  const active=['active','unlisted'].includes(p?.status||'active');
+  // Only listed products reach customers: active AND published to the Online Store. Draft,
+  // archived and unlisted products, and active ones hidden from the store (published_at null),
+  // are kept in Ecom as inactive so the bot never offers or links them.
+  const active=(p?.status||'active')==='active'&&p?.published_at!==null;
   const f={
     name:p?.title||'', sku:(variants.find(v=>v.sku)?.sku)||'',
     price:prices.length?Math.min(...prices):0,
