@@ -12,11 +12,18 @@ function iso(offsetDays) {
   const d = new Date(); d.setDate(d.getDate() + offsetDays);
   return d.toISOString().slice(0, 10);
 }
+// A few days ahead but never past this month's end — the Departures calendar lists only the
+// current month, so a "+3 days" trip on the 29th fell into next month and the test failed.
+function isoThisMonth(offsetDays) {
+  const d = new Date(), last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(d.getDate() + offsetDays, last));
+  return d.toISOString().slice(0, 10);
+}
 
 async function openTravel(page, client) {
   await page.route('**/*', (route) => (route.request().url().startsWith('file://') ? route.continue() : route.abort()));
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(({ rec, today, soon, later }) => {
+  await page.evaluate(({ rec, today, soon, later, tripStart }) => {
     document.getElementById('app').classList.add('show');
     document.getElementById('gate')?.style.setProperty('display', 'none');
     try { localStorage.removeItem('lv_travel_view_7'); } catch (e) {}
@@ -24,7 +31,7 @@ async function openTravel(page, client) {
     clientId = 7; clientRecord = rec; sessionToken = 't'; myEmail = '';
     // @ts-ignore
     allLeads = [
-      { Id: 1, Name: 'Asha', Phone: '9190000001', Date: today, Stage: 'new', Destination: 'Dubai', TravelDates: `${soon} → ${later}`, ServiceCategory: 'Package' },
+      { Id: 1, Name: 'Asha', Phone: '9190000001', Date: today, Stage: 'new', Destination: 'Dubai', TravelDates: `${tripStart} → ${later}`, ServiceCategory: 'Package' },
       { Id: 2, Name: 'Ravi', Phone: '9190000002', Date: today, Stage: 'human_handover', Handover: 'Yes', Destination: 'Dubai' },
     ];
     // @ts-ignore
@@ -36,7 +43,7 @@ async function openTravel(page, client) {
     applyTheme(rec.industry);
     // @ts-ignore
     navigate('travelhome');
-  }, { rec: client, today: iso(0), soon: iso(3), later: iso(8) });
+  }, { rec: client, today: iso(0), soon: iso(3), later: iso(8), tripStart: isoThisMonth(3) });
 }
 
 test.describe('travel workspace', () => {
