@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ltMenuDefaults, ltMenuNormalize, ltMenuValidate, ltMenuSections, ltMenuMatch, ltMenuIsGreeting, ltMenuIsMenuRequest,
   ltMenuGreetingText, ltMenuDateRows, ltMenuRouteRows, ltMenuParsePax, ltCheckoutCommand, ltParseBookingForm, ltBookingFormMissing,
-  ltCheckoutUrl, ltFlightDetailsText, ltPortalRows, LT_PORTAL_SOURCES } from './live-travel-wa-menu.js';
+  ltCheckoutUrl, ltFlightDetailsText, ltPortalRows, LT_PORTAL_SOURCES, ltVisaContextLine } from './live-travel-wa-menu.js';
 
 test('default menu normalizes to WhatsApp-safe rows grouped by section', () => {
   const menu = ltMenuNormalize({ ...ltMenuDefaults(), enabled: true });
@@ -175,4 +175,25 @@ test('flight details card', () => {
   const hidden = ltFlightDetailsText({ airline: 'Air India', total: 650, currency: 'AED' }, { formatMoney: (n, c) => `${c} ${n}`, showFare: false });
   assert.doesNotMatch(hidden, /AED/);
   assert.match(hidden, /Fare: shown at checkout/);
+});
+
+test('visa packages show their Services Included, not included and notes', () => {
+  const oman = { Id: 7, visa_country: 'Oman', visa_type: 'single_entry', duration: '30_days', adult_price: 350, child_price: 300, currency: 'AED',
+    visa_validity: '30 days from entry', processing_time: '2-3 working days',
+    services_included: JSON.stringify([{ item: 'Transportation', detail: 'Dubai ⇄ Oman border, AC bus' }, { item: 'Hotel Stay', detail: '1 night 3★' },
+      { item: 'Meals', detail: 'Breakfast' }, { item: 'Border Fees', detail: '' }, { item: 'Khasab city tour', detail: '' }]),
+    not_included: 'Flight tickets\nPersonal expenses', required_documents: 'Passport copy\nPhoto', notes: 'Same-day border crossing' };
+  const [row] = ltPortalRows('visas', [oman]);
+  assert.equal(row.title, 'Oman Single Entry Visa');
+  assert.equal(row.description, '30 days · AED 350 · 5 services incl.');
+  assert.match(row.detail, /📅 Stay: 30 days\n⏳ Validity: 30 days from entry/);
+  assert.match(row.detail, /✅ \*Services included\*\n🚌 Transportation: Dubai ⇄ Oman border, AC bus\n🏨 Hotel Stay: 1 night 3★\n🍽️ Meals: Breakfast\n🛃 Border Fees\n✅ Khasab city tour/);
+  assert.match(row.detail, /❌ \*Not included\*\n• Flight tickets\n• Personal expenses/);
+  assert.match(row.detail, /Same-day border crossing/);
+  const line = ltVisaContextLine(oman);
+  assert.match(line, /^- Oman Single Entry visa — stay 30 days — validity 30 days from entry/);
+  assert.match(line, /includes: Transportation \(Dubai ⇄ Oman border, AC bus\), Hotel Stay \(1 night 3★\), Meals \(Breakfast\), Border Fees, Khasab city tour/);
+  assert.match(line, /not included: Flight tickets, Personal expenses/);
+  // an older visa with no services keeps its old layout
+  assert.doesNotMatch(ltPortalRows('visas', [{ Id: 8, visa_country: 'UAE', adult_price: 100 }])[0].detail, /Services included/);
 });
