@@ -21142,7 +21142,24 @@ BUTTONS — mandatory after EVERY reply:
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) sys+=`\n\nMANGLISH WORDS RULE: The following English words have no natural Malayalam equivalent and are better understood by customers in their original English/Manglish form. Do NOT translate them into Malayalam script — write them exactly as they are: ${mw.join(', ')}.`;
   }
+  sys+=engineReplyStyleRules(c);
   return sys;
+}
+
+// Settings → Bot Behavior → ✂️ Reply Style. Four independent bot_config toggles that tighten
+// replies for clients who want short, to-the-point answers (property features, details, rates).
+// Appended last so they override the softer "Default style" guidance earlier in the prompt.
+export const ENGINE_REPLY_STYLE_RULES={
+  concise_communication:'CONCISE COMMUNICATION: Speak briefly, simply and directly. Short sentences, no elaboration.',
+  core_focus:'CORE FOCUS: Give only the specific features, details and rates the customer asked for. Do not add other products, properties or topics they did not ask about.',
+  no_fluff:'NO FLUFF: No long paragraphs, extra explanations, sales talk or unnecessary descriptions.',
+  direct_answers:'DIRECT ANSWERS: Start with the answer itself — no greeting, preamble or restating the question.',
+};
+export function engineReplyStyleRules(c){
+  const botCfg=engineParseJsonField(c?.bot_config,{});
+  const rules=Object.keys(ENGINE_REPLY_STYLE_RULES).filter(k=>botCfg[k]===true).map(k=>ENGINE_REPLY_STYLE_RULES[k]);
+  if(!rules.length) return '';
+  return '\n\nREPLY STYLE (set by the business — follow strictly, it overrides any default length or style guidance above; never drop a fact the customer asked for):\n- '+rules.join('\n- ');
 }
 
 // Optional per-client approved Malayalam-script spelling of the business name
@@ -21556,6 +21573,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
   if(lang && lang!=='en') sys+='\n\nPROPER NOUNS RULE: Always write person names, place names, and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
   sys+=engineBusinessNameMlRule(c, lang);
+  sys+=engineReplyStyleRules(c);
   return sys;
 }
 
