@@ -5,7 +5,12 @@
 // Pure helpers only — storage, routes and the Chatwoot send live in worker.js.
 
 export const TA_PROPERTY_TYPES=['resort','hotel','villa','homestay','houseboat','apartment','camp','other'];
-export const TA_PROPERTY_FIELDS=['name','property_type','location','star_rating','room_types','price_from','currency','price_unit','amenities','description','image_url','image_url_2','image_url_3','video_url','pdf_url','status'];
+// Who a resort is for. 'both' is a Family and a Couple resort at once; '' is a general property.
+export const TA_RESORT_CATEGORIES=['family','couple','both'];
+export const TA_RESORT_CATEGORY_LABEL={family:'Family Resort',couple:'Couple Resort',both:'Family & Couple Resort'};
+// The lead's CRM Service Category for each (the CRM's built-in category list has both).
+export const TA_RESORT_SERVICE_CATEGORY={family:'Family Resort',couple:'Couple Resort'};
+export const TA_PROPERTY_FIELDS=['name','property_type','category','location','star_rating','room_types','price_from','currency','price_unit','amenities','description','image_url','image_url_2','image_url_3','video_url','pdf_url','status'];
 export const TA_PROPERTY_MEDIA_FIELDS=['image_url','image_url_2','image_url_3','video_url','pdf_url'];
 const MEDIA_LABEL={image_url:'Photo 1',image_url_2:'Photo 2',image_url_3:'Photo 3',video_url:'Video',pdf_url:'PDF brochure'};
 
@@ -40,6 +45,7 @@ export function taPropertyClean(body, partial=false){
     else if(f==='price_from'){ const n=Number(v); v=v!==''&&v!=null&&Number.isFinite(n)&&n>=0?n:null; }
     else if(f==='status') v=v==='inactive'?'inactive':'active';
     else if(f==='property_type') v=TA_PROPERTY_TYPES.includes(v)?v:'resort';
+    else if(f==='category') v=TA_RESORT_CATEGORIES.includes(v)?v:'';
     else if(f==='currency') v=String(v||'INR').trim().toUpperCase().slice(0,3)||'INR';
     else if(f==='price_unit') v=String(v||'per night').trim().slice(0,40)||'per night';
     else v=String(v??'').trim().slice(0,f==='description'?2000:f.endsWith('_url')?600:500);
@@ -66,6 +72,41 @@ export function taPropertyMediaRequest(text){
   if(images||video||pdf) return {images,video,pdf};
   if(/\b(?:show me|have a look|more details|full details)\b/.test(t)) return {images:true,video:true,pdf:true};
   return null;
+}
+
+export function taPropertyInCategory(p, cat){
+  return !!cat&&(p?.category===cat||p?.category==='both');
+}
+
+// Which kind of resort the lead is after: 'family' (kids, parents, family trip) or 'couple'
+// (honeymoon, romantic, anniversary, wife/husband). Children mean family. null when neither, or
+// when it says both ("family and couple").
+const FAMILY_RE=/\b(?:family|families|kids?|children|child|parents|grand ?parents|toddlers?|infants?|baby|babies|son|daughter|kid friendly|family friendly)\b/;
+const KIDS_RE=/\b(?:kids?|children|child|toddlers?|infants?|baby|babies|\d+ (?:kids?|children|child))\b/;
+const COUPLE_RE=/\b(?:couples?|honey ?moon(?:ers?)?|romantic|romance|anniversary|wife|husband|newly ?weds?|newly married|just married|partner|girlfriend|boyfriend|fianc[eé]e?|candle ?light|private pool villa|2 adults|two adults|for two)\b/;
+export function taResortCategoryFromText(text){
+  const t=taPropertyNormalize(text);
+  if(!t) return null;
+  // Children along make it a family trip even for "2 adults and 2 kids".
+  if(KIDS_RE.test(t)) return 'family';
+  const fam=FAMILY_RE.test(t), cpl=COUPLE_RE.test(t);
+  return fam===cpl?null:fam?'family':'couple';
+}
+
+// The CRM Service Category to file the lead under this turn ('Family Resort' / 'Couple Resort'),
+// or null. Only when the agency actually lists a resort of that kind, and never over a category
+// the lead already has for something else (a Visa or Package lead stays where it is).
+export function taResortLeadCategory(properties, {userText='', sentProperties=[], currentCategory=''}={}){
+  const cur=String(currentCategory||'').trim();
+  if(cur&&!['Hotel','Family Resort','Couple Resort'].includes(cur)) return null;
+  let cat=taResortCategoryFromText(userText);
+  if(!cat){
+    const cats=new Set((sentProperties||[]).map(p=>p?.category).filter(c=>c==='family'||c==='couple'));
+    if(cats.size===1) cat=[...cats][0];
+  }
+  if(!cat||!(properties||[]).some(p=>p&&p.status!=='inactive'&&taPropertyInCategory(p,cat))) return null;
+  const out=TA_RESORT_SERVICE_CATEGORY[cat];
+  return out===cur?null:out;
 }
 
 // The properties a text names. A name matches whole-word on its own, or on its distinctive words
@@ -104,6 +145,10 @@ export function taPropertyMediaPlan(properties, {userText='', replyText='', prev
     if(inReply.length===1) return {properties:inReply, kinds:ask, explicit:true};
     const inPrev=inReply.length?[]:taPropertiesInText(withMedia, previousBotText);
     if(inPrev.length===1) return {properties:inPrev, kinds:ask, explicit:true};
+    // "Photos of your couple resorts" — the only one of that kind, when there is just one.
+    const cat=taResortCategoryFromText(userText);
+    const ofCat=cat?withMedia.filter(p=>taPropertyInCategory(p,cat)):[];
+    if(ofCat.length===1) return {properties:ofCat, kinds:ask, explicit:true};
     if(withMedia.length===1) return {properties:withMedia, kinds:ask, explicit:true};
     return null;
   }
@@ -137,8 +182,10 @@ export function taPropertyContextLines(properties){
   const active=(properties||[]).filter(p=>p&&p.status!=='inactive'&&p.name).slice(0,30);
   if(!active.length) return [];
   const lines=['## Resorts & Hotels'];
-  active.forEach(p=>{
-    let line=`- ${p.name} (${p.property_type||'resort'}${Number(p.star_rating)>0?`, ${p.star_rating}-star`:''})`;
+  // Family resorts first, then couple, then the rest — the model reads them grouped.
+  const rank=p=>({family:0,both:1,couple:2}[p.category]??3);
+  active.slice().sort((a,b)=>rank(a)-rank(b)).forEach(p=>{
+    let line=`- ${p.name} (${TA_RESORT_CATEGORY_LABEL[p.category]||p.property_type||'resort'}${Number(p.star_rating)>0?`, ${p.star_rating}-star`:''})`;
     if(p.location) line+=` — ${p.location}`;
     line+=Number(p.price_from)>0?` — from ${p.currency||'INR'} ${p.price_from} ${p.price_unit||'per night'}`:' — price on request';
     if(p.room_types) line+=` — rooms: ${String(p.room_types).replace(/\s*\n\s*/g,', ').slice(0,150)}`;
@@ -151,6 +198,7 @@ export function taPropertyContextLines(properties){
     if(media.length) line+=` — ${media.join(', ')} available`;
     lines.push(line);
   });
+  if(active.some(p=>p.category)) lines.push('Resort categories: for a family trip (kids, parents) recommend Family Resorts; for a honeymoon, anniversary or a couple recommend Couple Resorts ("Family & Couple" suits both). Ask who is travelling if it is not clear, and only recommend from this list.');
   lines.push('When a resort/hotel above has photos, video or a PDF brochure, the system sends those files to the customer automatically whenever you name that property or the customer asks for them — always use the property\'s exact name, never say you cannot send photos/videos, and never write image placeholders.');
   return lines;
 }

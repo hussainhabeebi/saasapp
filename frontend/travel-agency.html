@@ -790,6 +790,11 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
           <option value="houseboat">Houseboat</option><option value="apartment">Apartment</option><option value="camp">Camp</option><option value="other">Other</option>
         </select>
       </div>
+      <div class="form-group"><label class="form-label">Resort Category</label>
+        <select class="form-input" id="propCategory">
+          <option value="">General</option><option value="family">👨‍👩‍👧 Family Resort</option><option value="couple">💑 Couple Resort</option><option value="both">👨‍👩‍👧 💑 Family &amp; Couple</option>
+        </select>
+      </div>
       <div class="form-group"><label class="form-label">Status</label>
         <select class="form-input" id="propStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
       </div>
@@ -4343,7 +4348,7 @@ function renderTravelAnalyticsSection(){
 const TODAY = new Date().toISOString().slice(0,10);
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 function fmtDateShort(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}catch{return String(d).slice(0,10);}}
-const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Family Resort','Couple Resort','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
 // Built-in + the account's own categories (CLIENTS.lead_categories_custom, edited in the dashboard's
 // Settings → 🗂️ Service Categories) — same list as dashboard.html.
 function leadCategoriesFor(rec){
@@ -4353,7 +4358,7 @@ function leadCategoriesFor(rec){
 }
 let LEAD_CATEGORIES = BASE_LEAD_CATEGORIES.slice();
 function serviceCategoryIcon(cat){
-  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
+  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Family Resort':'👨‍👩‍👧','Couple Resort':'💑','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
     Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
     'Umrah and Hajj':'🕋','Marketing Messages':'📣','Other Services':'🧳'}[cat]||'🏷️';
 }
@@ -4406,8 +4411,14 @@ function propThumb(p){
   const id=propDriveId(p.image_url||p.image_url_2||p.image_url_3);
   return id?`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w600`:'';
 }
+// Who a resort is for — its own sections and filter chips. A Family & Couple resort is in both.
+const PROP_CATS=[['family','👨‍👩‍👧','Family Resorts'],['couple','💑','Couple Resorts'],['other','🏨','Other Resorts & Hotels']];
+const PROP_CAT_BADGE={family:'👨‍👩‍👧 Family',couple:'💑 Couple',both:'👨‍👩‍👧 💑 Family & Couple'};
+let _propCat='all';
+const propInCat=(p,cat)=>cat==='all'?true:cat==='other'?!['family','couple','both'].includes(p.category):(p.category===cat||p.category==='both');
+function setPropCat(cat){ _propCat=cat; renderAgencySubPage('properties'); }
 function renderTaProperties(){
-  const cards=_taProperties.map(p=>{
+  const card=p=>{
     const thumb=propThumb(p);
     const photos=[p.image_url,p.image_url_2,p.image_url_3].filter(Boolean).length;
     const media=[photos?`📷 ${photos}`:'',p.video_url?'🎬 Video':'',p.pdf_url?'📄 PDF':''].filter(Boolean).join(' · ');
@@ -4419,27 +4430,41 @@ function renderTaProperties(){
           <div style="font-weight:700">${esc(p.name)}</div>
           <span class="stage-pill ${p.status==='active'?'stage-done':'stage-blocked'}">${esc(p.status||'active')}</span>
         </div>
+        ${PROP_CAT_BADGE[p.category]?`<div class="prop-cat" style="display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;background:${p.category==='couple'?'#FCE7F3;color:#9D174D':p.category==='family'?'#DBEAFE;color:#1E40AF':'#EDE9FE;color:#5B21B6'}">${PROP_CAT_BADGE[p.category]}</div>`:''}
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(PROP_TYPE_LABELS[p.property_type]||'Resort')}${p.star_rating?' · '+'⭐'.repeat(p.star_rating):''}${p.location?' · '+esc(p.location):''}</div>
         <div style="font-family:var(--mono);font-size:13px;margin-top:6px">${Number(p.price_from)>0?`From ${esc(p.currency||'INR')} ${fmtMoney(p.price_from)} <span style="color:var(--muted)">${esc(p.price_unit||'per night')}</span>`:'<span style="color:var(--muted)">Price on request</span>'}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">${media||'No media yet'}</div>
       </div>
     </div>`;
+  };
+  const grid=list=>`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">${list.map(card).join('')}</div>`;
+  const count=cat=>_taProperties.filter(p=>propInCat(p,cat)).length;
+  const chips=[['all','','All'],...PROP_CATS].map(([k,icon,label])=>
+    `<button class="btn btn-sm ${_propCat===k?'btn-primary':'btn-secondary'}" data-propcat="${k}" onclick="setPropCat('${k}')">${icon?icon+' ':''}${label} <span style="opacity:.75">${count(k)}</span></button>`).join('');
+  // All: one section per category; a chip: just that category.
+  const sections=(_propCat==='all'?PROP_CATS:PROP_CATS.filter(([k])=>k===_propCat)).map(([k,icon,label])=>{
+    const list=_taProperties.filter(p=>propInCat(p,k));
+    if(!list.length&&_propCat==='all') return '';
+    return `<div class="prop-sec" data-sec="${k}" style="margin-bottom:18px">
+      <div style="font-family:var(--disp);font-size:14px;font-weight:700;margin:4px 2px 10px">${icon} ${label} <span style="color:var(--muted);font-weight:500">(${list.length})</span></div>
+      ${list.length?grid(list):`<div class="ta-card" style="text-align:center;padding:30px;color:var(--muted);font-size:13px">No ${label.toLowerCase()} yet — set <strong>Resort Category</strong> on a property to list it here.</div>`}
+    </div>`;
   }).join('');
   return `
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🏨 Resorts &amp; Hotels</div>
     <button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button>
   </div>
-  ${_taProperties.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">${cards}</div>`
+  ${_taProperties.length?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${chips}</div>${sections}`
     :'<div class="ta-card" style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No resorts or hotels yet — click <strong>+ Add Property</strong> to add one with its photos, video and PDF brochure.</div>'}
   <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
-    💡 The bot sends a property's photos, video and PDF straight to the lead when they name it, ask for its photos/video/brochure, or the bot recommends it.
+    💡 The bot sends a property's photos, video and PDF straight to the lead when they name it, ask for its photos/video/brochure, or the bot recommends it. It suggests Family Resorts for trips with kids or family and Couple Resorts for honeymoons and couples, and files the lead under that category in the CRM.
   </div>`;
 }
 
 let _editPropId=null;
-const PROP_INPUTS={name:'propName',property_type:'propType',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',video_url:'propVideo',pdf_url:'propPdf'};
-const PROP_DEFAULTS={property_type:'resort',status:'active',currency:'INR',price_unit:'per night'};
+const PROP_INPUTS={name:'propName',property_type:'propType',category:'propCategory',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',video_url:'propVideo',pdf_url:'propPdf'};
+const PROP_DEFAULTS={property_type:'resort',category:'',status:'active',currency:'INR',price_unit:'per night'};
 function openPropertyModal(id){
   _editPropId=id||null;
   const p=id?(_taProperties.find(x=>String(x.id)===String(id))||{}):{};
