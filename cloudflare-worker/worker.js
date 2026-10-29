@@ -12,7 +12,7 @@ import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
-import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines} from './ta-properties.js';
+import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -10121,6 +10121,7 @@ async function taPropertyEnsureSchema(env){
     client_id TEXT NOT NULL,
     name TEXT NOT NULL,
     property_type TEXT DEFAULT 'resort',
+    category TEXT DEFAULT '',
     location TEXT,
     star_rating INTEGER,
     room_types TEXT,
@@ -10149,6 +10150,9 @@ async function taPropertyEnsureSchema(env){
     sent_at TEXT NOT NULL,
     PRIMARY KEY(client_id, lead_id, property_id, sent_date)
   )`).run();
+  // category (Family / Couple Resort) came after the table did — add it to an existing table.
+  const {results:cols}=await env.DB.prepare(`PRAGMA table_info(ta_properties)`).all();
+  if(cols&&!cols.some(c=>c.name==='category')) await env.DB.prepare(`ALTER TABLE ta_properties ADD COLUMN category TEXT DEFAULT ''`).run();
   _taPropertySchemaEnsured=true;
 }
 
@@ -10226,12 +10230,16 @@ async function taClaimPropertyMediaForToday(env, clientId, leadId, propertyId){
 // Called after a travel_faq reply: forwards the photos/video/PDF of the resort or hotel the lead
 // named, asked media for, or the bot just recommended. Best-effort — a file that can't be fetched
 // (not shared publicly, too large) is skipped by sendDriveMediaToChatwoot.
-async function travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText, previousBotText, leadId}){
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+// Returns the CRM Service Category to file the lead under — 'Family Resort' / 'Couple Resort' when
+// the lead is after that kind of resort (or was just sent one) — or null.
+async function travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText, previousBotText, leadId, currentCategory}){
+  let properties=[], sent=[];
   try{
-    const plan=taPropertyMediaPlan(await taPropertiesForClient(env, clientId), {userText, replyText, previousBotText});
-    if(!plan) return;
-    for(const p of plan.properties){
+    properties=await taPropertiesForClient(env, clientId);
+    const plan=c.chatwoot_base&&c.chatwoot_account_id&&c.chatwoot_token
+      ?taPropertyMediaPlan(properties, {userText, replyText, previousBotText}):null;
+    for(const p of plan?.properties||[]){
+      sent.push(p);
       const claimed=await taClaimPropertyMediaForToday(env, clientId, leadId, p.id);
       if(!claimed&&!plan.explicit) continue;
       for(const item of taPropertyMediaItems(p, plan.kinds)){
@@ -10239,6 +10247,7 @@ async function travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText,
       }
     }
   }catch(e){ await reportOpsError(env, 'travelMaybeSendPropertyMedia', e, {clientId, convId}); }
+  return taResortLeadCategory(properties, {userText, sentProperties:sent, currentCategory});
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -19923,7 +19932,7 @@ export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,p
 }
 
 // ── WhatsApp menu + guided booking (live-travel-wa-menu.js) ──────────────────
-const LT_BASE_LEAD_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+const LT_BASE_LEAD_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Family Resort','Couple Resort','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
 let _ltMenuTravelFlowColumn=false,_ltMenuTravelSettingsColumn=false;
 async function ltMenuEnsureSchema(env){
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_wa_menu (client_id INTEGER PRIMARY KEY, menu_json TEXT NOT NULL DEFAULT '{}', updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, travel_flow INTEGER, travel_settings TEXT)`).run();
@@ -27461,7 +27470,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // Auto-send attestation service checklist PDF when the bot's reply names a specific service
       if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
       // Resort/hotel photos, video and brochure — when the lead names one, asks for its media, or the reply recommends it
-      if(routing.route==='travel_faq') await travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText:sentText, previousBotText:state.botMsgs?.[state.botMsgs.length-1]||'', leadId:state.leadId});
+      // — and files the lead under Family Resort / Couple Resort when that's what they're after.
+      if(routing.route==='travel_faq'){
+        const resortCategory=await travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText:sentText, previousBotText:state.botMsgs?.[state.botMsgs.length-1]||'', leadId:state.leadId, currentCategory:state.lead?.ServiceCategory});
+        if(resortCategory&&!routing.serviceCategory){ routing.serviceCategory=resortCategory; await ensureLeadsColumns(env,['ServiceCategory']).catch(()=>{}); }
+      }
       if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);

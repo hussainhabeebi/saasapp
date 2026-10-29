@@ -1082,7 +1082,7 @@ function closeDd(){$('ddMenu')?.remove();syncBackdrop()}
 // ── Travel: the lead's Service Category, set from the header (🗂) or the contact panel. Saved on the
 // lead (ServiceCategory) like the CRM's Edit Lead, so Leads, Home and Reports count it; the Worker
 // copies it onto the conversation for the category chips. Same list as dashboard.html LEAD_CATEGORIES.
-const SERVICE_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+const SERVICE_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Family Resort','Couple Resort','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
 function isTravelInbox(){return V2&&!!boot2?.travel}
 // Built-in list + the account's custom categories (Settings → 🗂️ Service Categories).
 function serviceCategories(){return [...new Set([...SERVICE_CATEGORIES,...(boot2?.categories_custom||[])])]}

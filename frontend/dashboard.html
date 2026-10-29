@@ -1479,7 +1479,7 @@ const CROSS_SELL_DEFAULTS = {
 // Service Category field, the Leads page category filter, the Travel Agency Home page's
 // categorized-leads widget, and the per-user "lead categories" access restriction below.
 // Ticket / Package / Hotel / Other Services are the original four — kept so existing leads still match.
-const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Family Resort','Couple Resort','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
 // Built-in categories plus the account's own (Settings → 🗂️ Service Categories, stored as a JSON
 // array in CLIENTS.lead_categories_custom). Rebuilt by refreshLeadCategories() whenever the client
 // record loads or the list is edited, so every picker, filter and report sees the same list.
@@ -1499,7 +1499,7 @@ function refreshLeadCategories(){
     if(v&&![...cf.options].some(o=>o.value===v)) cf.insertAdjacentHTML('beforeend',`<option value="${esc(v)}">${esc(v)}</option>`); cf.value=v; }
 }
 function serviceCategoryIcon(cat){
-  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
+  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Family Resort':'👨‍👩‍👧','Couple Resort':'💑','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
     Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
     'Umrah and Hajj':'🕋','Marketing Messages':'📣','Other Services':'🧳'}[cat]||'🏷️';
 }
