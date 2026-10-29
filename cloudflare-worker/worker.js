@@ -7284,6 +7284,8 @@ async function shopifySyncEcomProducts(env, c, products, opts={}){
   const saved=[...updates.map(u=>({...byId.get(u.Id), ...u})), ...creates.map((f, i)=>({...f, currency, Id:created[i]?.Id}))].filter(p=>p.Id);
   await ecomMirrorProductsToD1(env, c.Id, saved);
   await kvDelEcomProducts(env, c.Id);
+  // Inactive ones (draft/unlisted/unpublished in Shopify) only drop their memory — cheap, so no cap.
+  for(const p of saved.filter(p=>p.status==='inactive')) await engineMemoryIndexProduct(env, c.Id, p).catch(()=>{});
   for(const p of saved.filter(p=>p.status!=='inactive').slice(0, 60)) await engineMemoryIndexProduct(env, c.Id, p).catch(()=>{});
   return {created:creates.length, updated:updates.length};
 }
@@ -21859,14 +21861,29 @@ async function engineMemoryUpsert(env, {clientId, leadId, kind, refId, text}){
 }
 
 // Called from handleEcomCreate/handleEcomUpdate (kind==='products') right after a successful save
-// — see those call sites.
+// — see those call sites. Drops the product's earlier chunks first (so a re-save doesn't pile up
+// stale text), and an inactive product is only dropped — the bot must not recall it to customers.
 async function engineMemoryIndexProduct(env, clientId, product){
-  if(!product?.name) return;
+  await engineMemoryForgetProduct(env, clientId, product?.Id||product?.id);
+  if(!product?.name || product.status==='inactive') return;
   const parts=[product.name];
   if(product.category) parts.push('Category: '+product.category);
   if(product.description) parts.push(product.description);
   parts.push(...ecomStyleAttributeLines(product));
   await engineMemoryUpsert(env, {clientId, kind:'product', refId:product.Id||product.id, text:parts.filter(Boolean).join('. ')});
+}
+
+// Retrieval skips chunks whose D1 row is gone, so deleting the rows is enough; the vectors are
+// removed too so they stop taking topK slots.
+async function engineMemoryForgetProduct(env, clientId, productId){
+  if(!env.MEMORY_INDEX || !env.DB || !productId) return;
+  try{
+    const {results}=await env.DB.prepare(`SELECT id FROM memory_chunks WHERE client_id=? AND kind='product' AND ref_id=?`).bind(Number(clientId), String(productId)).all();
+    const ids=(results||[]).map(r=>r.id);
+    if(!ids.length) return;
+    await env.DB.prepare(`DELETE FROM memory_chunks WHERE client_id=? AND kind='product' AND ref_id=?`).bind(Number(clientId), String(productId)).run();
+    await env.MEMORY_INDEX.deleteByIds(ids).catch(()=>{});
+  }catch(e){ console.error('[engineMemoryForgetProduct] failed', e.message); }
 }
 
 // Called from handleEcomCategoryCreate/handleEcomCategoryUpdate right after a successful save.
