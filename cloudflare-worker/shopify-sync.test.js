@@ -145,11 +145,18 @@ test('a Shopify product maps to one Ecom product', () => {
   assert.equal(f.image_url, 'https://cdn/k1.jpg');
   assert.equal(f.image_url_2, 'https://cdn/k2.jpg');
   assert.equal('image_url_3' in f, false); // a photo added in Ecom stays
-  // Unlisted = sold by direct link, hidden from the storefront: still a live product with its link.
+  // Unlisted / not published to the Online Store: never shared with customers.
   const unlisted = shopifyEcomProductFields(SHOP, { ...KURTA, status: 'unlisted' });
-  assert.equal(unlisted.status, 'active');
-  assert.equal(unlisted.shopify_product_url, 'https://demo.myshopify.com/products/kurta');
-  assert.equal(shopifyEcomProductPlan(SHOP, [], [{ ...KURTA, status: 'unlisted' }]).creates.length, 1);
+  assert.equal(unlisted.status, 'inactive');
+  assert.equal(unlisted.shopify_product_url, '');
+  assert.equal(shopifyEcomProductPlan(SHOP, [], [{ ...KURTA, status: 'unlisted' }]).creates.length, 0);
+  const hidden = shopifyEcomProductFields(SHOP, { ...KURTA, status: 'active', published_at: null });
+  assert.equal(hidden.status, 'inactive');
+  assert.equal(hidden.shopify_product_url, '');
+  assert.equal(shopifyEcomProductFields(SHOP, { ...KURTA, published_at: '2026-01-01T00:00:00Z' }).status, 'active');
+  // An imported product that goes unlisted later is switched off on the next sync.
+  const plan = shopifyEcomProductPlan(SHOP, [{ Id: 9, shopify_product_id: String(KURTA.id), status: 'active' }], [{ ...KURTA, status: 'unlisted' }]);
+  assert.equal(plan.updates[0].status, 'inactive');
   const draft = shopifyEcomProductFields(SHOP, { ...KURTA, status: 'draft' });
   assert.equal(draft.status, 'inactive');
   assert.equal(draft.shopify_product_url, '');
