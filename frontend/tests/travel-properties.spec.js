@@ -49,3 +49,46 @@ test('lists resorts/hotels and saves a new property with Drive media', async ({ 
   expect(posts.at(-1)).toMatchObject({ client_id: '7', name: 'Taj Bekal', property_type: 'hotel', status: 'active', currency: 'INR', price_unit: 'per night',
     image_url: 'https://drive.google.com/file/d/img9/view', pdf_url: 'https://drive.google.com/file/d/pdf9/view' });
 });
+
+test('Family and Couple resorts get their own sections and filter chips; category is saved', async ({ page }) => {
+  const ids = { packages: 'tp', bookings: 'tb', cases: 'tc', itineraries: 'ti', umrah_groups: 'tu' };
+  const posts = [];
+  const list = [
+    { id: 1, name: 'Kids Paradise', category: 'family', status: 'active' },
+    { id: 2, name: 'Honeymoon Hills', category: 'couple', status: 'active' },
+    { id: 3, name: 'Lake Breeze', category: 'both', status: 'active' },
+    { id: 4, name: 'City Inn', property_type: 'hotel', category: '', status: 'active' },
+  ];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (!url.startsWith(WORKER)) return route.abort();
+    const u = new URL(url);
+    if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids) } });
+    if (u.pathname === '/ta/properties' && req.method() === 'GET') return route.fulfill({ json: { list } });
+    if (u.pathname === '/ta/properties' && req.method() === 'POST') { posts.push(req.postDataJSON()); return route.fulfill({ json: { ok: true, id: 9 } }); }
+    return route.fulfill({ json: { list: [] } });
+  });
+  await page.goto('file://' + path.resolve(__dirname, '../travel-agency.html') + '?client=7&token=t&embed=1&shell=travel&tab=properties', { waitUntil: 'domcontentloaded' });
+  const content = page.locator('#agencyContent');
+  await expect(content).toContainText('Kids Paradise');
+  const names = (sec) => content.locator(`.prop-sec[data-sec="${sec}"] .ta-card div[style*="font-weight:700"]`).allTextContents();
+  expect(await names('family')).toEqual(['Kids Paradise', 'Lake Breeze']);
+  expect(await names('couple')).toEqual(['Honeymoon Hills', 'Lake Breeze']);
+  expect(await names('other')).toEqual(['City Inn']);
+  await expect(content.locator('[data-propcat="family"]')).toContainText('2');
+  await expect(content.locator('[data-propcat="couple"]')).toContainText('2');
+  if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT, fullPage: true });
+
+  await content.locator('[data-propcat="couple"]').click();
+  await expect(content.locator('.prop-sec')).toHaveCount(1);
+  expect(await names('couple')).toEqual(['Honeymoon Hills', 'Lake Breeze']);
+  await expect(content.locator('.prop-sec[data-sec="couple"] .prop-cat').first()).toHaveText('💑 Couple');
+
+  await page.click('text=+ Add Property');
+  await page.fill('#propName', 'Tiny Tots Resort');
+  await page.selectOption('#propCategory', 'family');
+  await page.click('#savePropBtn');
+  await expect(page.locator('#savePropMsg')).toHaveText('✓ Saved');
+  expect(posts.at(-1)).toMatchObject({ name: 'Tiny Tots Resort', category: 'family' });
+});

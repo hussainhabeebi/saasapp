@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { taPropertyClean, taPropertyMediaRequest, taPropertiesInText, taPropertyMediaPlan, taPropertyMediaItems, taPropertyContextLines, taPropertyMediaUrlError } from './ta-properties.js';
+import { taPropertyClean, taPropertyMediaRequest, taPropertiesInText, taPropertyMediaPlan, taPropertyMediaItems, taPropertyContextLines, taPropertyMediaUrlError, taResortCategoryFromText, taResortLeadCategory } from './ta-properties.js';
 
 const drive = id => `https://drive.google.com/file/d/${id}/view?usp=sharing`;
 const props = [
@@ -87,4 +87,57 @@ test('bot context lists active properties and tells the model media is sent for 
   assert.ok(lines.some(l => l.includes('Spice Village Resort (resort, 4-star) — Thekkady — from INR 8500 per night') && l.includes('photos, video, PDF brochure available')));
   assert.ok(!lines.some(l => l.includes('Old Closed Resort')));
   assert.match(lines.at(-1), /never say you cannot send photos/);
+});
+
+const catProps = [
+  { id: 11, name: 'Kids Paradise Resort', category: 'family', image_url: drive('f1'), status: 'active' },
+  { id: 12, name: 'Honeymoon Hills', category: 'couple', image_url: drive('c1'), pdf_url: drive('c2'), status: 'active' },
+  { id: 13, name: 'Lake Breeze', category: 'both', image_url: drive('b1'), status: 'active' },
+  { id: 14, name: 'City Inn', category: '', image_url: drive('g1'), status: 'active' },
+];
+
+test('who the resort is for: kids mean family, honeymoon/romantic mean couple', () => {
+  assert.equal(taResortCategoryFromText('family trip to Munnar'), 'family');
+  assert.equal(taResortCategoryFromText('we are 2 adults and 2 kids'), 'family');
+  assert.equal(taResortCategoryFromText('looking for a honeymoon resort'), 'couple');
+  assert.equal(taResortCategoryFromText('anniversary stay with my wife'), 'couple');
+  assert.equal(taResortCategoryFromText('family and couple both'), null);
+  assert.equal(taResortCategoryFromText('price for 2 nights?'), null);
+});
+
+test('category is saved on a property; anything else is general', () => {
+  assert.equal(taPropertyClean({ name: 'A', category: 'family' }).values.category, 'family');
+  assert.equal(taPropertyClean({ name: 'A', category: 'both' }).values.category, 'both');
+  assert.equal(taPropertyClean({ name: 'A', category: 'kids' }).values.category, '');
+  assert.deepEqual(taPropertyClean({ category: 'couple' }, true).values, { category: 'couple' });
+});
+
+test('photos of "your couple resort" send the one couple resort (a Family & Couple one counts too)', () => {
+  const onlyCouple = catProps.filter((p) => p.id !== 13);
+  const plan = taPropertyMediaPlan(onlyCouple, { userText: 'send photos of your honeymoon resort' });
+  assert.deepEqual(plan.properties.map((p) => p.id), [12]);
+  assert.deepEqual(plan.kinds, { images: true, video: false, pdf: false });
+  assert.equal(taPropertyMediaPlan(catProps, { userText: 'send photos of your honeymoon resort' }), null); // two couple resorts — can't pick
+});
+
+test('lead is filed under Family Resort / Couple Resort only when the agency has one, never over another category', () => {
+  assert.equal(taResortLeadCategory(catProps, { userText: 'resort for honeymoon' }), 'Couple Resort');
+  assert.equal(taResortLeadCategory(catProps, { userText: 'trip with kids' }), 'Family Resort');
+  assert.equal(taResortLeadCategory(catProps, { userText: 'price?', sentProperties: [catProps[0]] }), 'Family Resort');
+  assert.equal(taResortLeadCategory(catProps, { userText: 'price?', sentProperties: [catProps[3]] }), null);
+  assert.equal(taResortLeadCategory(catProps, { userText: 'honeymoon', currentCategory: 'Visa' }), null);
+  assert.equal(taResortLeadCategory(catProps, { userText: 'honeymoon', currentCategory: 'Hotel' }), 'Couple Resort');
+  assert.equal(taResortLeadCategory(catProps, { userText: 'honeymoon', currentCategory: 'Couple Resort' }), null); // already there
+  assert.equal(taResortLeadCategory([catProps[3]], { userText: 'honeymoon' }), null); // no couple resort listed
+  assert.equal(taResortLeadCategory([catProps[2]], { userText: 'honeymoon' }), 'Couple Resort'); // Family & Couple resort counts
+});
+
+test('bot context groups family before couple and labels each, with the recommendation rule', () => {
+  const lines = taPropertyContextLines(catProps);
+  const names = lines.filter((l) => l.startsWith('- ')).map((l) => l.slice(2).split(' (')[0]);
+  assert.deepEqual(names, ['Kids Paradise Resort', 'Lake Breeze', 'Honeymoon Hills', 'City Inn']);
+  assert.ok(lines.some((l) => l.startsWith('- Honeymoon Hills (Couple Resort')));
+  assert.ok(lines.some((l) => l.startsWith('- Lake Breeze (Family & Couple Resort')));
+  assert.ok(lines.some((l) => /honeymoon, anniversary or a couple recommend Couple Resorts/.test(l)));
+  assert.ok(!taPropertyContextLines([catProps[3]]).some((l) => /Resort categories/.test(l)));
 });
