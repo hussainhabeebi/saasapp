@@ -4164,6 +4164,57 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">✂️ Reply Style</div>
+            <div class="s-note">Turn these on to keep bot replies short and to the point. Each one can be switched on separately; the bot still always includes the facts the customer asked for.</div>
+            <div style="margin-top:12px">
+              <label class="form-label">Concise Communication</label>
+              <div class="s-note">Speak briefly, simply, and directly without elaboration.</div>
+              <div style="flex:1;min-width:200px;max-width:300px;margin-top:8px">
+                <select class="form-input" id="cfgConciseCommunication">
+                  <option value="No">Off</option>
+                  <option value="Yes">On</option>
+                </select>
+              </div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">Core Focus</label>
+              <div class="s-note">Provide only the specific property features, details, and rates requested.</div>
+              <div style="flex:1;min-width:200px;max-width:300px;margin-top:8px">
+                <select class="form-input" id="cfgCoreFocus">
+                  <option value="No">Off</option>
+                  <option value="Yes">On</option>
+                </select>
+              </div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">No Fluff</label>
+              <div class="s-note">Avoid long paragraphs, extra explanations, and unnecessary descriptions.</div>
+              <div style="flex:1;min-width:200px;max-width:300px;margin-top:8px">
+                <select class="form-input" id="cfgNoFluff">
+                  <option value="No">Off</option>
+                  <option value="Yes">On</option>
+                </select>
+              </div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">Direct Answers</label>
+              <div class="s-note">Deliver straightforward information immediately to the point.</div>
+              <div style="flex:1;min-width:200px;max-width:300px;margin-top:8px">
+                <select class="form-input" id="cfgDirectAnswers">
+                  <option value="No">Off</option>
+                  <option value="Yes">On</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
+              <button class="save-btn" id="saveReplyStyle">Save</button>
+              <span class="save-msg" id="saveReplyStyleMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:14px" id="pfFollowupButtonsCard" style="display:none">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🔘 Prompt-First Follow-up Buttons</div>
@@ -14063,6 +14114,7 @@ function populateBotBehaviorPage(){
   $id('cfgV2NudgeHours').value=botConfig.v2_nudge_hours||'';
   $id('cfgV2NudgeText').value=botConfig.v2_nudge_text||'';
   $id('cfgV2FollowupGuard').value=botConfig.v2_followup_guard===true?'Yes':'No';
+  REPLY_STYLE_FIELDS.forEach(([id,key])=>{ $id(id).value=botConfig[key]===true?'Yes':'No'; });
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -14122,6 +14174,12 @@ $id('saveObjectionHandlingEnabled').addEventListener('click',async()=>{
   const off=$id('cfgObjectionHandlingEnabled').value==='No';
   if(off) botConfig.objection_handling_enabled=false; else delete botConfig.objection_handling_enabled;
   await saveField('saveObjectionHandlingEnabled','saveObjectionHandlingEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+const REPLY_STYLE_FIELDS=[['cfgConciseCommunication','concise_communication'],['cfgCoreFocus','core_focus'],['cfgNoFluff','no_fluff'],['cfgDirectAnswers','direct_answers']];
+$id('saveReplyStyle').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  REPLY_STYLE_FIELDS.forEach(([id,key])=>{ if($id(id).value==='Yes') botConfig[key]=true; else delete botConfig[key]; });
+  await saveField('saveReplyStyle','saveReplyStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveProactiveHandoverEnabled').addEventListener('click',async()=>{
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
