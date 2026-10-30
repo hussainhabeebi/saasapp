@@ -2,7 +2,7 @@
 // WhatsApp Manager, 24 products added in Meta, a System User catalog token saved in Leadvyne.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { waShopHandleRoute, waShopProcessWebhook, waShopTokens, waShopLinkError, waShopParseMetaPrice,
+import { waShopHandleRoute, waShopProcessWebhook, waShopTokens, waShopLinkError, waShopLinkDiagnosis, waShopParseMetaPrice,
   waShopMetaItemProduct, waShopProductListPayload, waShopConfig, waShopHasProducts } from './wa-commerce.js';
 
 const ITEMS = Array.from({ length: 24 }, (_, i) => ({ id: 'm' + i, retailer_id: 'CP-' + i, name: 'Baby set ' + i, price: '₹899.00', currency: 'INR', category: i < 12 ? 'Premium Sets' : 'Cord Sets', availability: 'in stock' }));
@@ -114,4 +114,19 @@ test('tokens: catalog token first for catalog calls, WhatsApp token first for th
   assert.deepEqual(waShopTokens({ wa_shop_catalog_token: 'C' }, { wa_token: 'W' }), ['C', 'W']);
   assert.deepEqual(waShopTokens({ wa_shop_catalog_token: 'C' }, { wa_token: 'W' }, 'whatsapp'), ['W', 'C']);
   assert.deepEqual(waShopTokens({}, { wa_token: 'W' }), ['W']);
+});
+
+test('"invalid catalogue ID" from Meta: says whether the token can see it and which business owns it', async () => {
+  const h = harness({ meta: {
+    'WABA/product_catalogs?fields': { method: 'GET', body: { data: [] } },
+    'WABA/product_catalogs': { method: 'POST', status: 400, body: { error: { message: 'Cannot link WhatsApp Business account with an invalid product catalogue ID.' } } },
+    '1484032813531427?fields=id,name,business': { body: { id: '1484032813531427', name: 'Couplo', business: { id: 'B1', name: 'Couplo Kids' } } },
+    'WABA?fields=id,name,owner_business_info': { body: { id: 'WABA', owner_business_info: { id: 'B2', name: 'Couplo WhatsApp' } } },
+  } });
+  const r = await h.call('/ecom/wa-shop/connect', { catalog_id: '1484032813531427' });
+  assert.equal(r.s, 502);
+  assert.match(r.d.error, /belongs to the business "Couplo Kids", but your WhatsApp account belongs to "Couplo WhatsApp"/);
+
+  assert.match(waShopLinkDiagnosis({ catalogId: '1', catalog: null, blind: ['catalog token: (#100) Unsupported get request'] }), /None of your saved tokens can open catalog 1 \(catalog token: \(#100\)/);
+  assert.match(waShopLinkDiagnosis({ catalogId: '1', catalog: { name: 'Shop', business: { id: 'B' } }, waba: { owner_business_info: { id: 'B' } }, linkError: 'x' }), /Link it once by hand — WhatsApp Manager/);
 });

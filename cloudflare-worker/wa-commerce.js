@@ -370,7 +370,8 @@ async function handleConnect(request, env, deps){
     // Meta's "already connected to this account" refusal = done; anything else (e.g. a different
     // catalog holds the WhatsApp account's one slot) is a real failure.
     if(link.ok || (!otherCatalog && /\balready\b/i.test(link.error))) alreadyLinked=!link.ok;
-    else return deps.json({error:waShopLinkError(link, otherCatalog)}, 502);
+    else if(otherCatalog) return deps.json({error:waShopLinkError(link, otherCatalog)}, 502);
+    else return deps.json({error:await diagnoseLink(c, cr, cfg.catalog_id, link)}, 502);
   }
   // 3. Show the catalog and the cart on the number.
   const show=await graphAny(`${cr.wa_phone_id}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`, waShopTokens(c, cr, 'whatsapp'), {method:'POST'});
@@ -381,6 +382,32 @@ async function handleConnect(request, env, deps){
     ...(info.ok?{catalog_name:info.name, catalog_count:info.count, meta_items:info.items.slice(0,100), meta_items_at:new Date().toISOString()}:{})});
   return deps.json({ok:true, already_linked:alreadyLinked, catalog_name:info.ok?info.name:'', product_count:info.ok?info.count:null,
     ...(info.ok?{}:{warning:`Linked, but the catalog's products couldn't be read: ${info.error}`})});
+}
+// Couplo (Oct 2026): Meta answered "invalid product catalogue ID" for a real catalog, even with a
+// System User token saved — that text also covers "this token can't see it" and "the catalog belongs
+// to a different business than the WhatsApp account". Ask Meta which one it is, per token.
+async function diagnoseLink(c, cr, catalogId, link){
+  const cat=String(c?.[WA_SHOP_TOKEN_FIELD]||'').trim(), wa=String(cr?.wa_token||'').trim();
+  const tokens=[...(cat?[['catalog token', cat]]:[]), ...(wa&&wa!==cat?[['WhatsApp token', wa]]:[])];
+  let catalog=null, waba=null; const blind=[];
+  for(const [label, t] of tokens){
+    const r=await graph(`${catalogId}?fields=id,name,business{id,name}`, t);
+    if(r.ok){ catalog=catalog||r.data; } else blind.push(`${label}: ${r.error}`);
+    if(!waba){ const w=await graph(`${cr.waba_id}?fields=id,name,owner_business_info`, t); if(w.ok) waba=w.data; }
+  }
+  return waShopLinkDiagnosis({catalogId, catalog, waba, blind, linkError:link?.error});
+}
+export function waShopLinkDiagnosis({catalogId, catalog, waba, blind=[], linkError=''}){
+  if(!catalog) return `None of your saved tokens can open catalog ${catalogId} (${blind.join('; ')||linkError}). `+
+    `Either the ID isn't the catalog's (Commerce Manager → the catalog → Settings → Catalog ID — not the Business or Commerce account ID), `+
+    `or the System User behind the catalog token isn't assigned to this catalog (Business Settings → Data sources → Catalogs → Assign people → your System User, Full control), then generate a new token.`;
+  const cb=catalog.business||{}, wb=waba?.owner_business_info||{};
+  const name=catalog.name?`"${catalog.name}"`:catalogId;
+  if(cb.id&&wb.id&&String(cb.id)!==String(wb.id))
+    return `Catalog ${name} belongs to the business "${cb.name||cb.id}", but your WhatsApp account belongs to "${wb.name||wb.id}". `+
+      `Meta only links a catalog owned by the same business as the WhatsApp account — create the catalog in Commerce Manager under "${wb.name||wb.id}" and use that ID.`;
+  return `Catalog ${name} exists and your token can see it, but Meta still refused to link it (${linkError}). `+
+    `Link it once by hand — WhatsApp Manager → Account tools → Catalog → Choose a catalog (or Commerce Manager → Settings → Business assets → WhatsApp accounts) — then press "Link to my WhatsApp" again.`;
 }
 // A Meta refusal in words the merchant can act on.
 export function waShopLinkError(r, otherCatalog=null){
