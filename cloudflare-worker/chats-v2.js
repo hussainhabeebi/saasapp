@@ -336,6 +336,30 @@ export async function chatsV2MessageStatus(env, clientId, {cwId, convId, content
   return Number(row.lead_id);
 }
 
+// Fallback for receipts that never arrive by webhook (e.g. a Chatwoot webhook still missing its
+// message_updated subscription): while a chat is open, read the latest messages' status from
+// Chatwoot — only when a recent reply isn't read yet, and at most every 20s per chat.
+const statusPolledAt=new Map();
+const webhookChecked=new Set();
+export async function chatsV2PollStatuses(env, deps, c, cid, row, nowMs=Date.now()){
+  if(!deps.cwMessages||!row?.conv_id) return 0;
+  const key=String(row.lead_id);
+  if(nowMs-(statusPolledAt.get(key)||0)<20e3) return 0;
+  statusPolledAt.set(key, nowMs);
+  if(statusPolledAt.size>5000) statusPolledAt.delete(statusPolledAt.keys().next().value);
+  const pending=await env.DB.prepare(`SELECT 1 AS x FROM lead_messages WHERE lead_id=? AND role='assistant' AND kind NOT IN ('note','event') AND ts>=? AND status NOT IN ('read','failed') LIMIT 1`)
+    .bind(Number(row.lead_id), new Date(nowMs-7*864e5).toISOString()).first();
+  if(!pending) return 0;
+  const msgs=await deps.cwMessages(env, c, row.conv_id);
+  let changed=0;
+  // Newest first, so a text sent twice pairs its newest copy with the newest unlinked row.
+  for(const m of [...(msgs||[])].reverse()){
+    if(m?.private||!(m?.message_type===1||m?.message_type==='outgoing')||!m.status) continue;
+    if(await chatsV2MessageStatus(env, cid, {cwId:m.id, convId:row.conv_id, content:m.content, status:String(m.status)})) changed++;
+  }
+  return changed;
+}
+
 // A NocoDB lead PATCH made by some other path (v1 /chat/* routes, the engine's lead upsert, the
 // dashboard's NocoDB passthrough) mirrored onto the conversation row straight away, instead of
 // waiting for the next reconcile. Only touches a row that already exists; only fields present.
@@ -1017,6 +1041,13 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
   const t0=Date.now();
   try{
     if(path==='/chats/v2/bootstrap'&&method==='GET'){
+      // Older Chatwoot webhooks were registered without message_updated, so delivery/read ticks
+      // never arrived until someone re-saved Settings. Re-check the registration once per isolate.
+      if(deps.syncWebhook&&!webhookChecked.has(cid)){
+        webhookChecked.add(cid);
+        const p=deps.syncWebhook(env, c).catch(()=>{});
+        if(ctx?.waitUntil) ctx.waitUntil(p);
+      }
       const {results:canned}=await env.DB.prepare('SELECT id, shortcut, body FROM canned_responses WHERE client_id=? ORDER BY shortcut LIMIT 500').bind(cid).all();
       const {results:lab}=await env.DB.prepare(`SELECT labels FROM conversations WHERE client_id=? AND labels<>'' GROUP BY labels LIMIT 500`).bind(cid).all();
       const labels=[...new Set((lab||[]).flatMap(r=>labelsOf(r.labels)))].sort((x,y)=>x.localeCompare(y));
@@ -1072,6 +1103,11 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
         await env.DB.prepare('UPDATE conversations SET media_backfilled=1 WHERE lead_id=?').bind(leadId).run();
         const p=deps.backfillMedia(env, c, cid, {Id:leadId, ConversationID:row.conv_id}).catch(()=>{});
         if(ctx?.waitUntil) ctx.waitUntil(p);
+      }
+      if(!qp.before){
+        // Bounded so a slow Chatwoot never holds up the thread.
+        await Promise.race([chatsV2PollStatuses(env, deps, c, cid, row).catch(()=>0), new Promise(r=>setTimeout(r, 2500))]);
+        row=await convRow(env, leadId)||row;
       }
       const out=await chatsV2Thread(env, leadId, qp);
       return json({...out, conversation:row, ms:Date.now()-t0});

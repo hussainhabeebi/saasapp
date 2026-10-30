@@ -2040,6 +2040,18 @@ export async function chatwootMessageStatus(c, convId, msgId){
   }catch(e){ return ''; }
 }
 
+// The latest page (20) of a conversation's Chatwoot messages, each with its delivery status.
+export async function chatwootRecentMessages(c, convId){
+  const conv=Number(convId);
+  if(!conv||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return [];
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv}/messages`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return [];
+    const d=await r.json().catch(()=>null);
+    return Array.isArray(d?.payload)?d.payload:[];
+  }catch(e){ return []; }
+}
+
 // Shared by /chat/send and Chats v2 scheduled messages (chats-v2.js chatsV2RunScheduled).
 async function chatSendTextCore(env, c, payload, body){
   const {conv_id, lead_id, reply_to}=body;
@@ -35177,6 +35189,10 @@ const CHATS_V2_DEPS={
   broadcast:engineBroadcastUpdate,
   handover:chatHandoverCore,
   sendText:chatSendTextCore,
+  // Delivery ticks: recent Chatwoot messages (with status) for the open chat, and a check that the
+  // engine webhook is subscribed to message_updated.
+  cwMessages:(env, c, convId)=>chatwootRecentMessages(c, convId),
+  syncWebhook:(env, c)=>engineSyncChatwootWebhook(env, c),
   // WhatsApp Cloud API block list (Block contact). Needs the channel's own Meta credentials.
   waBlock:async(env, c, phone, inboxId, block)=>{
     const creds=resolveMetaCredentials(c, {inbox_id:inboxId});

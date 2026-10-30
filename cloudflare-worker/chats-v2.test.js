@@ -10,7 +10,7 @@ import {
   toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access, chatsV2CreatedVia,
   chatsV2Ready, chatsV2AfterInsert, chatsV2ApplyLeadPatch, chatsV2List, chatsV2Counts, chatsV2Thread,
   chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai, chatsV2CompileFilter, chatsV2RunScheduled,
-  chatsV2NextStatus, chatsV2MessageStatus,
+  chatsV2NextStatus, chatsV2MessageStatus, chatsV2PollStatuses,
 } from './chats-v2.js';
 
 function d1(db){
@@ -210,6 +210,28 @@ describe('delivery ticks', ()=>{
     assert.equal(await chatsV2MessageStatus(env, CID, {cwId:901, convId:77, content:'It is 99', status:'read'}), 52);
     assert.equal(db.prepare(`SELECT cw_id, status FROM lead_messages WHERE lead_id=52 AND role='assistant'`).get().status, 'read');
     assert.equal(await chatsV2MessageStatus(env, CID, {cwId:902, convId:77, content:'Something else', status:'read'}), null);
+  });
+  test('an open chat polls Chatwoot for receipts the webhook never delivered, at most every 20s', async()=>{
+    const now=Date.now(), iso=ms=>new Date(ms).toISOString();
+    await insertMsg(53, {role:'user', content:'hi', ts:iso(now-120e3)});
+    db.prepare(`UPDATE conversations SET conv_id='88' WHERE lead_id=53`).run();
+    const r=db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, attachment, reply_to, ts, sender_type, kind, cw_id, status) VALUES (53,?,'assistant','Agent text','{}','{}',?,'agent','text',950,'sent')`).run(CID, iso(now-60e3));
+    await chatsV2AfterInsert(env, 53, CID, {role:'assistant', sender_type:'agent', content:'Agent text', ts:iso(now-60e3)}, Number(r.lastInsertRowid));
+    await insertMsg(53, {role:'assistant', sender_type:'bot', content:'Bot text', ts:iso(now-30e3)});
+    let calls=0;
+    const d={cwMessages:async(env, c, conv)=>{ calls++; assert.equal(String(conv), '88');
+      return [{id:949, message_type:0, content:'hi', status:'sent'}, {id:950, message_type:1, content:'Agent text', status:'read'},
+        {id:951, message_type:1, content:'Bot text', status:'delivered'}, {id:952, message_type:1, private:true, content:'note', status:'sent'}]; }};
+    const conv=row(53);
+    assert.equal(await chatsV2PollStatuses(env, d, CLIENT, CID, conv, now), 2);
+    const st=Object.fromEntries(db.prepare(`SELECT content, status FROM lead_messages WHERE lead_id=53 AND role='assistant'`).all().map(x=>[x.content, x.status]));
+    assert.deepEqual(st, {'Agent text':'read', 'Bot text':'delivered'});
+    assert.equal(row(53).last_message_status, 'delivered');
+    assert.equal(await chatsV2PollStatuses(env, d, CLIENT, CID, conv, now+5e3), 0);
+    assert.equal(calls, 1);
+    db.prepare(`UPDATE lead_messages SET status='read' WHERE lead_id=53`).run();
+    assert.equal(await chatsV2PollStatuses(env, d, CLIENT, CID, conv, now+25e3), 0);
+    assert.equal(calls, 1, 'nothing pending, so Chatwoot is not asked');
   });
 });
 
