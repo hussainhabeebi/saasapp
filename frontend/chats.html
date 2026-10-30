@@ -35,7 +35,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .bubble a{color:#027eb5}.bubble code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;background:rgba(0,0,0,.05);padding:1px 4px;border-radius:4px}
 .bubble .media{display:block;width:330px;max-width:100%;height:auto;max-height:320px;border-radius:6px;margin:0 0 6px;object-fit:cover;cursor:zoom-in;background:#dfe5e7}.bubble video.media{cursor:default}
 .doc{display:flex;align-items:center;gap:10px;background:rgba(0,0,0,.04);padding:9px;border-radius:6px;margin-bottom:5px;color:inherit;text-decoration:none;min-width:200px}.doc .ext{width:34px;height:40px;border-radius:4px;background:#ff5b5b;color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;flex:none;text-transform:uppercase}.doc small{display:block;color:#667781}
-.meta{float:right;margin:5px 0 -2px 12px;display:inline-flex;align-items:center;gap:3px;font-size:10.5px;color:#667781;white-space:nowrap}.checks{color:#53bdeb}.tick-pending{color:#8696a0}.tick-failed{color:var(--danger);font-weight:700;cursor:pointer}
+.meta{float:right;margin:5px 0 -2px 12px;display:inline-flex;align-items:center;gap:3px;font-size:10.5px;color:#667781;white-space:nowrap}.checks{color:#8696a0}.tick{font-weight:700;letter-spacing:-3px;padding-right:3px}.tick.sent{color:#8696a0}.tick.unread{color:#dc2626}.tick.read{color:#16a34a}.tick.failed{color:var(--danger)}.tick-pending{color:#8696a0}.tick-failed{color:var(--danger);font-weight:700;cursor:pointer}
 .quote{border-left:3px solid var(--wa);background:rgba(0,0,0,.05);border-radius:5px;padding:5px 8px;margin-bottom:5px;color:#54656f;font-size:12px;line-height:1.25;white-space:normal;overflow:hidden;text-overflow:ellipsis}.quote b{display:block;color:var(--wa-dark);margin-bottom:2px}
 .msg-actions{display:flex;gap:2px;opacity:0;transition:opacity .12s}.bubble-row:hover .msg-actions,.msg-actions:focus-within{opacity:1}.msg-actions button{width:28px;height:28px;border:0;border-radius:50%;background:rgba(255,255,255,.9);color:#54656f;display:grid;place-items:center;padding:0;box-shadow:0 1px 2px rgba(0,0,0,.1)}
 .failed-row .bubble{opacity:.85}
@@ -544,6 +544,14 @@ function waitBadge(r){
  const t=mins<60?mins+'m':mins<1440?Math.floor(mins/60)+'h'+(mins%60?' '+(mins%60)+'m':''):Math.floor(mins/1440)+'d';
  return `<span class="wait ${mins>=breach?'breach':'warn'}" title="Waiting for a reply">⏱ ${t}</span>`;
 }
+// Delivery ticks from WhatsApp's real receipts (lead_messages.status): grey ✓ sent / not known yet,
+// red ✓✓ delivered but not read, green ✓✓ read.
+function tickHtml(s){
+ if(s==='read')return '<span class="tick read" title="Read">✓✓</span>';
+ if(s==='delivered')return '<span class="tick unread" title="Delivered — not read yet (or the customer has read receipts off)">✓✓</span>';
+ if(s==='failed')return '<span class="tick failed" title="Not delivered">⚠</span>';
+ return '<span class="tick sent" title="Sent">✓</span>';
+}
 function rowHtml(l,i){
  const r=l._v2,active=current&&String(current.Id)===String(l.Id),draft=active?'':getDraft(l.Id);
  const u=r?r.unread_count>0:unread(l),human=l.Handover==='Yes';
@@ -551,7 +559,7 @@ function rowHtml(l,i){
  if(r){out=r.last_message_dir==='out';p=esc(r.last_message_preview||l.Phone||'')}
  else{const h=hist(l),last=h[h.length-1]||{};out=isOut(last);p=esc(last.content||last.attachment||last.media_url?snippetOf(last).slice(0,70):(l.Phone||''))}
  if(draft)p=`<span class="draft">Draft:</span> ${esc(draft.replace(/\s+/g,' ').slice(0,60))}`;
- else if(out)p=`<span class="checks">${r?.last_sender==='bot'?'🤖':'✓✓'} </span>`+p;
+ else if(out)p=`${r?.last_sender==='bot'?'<span class="checks">🤖</span>':''}${tickHtml(r?.last_message_status)} `+p;
  const labels=String(l.Tags||'').split(',').map(x=>x.trim()).filter(Boolean);
  const row3=(labels.slice(0,2).map(x=>`<span class="lbl">${esc(x)}</span>`).join('')+(labels.length>2?`<span class="lbl more">+${labels.length-2}</span>`:'')+(r?.priority>=3?`<i class="prio p${r.priority}" title="${r.priority>=4?'Urgent':'High'} priority"></i>`:''));
  const owner=String(l.Owner||'').trim();
@@ -694,7 +702,7 @@ function drawMessages(stick=false,mode=''){
   const out=isOut(m),atts=attachmentsOf(m),dir=out?'out':'in',snd=senderOf(m),sk=snd?.key||'',tail=dir!==prevDir||(out&&sk&&sk!==prevSender);prevDir=dir;prevSender=sk;
   const who=out&&tail&&snd?.label?`<div class="who${snd.bot?' bot':''}">${esc(snd.label)}</div>`:'';
   const quote=m.reply_to?`<div class="quote"><b>${esc(m.reply_to.who||'Reply')}</b>${esc(m.reply_to.snippet||'')}</div>`:'';
-  const tick=!out?'':m._status==='pending'?'<span class="tick-pending" title="Sending">🕓</span>':m._status==='failed'?`<span class="tick-failed" title="Not sent — tap to retry" data-retry="${i}">⚠ Retry</span>`:'<span class="checks">✓✓</span>';
+  const tick=!out?'':m._status==='pending'?'<span class="tick-pending" title="Sending">🕓</span>':m._status==='failed'?`<span class="tick-failed" title="Not sent — tap to retry" data-retry="${i}">⚠ Retry</span>`:tickHtml(m.status);
   const why=m._status==='failed'&&m._err?`<span class="fail-why">Not delivered · ${esc(failReason(m._err))}</span>`:'';
   const text=bodyOf(m,atts),tr=transcriptOf(m,atts),tpl=atts.find(a=>a.kind==='template'),shown=atts.filter(a=>a.kind!=='template');
   const mediaOnly=!text&&!tr&&!quote&&!tpl&&!who&&shown.length===1&&['image','video'].includes(shown[0].kind)&&shown[0].url;
@@ -799,7 +807,7 @@ function setReply(i){if(!current)return;const m=hist(current)[i];if(!m)return;if
 function clearReply(){replyTarget=null;renderReply()}
 function renderReply(){const box=$('replyBox');if(!box)return;if(!replyTarget){box.classList.add('hidden');box.innerHTML='';return}box.classList.remove('hidden');box.innerHTML=`<div class="reply-card"><b>${esc(replyTarget.who)}</b><div>${esc(replyTarget.snippet)}</div></div><button class="icon-btn" title="Cancel reply" onclick="clearReply()">${IC.close}</button>`}
 async function patchLead(lead,patch){await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({Id:lead.Id,...patch})});Object.assign(lead,patch);const i=leads.findIndex(x=>String(x.Id)===String(lead.Id));if(i>=0&&leads[i]!==lead)Object.assign(leads[i],patch)}
-// Optimistic send: the bubble appears at once with a clock, flips to ✓✓ when the worker confirms,
+// Optimistic send: the bubble appears at once with a clock, flips to ✓ when the worker confirms,
 // or to "⚠ Retry" on failure (tap to resend) — nothing typed or recorded is lost to a bad network.
 function pushLocal(lead,msg){msg.ts=new Date().toISOString();msg._status='pending';if(!msg.sender_type){msg.sender_type='agent';msg.sender_email=meEmail}hist(lead).push(msg);const L=leads.find(x=>String(x.Id)===String(lead.Id));if(L){L.LastMsgAt=msg.ts;if(L._v2)Object.assign(L._v2,{last_message_at:msg.ts,last_message_preview:snippetOf(msg),last_message_dir:'out',last_sender:'agent',waiting_since:null,unread_count:0})}markRead(lead.Id);if(current&&String(current.Id)===String(lead.Id))drawMessages(true);renderContacts();return msg}
 // Plain-language reasons for the errors WhatsApp/Chatwoot return most often.
