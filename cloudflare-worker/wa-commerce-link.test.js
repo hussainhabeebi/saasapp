@@ -17,7 +17,7 @@ function harness({ meta = {}, config = { catalog_id: '' }, catalogToken = 'CATTO
     getClientById: async () => ({ ...c, wa_shop_config: JSON.stringify(saved) }),
     resolveMetaCredentials: () => ({ wa_token: 'WATOK', wa_phone_id: 'PH', waba_id: 'WABA', display_phone: '917736370175' }),
     ensureClientColumns: async () => {},
-    patchClientFields: async (env, id, f) => { saved = JSON.parse(f.wa_shop_config); },
+    patchClientFields: async (env, id, f) => { if (f.wa_shop_config) saved = JSON.parse(f.wa_shop_config); },
     reportOpsError: async () => {},
     ecomResolveTable: async (env, cid, kind) => kind, ecomListClientRows: async () => [], ensureEcomOrderFields: async () => {},
     ncFetch: async () => ({ ok: true, json: async () => ({ Id: 1 }) }),
@@ -30,11 +30,11 @@ function harness({ meta = {}, config = { catalog_id: '' }, catalogToken = 'CATTO
     if (key) return reply(meta[key].status || 200, meta[key].body);
     return reply(200, {});
   };
-  const call = async (path, body) => {
+  const call = async (path, body, env = {}) => {
     const req = new Request('https://w' + path, { method: 'POST', body: JSON.stringify(body || {}) });
-    return waShopHandleRoute(req, {}, deps, new URL('https://w' + path));
+    return waShopHandleRoute(req, env, deps, new URL('https://w' + path));
   };
-  return { call, graph, saved: () => saved };
+  return { call, graph, saved: () => saved, deps, c };
 }
 
 test('already connected in WhatsApp Manager: no re-link, cart shown, catalog name / count / items read back', async () => {
@@ -129,4 +129,21 @@ test('"invalid catalogue ID" from Meta: says whether the token can see it and wh
 
   assert.match(waShopLinkDiagnosis({ catalogId: '1', catalog: null, blind: ['catalog token: (#100) Unsupported get request'] }), /None of your saved tokens can open catalog 1 \(catalog token: \(#100\)/);
   assert.match(waShopLinkDiagnosis({ catalogId: '1', catalog: { name: 'Shop', business: { id: 'B' } }, waba: { owner_business_info: { id: 'B' } }, linkError: 'x' }), /Link it once by hand — WhatsApp Manager/);
+});
+
+test('catalog token: kept in KV when the column drops it, and used by Link', async () => {
+  const kv = new Map(); const env = { MATRI_CACHE: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); }, delete: async k => { kv.delete(k); } } };
+  const h = harness({ catalogToken: '', meta: {
+    'WABA/product_catalogs': { method: 'GET', token: 'EAAGsystemuser1234567890abc', body: { data: [{ id: '555', name: 'Shop' }] } },
+  } });
+  // NocoDB without the column: the field is silently dropped
+  const r = await h.call('/ecom/wa-shop/config', { catalog_token: ' EAAGsystemuser1234567890abc ' }, env);
+  assert.equal(r.s, 200, JSON.stringify(r.d));
+  assert.equal(kv.get('wa_shop_catalog_token:7'), 'EAAGsystemuser1234567890abc');
+  const st = await h.call('/ecom/wa-shop/connect', { catalog_id: '555' }, env);
+  assert.equal(st.s, 200, JSON.stringify(st.d));
+  assert.equal(h.graph.find(g => g.u.includes('WABA/product_catalogs')).tok, 'EAAGsystemuser1234567890abc');
+  assert.equal(st.d.already_linked, true);
+  const bad = await h.call('/ecom/wa-shop/config', { catalog_token: 'my token' }, env);
+  assert.equal(bad.s, 400);
 });

@@ -760,7 +760,7 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 export function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, meta_leadgen_page_token, ...safe}=rec;
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, meta_leadgen_page_token, wa_shop_catalog_token, ...safe}=rec;
   return {...safe, meta_leadgen_connected:!!meta_leadgen_page_token, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token, sarvam_api_key_configured:!!sarvam_api_key};
 }
 
