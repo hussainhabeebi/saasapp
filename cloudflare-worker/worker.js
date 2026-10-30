@@ -2025,6 +2025,21 @@ async function handleInstagramSendCompat(request, env){
   catch(e){ return json({error:e.message}, e.status||502); }
 }
 
+// One message's delivery status (sent / delivered / read / failed) from Chatwoot's messages API —
+// `after`+`before` around its id returns just that message. '' when it can't be read.
+export async function chatwootMessageStatus(c, convId, msgId){
+  const id=Number(msgId), conv=Number(convId);
+  if(!id||!conv||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return '';
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv}/messages?after=${id}&before=${id+1}`,
+      {headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return '';
+    const d=await r.json().catch(()=>null);
+    const m=(Array.isArray(d?.payload)?d.payload:[]).find(x=>Number(x?.id)===id);
+    return String(m?.status||'');
+  }catch(e){ return ''; }
+}
+
 // Shared by /chat/send and Chats v2 scheduled messages (chats-v2.js chatsV2RunScheduled).
 async function chatSendTextCore(env, c, payload, body){
   const {conv_id, lead_id, reply_to}=body;
@@ -24781,18 +24796,21 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
   if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)){ await logEngineSkip(env, clientId, null, null, 'account-mismatch', `payload account ${accountId}`); return json({ok:true, skipped:'account-mismatch'}); }
 
   if(body.event==='message_updated'){
-    // Delivery/read receipts for the Chats thread ticks.
+    // Delivery/read receipts. Chatwoot's webhook payload (Message#webhook_data) carries no
+    // `status`, so for an outgoing message read it back from the messages API.
     const mt=body.message_type??body.message?.message_type;
-    if(mt!=='incoming'&&mt!==0){
+    const outgoing=mt!=='incoming'&&mt!==0;
+    const msgId=body.id||body.message?.id, convId=body.conversation?.id;
+    let status=String(body.status||body.message?.status||'');
+    if(!status&&outgoing) status=await chatwootMessageStatus(c, convId, msgId);
+    if(outgoing){
       try{
-        await chatsV2MessageStatus(env, c.Id, {cwId:body.id||body.message?.id, convId:body.conversation?.id, content:body.content,
-          status:String(body.status||body.message?.status||'')}, {broadcast:engineBroadcastUpdate});
+        await chatsV2MessageStatus(env, c.Id, {cwId:msgId, convId, content:body.content, status}, {broadcast:engineBroadcastUpdate});
       }catch(e){}
     }
     if(await fv3IsEnabled(env,c.Id)){
       await fv3EnsureSchema(env);
-      const status=String(body.status||body.message?.status||'');
-      const id=String(body.id||body.message?.id||'');
+      const id=String(msgId||'');
       if(id && ['sent','delivered','read','failed'].includes(status)){
         const mapped=status==='sent'?'accepted':status,at=new Date().toISOString();
         await env.DB.prepare(`UPDATE followup_sends SET delivery_status=CASE WHEN delivery_status='read' THEN 'read' WHEN delivery_status='delivered' AND ?='accepted' THEN 'delivered' ELSE ? END,delivered_at=CASE WHEN ? IN ('delivered','read') THEN COALESCE(delivered_at,?) ELSE delivered_at END,read_at=CASE WHEN ?='read' THEN COALESCE(read_at,?) ELSE read_at END WHERE client_id=? AND provider_message_id=?`)
