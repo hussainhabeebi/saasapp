@@ -237,6 +237,15 @@ async function graphAny(path, tokens, opts){
   for(const t of tokens){ const r=await graph(path, t, opts); if(r.ok) return {...r, token:t}; last=r; }
   return last;
 }
+// Couplo (Oct 2026): "✓ Token saved" yet Link only ever tried the WhatsApp token — NocoDB drops a
+// PATCH field whose column couldn't be created, silently. The token is now also kept server-side in
+// KV (never returned to the browser) and read from there whenever the column comes back empty.
+const tokenKey=cid=>`wa_shop_catalog_token:${cid}`;
+async function withCatalogToken(env, c){
+  if(!c||String(c[WA_SHOP_TOKEN_FIELD]||'').trim()||!env?.MATRI_CACHE) return c;
+  const t=await env.MATRI_CACHE.get(tokenKey(c.Id)).catch(()=>null);
+  return t?{...c, [WA_SHOP_TOKEN_FIELD]:t}:c;
+}
 export function waShopTokens(c, cr, prefer='catalog'){
   const cat=String(c?.[WA_SHOP_TOKEN_FIELD]||'').trim(), wa=String(cr?.wa_token||'').trim();
   return [...new Set(prefer==='catalog'?[cat, wa]:[wa, cat])].filter(Boolean);
@@ -302,7 +311,7 @@ async function syncCatalog(env, deps, c){
 async function session(request, env, deps){
   const payload=await deps.requireSession(request, env);
   if(!payload) return {error:deps.json({error:'Sign in again to change WhatsApp Shop settings.'}, 401)};
-  const c=await deps.getClientById(env, payload.cid);
+  const c=await withCatalogToken(env, await deps.getClientById(env, payload.cid));
   if(!c) return {error:deps.json({error:'Client not found'}, 404)};
   return {c, cid:payload.cid};
 }
@@ -338,10 +347,21 @@ async function handleConfig(request, env, deps){
     return deps.json({error:'Add the payment configuration name from WhatsApp Manager → Payments to use WhatsApp Pay.'}, 400);
   const fields={};
   if(Object.keys(patch).length){ await deps.ensureClientColumns(env, [WA_SHOP_CONFIG_FIELD]); fields[WA_SHOP_CONFIG_FIELD]=JSON.stringify({...storedConfig(c), ...patch}); }
-  if('catalog_token' in b){ await deps.ensureClientColumns(env, [WA_SHOP_TOKEN_FIELD]); fields[WA_SHOP_TOKEN_FIELD]=String(b.catalog_token||'').trim(); }
+  const hasToken='catalog_token' in b, token=String(b.catalog_token||'').trim();
+  if(hasToken){
+    if(token&&!/^EA[A-Za-z0-9]{20,}$/.test(token)) return deps.json({error:'That doesn\'t look like a Meta access token — it starts with EAA and has no spaces.'}, 400);
+    await deps.ensureClientColumns(env, [WA_SHOP_TOKEN_FIELD]); fields[WA_SHOP_TOKEN_FIELD]=token;
+  }
   if(!Object.keys(fields).length) return deps.json({error:'Nothing to save'}, 400);
   await deps.patchClientFields(env, c.Id, fields);
-  return deps.json({ok:true});
+  if(!hasToken) return deps.json({ok:true});
+  const kv=env?.MATRI_CACHE;
+  let inKv=false;
+  if(kv) try{ token?await kv.put(tokenKey(c.Id), token):await kv.delete(tokenKey(c.Id)); inKv=true; }catch(e){}
+  const fresh=await deps.getClientById(env, c.Id).catch(()=>null);
+  const inDb=String(fresh?.[WA_SHOP_TOKEN_FIELD]||'').trim()===token;
+  if(token&&!inDb&&!inKv) return deps.json({error:'The token could not be stored — try again, or ask support to add the wa_shop_catalog_token column.'}, 500);
+  return deps.json({ok:true, token_saved:!!token});
 }
 
 // Links the catalog to the WhatsApp Business account and shows it (with the cart) on the number.
@@ -602,7 +622,8 @@ async function handlePayment(env, deps, c, cr, st, pay){
 }
 
 // Daily: keep price, stock and photos in the WhatsApp catalog in step with Ecom Products.
-export async function waShopDailySync(env, deps, c){
+export async function waShopDailySync(env, deps, client){
+  const c=await withCatalogToken(env, client);
   const cfg=waShopConfig(c);
   if(cfg.catalog_id && cfg.linked_at){
     const info=await fetchCatalogInfo(cfg.catalog_id, waShopTokens(c, creds(deps, c, cfg), 'catalog')).catch(()=>null);

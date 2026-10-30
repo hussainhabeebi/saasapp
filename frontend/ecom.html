@@ -4663,7 +4663,7 @@ function wsConnect(btn) {
 function wsSaveToken(btn) {
   const v = document.getElementById('wsCatalogToken').value.trim();
   if (!v) { showMsg('wsMsgTok', 'Paste the token first'); return; }
-  return wsRun(btn, 'wsMsgTok', () => wsCall('config', { catalog_token: v }), () => { document.getElementById('wsCatalogToken').value = ''; return '✓ Token saved'; });
+  return wsRun(btn, 'wsMsgTok', () => wsCall('config', { catalog_token: v }), () => { const el = document.getElementById('wsCatalogToken'); el.value = ''; el.placeholder = 'Saved — paste a new one to replace'; return '✓ Token saved — press “Link to my WhatsApp” again'; });
 }
 function wsSync(btn) {
   return wsRun(btn, 'wsMsg2', async () => {
