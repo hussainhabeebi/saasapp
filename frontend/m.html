@@ -29,11 +29,16 @@
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
 button:active{transform:scale(.98)}
-#app{position:relative;height:100dvh;max-width:760px;margin:0 auto;overflow:hidden;background:var(--bg)}
+/* Height comes from window.innerHeight (--app-h, set by the script at the end of <body>): inside the
+   Android app (TWA) Chrome sizes 100dvh taller than the visible page, which pushed the bottom tab bar
+   off the screen. --sab is the bottom safe area; in the app it never drops below 12px because Chrome
+   there can draw under the gesture bar without reporting safe-area-inset-bottom. */
+:root{--sab:max(env(safe-area-inset-bottom,0px),var(--sab-min,0px))}.in-twa{--sab-min:12px}
+#app{position:relative;height:100%;height:var(--app-h,100%);max-width:760px;margin:0 auto;overflow:hidden;background:var(--bg)}
 .tab{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;flex-direction:column;visibility:hidden;background:var(--bg)}
 .tab.on{visibility:visible}
 .thread-open #nav{display:none}
-#tabChats{bottom:calc(var(--nav) + var(--navgap)*2 + env(safe-area-inset-bottom))}.thread-open #tabChats{bottom:0}
+#tabChats{bottom:calc(var(--nav) + var(--navgap)*2 + var(--sab))}.thread-open #tabChats{bottom:0}
 .top{min-height:64px;display:flex;align-items:center;gap:8px;padding:calc(6px + env(safe-area-inset-top)) 12px 6px 20px;flex:none;background:var(--bg)}
 .top h1{margin:0;font-size:28px;font-weight:800;letter-spacing:-.02em;color:var(--ink);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
@@ -41,7 +46,7 @@ button:active{transform:scale(.98)}
 .brand b{display:block;font-size:18px;font-weight:800;letter-spacing:-.01em}.brand small{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .biz{max-width:100%}
 .icon{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;color:var(--ink);flex:none;background:var(--surface)}.icon:active{background:var(--line)}
-.scroll{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding-bottom:calc(var(--nav) + var(--navgap)*2 + 20px + env(safe-area-inset-bottom))}
+.scroll{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding-bottom:calc(var(--nav) + var(--navgap)*2 + 20px + var(--sab))}
 /* Home hero */
 .hero{margin:6px 16px 0;border-radius:24px;padding:18px 18px 16px;color:#fff;background:radial-gradient(120% 120% at 100% 0%,rgba(4,120,87,.9) 0%,rgba(4,120,87,0) 60%),linear-gradient(135deg,var(--blue) 0%,#0E3B5C 55%,var(--green) 100%);box-shadow:0 10px 30px rgba(11,37,69,.18)}
 .hello{font-size:14px;opacity:.8}.hello b{display:block;font-size:22px;font-weight:800;letter-spacing:-.01em;opacity:1;margin-top:2px;color:#fff}
@@ -85,12 +90,12 @@ button:active{transform:scale(.98)}
 #chatsLoading .btn-row{display:flex;gap:10px;justify-content:center;margin-top:14px}
 #chatsLoading button,#chatsLoading a{padding:10px 16px;border-radius:12px;font-weight:600;font-size:14px;background:var(--green-soft);color:var(--green);text-decoration:none}
 /* Floating tab bar */
-#nav{position:absolute;left:12px;right:12px;bottom:calc(var(--navgap) + env(safe-area-inset-bottom));height:var(--nav);display:flex;padding:6px;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:24px;box-shadow:0 10px 30px rgba(11,37,69,.14);z-index:5}
+#nav{position:absolute;left:12px;right:12px;bottom:calc(var(--navgap) + var(--sab));height:var(--nav);display:flex;padding:6px;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:24px;box-shadow:0 10px 30px rgba(11,37,69,.14);z-index:5}
 #nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:11.5px;font-weight:600;color:var(--muted);position:relative;border-radius:18px;transition:background .15s,color .15s}
 #nav .pill{display:grid;place-items:center}
 #nav button.on{color:var(--green);background:var(--green-soft);font-weight:800}
 #nav .dot{position:absolute;top:4px;left:calc(50% + 6px);min-width:18px;height:18px;border-radius:9px;background:var(--blue-2);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center;padding:0 5px;box-shadow:0 0 0 2px #fff}
-.toast{position:fixed;left:50%;bottom:calc(var(--nav) + 30px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--blue);color:#fff;padding:11px 16px;border-radius:14px;font-size:14px;z-index:20;max-width:90vw;box-shadow:0 8px 24px rgba(11,37,69,.25)}
+.toast{position:fixed;left:50%;bottom:calc(var(--nav) + 30px + var(--sab));transform:translateX(-50%);background:var(--blue);color:#fff;padding:11px 16px;border-radius:14px;font-size:14px;z-index:20;max-width:90vw;box-shadow:0 8px 24px rgba(11,37,69,.25)}
 .hidden{display:none!important}
 .pad{padding:16px 16px 0}
 .section-title{font-weight:800;font-size:17px;margin-bottom:12px;letter-spacing:-.01em}
@@ -117,7 +122,7 @@ button:active{transform:scale(.98)}
 .seg button[data-k="new"].on{background:var(--blue);color:#fff}.seg button[data-k="unans"].on{background:var(--green);color:#fff}
 .attn .lead{padding-left:12px}.attn .lead:last-of-type .info{border-bottom:0}.attn .empty{padding:20px 16px}
 .sheet-bg{position:fixed;inset:0;background:rgba(11,37,69,.35);z-index:30}
-.sheet{position:fixed;left:0;right:0;bottom:0;max-width:760px;margin:0 auto;max-height:92dvh;overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;z-index:31;box-shadow:0 -10px 40px rgba(11,37,69,.2);padding:8px 0 calc(18px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.sheet{position:fixed;left:0;right:0;bottom:0;max-width:760px;margin:0 auto;max-height:calc(var(--app-h,100dvh)*.92);overflow-y:auto;background:#fff;border-radius:24px 24px 0 0;z-index:31;box-shadow:0 -10px 40px rgba(11,37,69,.2);padding:8px 0 calc(18px + var(--sab));-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .sheet .grab{width:42px;height:5px;border-radius:3px;background:#D5DAE1;margin:4px auto 10px}
 .ls-head{display:flex;align-items:center;gap:14px;padding:4px 20px 14px}
 .ls-head .av{width:56px;height:56px;border-radius:18px;font-size:22px}
@@ -232,6 +237,12 @@ svg{display:block}
 const WORKER='https://leadvyne-api-proxy.leadvyne.workers.dev';
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// Size the app to the page that's actually on screen (see --app-h in the <style>).
+(function(){
+  const fit=()=>{ const h=window.innerHeight; if(h>0) document.documentElement.style.setProperty('--app-h',h+'px'); };
+  fit(); window.addEventListener('resize',fit); window.addEventListener('orientationchange',fit);
+  if(window.visualViewport) visualViewport.addEventListener('resize',fit);
+})();
 let clientId='',sessionToken='';
 try{clientId=localStorage.getItem('lv_cid')||'';sessionToken=localStorage.getItem('lv_session')||''}catch{}
 // Not signed in (or the session is gone): the full dashboard owns sign-in.

@@ -38,6 +38,19 @@ async function routes(page, calls = { upload: [] }) {
 test.describe('phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
+  test('in the Android app the bottom tab bar sits fully on screen, clear of the gesture bar', async ({ page }) => {
+    await routes(page);
+    await page.goto(mUrl);
+    await page.evaluate(() => { localStorage.setItem('lv_cid', '48'); localStorage.setItem('lv_session', 't'); });
+    await page.goto(mUrl + '?src=twa');
+    await expect(page.locator('html')).toHaveClass(/in-twa/);
+    const box = await page.locator('#nav').boundingBox();
+    // 10px gap + 12px minimum bottom safe area in the app.
+    expect(box.y + box.height).toBeLessThanOrEqual(844 - 22);
+    await page.setViewportSize({ width: 390, height: 700 });
+    await expect.poll(async () => { const b = await page.locator('#nav').boundingBox(); return b.y + b.height; }).toBeLessThanOrEqual(700 - 22);
+  });
+
   test('Home shows chat counts and recent chats; a recent chat opens full-screen and Back closes it', async ({ page }) => {
     await routes(page);
     await page.goto(mUrl);
