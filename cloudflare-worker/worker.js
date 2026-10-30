@@ -16427,7 +16427,7 @@ const ENGINE_TRANSCRIBE_MODEL='gemini-2.5-flash';
 // accented audio". Not a hard constraint: the prompt still says "if it's actually a different
 // language, transcribe that instead" so a customer who doesn't match the client's configured
 // default language isn't mistranscribed into it.
-const ENGINE_LANG_NAMES={en:'English', ml:'Malayalam', hi:'Hindi', ta:'Tamil', te:'Telugu', kn:'Kannada', bn:'Bengali', gu:'Gujarati', mr:'Marathi', pa:'Punjabi', or:'Odia', ar:'Arabic'};
+const ENGINE_LANG_NAMES={en:'English', ml:'Malayalam', hi:'Hindi', ta:'Tamil', te:'Telugu', kn:'Kannada', bn:'Bengali', gu:'Gujarati', mr:'Marathi', pa:'Punjabi', or:'Odia', ar:'Arabic', ur:'Urdu'};
 
 // Downloads the voice note once (shared by both transcription attempts below, so a Gemini failure
 // followed by the OpenRouter fallback doesn't re-fetch the same file from Meta/Chatwoot a second
@@ -19302,11 +19302,98 @@ const LT_LOCAL_TRAVEL_WORDS=[
   ['morning','രാവിലെ'],['afternoon','ഉച്ച'],['evening','വൈകുന്നേര|വൈകിട്ട'],['night','രാത്ര'],
   ['book','ബുക്ക'],['first','ഒന്നാമ|ഒന്ന'],['second','രണ്ടാമ|രണ്ട'],['third','മൂന്നാമ|മൂന്ന'],['please','ചെയ്യ'],['yes','അതെ|ഉവ്വ'],['ok','മതി|ശരി|ഓക്കെ|ഓകെ'],['want','വേണം'],['check','നോക്ക']
 ].map(([en,stems])=>[new RegExp(`(?:${stems})${LT_ML_SUFFIX}`,'gu'),` ${en} `]);
+
+// Every other language the bot replies in: Hindi/Marathi (Devanagari), Tamil, Telugu, Kannada,
+// Bengali, Gujarati, Punjabi (Gurmukhi), Odia, Arabic and Urdu. Same idea as the Malayalam table:
+// travel words only, a stem plus any case suffix glued to it (दुबईहून, துபாயிலிருந்து, لدبي).
+// "X से Y", "X থেকে Y", "X నుండి Y" put the origin first, so the "from" postposition becomes "to";
+// Arabic "من X إلى Y" is already from/to. A glued postposition is eaten with the city, and the
+// two-city fallback in ltParseFlightRoute still reads them in the order written.
+const LT_INTL_SUFFIX='[\\u0600-\\u06FF\\u0900-\\u0DFF\\u200C\\u200D]*';
+const LT_INTL_TRAVEL_WORDS=[
+  ['abu dhabi','अबू\\s*धाबी|अबु\\s*धाबी|(?:أبو|ابو)\\s*ظبي|ابو\\s*ظہبی|ابوظبی|அபு\\s*தாபி|అబు\\s*దాబి|అబుదాబి|ಅಬು\\s*ಧಾಬಿ|ಅಬುಧಾಬಿ|আবু\\s*ধাবি|આબુ\\s*ધાબી|અબુ\\s*ધાબી|ਅਬੂ\\s*ਧਾਬੀ|ଆବୁ\\s*ଧାବି'],
+  ['dubai','दुबई|دبي|دبئی|دبی|துபா|దుబా|ದುಬೈ|দুবাই|દુબઈ|દુબઇ|ਦੁਬਈ|ଦୁବାଇ'],
+  ['sharjah','शारज|شارق|شارج|ஷார்ஜா|షార్జా|ಶಾರ್ಜಾ|শারজা|શારજા|ਸ਼ਾਰਜਾ|ਸ਼ਾਰਜਾ|ଶାରଜା'],
+  ['kozhikode','कोझिकोड|कालीकट|كاليكوت|كوزيكود|کالیکٹ|کوزیکوڈ|கோழிக்கோ|காலிகட|కోజికోడ్|కాలికట్|ಕೋಳಿಕ್ಕೋಡ್|ಕ್ಯಾಲಿಕಟ್'],
+  ['kochi','कोच्चि|कोचीन|كوتشي|كوشين|کوچی|کوچین|கொச்சி|కొచ్చి|ಕೊಚ್ಚಿ|কোচি|કોચી|ਕੋਚੀ'],
+  ['kannur','कन्नूर|كانور|کنور|கண்ணூ|కన్నూర్|ಕಣ್ಣೂರು'],
+  ['trivandrum','तिरुवनंतपुरम|त्रिवेंद्रम|تريفاندرم|ترویندرم|திருவனந்தபுர|త్రివేండ్రం|తిరువనంతపురం|ತಿರುವನಂತಪುರ'],
+  ['mumbai','मुंबई|मुम्बई|बॉम्बे|مومباي|ممبئی|ممبئ|மும்பை|ముంబై|ಮುಂಬೈ|মুম্বাই|মুম্বই|મુંબઈ|મુંબઇ|ਮੁੰਬਈ|ମୁମ୍ବାଇ'],
+  ['delhi','दिल्ली|دلهي|دہلی|دلی|டெல்லி|தில்லி|ఢిల్లీ|డిల్లీ|ದೆಹಲಿ|ದಿಲ್ಲಿ|দিল্লি|দিল্লী|દિલ્હી|ਦਿੱਲੀ|ଦିଲ୍ଲୀ'],
+  ['chennai','चेन्नई|تشيناي|چنئی|சென்னை|చెన్నై|ಚೆನ್ನೈ|চেন্নাই|ચેન્નઈ|ਚੇਨਈ|ਚੇਨੱਈ|ଚେନ୍ନାଇ'],
+  ['bangalore','बेंगलुरु|बेंगलूरु|बैंगलोर|बंगलौर|بنغالور|بنگلور|பெங்களூ|బెంగళూరు|ಬೆಂಗಳೂರು|বেঙ্গালুরু|ব্যাঙ্গালোর|બેંગલુરુ|બેંગ્લોર|ਬੰਗਲੌਰ|ਬੈਂਗਲੁਰੂ|ବେଙ୍ଗାଲୁରୁ'],
+  ['hyderabad','हैदराबाद|حيدر\\s*[أا]باد|حیدر\\s*آباد|ஹைதராபா|హైదరాబాద్|ಹೈದರಾಬಾದ್|হায়দ্রাবাদ|હૈદરાબાદ|ਹੈਦਰਾਬਾਦ|ହାଇଦ୍ରାବାଦ'],
+  ['kolkata','कोलकाता|كولكاتا|کولکتہ|கொல்கத்தா|కోల్‌కతా|కోల్కతా|ಕೋಲ್ಕತ್ತಾ|কলকাতা|কোলকাতা|કોલકાતા|ਕੋਲਕਾਤਾ|କୋଲକାତା'],
+  ['ahmedabad','अहमदाबाद|أحمد\\s*آباد|احمد\\s*آباد|அகமதாபாத்|అహ్మదాబాద్|ಅಹಮದಾಬಾದ್|আহমেদাবাদ|અમદાવાદ|ਅਹਿਮਦਾਬਾਦ'],
+  ['lucknow','लखनऊ|لکھنؤ|لكناو'],['jaipur','जयपुर|جے\\s*پور|જયપુર'],['pune','पुणे|पूना'],['amritsar','अमृतसर|امرتسر|ਅੰਮ੍ਰਿਤਸਰ'],
+  ['bhubaneswar','भुवनेश्वर|ଭୁବନେଶ୍ୱର|ଭୁବନେଶ୍ବର'],['madurai','मदुरै|மதுரை'],['coimbatore','कोयंबटूर|கோயம்புத்தூ|கோவை'],['trichy','திருச்சி'],
+  ['mangalore','मैंगलोर|मंगलुरु|ಮಂಗಳೂರು'],['goa','गोवा|ಗೋವಾ'],['visakhapatnam','విశాఖ'],['vijayawada','విజయవాడ'],['tirupati','తిరుపతి|திருப்பதி'],
+  ['dhaka','ढाका|دكا|ڈھاکہ|ঢাকা'],['chittagong','চট্টগ্রাম'],['kathmandu','काठमांडू|काठमाडौं'],['colombo','கொழும்பு|कोलंबो'],
+  ['karachi','कराची|كراتشي|كراچي|کراچی'],['lahore','लाहौर|لاهور|لاہور'],['islamabad','इस्लामाबाद|إسلام\\s*آباد|اسلام\\s*آباد'],['peshawar','पेशावर|بيشاور|پشاور'],
+  ['doha','दोहा|الدوح|دوحہ|தோஹா|దోహా|ದೋಹಾ|দোহা|દોહા|ਦੋਹਾ|ଦୋହା'],
+  ['muscat','मस्कट|مسقط|மஸ்கட|మస్కట్|ಮಸ್ಕತ್|মাস্কাট|મસ્કત|ਮਸਕਟ|ମସ୍କଟ'],
+  ['riyadh','रियाद|रियाध|رياض|ریاض|ரியாத|రియాద్|ರಿಯಾದ್|রিয়াদ|રિયાધ|રિયાદ|ਰਿਆਦ|ରିୟାଦ'],
+  ['jeddah','जेद्दा|जद्दा|جدة|جده|جدہ|ஜித்தா|ஜெட்டா|జెడ్డా|ಜೆಡ್ಡಾ|জেদ্দা|જેદ્દા|ਜੱਦਾ|ଜେଦା'],
+  ['dammam','दम्माम|دمام|தம்மாம|దమ్మామ్|ದಮ್ಮಾಮ್|দাম্মাম'],
+  ['kuwait','कुवैत|كويت|کویت|குவைத|కువైట్|ಕುವೈತ್|কুয়েত|કુવૈત|ਕੁਵੈਤ|କୁଏତ'],
+  ['bahrain','बहरीन|بحرين|بحرین|பஹ்ரைன|బహ్రెయిన్|ಬಹ್ರೇನ್|বাহরাইন|બહેરીન|ਬਹਿਰੀਨ'],
+  ['madinah','मदीना|المدينة\\s*المنورة|مدینہ'],['cairo','काहिरा|القاهرة|قاہرہ'],['istanbul','इस्तांबुल|إسطنبول|اسطنبول|استنبول'],
+  ['singapore','सिंगापुर|سنغافورة|سنگاپور|சிங்கப்பூ|సింగపూర్|ಸಿಂಗಾಪುರ|সিঙ্গাপুর'],['kuala lumpur','कुआलालंपुर|كوالالمبور|கோலாலம்பூ'],
+  ['bangkok','बैंकॉक|بانكوك|بینکاک'],['london','लंदन|لندن|லண்டன|లండన్|ಲಂಡನ್|লন্ডন|લંડન|ਲੰਡਨ'],
+  ['january','जनवरी|जानेवारी|يناير|جنوری|ஜனவரி|జనవరి|ಜನವರಿ|জানুয়ারি|જાન્યુઆરી|ਜਨਵਰੀ|ଜାନୁଆରୀ'],
+  ['february','फ़रवरी|फरवरी|फेब्रुवारी|فبراير|فروری|பிப்ரவரி|ఫిబ్రవరి|ಫೆಬ್ರವರಿ|ফেব্রুয়ারি|ફેબ્રુઆરી|ਫ਼ਰਵਰੀ|ਫਰਵਰੀ|ଫେବୃଆରୀ'],
+  ['march','मार्च|مارس|مارچ|மார்ச|మార్చి|ಮಾರ್ಚ್|মার্চ|માર્ચ|ਮਾਰਚ|ମାର୍ଚ୍ଚ'],
+  ['april','अप्रैल|एप्रिल|أبريل|ابريل|اپریل|ஏப்ரல|ఏప్రిల్|ಏಪ್ರಿಲ್|এপ্রিল|એપ્રિલ|ਅਪ੍ਰੈਲ|ଅପ୍ରେଲ'],
+  ['may','مايو|مئی'],['june','जून|يونيو|جون|ஜூன|జూన్|ಜೂನ್|জুন|જૂન|ਜੂਨ|ଜୁନ'],
+  ['july','जुलाई|जुलै|يوليو|جولائی|ஜூலை|జూలై|ಜುಲೈ|জুলাই|જુલાઈ|ਜੁਲਾਈ|ଜୁଲାଇ'],
+  ['august','अगस्त|ऑगस्ट|أغسطس|اغسطس|اگست|ஆகஸ்ட|ఆగస్టు|ಆಗಸ್ಟ್|আগস্ট|ઓગસ્ટ|ਅਗਸਤ|ଅଗଷ୍ଟ'],
+  ['september','सितंबर|सितम्बर|सप्टेंबर|سبتمبر|ستمبر|செப்டம்ப|సెప్టెంబర్|ಸೆಪ್ಟೆಂಬರ್|সেপ্টেম্বর|સપ્ટેમ્બર|ਸਤੰਬਰ|ସେପ୍ଟେମ୍ବର'],
+  ['october','अक्टूबर|अक्तूबर|ऑक्टोबर|أكتوبر|اكتوبر|اکتوبر|அக்டோப|అక్టోబర్|ಅಕ್ಟೋಬರ್|অক্টোবর|ઓક્ટોબર|ਅਕਤੂਬਰ|ଅକ୍ଟୋବର'],
+  ['november','नवंबर|नवम्बर|नोव्हेंबर|نوفمبر|نومبر|நவம்ப|నవంబర్|ನವೆಂಬರ್|নভেম্বর|નવેમ્બર|ਨਵੰਬਰ|ନଭେମ୍ବର'],
+  ['december','दिसंबर|दिसम्बर|डिसेंबर|ديسمبر|دسمبر|டிசம்ப|డిసెంబర్|ಡಿಸೆಂಬರ್|ডিসেম্বর|ડિસેમ્બર|ਦਸੰਬਰ|ଡିସେମ୍ବର'],
+  ['flight','फ्लाइट|फ़्लाइट|फ्लाईट|विमान|उड़ान|उड़ान|رحلة|رحلات|طيران|طائرة|فلائٹ|پرواز|விமான|பிளைட|ஃப்ளைட|ఫ్లైట్|విమాన|ಫ್ಲೈಟ್|ವಿಮಾನ|ফ্লাইট|বিমান|ફ્લાઇટ|ફ્લાઈટ|વિમાન|ਫਲਾਈਟ|ਫ਼ਲਾਈਟ|ਜਹਾਜ਼|ਜਹਾਜ|ଫ୍ଲାଇଟ|ବିମାନ'],
+  ['ticket','टिकट|तिकीट|تذكر|تذاكر|ٹکٹ|டிக்கெட|டிக்கட|టికెట్|టిక్కెట్|ಟಿಕೆಟ್|ಟಿಕೇಟ್|টিকিট|ટિકિટ|ટિકીટ|ਟਿਕਟ|ଟିକେଟ'],
+  ['price','किराया|कीमत|दाम|रेट|سعر|أسعار|اسعار|قیمت|کرایہ|விலை|ధర|ಬೆಲೆ|দাম|ભાડું|કિંમત|ਕਿਰਾਇਆ|ଦାମ'],
+  ['cheapest','सबसे\\s*सस्त|सबसे\\s*कम|सस्त|أرخص|ارخص|رخيص|سست|மலிவ|குறைந்த|చౌక|తక్కువ|ಅಗ್ಗ|ಕಡಿಮೆ|সস্তা|સસ્ત|ਸਸਤ|ଶସ୍ତା'],
+  ['direct','डायरेक्ट|नॉन\\s*स्टॉप|مباشر|ڈائریکٹ|براہ\\s*راست|நேரடி|నేరుగా|డైరెక్ట్|ನೇರ|সরাসরি|ডাইরেক্ট|ડાયરેક્ટ|ਸਿੱਧੀ|ସିଧା'],
+  ['morning','सुबह|सकाळ|صباح|صبح|காலை|ఉదయం|ಬೆಳಿಗ್ಗೆ|সকাল|સવાર|ਸਵੇਰ|ସକାଳ'],
+  ['evening','शाम|संध्याकाळ|مساء|شام|மாலை|సాయంత్రం|ಸಂಜೆ|সন্ধ্যা|સાંજ|ਸ਼ਾਮ|ସନ୍ଧ୍ୟା'],
+  ['night','रात|ليل|رات|இரவு|రాత్రి|ರಾತ್ರಿ|রাত|રાત|ਰਾਤ|ରାତି'],
+  ['book','बुक|احجز|حجز|புக்|బుక్|ಬುಕ್|বুক|બુક|ਬੁੱਕ|ਬੁਕ|ବୁକ'],
+  ['adult','वयस्क|بالغ|کبار|பெரியவர|పెద్దలు|ವಯಸ್ಕ|প্রাপ্তবয়স্ক|પુખ્ત|ਬਾਲਗ|ବୟସ୍କ'],
+  ['child','बच्च|طفل|أطفال|اطفال|بچے|بچہ|குழந்தை|పిల్ల|ಮಗು|ಮಕ್ಕಳ|শিশু|বাচ্চা|બાળક|ਬੱਚ|ପିଲା'],
+  ['infant','शिशु|رضيع|نومولود|கைக்குழந்தை|శిశువు|ಶಿಶು|নবজাতক|ਨਵਜੰਮ'],
+  ['want','चाहिए|चाहिये|हवे|हवं|हवी|أريد|اريد|ابغى|أبغى|چاہیے|چاہئے|வேண்டு|வேணு|కావాలి|ಬೇಕು|চাই|જોઈએ|ਚਾਹੀਦ|ଦରକାର'],
+].map(([en,stems])=>[new RegExp(`(?:${stems.normalize('NFC')})${LT_INTL_SUFFIX}`,'gu'),` ${en} `]);
+// Short words that are only safe on their own ("मई" but not "में"; "से" but not "सेब").
+const LT_INTL_TRAVEL_WHOLE_WORDS=[
+  ['to','से|سے|पासून|থেকে|થી|ਤੋਂ|నుండి|నుంచి|ಇಂದ|ನಿಂದ|இருந்து|இலிருந்து|ରୁ|ଠାରୁ|إلى|الى|إلي|الي'],['from','من'],
+  ['may','मई|மே|మే|ಮೇ|মে|મે|ਮਈ|ମେ'],
+  ['yes','हाँ\\s*जी|हां\\s*जी|जी\\s*हाँ|जी\\s*हां|हाँ|हां|نعم|ايوه|أيوه|ہاں|ஆமா|ஆம்|అవును|ಹೌದು|হ্যাঁ|হাঁ|હા|ਹਾਂ|ହଁ'],
+  ['ok','ठीक\\s*है|ठीक|चलेगा|تمام|حسنا|اوكي|أوكي|ٹھیک|சரி|సరే|ಸರಿ|ঠিক\\s*আছে|ঠিক|બરાબર|ઠીક|ਠੀਕ|ଠିକ'],
+  ['tomorrow','غدا|غداً|بكرة|بكره|بکرہ'],['one','वाला|वाली|वाले|والا|والی'],
+  ['any','कोई\\s*भी|أي|کوئی\\s*بھی|ஏதாவது|ఏదైనా|ಯಾವುದಾದರೂ|যেকোনো|કોઈ\\s*પણ|ਕੋਈ\\s*ਵੀ|ଯେକୌଣସି'],
+].map(([en,words])=>[new RegExp(`(?<![\\p{L}\\p{M}])(?:${words.normalize('NFC')})(?![\\p{L}\\p{M}])`,'gu'),` ${en} `]);
+// Arabic-Indic, Persian/Urdu and Indian-script digits → 0-9 ("١٥ نوفمبر", "१५ नवंबर").
+const LT_NATIVE_DIGIT_ZEROS=[0x0660,0x06F0,0x0966,0x09E6,0x0A66,0x0AE6,0x0B66,0x0BE6,0x0C66,0x0CE6,0x0D66];
+function ltAsciiDigits(value){
+  return value.replace(/[\u0660-\u0669\u06F0-\u06F9\u0966-\u096F\u09E6-\u09EF\u0A66-\u0A6F\u0AE6-\u0AEF\u0B66-\u0B6F\u0BE6-\u0BEF\u0C66-\u0C6F\u0CE6-\u0CEF\u0D66-\u0D6F]/gu,ch=>{
+    const code=ch.codePointAt(0),zero=LT_NATIVE_DIGIT_ZEROS.find(z=>code>=z&&code<=z+9);
+    return String(code-zero);
+  });
+}
 export function ltLocalTravelText(text){
-  let value=String(text||'');
+  let value=ltAsciiDigits(String(text||'').normalize('NFC'));
   if(/[\u0D00-\u0D7F]/u.test(value))for(const [pattern,en] of LT_LOCAL_TRAVEL_WORDS)value=value.replace(pattern,en);
-  // Manglish: "sharjah ninnu calicut", "kuranja ticket", "any mathi".
-  return value.replace(/\bninn?u\b/gi,' to ').replace(/\b(?:kuranj?a|kuravu|kuranjathu)\b/gi,' cheapest ').replace(/\b(?:mathi|madhi)\b/gi,' ok ').replace(/\b(?:venam|venum)\b/gi,' want ')
+  if(/[\u0600-\u06FF\u0900-\u0CFF]/u.test(value)){
+    for(const [pattern,en] of LT_INTL_TRAVEL_WHOLE_WORDS)value=value.replace(pattern,en);
+    for(const [pattern,en] of LT_INTL_TRAVEL_WORDS)value=value.replace(pattern,en);
+  }
+  // Manglish: "sharjah ninnu calicut", "kuranja ticket", "any mathi". Hinglish and other typed
+  // transliterations: "dubai se delhi ticket chahiye", "chennai irunthu", "hyderabad nundi",
+  // "dhaka theke", "sasta wala".
+  return value.replace(/\b(?:ninn?u|se|irun?th?u|irundhu|nundi|nunchi|theke)\b/gi,' to ').replace(/\b(?:kuranj?a|kuravu|kuranjathu|sasta|sasti|saste)\b/gi,' cheapest ')
+    .replace(/\b(?:mathi|madhi|theek|thik)\b/gi,' ok ').replace(/\b(?:venam|venum|chahiye|chahie|chaiye|kavali|beku)\b/gi,' want ')
     .replace(/[ \t]{2,}/g,' ');
 }
 
@@ -20605,8 +20692,8 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   // Guided search (a new request, or Live Flights from the menu): route → date → passengers.
   if(flowOn&&(draft?.guided||freshAsk)){
     input.guided=true;input.pax_done=Boolean(draft?.pax_done);
-    const pax=!input.pax_done&&ltMenuParsePax(userText);
-    if(pax&&(draft?.pax_asked||!/^\s*\d\s*$/.test(String(userText||'')))){Object.assign(input,pax);input.pax_done=true;}
+    const paxText=ltLocalTravelText(userText),pax=!input.pax_done&&ltMenuParsePax(paxText);
+    if(pax&&(draft?.pax_asked||!/^\s*\d\s*$/.test(paxText))){Object.assign(input,pax);input.pax_done=true;}
   }
   if(input.missing.length){
     await ltSaveChatSearchDraft(env,clientId,phone,input);
@@ -24334,7 +24421,8 @@ export function engineV2Block(state){
 
 // Language follow (#8): the script a staff message is written in, when it's one we can tell
 // from the characters alone.
-const ENGINE_SCRIPT_LANGS=[['ml',/[ഀ-ൿ]/],['ta',/[஀-௿]/],['te',/[ఀ-౿]/],['kn',/[ಀ-೿]/],['bn',/[ঀ-৿]/],['hi',/[ऀ-ॿ]/],['ar',/[؀-ۿ]/]];
+// Urdu is told from Arabic by the letters only Urdu uses (ٹ ڈ ڑ ں ے ہ).
+const ENGINE_SCRIPT_LANGS=[['ml',/[ഀ-ൿ]/],['ta',/[஀-௿]/],['te',/[ఀ-౿]/],['kn',/[ಀ-೿]/],['bn',/[ঀ-৿]/],['gu',/[઀-૿]/],['pa',/[਀-੿]/],['or',/[଀-୿]/],['hi',/[ऀ-ॿ]/],['ur',/[ٹڈڑںےۓہ]/],['ar',/[؀-ۿ]/]];
 export function engineScriptLang(text){
   const t=String(text||'');
   for(const [code,re] of ENGINE_SCRIPT_LANGS) if(re.test(t)) return code;
@@ -25186,7 +25274,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       &&await ltLiveTicketsConnected(env,clientId)){
       const liveTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
       if(liveTurn?.handled){
-        const lang=/[\u0D00-\u0D7F]/u.test(userText)?'ml':(c.language||'en');
+        // Reply in the script the customer writes in (or has been writing in, for a button tap).
+        const lang=engineScriptLang(userText)||engineSessionLanguage(state.activeHistory,userText,c.language||'en')||c.language||'en';
         const reply=await engineLocalizeReply(env,c,liveTurn.reply,lang);
         await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,{
           route:'travel_live_ticketing',next:state.stage||'new',preserveCrmStage:true,lang,text:reply,intent:'BOOKING',serviceCategory:'Air Ticket',
