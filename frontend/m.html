@@ -63,6 +63,7 @@ button:active{transform:scale(.98)}
 .row .nm{flex:1;min-width:0;font-size:15.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .tm{font-size:12px;color:var(--muted);white-space:nowrap}
 .row .pv{flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tk{font-weight:700;letter-spacing:-3px;padding-right:3px}.tk.sent{color:#8696a0}.tk.unread{color:#dc2626}.tk.read{color:#16a34a}.tk.failed{color:#dc2626;letter-spacing:0}
 .row.unread .nm{font-weight:800}.row.unread .pv{color:var(--ink)}.row.unread .tm{color:var(--green);font-weight:700}
 .bdg{min-width:20px;height:20px;border-radius:10px;background:var(--green);color:#fff;font-size:11.5px;font-weight:700;display:grid;place-items:center;padding:0 6px}
 .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:14px}
@@ -679,11 +680,13 @@ function paintCounts(c){
 // Avatar tints: dark blue / dark green family, picked from the name so a contact keeps its colour.
 const AV_TINTS=[['#ECF0F8','#0B2545'],['#E7F4EE','#065F46'],['#E3E9F7','#1E3A8A'],['#DDF1E8','#047857']];
 function avStyle(name){let h=0;for(const c of String(name||''))h=(h*31+c.charCodeAt(0))>>>0;const [bg,fg]=AV_TINTS[h%AV_TINTS.length];return `background:${bg};color:${fg}`}
+// Same delivery ticks as chats.html: grey ✓ sent / not known, red ✓✓ delivered not read, green ✓✓ read.
+function tickHtml(s){return s==='read'?'<span class="tk read">✓✓</span>':s==='delivered'?'<span class="tk unread">✓✓</span>':s==='failed'?'<span class="tk failed">⚠</span>':'<span class="tk sent">✓</span>'}
 function paintRecent(rows){
  const el=$('recent');
  if(!rows)return;
  if(!rows.length){el.innerHTML='<div class="empty">No chats yet.</div>';return}
- el.innerHTML=rows.map(r=>{const name=r.name||r.phone||'Unknown',un=Number(r.unread_count)||0;return `<button class="row${un?' unread':''}" data-id="${esc(r.lead_id)}" data-ch="${esc(r.channel||'whatsapp')}"><span class="av" style="${avStyle(name)}">${esc((name.trim()[0]||'?').toUpperCase())}</span><span class="info"><span class="r1"><span class="nm">${esc(name)}</span><span class="tm">${esc(fmtTime(r.last_message_at))}</span></span><span class="r2"><span class="pv">${r.last_message_dir==='out'?'✓✓ ':''}${esc(r.last_message_preview||'')}</span>${un?`<span class="bdg">${un>99?'99+':un}</span>`:''}</span></span></button>`}).join('');
+ el.innerHTML=rows.map(r=>{const name=r.name||r.phone||'Unknown',un=Number(r.unread_count)||0;return `<button class="row${un?' unread':''}" data-id="${esc(r.lead_id)}" data-ch="${esc(r.channel||'whatsapp')}"><span class="av" style="${avStyle(name)}">${esc((name.trim()[0]||'?').toUpperCase())}</span><span class="info"><span class="r1"><span class="nm">${esc(name)}</span><span class="tm">${esc(fmtTime(r.last_message_at))}</span></span><span class="r2"><span class="pv">${r.last_message_dir==='out'?tickHtml(r.last_message_status)+' ':''}${esc(r.last_message_preview||'')}</span>${un?`<span class="bdg">${un>99?'99+':un}</span>`:''}</span></span></button>`}).join('');
 }
 $('recent').addEventListener('click',e=>{const b=e.target.closest('.row');if(b)openChats({leadId:b.dataset.id,channel:b.dataset.ch==='instagram'?'instagram':'whatsapp'})});
 function paintHello(name,biz){
