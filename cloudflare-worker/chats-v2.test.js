@@ -10,6 +10,7 @@ import {
   toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access, chatsV2CreatedVia,
   chatsV2Ready, chatsV2AfterInsert, chatsV2ApplyLeadPatch, chatsV2List, chatsV2Counts, chatsV2Thread,
   chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai, chatsV2CompileFilter, chatsV2RunScheduled,
+  chatsV2NextStatus, chatsV2MessageStatus,
 } from './chats-v2.js';
 
 function d1(db){
@@ -173,6 +174,42 @@ describe('message write hook', ()=>{
     assert.deepEqual(sent.at(-1), {type:'conv', lead_ids:[1]});
     assert.equal(await chatsV2ApplyLeadPatch(env, 99, {Owner:'x'}, {}), null);
     assert.equal(row(99), undefined);
+  });
+});
+
+describe('delivery ticks', ()=>{
+  beforeEach(()=>fresh());
+  test('status only moves forward; failed never hides a delivered or read message', ()=>{
+    assert.equal(chatsV2NextStatus('', 'sent'), 'sent');
+    assert.equal(chatsV2NextStatus('sent', 'read'), 'read');
+    assert.equal(chatsV2NextStatus('read', 'delivered'), null);
+    assert.equal(chatsV2NextStatus('delivered', 'failed'), null);
+    assert.equal(chatsV2NextStatus('sent', 'failed'), 'failed');
+    assert.equal(chatsV2NextStatus('sent', 'bogus'), null);
+  });
+  test('a receipt finds the message by Chatwoot id and updates the thread and the list row', async()=>{
+    await insertMsg(51, {role:'user', content:'hi', ts:T('10:00')});
+    const r=db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, attachment, reply_to, ts, sender_type, kind, cw_id, status) VALUES (51,?,'assistant','Hello!','{}','{}',?,'agent','text',900,'sent')`).run(CID, T('10:01'));
+    await chatsV2AfterInsert(env, 51, CID, {role:'assistant', sender_type:'agent', content:'Hello!', ts:T('10:01')}, Number(r.lastInsertRowid), {broadcast:deps().broadcast});
+    assert.equal(row(51).last_message_status, 'sent');
+    sent=[];
+    assert.equal(await chatsV2MessageStatus(env, CID, {cwId:900, status:'delivered'}, {broadcast:deps().broadcast}), 51);
+    assert.equal(row(51).last_message_status, 'delivered');
+    assert.deepEqual(sent, [{type:'conv', lead_ids:[51], dir:''}]);
+    await chatsV2MessageStatus(env, CID, {cwId:900, status:'read'});
+    assert.equal(await chatsV2MessageStatus(env, CID, {cwId:900, status:'delivered'}), null);
+    assert.equal(row(51).last_message_status, 'read');
+    const t=await chatsV2Thread(env, 51, {});
+    assert.equal(t.messages.at(-1).status, 'read');
+    assert.equal(t.messages[0].status, undefined);
+  });
+  test('a bot reply saved before its id was known is linked by conversation and text', async()=>{
+    await insertMsg(52, {role:'user', content:'price?', ts:new Date(Date.now()-60e3).toISOString()});
+    db.prepare(`UPDATE conversations SET conv_id='77' WHERE lead_id=52`).run();
+    await insertMsg(52, {role:'assistant', sender_type:'bot', content:'It is 99', ts:new Date().toISOString()});
+    assert.equal(await chatsV2MessageStatus(env, CID, {cwId:901, convId:77, content:'It is 99', status:'read'}), 52);
+    assert.equal(db.prepare(`SELECT cw_id, status FROM lead_messages WHERE lead_id=52 AND role='assistant'`).get().status, 'read');
+    assert.equal(await chatsV2MessageStatus(env, CID, {cwId:902, convId:77, content:'Something else', status:'read'}), null);
   });
 });
 

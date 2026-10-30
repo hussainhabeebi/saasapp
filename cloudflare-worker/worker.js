@@ -8,7 +8,7 @@ import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedg
 import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan,shopifyFlowVariants,shopifyFlowOrders} from './shopify-sync.js';
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
 import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
-import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
+import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -1824,9 +1824,11 @@ function leadMessageStmt(env, leadId, clientId, msg, v2=false){
       :msg.attachment?.kind==='template'?'template'
       :msg.attachment&&Object.keys(msg.attachment).length?String(msg.attachment.kind==='voice'?'audio':msg.attachment.kind||'document')
       :'text';
+    // Chatwoot's id for a message we sent starts its delivery ticks at "sent" (chatsV2MessageStatus).
+    const cwId=Number(msg.cw_id||msg.attachment?.cw_id)||null;
     return env.DB.prepare(
-      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts,sender_type,sender_email,sender_name,kind,meta)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts,sender_type,sender_email,sender_name,kind,meta,cw_id,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       Number(leadId), Number(clientId),
       msg.role,
@@ -1839,7 +1841,9 @@ function leadMessageStmt(env, leadId, clientId, msg, v2=false){
       String(msg.sender_name||'').slice(0,80),
       kind.slice(0,20),
       // Quick-reply buttons the bot offered with this message, shown under the bubble in Chats.
-      Array.isArray(msg.options)&&msg.options.length?JSON.stringify({options:msg.options.map(o=>String(o?.title||o?.text||o||'').slice(0,40)).filter(Boolean).slice(0,10)}):'{}'
+      Array.isArray(msg.options)&&msg.options.length?JSON.stringify({options:msg.options.map(o=>String(o?.title||o?.text||o||'').slice(0,40)).filter(Boolean).slice(0,10)}):'{}',
+      cwId,
+      cwId&&msg.role==='assistant'?'sent':''
     );
   }
   return env.DB.prepare(
@@ -2037,14 +2041,15 @@ async function chatSendTextCore(env, c, payload, body){
   fd.append('content', outText); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   if(!r.ok) throw Object.assign(new Error(await chatwootErrorText(r)), {status:502});
+  const data=await r.json().catch(()=>({}));
   // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
   if(lead_id){
     const ts=new Date().toISOString();
-    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...chatsAgentSender(c, payload), ...(body.sender_type?{sender_type:body.sender_type}:{}), ...(quote?.snippet?{reply_to:quote}:{})});
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...chatsAgentSender(c, payload), ...(body.sender_type?{sender_type:body.sender_type}:{}), ...(quote?.snippet?{reply_to:quote}:{}), ...(data?.id?{cw_id:Number(data.id)}:{})});
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
       {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
   }
-  return await r.json().catch(()=>({}));
+  return data;
 }
 
 // Pin/unpin a conversation from the Chats tab (chats.js chatTogglePin) — a lightweight, team-shared
@@ -24776,6 +24781,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
   if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)){ await logEngineSkip(env, clientId, null, null, 'account-mismatch', `payload account ${accountId}`); return json({ok:true, skipped:'account-mismatch'}); }
 
   if(body.event==='message_updated'){
+    // Delivery/read receipts for the Chats thread ticks.
+    const mt=body.message_type??body.message?.message_type;
+    if(mt!=='incoming'&&mt!==0){
+      try{
+        await chatsV2MessageStatus(env, c.Id, {cwId:body.id||body.message?.id, convId:body.conversation?.id, content:body.content,
+          status:String(body.status||body.message?.status||'')}, {broadcast:engineBroadcastUpdate});
+      }catch(e){}
+    }
     if(await fv3IsEnabled(env,c.Id)){
       await fv3EnsureSchema(env);
       const status=String(body.status||body.message?.status||'');

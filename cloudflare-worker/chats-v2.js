@@ -110,6 +110,10 @@ export const CHATS_V2_MESSAGE_COLUMNS=[
   `ALTER TABLE lead_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE lead_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'`,
   `ALTER TABLE lead_messages ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'`,
+  // Delivery receipts for messages we send: Chatwoot's message id, and sent → delivered → read
+  // (or failed) from its message_updated webhook (chatsV2MessageStatus). '' = not known.
+  `ALTER TABLE lead_messages ADD COLUMN cw_id INTEGER`,
+  `ALTER TABLE lead_messages ADD COLUMN status TEXT NOT NULL DEFAULT ''`,
 ];
 
 // Additive columns on conversations, same one-by-one "duplicate column is fine" rule.
@@ -120,6 +124,12 @@ export const CHATS_V2_MESSAGE_COLUMNS=[
 export const CHATS_V2_CONV_COLUMNS=[
   `ALTER TABLE conversations ADD COLUMN service_category TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE conversations ADD COLUMN created_via TEXT NOT NULL DEFAULT ''`,
+  // The latest message's delivery status, for the chat list's tick.
+  `ALTER TABLE conversations ADD COLUMN last_message_status TEXT NOT NULL DEFAULT ''`,
+];
+// Indexes on the additive columns above — only valid once those columns exist.
+export const CHATS_V2_COLUMN_INDEXES=[
+  `CREATE INDEX IF NOT EXISTS ix_lm_cw ON lead_messages(client_id, cw_id) WHERE cw_id IS NOT NULL`,
 ];
 // A lead's origin for the inbox: its CreatedVia, else (an older lead) 'chatwoot' when it has a
 // Chatwoot conversation — which every chat lead has.
@@ -141,6 +151,7 @@ export async function chatsV2Ready(env){
         try{ await env.DB.prepare(sql).run(); }
         catch(e){ if(!/duplicate column/i.test(String(e?.message||e))) throw e; }
       }
+      for(const sql of CHATS_V2_COLUMN_INDEXES) await env.DB.prepare(sql).run();
       return true;
     })().catch(()=>{ schemaReady.delete(env.DB); return false; });
     schemaReady.set(env.DB, p);
@@ -280,6 +291,8 @@ export async function chatsV2AfterInsert(env, leadId, clientId, msg, messageId, 
         waiting_since=(SELECT MIN(m.ts) FROM lead_messages m WHERE m.lead_id=conversations.lead_id AND m.role='user'
           AND m.ts>COALESCE((SELECT MAX(o.ts) FROM lead_messages o WHERE o.lead_id=conversations.lead_id AND o.role='assistant'),''))
       WHERE lead_id=?1`).bind(Number(leadId)),
+    env.DB.prepare(`UPDATE conversations SET last_message_status=COALESCE((SELECT m.status FROM lead_messages m WHERE m.id=conversations.last_message_id),'') WHERE lead_id=?1`)
+      .bind(Number(leadId)),
   ]);
   const row=await convRow(env, leadId);
   // Deltas carry ids only, never names or message text: every tab of the account shares this
@@ -287,6 +300,40 @@ export async function chatsV2AfterInsert(env, leadId, clientId, msg, messageId, 
   // through /chats/v2/list?updated_since=…, which applies the same access rules as the list.
   if(broadcast&&row) await broadcast(env, clientId, {type:'conv', lead_ids:[Number(leadId)], dir:seed?'':(dir==='in'?'in':'out')});
   return row;
+}
+
+// WhatsApp/Instagram delivery receipt (Chatwoot message_updated) for a message we sent. Finds the
+// row by Chatwoot message id; a row saved before its id was known (the bot records its reply
+// before sending it) is matched once by conversation + exact text among recent unlinked replies,
+// and linked. Status only moves forward (sent → delivered → read); failed never overwrites a
+// delivered/read. Returns the lead id when something changed.
+const MSG_STATUS_RANK={'':0, sent:1, delivered:2, read:3};
+export function chatsV2NextStatus(cur, next){
+  cur=String(cur||''); next=String(next||'');
+  if(next==='failed') return (MSG_STATUS_RANK[cur]||0)<2&&cur!=='failed'?'failed':null;
+  if(!(next in MSG_STATUS_RANK)||!next) return null;
+  if(cur==='failed') return next;
+  return MSG_STATUS_RANK[next]>(MSG_STATUS_RANK[cur]||0)?next:null;
+}
+export async function chatsV2MessageStatus(env, clientId, {cwId, convId, content, status}, {broadcast}={}){
+  cwId=Number(cwId)||0;
+  if(!cwId||!['sent','delivered','read','failed'].includes(status)||!await chatsV2Ready(env)) return null;
+  let row=await env.DB.prepare(`SELECT id, lead_id, status FROM lead_messages WHERE client_id=? AND cw_id=? AND role='assistant' LIMIT 1`)
+    .bind(Number(clientId), cwId).first();
+  if(!row&&convId&&content){
+    const conv=await env.DB.prepare('SELECT lead_id FROM conversations WHERE client_id=? AND conv_id=? LIMIT 1').bind(Number(clientId), String(convId)).first();
+    if(conv) row=await env.DB.prepare(`SELECT id, lead_id, status FROM lead_messages WHERE lead_id=? AND role='assistant' AND cw_id IS NULL AND content=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT 1`)
+      .bind(Number(conv.lead_id), String(content), new Date(Date.now()-2*864e5).toISOString()).first();
+  }
+  if(!row) return null;
+  const next=chatsV2NextStatus(row.status, status);
+  await env.DB.prepare('UPDATE lead_messages SET cw_id=?, status=COALESCE(?, status) WHERE id=?').bind(cwId, next, row.id).run();
+  if(!next) return null;
+  const now=new Date().toISOString();
+  await env.DB.prepare('UPDATE conversations SET last_message_status=?, updated_at=? WHERE lead_id=? AND last_message_id=?')
+    .bind(next, now, Number(row.lead_id), row.id).run();
+  if(broadcast) await broadcast(env, clientId, {type:'conv', lead_ids:[Number(row.lead_id)], dir:''});
+  return Number(row.lead_id);
 }
 
 // A NocoDB lead PATCH made by some other path (v1 /chat/* routes, the engine's lead upsert, the
@@ -678,6 +725,7 @@ export function chatsV2MessageOut(r){
   if(r.sender_name) m.sender_name=r.sender_name;
   if(r.sender_email) m.sender_email=r.sender_email;
   if(r.kind&&r.kind!=='text') m.kind=r.kind;
+  if(r.status) m.status=r.status;
   const meta=safeJson(r.meta); if(Object.keys(meta).length) m.meta=meta;
   return m;
 }
