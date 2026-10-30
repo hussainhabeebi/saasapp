@@ -346,6 +346,16 @@ async function runSync(){
  renderContacts();loadCounts();
  if(current&&ids.has(String(current.Id))){await refreshMessages(current);renderHeaderCtl()}
 }
+// Delivery ticks: while the open chat has a recent reply that isn't read yet, re-read its thread
+// every 20s (the worker asks Chatwoot for receipts its webhook may have missed). Redraws only
+// when a tick actually changed.
+setInterval(async()=>{
+ if(!V2||!current||document.hidden)return;
+ const k=String(current.Id),since=Date.now()-7*864e5,ticks=()=>(histCache[k]||[]).map(m=>m.status||'').join();
+ if(!(histCache[k]||[]).some(m=>isOut(m)&&!m._status&&m.kind!=='event'&&m.kind!=='note'&&!['read','failed'].includes(m.status)&&new Date(m.ts).getTime()>since))return;
+ const before=ticks();
+ try{await fetchThread(current);if(current&&String(current.Id)===k&&ticks()!==before)drawMessages(false)}catch{}
+},20000);
 function connectWs(){
  if(!V2||ws||!('WebSocket'in window)||location.protocol==='file:')return;
  const name=(boot2?.agents||[]).find(a=>a.email===meEmail)?.name||meEmail;
