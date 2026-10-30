@@ -414,6 +414,33 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltChatFlightIntent('I live in Dubai, need Kochi visa'),false);
   });
 
+  test('understands flight requests in every reply language, with native digits',()=>{
+    const cases=[
+      ['मुझे दुबई से कोच्चि का टिकट चाहिए 15 नवंबर','DXB','COK'],
+      ['दुबईहून मुंबई विमान तिकीट २० डिसेंबर','DXB','BOM'],
+      ['أريد تذكرة طيران من دبي إلى كاليكوت يوم ١٥ نوفمبر','DXB','CCJ'],
+      ['دبئی سے لاہور کا ٹکٹ چاہیے ۲۰ دسمبر','DXB','LHE'],
+      ['துபாயிலிருந்து சென்னைக்கு டிக்கெட் வேண்டும் நவம்பர் 20','DXB','MAA'],
+      ['దుబాయ్ నుండి హైదరాబాద్ ఫ్లైట్ టికెట్ కావాలి','DXB','HYD'],
+      ['ದುಬೈಯಿಂದ ಬೆಂಗಳೂರು ಫ್ಲೈಟ್ ಟಿಕೆಟ್ ಬೇಕು','DXB','BLR'],
+      ['দুবাই থেকে ঢাকা বিমান টিকিট চাই ১৫ নভেম্বর','DXB','DAC'],
+      ['દુબઈ થી અમદાવાદ ફ્લાઇટ ટિકિટ જોઈએ','DXB','AMD'],
+      ['ਦੁਬਈ ਤੋਂ ਅੰਮ੍ਰਿਤਸਰ ਟਿਕਟ ਚਾਹੀਦੀ ਹੈ','DXB','ATQ'],
+      ['ଦୁବାଇ ରୁ ଭୁବନେଶ୍ୱର ଫ୍ଲାଇଟ ଟିକେଟ ଦରକାର','DXB','BBI'],
+      ['dubai se delhi ticket chahiye','DXB','DEL'],
+    ];
+    for(const [text,origin,destination] of cases){
+      assert.equal(ltChatFlightIntent(text),true,text);
+      assert.deepEqual(ltParseFlightRoute(text),{origin,destination},text);
+    }
+    assert.match(ltLocalTravelText('١٥ نوفمبر'),/15 november/);
+    assert.match(ltLocalTravelText('१५ नवंबर'),/15 november/);
+    assert.deepEqual(ltParseChatFlightFilters('सबसे सस्ता'),{sort:'cheapest'});
+    for(const text of ['हाँ सबसे सस्ता वाला','نعم أرخص','ठीक है'])assert.equal(ltChatFlightGoAhead(text),true,text);
+    // Visa questions and everyday sentences are still not flight requests.
+    for(const text of ['दुबई वीज़ा चाहिए','دبي فيزا','मैं दुबई में रहता हूँ','मुझे आप से बात करनी है'])assert.equal(ltChatFlightIntent(text),false,text);
+  });
+
   test('a short go-ahead continues a flight request instead of more questions',()=>{
     for(const text of ['yes','ok any cheap one','ഏതെങ്കിലും കുറവ് മതി','Look up options'])assert.equal(ltChatFlightGoAhead(text),true,text);
     for(const text of ['visa price?','visa venam','ദുബായ് വിസ വേണം','what is the baggage allowance'])assert.equal(ltChatFlightGoAhead(text),false,text);
