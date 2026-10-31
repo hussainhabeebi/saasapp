@@ -3806,19 +3806,7 @@ const ROLES = {
             </div>
 
             <div id="taOptionsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
-              <div style="margin-bottom:8px"><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">How itineraries are shared with your customers. Live flight fare options (prices, number of options, fare card style) are in ✈️ Flights → ⚙️ Settings.</div></div>
-              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px">
-                <div class="form-group" style="margin:0"><label class="form-label" for="cfgItinSharePdf">🗺️ Share itineraries as PDF</label>
-                  <select class="form-input" id="cfgItinSharePdf"><option value="No">No — send as WhatsApp text</option><option value="Yes">Yes — always send the itinerary PDF</option></select>
-                  <div class="s-note" style="margin:2px 0 0">Every itinerary send uses your existing itinerary PDF layout.</div></div>
-                <div class="form-group" style="margin:0"><label class="form-label" for="cfgItinAutoImages">🖼️ Auto-add images to itinerary PDF</label>
-                  <select class="form-input" id="cfgItinAutoImages"><option value="Yes">Yes</option><option value="No">No</option></select>
-                  <div class="s-note" style="margin:2px 0 0">Items without a photo use a matching hotel or package photo. Photos you upload always win.</div></div>
-              </div>
-              <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
-                <button class="save-btn" id="saveTaOptions">Save</button>
-                <span class="save-msg" id="saveTaOptionsMsg"></span>
-              </div>
+              <div><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">Live fares &amp; booking, currency, the WhatsApp menu and itinerary options are all in ✈️ Flights → ⚙️ Travel Settings.</div></div>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -21400,24 +21388,8 @@ $id('saveTaFlow').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
 });
 
-// Travel Settings — itinerary PDF sharing/images (travel-agency.html). Live-fare options moved to
-// Live Agency → ⚙️ Settings (live-travel-agency.html); this PUT only sends the itinerary fields.
-$id('saveTaOptions').addEventListener('click',async()=>{
-  const btn=$id('saveTaOptions'),msg=$id('saveTaOptionsMsg');
-  btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  try{
-    const body={
-      itin_share_pdf:$id('cfgItinSharePdf').value==='Yes',
-      itin_auto_images:$id('cfgItinAutoImages').value==='Yes',
-    };
-    const r=await fetch(`${WORKER_BASE}/live-travel/travel-settings`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
-    taOptionsApply(d);
-    msg.textContent='✓ Saved';
-  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
-  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
-});
+// Travel Settings (itinerary PDF, live fares, currency, WhatsApp menu) are edited in Live Agency →
+// ⚙️ Travel Settings (live-travel-agency.html); taOptionsApply above still mirrors the saved values.
 
 /* ── B2B: SETTINGS ── */
 function initB2bSettings(){

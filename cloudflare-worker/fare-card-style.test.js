@@ -53,3 +53,13 @@ test('next-day arrival offset',()=>{
   assert.equal(ltArrivalDayOffset('2026-11-10T23:00:00','2026-11-12T06:00:00'),2);
   assert.equal(ltArrivalDayOffset('','2026-11-12T06:00:00'),0);
 });
+
+test('online booking off: the AI is told there is no booking link',async()=>{
+  const { ltTravelAgencyPromptBlock, ltManualBookingConfirmText } = await import('./worker.js');
+  const on=ltTravelAgencyPromptBlock(true),off=ltTravelAgencyPromptBlock(true,false);
+  assert.match(on,/secure booking link is sent automatically/);
+  assert.doesNotMatch(off,/secure booking link is sent automatically/);
+  assert.match(off,/There is no online booking link: never promise or send one\./);
+  assert.equal(ltTravelAgencyPromptBlock(false,false),ltTravelAgencyPromptBlock(false));
+  assert.doesNotMatch(ltManualBookingConfirmText({airline:'IndiGo',flightNumber:'1435',origin:'CCJ',destination:'AUH'},{name:'Asha Nair'}),/https?:/);
+});

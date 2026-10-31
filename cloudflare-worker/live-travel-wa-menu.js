@@ -242,10 +242,12 @@ export function ltFlightDetailsText(s,{formatMoney,showFare=true}={}){
   return lines.join('\n');
 }
 
-export function ltBookingFormText(passenger={},{adults=1}={}){
+// manual: online booking is off — the team, not a booking page, takes it from here.
+export function ltBookingFormText(passenger={},{adults=1,manual=false}={}){
   const missing=ltBookingFormMissing(passenger);
   if(missing.length===2||!missing.length){
-    return `📝 *Booking form*\n\nPlease reply with the lead passenger's details:\n\n*Full name* (as on passport)\n*Email address*\n\nExample:\nHussain Aparambil\nname@email.com${adults>1?`\n\nDetails for the other ${adults-1} passenger${adults===2?'':'s'} are entered on the booking page.`:''}`;
+    const others=adults>1?`\n\nDetails for the other ${adults-1} passenger${adults===2?'':'s'} ${manual?'will be collected by our team':'are entered on the booking page'}.`:'';
+    return `📝 *Booking ${manual?'request':'form'}*\n\nPlease reply with the lead passenger's details:\n\n*Full name* (as on passport)\n*Email address*\n\nExample:\nHussain Aparambil\nname@email.com${others}${manual?'\n\nOur team will confirm the booking and send payment details here.':''}`;
   }
   return missing[0]==='name'
     ? `Thanks! Now please send the lead passenger's *full name* exactly as on the passport.`

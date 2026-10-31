@@ -322,13 +322,13 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
   globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
   try{
     let r=await call(env,session,'/live-travel/travel-settings');
-    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic'});
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
     assert.equal(r.status,200,JSON.stringify(r.data));
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic'});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'highlighted'});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted'},'only the style changes');
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true},'only the style changes');
     assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);
@@ -377,5 +377,58 @@ test('Custom API connector: live fares in chat in its own currency, booking link
     sessionUp=false;
     co=await engineHandleLiveTicketCheckoutChat(env,c,9,'56',phone,'Book Option 1','text','');
     assert.equal(meta.pop().interactive.action.parameters.url,'https://tripcod.com/book?fareId=TC-1&supplier=DUFFEL&source=leadvyne&client=9');
+  }finally{globalThis.fetch=realFetch;}
+});
+
+test('Online booking off: no booking link for any supplier, the details become a manual request for the team',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY,11);
+  const realFetch=globalThis.fetch,meta=[],chatwoot=[],notes=[];
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u==='https://api.flypoomas.com/api/search')return new Response(JSON.stringify({fares:[{id:'FARE-1',isBookable:true,supplier:'DUFFEL',displayPrice:650,totalFare:650,currency:'AED',airline:'AI',airlineName:'Air India',flightNumber:'AI 6509',origin:'SHJ',destination:'CCJ',departureTime:'2026-12-01T20:00:00',arrivalTime:'2026-12-01T23:59:00',duration:240,stops:0}]}));
+    if(u.startsWith('https://graph.facebook.com/')){meta.push(JSON.parse(opts.body));return new Response('{}');}
+    if(u.startsWith('https://cw.test/')){
+      if(typeof opts.body==='string'){const b=JSON.parse(opts.body);if(b.private)notes.push(b.content);else chatwoot.push({content:b.content});}
+      else chatwoot.push({content:opts.body.get?.('content'),items:opts.body.get?.('content_attributes')?JSON.parse(opts.body.get('content_attributes')).items:null});
+      return new Response('{"id":1}');
+    }
+    return new Response('{}',{status:404});
+  };
+  try{
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    let r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_online_booking:false});
+    assert.equal(r.status,200);
+    assert.equal(r.data.lt_online_booking,false);
+    // The webhook loads the saved settings onto the client record (ltTravelSettingsStored).
+    const c={Id:11,industry:'travel',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN',...r.data};
+    const phone='+971500000011',ctaUrls=()=>meta.filter(m=>m.interactive?.type==='cta_url');
+
+    // Travel Flow is off for this agency: previously a pick sent the booking link straight away.
+    const step=await engineHandleLiveTicketingChat(env,c,11,'SHJ to CCJ on 2026-12-01, 2 adults',[],phone);
+    assert.deepEqual(step.buttons.map(b=>b.title),['Book Option 1']);
+    let co=await engineHandleLiveTicketCheckoutChat(env,c,11,'60',phone,'Book Option 1','text','');
+    assert.equal(co.step,'confirm');
+    assert.deepEqual(chatwoot.pop().items.map(i=>i.title),['✅ Proceed to Book','🔁 Other Flights','🆕 New Search']);
+    co=await engineHandleLiveTicketCheckoutChat(env,c,11,'60',phone,'proceed to book','text','');
+    let msg=chatwoot.pop();
+    assert.match(msg.content,/Booking request/);
+    assert.match(msg.content,/other 1 passenger will be collected by our team/);
+    assert.deepEqual(msg.items.map(i=>i.title),['🔁 Other Flights'],'no Skip form when the team books');
+    // "skip form" can't jump to a link.
+    await engineHandleLiveTicketCheckoutChat(env,c,11,'60',phone,'skip form','text','');
+    assert.match(chatwoot.pop().content,/Booking request/);
+    co=await engineHandleLiveTicketCheckoutChat(env,c,11,'60',phone,'Asha Nair\nasha@example.com','text','');
+    msg=chatwoot.pop();
+    assert.match(msg.content,/Thanks Asha! Your booking request is received/);
+    assert.match(msg.content,/Air India AI 6509 · SHJ → CCJ/);
+    assert.match(notes.pop(),/Manual flight booking request[\s\S]*Asha Nair · asha@example\.com[\s\S]*2 adults/);
+    const quote=DB.db.prepare(`SELECT * FROM live_travel_quotes WHERE client_id=11`).get();
+    assert.match(quote.notes,/^MANUAL BOOKING REQUEST/);
+    assert.equal(quote.customer_email,'asha@example.com');
+    // Asking for the link afterwards still gets none.
+    await engineHandleLiveTicketCheckoutChat(env,c,11,'60',phone,'open checkout','text','');
+    assert.match(chatwoot.pop().content,/is with our team/);
+    assert.equal(ctaUrls().length,0,'no booking link was ever sent');
+    assert.equal(chatwoot.some(m=>/https?:\/\//.test(m.content||'')),false);
   }finally{globalThis.fetch=realFetch;}
 });

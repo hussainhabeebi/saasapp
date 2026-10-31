@@ -33,6 +33,7 @@ test('agency edits, previews and saves its WhatsApp menu', async ({ page }) => {
     return route.abort();
   });
   await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
   await page.getByRole('button', { name: '💬 WhatsApp Menu' }).click();
   const preview = page.locator('#wmPreview');
   await expect(preview).toContainText('✈️ Flight Tickets');
