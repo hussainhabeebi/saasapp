@@ -147,3 +147,22 @@ test('catalog token: kept in KV when the column drops it, and used by Link', asy
   const bad = await h.call('/ecom/wa-shop/config', { catalog_token: 'my token' }, env);
   assert.equal(bad.s, 400);
 });
+
+test('cart switch refused by Meta: the link is still saved, reported as a warning; skipped when already on', async () => {
+  const h = harness({ meta: {
+    'WABA/product_catalogs': { method: 'GET', body: { data: [{ id: '555', name: 'Shop' }] } },
+    'PH/whatsapp_commerce_settings?is_catalog_visible': { method: 'POST', status: 500, body: { error: { message: 'An unknown error has occurred.', code: 1 } } },
+  } });
+  const r = await h.call('/ecom/wa-shop/connect', { catalog_id: '555' });
+  assert.equal(r.s, 200, JSON.stringify(r.d));
+  assert.deepEqual({ shown: r.d.shown, err: r.d.show_error }, { shown: false, err: 'An unknown error has occurred.' });
+  assert.ok(waShopConfig({ wa_shop_config: JSON.stringify(h.saved()) }).linked_at);
+
+  const on = harness({ meta: {
+    'WABA/product_catalogs': { method: 'GET', body: { data: [{ id: '555', name: 'Shop' }] } },
+    'PH/whatsapp_commerce_settings': { method: 'GET', body: { data: [{ is_catalog_visible: true, is_cart_enabled: true }] } },
+  } });
+  const r2 = await on.call('/ecom/wa-shop/connect', { catalog_id: '555' });
+  assert.equal(r2.d.shown, true);
+  assert.ok(!on.graph.some(g => g.u.includes('whatsapp_commerce_settings') && g.method === 'POST'));
+});

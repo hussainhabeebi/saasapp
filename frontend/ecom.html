@@ -4656,7 +4656,9 @@ function wsConnect(btn) {
   const id = document.getElementById('wsCatalogId').value.replace(/\D/g, '');
   if (!id) { wsSetMsg('wsMsg1', '⚠ Enter the catalog ID — the long number shown in Commerce Manager.', 'err'); return; }
   return wsRun(btn, 'wsMsg1', () => wsCall('connect', { catalog_id: id }),
-    d => `✓ ${d.already_linked ? 'Catalog was already connected — now' : 'Catalog linked and'} shown on your WhatsApp number with the cart on` +
+    d => (d.shown === false
+      ? `✓ Catalog connected to your WhatsApp account — but Meta wouldn't switch on the catalog icon and cart for the number (${d.show_error}). Switch on "Show catalog icon" and "Show add to cart button" in WhatsApp Manager → Account tools → Catalog, then press Link again to check`
+      : `✓ ${d.already_linked ? 'Catalog was already connected — now' : 'Catalog linked and'} shown on your WhatsApp number with the cart on`) +
       (d.catalog_name ? ` · “${d.catalog_name}”` : '') + (d.product_count != null ? ` · ${d.product_count} products` : '') + (d.warning ? ` (${d.warning})` : ''),
     'Linking… checking with Meta');
 }
