@@ -10,8 +10,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <style>
 :root{
   --bg:#F0F9FF;--card:#FFFFFF;--ink:#0B2540;--muted:#5B7C93;
@@ -174,7 +172,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .travel-hero::after{content:'✈️';position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:52px;opacity:.12}
 .travel-hero-title{font-family:var(--disp);font-size:20px;font-weight:700;margin-bottom:4px}
 .travel-hero-sub{font-size:12.5px;opacity:.8}
-.travel-stat-row{display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px}
+.travel-stat-row{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:14px}
 .travel-stat{background:rgba(255,255,255,.18);backdrop-filter:blur(4px);border-radius:12px;padding:12px;text-align:center}
 .travel-stat-val{font-size:24px;font-weight:700}
 .travel-stat-lbl{font-size:10px;opacity:.75;margin-top:2px}
@@ -287,6 +285,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   <header>
     <span class="brand">Leadvyne<span>.</span></span>
     <span class="chip">✈️ Travel Agency</span>
+    <button class="hback" style="background:#d92d20;color:#fff;border-color:#d92d20;font-weight:700" onclick="openLiveAgency()">🔴 Live Agency</button>
     <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
   </header>
 
@@ -295,6 +294,8 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="ta-tab" data-ta="packages">📦 Packages</button>
     <button class="ta-tab" data-ta="itineraries">🗺️ Itineraries</button>
     <button class="ta-tab" data-ta="services">🗂️ Services</button>
+    <button class="ta-tab" data-ta="attestation">📋 Attestation</button>
+    <button class="ta-tab" data-ta="properties">🏨 Resorts &amp; Hotels</button>
     <button class="ta-tab" data-ta="visas">🛂 Visa</button>
     <button class="ta-tab" data-ta="groupfares">👥 Group Fare</button>
     <button class="ta-tab" data-ta="specialfares">🎟️ Special Fare</button>
@@ -302,6 +303,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="ta-tab" data-ta="bookings">🎫 Bookings</button>
     <button class="ta-tab" data-ta="cars">🚗 Cars</button>
     <button class="ta-tab" data-ta="finance">💰 Finance</button>
+    <button class="ta-tab" style="color:#d92d20;font-weight:800" onclick="openLiveAgency()">🔴 Live Agency</button>
   </div>
   <div id="taMissingTablesBanner" style="display:none"></div>
 
@@ -321,7 +323,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="pkgModalTitle">New Package</div><button class="icon-btn" onclick="closeModal('modalPkg')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package Name *</label><input class="form-input" id="pkgName" placeholder="e.g. Dubai 5 Nights City Tour"></div>
         <div class="form-group"><label class="form-label">Type</label><select class="form-input" id="pkgType"><option value="tour">Tour</option><option value="umrah">Umrah</option><option value="hajj">Hajj</option><option value="hotel">Hotel Only</option><option value="visa">Visa Package</option><option value="custom">Custom</option></select></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="pkgDest" placeholder="Dubai, UAE"></div>
@@ -330,10 +332,18 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Max Pax</label><input class="form-input" type="number" id="pkgPaxMax" value="99"></div>
         <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="pkgCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
         <div class="form-group"><label class="form-label">Base (Cost) Price / pax</label><input class="form-input" type="number" id="pkgBasePrice" placeholder="0"></div>
-        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sell Price / pax (with margin)</label><input class="form-input" type="number" id="pkgSellPrice" placeholder="0"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sell Price / adult (with margin)</label><input class="form-input" type="number" id="pkgSellPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Child Price (with bed)</label><input class="form-input" type="number" id="pkgChildPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Child Price (no bed)</label><input class="form-input" type="number" id="pkgChildNoBedPrice" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Infant Price</label><input class="form-input" type="number" id="pkgInfantPrice" placeholder="0"></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Inclusions (one per line)</label><textarea class="form-input" id="pkgInclusions" rows="4" placeholder="Visa&#10;Return flights&#10;4-star hotel&#10;Airport transfers"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Exclusions (one per line)</label><textarea class="form-input" id="pkgExclusions" rows="3" placeholder="Travel insurance&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="pkgNotes" rows="2"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1;margin-bottom:0"><label class="form-label">Photos &amp; PDF for WhatsApp</label><div style="font-size:11.5px;color:var(--muted)">Paste Google Drive file links shared as "Anyone with the link can view" (or any direct image / PDF link). When a lead names this package, its destination, or picks it from the menu, the bot sends these straight into the chat.</div></div>
+        <div class="form-group"><label class="form-label">Photo 1 (cover)</label><input class="form-input" id="pkgImage1" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="form-group"><label class="form-label">Photo 2</label><input class="form-input" id="pkgImage2" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="form-group"><label class="form-label">Photo 3</label><input class="form-input" id="pkgImage3" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="form-group"><label class="form-label">PDF Brochure</label><input class="form-input" id="pkgPdfUrl" placeholder="https://drive.google.com/file/d/…"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -344,15 +354,39 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   </div>
 
   <!-- TA: ITINERARY MODAL -->
-  <div class="modal" id="modalItin" style="width:640px">
+  <div class="modal" id="modalItin" style="width:760px">
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="itinModalTitle">New Itinerary</div><button class="icon-btn" onclick="closeModal('modalItin')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Title *</label><input class="form-input" id="itinTitle" placeholder="e.g. Dubai City Tour 5D4N"></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="itinDest" placeholder="Dubai, UAE"></div>
-        <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom"></div>
+        <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom" onchange="renderItinDays()"></div>
         <div class="form-group"><label class="form-label">To Date</label><input class="form-input" type="date" id="itinTo"></div>
+        <div class="form-group"><label class="form-label">Nights</label><input class="form-input" type="number" min="0" id="itinNights" placeholder="Auto from dates"></div>
+        <div class="form-group"><label class="form-label">Departure City</label><input class="form-input" id="itinDepCity" placeholder="e.g. Kozhikode"></div>
+        <div class="form-group"><label class="form-label">Hotel Category</label><select class="form-input" id="itinHotelCat"><option value="">—</option><option>Budget</option><option>3 Star</option><option>4 Star</option><option>5 Star</option><option>Luxury</option><option>Houseboat / Resort</option></select></div>
+        <div class="form-group"><label class="form-label">Meal Plan</label><select class="form-input" id="itinMealPlan"><option value="">—</option><option>Room Only</option><option>Breakfast (CP)</option><option>Half Board (MAP)</option><option>Full Board (AP)</option><option>All Inclusive</option></select></div>
+        <div class="form-group"><label class="form-label">Transport</label><input class="form-input" id="itinTransport" placeholder="e.g. AC bus, private car, train"></div>
+      </div>
+      <div class="sec-hd">Travellers &amp; Rates</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:6px">
+        <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="0" id="itinAdults" value="1" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Children (with bed)</label><input class="form-input" type="number" min="0" id="itinChildren" value="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Children (no bed)</label><input class="form-input" type="number" min="0" id="itinChildrenNoBed" value="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Infants</label><input class="form-input" type="number" min="0" id="itinInfants" value="0" oninput="itinUpdateRateTotal()"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:6px">
+        <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="itinCurrency" onchange="itinUpdateRateTotal()"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option><option>QAR</option><option>KWD</option><option>OMR</option><option>BHD</option></select></div>
+        <div class="form-group"><label class="form-label">Adult Price</label><input class="form-input" type="number" min="0" id="itinAdultPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Child Price (with bed)</label><input class="form-input" type="number" min="0" id="itinChildPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Child Price (no bed)</label><input class="form-input" type="number" min="0" id="itinChildNoBedPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group"><label class="form-label">Infant Price</label><input class="form-input" type="number" min="0" id="itinInfantPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+      </div>
+      <div id="itinRateTotal" style="font-size:12.5px;color:var(--accent-ink);font-weight:600;margin-bottom:14px"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
+        <div class="form-group"><label class="form-label">Inclusions (one per line)</label><textarea class="form-input" id="itinInclusions" rows="4" placeholder="Accommodation&#10;Daily breakfast&#10;All transfers"></textarea></div>
+        <div class="form-group"><label class="form-label">Exclusions (one per line)</label><textarea class="form-input" id="itinExclusions" rows="4" placeholder="Entry tickets&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="itinNotes" rows="2"></textarea></div>
         <div class="form-group" style="grid-column:1/-1">
           <label class="form-label">Logo (optional — overrides your account logo on this itinerary's PDF only)</label>
@@ -374,7 +408,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="caseModalTitle">New Service Case</div><button class="icon-btn" onclick="closeModal('modalCase')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group"><label class="form-label">Client Name *</label><input class="form-input" id="caseClientName" placeholder="Full name"></div>
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="caseClientPhone" placeholder="971501234567" type="tel"></div>
         <div class="form-group"><label class="form-label">Service Type</label><select class="form-input" id="caseType" onchange="updateCaseStages()"><option value="visa">🛂 Visa</option><option value="attestation">📜 Attestation</option><option value="ticketing">✈️ Ticketing</option><option value="insurance">🛡️ Insurance</option><option value="recruitment">👷 Recruitment</option><option value="forex">💱 Forex</option><option value="passport">📘 Passport</option><option value="emigration">🚢 Emigration</option></select></div>
@@ -398,7 +432,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="visaModalTitle">New Visa</div><button class="icon-btn" onclick="closeModal('modalVisa')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Visa Country *</label><input class="form-input" id="visaCountry" placeholder="e.g. Thailand"></div>
         <div class="form-group"><label class="form-label">Visa Type</label><select class="form-input" id="visaType"><option value="single_entry">Single Entry</option><option value="multiple_entry">Multiple Entry</option><option value="transit">Transit</option></select></div>
         <div class="form-group"><label class="form-label">Duration</label><select class="form-input" id="visaDuration"><option value="10_days">10 Days</option><option value="14_days">14 Days</option><option value="30_days">30 Days</option><option value="60_days">60 Days</option><option value="90_days">90 Days</option><option value="1_year">1 Year</option></select></div>
@@ -406,10 +440,18 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Child Price</label><input class="form-input" type="number" id="visaChildPrice" placeholder="0"></div>
         <div class="form-group"><label class="form-label">Currency</label><select class="form-input" id="visaCurrency"><option>AED</option><option>INR</option><option>SAR</option><option>USD</option><option>EUR</option><option>GBP</option></select></div>
         <div class="form-group"><label class="form-label">Processing Time</label><input class="form-input" id="visaProcessingTime" placeholder="e.g. 3-5 working days"></div>
-        <div class="form-group"><label class="form-label">Visa Validity</label><input class="form-input" id="visaValidity" placeholder="e.g. 6 months from issue"></div>
         <div class="form-group"><label class="form-label">Entry Type</label><input class="form-input" id="visaEntryType" placeholder="e.g. Tourist, Business"></div>
         <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="visaStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+      </div>
+      <div class="sec-hd" style="margin-top:16px">Services Included</div>
+      <div style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px">Tick what this visa package includes and add the details. The WhatsApp bot shows this list when a lead asks about the visa.</div>
+      <div id="visaServicesRows" style="display:grid;gap:8px"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:12px">
+        <div class="form-group"><label class="form-label">⏳ Visa Validity</label><input class="form-input" id="visaValidity" placeholder="e.g. 60 days from issue"></div>
+        <div class="form-group"><label class="form-label">Other Services Included (one per line)</label><textarea class="form-input" id="visaOtherServices" rows="2" placeholder="Sightseeing tour&#10;SIM card"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Not Included (one per line)</label><textarea class="form-input" id="visaNotIncluded" rows="2" placeholder="Flight tickets&#10;Personal expenses"></textarea></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Documents</label><textarea class="form-input" id="visaRequiredDocs" rows="3" placeholder="Passport copy&#10;Photo&#10;Bank statement"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="visaNotes" rows="2" placeholder="e.g. Border crossing at Oman Hatta, return the same day"></textarea></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -424,7 +466,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="groupFareModalTitle">New Group Fare</div><button class="icon-btn" onclick="closeModal('modalGroupFare')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sector (From → To) *</label><input class="form-input" id="gfSector" placeholder="e.g. DXB → COK"></div>
         <div class="form-group"><label class="form-label">Airline</label><input class="form-input" id="gfAirline" placeholder="e.g. Air India Express"></div>
         <div class="form-group"><label class="form-label">Flight Number</label><input class="form-input" id="gfFlightNumber" placeholder="e.g. IX 384"></div>
@@ -454,7 +496,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="specialFareModalTitle">New Special Fare</div><button class="icon-btn" onclick="closeModal('modalSpecialFare')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sector *</label><input class="form-input" id="sfSector" placeholder="e.g. DXB → COK"></div>
         <div class="form-group"><label class="form-label">From</label><input class="form-input" id="sfFrom" placeholder="e.g. Dubai"></div>
         <div class="form-group"><label class="form-label">To</label><input class="form-input" id="sfTo" placeholder="e.g. Kochi"></div>
@@ -510,7 +552,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="umrahModalTitle">New Umrah Group</div><button class="icon-btn" onclick="closeModal('modalUmrah')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Group Name *</label><input class="form-input" id="umrahName" placeholder="e.g. Ramadan 2026 Group"></div>
         <div class="form-group"><label class="form-label">Departure Date</label><input class="form-input" type="date" id="umrahDep"></div>
         <div class="form-group"><label class="form-label">Return Date</label><input class="form-input" type="date" id="umrahRet"></div>
@@ -537,7 +579,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title">Add Pilgrim</div><button class="icon-btn" onclick="closeModal('modalPilgrim')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="pilgrimName" placeholder="Full name"></div>
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="pilgrimPhone" type="tel" placeholder="971501234567"></div>
         <div class="form-group"><label class="form-label">Passport No.</label><input class="form-input" id="pilgrimPassport" placeholder="K1234567"></div>
@@ -564,7 +606,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="bookingModalTitle">New Quote / Booking</div><button class="icon-btn" onclick="closeModal('modalBooking')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group"><label class="form-label">Client Name *</label><input class="form-input" id="bookingClientName" placeholder="Full name"></div>
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="bookingClientPhone" type="tel" placeholder="971501234567"></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package / Tour Name</label><input class="form-input" id="bookingPackage" placeholder="Dubai 5N Tour"></div>
@@ -590,7 +632,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="modal-close" onclick="closeModal('modalCar')">✕</button>
   </div>
   <div class="modal-body" style="overflow-y:auto;flex:1;padding:20px 22px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
       <div class="form-group" style="grid-column:1/-1">
         <label class="form-label">Display Name *</label>
         <input class="form-input" id="carName" placeholder="e.g. Toyota Camry 2023">
@@ -670,7 +712,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="modal-close" onclick="closeModal('modalCarBooking')">✕</button>
   </div>
   <div class="modal-body" style="overflow-y:auto;flex:1;padding:20px 22px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
       <div class="form-group">
         <label class="form-label">Customer Name *</label>
         <input class="form-input" id="carBkCustomer" placeholder="Full name">
@@ -735,6 +777,103 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   </div>
 </div>
 
+<!-- TA: RESORT / HOTEL PROPERTY MODAL -->
+<div class="modal" id="modalProperty" style="width:600px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="propModalTitle">New Resort / Hotel</div><button class="icon-btn" onclick="closeModal('modalProperty')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Property Name *</label><input class="form-input" id="propName" placeholder="e.g. Spice Village Resort"></div>
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-input" id="propType">
+          <option value="resort">Resort</option><option value="hotel">Hotel</option><option value="villa">Villa</option><option value="homestay">Homestay</option>
+          <option value="houseboat">Houseboat</option><option value="apartment">Apartment</option><option value="camp">Camp</option><option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Resort Category</label>
+        <select class="form-input" id="propCategory">
+          <option value="">General</option><option value="family">👨‍👩‍👧 Family Resort</option><option value="couple">💑 Couple Resort</option><option value="both">👨‍👩‍👧 💑 Family &amp; Couple</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="propStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Location</label><input class="form-input" id="propLocation" placeholder="e.g. Thekkady, Kerala"></div>
+      <div class="form-group"><label class="form-label">Star Rating</label>
+        <select class="form-input" id="propStars"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>7</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Price From</label><input class="form-input" type="number" id="propPrice" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="propCurrency"><option>INR</option><option>AED</option><option>SAR</option><option>USD</option><option>EUR</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Price Unit</label>
+        <select class="form-input" id="propUnit"><option>per night</option><option>per person</option><option>per couple</option><option>per package</option></select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Room Types (one per line)</label><textarea class="form-input" id="propRooms" rows="2" placeholder="Deluxe Room&#10;Pool Villa"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Amenities (one per line)</label><textarea class="form-input" id="propAmenities" rows="2" placeholder="Swimming pool&#10;Breakfast included&#10;Free Wi-Fi"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Description</label><textarea class="form-input" id="propDesc" rows="2"></textarea></div>
+      <div style="grid-column:1/-1;font-size:12px;color:var(--muted)">📁 Media — paste Google Drive <strong>file</strong> links (not folders), shared as <em>Anyone with the link can view</em>. Videos must be under 16 MB, photos under 5 MB for WhatsApp.</div>
+      <div class="form-group"><label class="form-label">Photo 1</label><input class="form-input" id="propImg1" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group"><label class="form-label">Photo 2</label><input class="form-input" id="propImg2" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group"><label class="form-label">Photo 3</label><input class="form-input" id="propImg3" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group"><label class="form-label">Video</label><input class="form-input" id="propVideo" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">PDF Brochure / Tariff</label><input class="form-input" id="propPdf" placeholder="https://drive.google.com/file/d/…/view"></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="savePropBtn" onclick="saveProperty()">Save Property</button>
+    <span class="save-msg" id="savePropMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalProperty')">Cancel</button>
+    <button class="btn btn-ghost" style="color:var(--red);margin-left:auto" id="deletePropBtn" onclick="deleteProperty()">Delete</button>
+  </div>
+</div>
+
+<!-- TA: ATTESTATION SERVICE MODAL -->
+<div class="modal" id="modalAttest" style="width:560px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="attestModalTitle">New Attestation Service</div><button class="icon-btn" onclick="closeModal('modalAttest')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Service Name *</label><input class="form-input" id="attestName" placeholder="e.g. MEA Attestation"></div>
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-input" id="attestType">
+          <option value="mea">MEA</option>
+          <option value="embassy">Embassy</option>
+          <option value="mofa">MOFA</option>
+          <option value="apostille">Apostille</option>
+          <option value="hrd">HRD</option>
+          <option value="state">State Authentication</option>
+          <option value="notary">Notary</option>
+          <option value="coc">Chamber of Commerce</option>
+          <option value="police_clearance">Police Clearance</option>
+          <option value="birth">Birth Certificate</option>
+          <option value="marriage">Marriage Certificate</option>
+          <option value="degree">Degree Certificate</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="attestStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Fee</label><input class="form-input" type="number" id="attestFee" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="attestCurrency"><option>INR</option><option>AED</option><option>SAR</option><option>USD</option><option>EUR</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Turnaround Time</label><input class="form-input" id="attestTAT" placeholder="e.g. 3-5 working days"></div>
+      <div class="form-group"><label class="form-label">Country / Destination</label><input class="form-input" id="attestCountry" placeholder="e.g. UAE, Saudi Arabia"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Documents (one per line)</label><textarea class="form-input" id="attestDocs" rows="3" placeholder="Original certificate&#10;Passport copy&#10;Application form"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Description</label><textarea class="form-input" id="attestDesc" rows="2"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">PDF Brochure / Checklist URL (Google Drive link or direct URL)</label><input class="form-input" id="attestPdf" placeholder="https://drive.google.com/file/d/…/view"></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveAttestBtn" onclick="saveAttestService()">Save Service</button>
+    <span class="save-msg" id="saveAttestMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalAttest')">Cancel</button>
+    <button class="btn btn-ghost" style="color:var(--red);margin-left:auto" id="deleteAttestBtn" onclick="deleteAttestService()">Delete</button>
+  </div>
+</div>
+
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const CONFIG = {
@@ -748,6 +887,9 @@ const params = new URLSearchParams(location.search);
 let clientId = params.get('client') || '';
 let sessionToken = params.get('token') || '';
 const isEmbedded = params.get('embed') === '1';
+// shell=travel: embedded in dashboard.html's travel workspace, whose own nav picks the sub-page
+// (?tab= on first load, a 'ta:goto' postMessage after that) — so this page's tab bar is hidden.
+const isTravelShell = isEmbedded && params.get('shell') === 'travel';
 let clientRecord = null;
 let allLeads = [];
 
@@ -775,9 +917,38 @@ async function patchClient(fields){
 }
 async function patchLead(leadId,fields){ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:Number(leadId),...fields}); }
 
+// Only the lead columns this module reads — skipping ConvHistory (full chat transcripts) is most
+// of the payload. Code that needs a transcript fetches it fresh (freshConvHistory).
+const TA_LEAD_FIELDS=['Id','Name','Phone','Email','Stage','Date','Owner','Tags','Score','HotMoment','LastMsgAt',
+  'Destination','TravelDates','TripType','PaxCount','ServiceCategory','BookingTime','QuoteSentAt','QuoteSentTotal',
+  'ConversationID','ConversationId'];
 async function loadLeads(){
-  const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`);
+  const base=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`;
+  let data;
+  // NocoDB rejects a fields list naming a column this account's Leads table doesn't have — fall
+  // back to the full rows rather than failing the page.
+  try{ data=await ncGet(`${base}&fields=${encodeURIComponent(TA_LEAD_FIELDS.join(','))}`); }
+  catch(e){ data=await ncGet(base); }
   allLeads=data.list||[];
+}
+// dashboard.html (same tab, same origin) keeps its leads in sessionStorage for 5 minutes, without
+// transcripts — when embedded, start from that copy instead of waiting on a 2,000-row fetch.
+function cachedDashboardLeads(){
+  try{
+    const c=JSON.parse(sessionStorage.getItem(`lv_leads_${clientId}`)||'null');
+    if(c&&Array.isArray(c.list)&&Date.now()-c.ts<300000) return c.list;
+  }catch(e){}
+  return null;
+}
+// jsPDF is only needed when a quote/itinerary PDF is built, so it isn't loaded with the page.
+// Self-hosted copy — nginx.conf's CSP blocks cdn.jsdelivr.net (see vendor/jspdf/README.md).
+let _jsPdfLoading=null;
+function loadJsPdf(){
+  if(window.jspdf?.jsPDF?.API?.autoTable) return Promise.resolve();
+  const add=src=>new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=()=>rej(new Error('PDF library unavailable')); document.head.appendChild(s); });
+  return _jsPdfLoading||(_jsPdfLoading=add('vendor/jspdf/jspdf.umd.min.js')
+    .then(()=>add('vendor/jspdf/jspdf.plugin.autotable.min.js'))
+    .catch(e=>{ _jsPdfLoading=null; throw e; }));
 }
 
 /* Deep link back into the parent dashboard.html — used by renderTravelAnalyticsSection's trip
@@ -787,35 +958,81 @@ function openLeadInParent(leadId){
   window.parent.postMessage({type:'ta:openLead', leadId}, location.origin);
 }
 
+function openLiveAgency(){
+  if(isTravelShell){ window.parent.postMessage({type:'ta:navigate', page:'tvlive'}, location.origin); return; }
+  window.location.href=`live-travel-agency.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}`;
+}
+
 async function init(){
   if(isEmbedded){ const hdr=document.querySelector('header'); if(hdr) hdr.style.display='none'; }
+  if(isTravelShell){ const tabs=$id('tabs'); if(tabs) tabs.style.display='none'; }
   if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
   if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the Agency tab inside your dashboard.</div>'; return; }
   $id('app').style.display='flex';
   try{
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    LEAD_CATEGORIES=leadCategoriesFor(clientRecord);
+    taLoadTravelSettings();
     if(clientRecord.ta_enabled!=='Yes'){
       $id('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">✈️</div>The Travel Agency module isn\'t enabled for this account. Ask your admin to enable it in Settings → Modules.</div>';
       return;
     }
-    await loadLeads();
+    const cached=isEmbedded?cachedDashboardLeads():null;
+    if(cached) allLeads=cached;
+    // Leads and the ta_* tables load in parallel; with a cached copy of leads the page renders as
+    // soon as the ta_* tables arrive and the fresh leads replace the cache in the background.
+    const leadsReady=loadLeads();
+    if(!cached) await leadsReady;
+    else leadsReady.then(()=>{ if(_taReady && ['dashboard','itineraries'].includes(_taPage)) renderAgencySubPage(_taPage); }).catch(()=>{});
     if(!taTablesReady()){
       $id('agencyContent').innerHTML=renderTaSetupNeeded();
       document.querySelectorAll('.ta-tab').forEach(t=>t.classList.remove('active'));
       taUpdateMissingBanner();
       return;
     }
+    // Paint the last loaded copy straight away, then swap in the fresh one when it arrives.
+    if(taApplySnapshot()){
+      _taReady = true;
+      renderAgencySubPage(_taPage);
+      taUpdateMissingBanner();
+      _taFreshPromise=taLoad();
+      _taFreshPromise.then(()=>{ if(!document.querySelector('.modal.open')) renderAgencySubPage(_taPage); })
+        .catch(e=>console.warn('Travel Agency refresh failed',e));
+      if(_taPendingNew){ _taPendingNew = false; taOpenNew(_taPage); }
+      return;
+    }
     await taLoad();
     taUpdateMissingBanner();
+    _taReady = true;
     renderAgencySubPage(_taPage);
+    if(_taPendingNew){ _taPendingNew = false; taOpenNew(_taPage); }
   }catch(e){
     $id('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
 }
 
 /* ── TRAVEL AGENCY MODULE ── */
-let _taPage = 'dashboard';
+const TA_PAGES = ['dashboard','packages','itineraries','services','attestation','properties','visas','groupfares','specialfares','umrah','bookings','cars','finance'];
+let _taPage = TA_PAGES.includes(params.get('tab')) ? params.get('tab') : 'dashboard';
+let _taReady = false;
+let _taPendingNew = params.get('action') === 'new';
+// "+ New …" form for a sub-page — the travel workspace's quick actions (+ Itinerary, + Booking).
+const TA_NEW_FORM = {packages:'openPkgModal', properties:'openPropertyModal', itineraries:'openItinModal', visas:'openVisaModal', umrah:'openUmrahModal', bookings:'openBookingModal', groupfares:'openGroupFareModal', specialfares:'openSpecialFareModal', cars:'openCarBookingModal'};
+function taOpenNew(page){
+  const fn = window[TA_NEW_FORM[page]];
+  if(typeof fn === 'function') fn();
+}
+window.addEventListener('message', e => {
+  if(e.origin !== location.origin || e.source !== window.parent) return;
+  const d = e.data || {};
+  if(d.type !== 'ta:goto' || !TA_PAGES.includes(d.page)) return;
+  if(!_taReady){ _taPage = d.page; if(d.action === 'new') _taPendingNew = true; return; }
+  renderAgencySubPage(d.page);
+  if(d.action === 'new') taOpenNew(d.page);
+});
 let _taPackages = [], _taBookings = [], _taCases = [], _taItineraries = [], _taUmrahGroups = [], _taCars = [], _taCarBookings = [];
+let _attestServices = [];
+let _taProperties = [];
 let _taVisas = [], _taGroupFares = [], _taSpecialFares = [];
 let _taLoaded = false;
 /* ── TA: TABLE IDS & CRUD HELPERS ── */
@@ -838,12 +1055,17 @@ async function taRepairTableIds(){
   const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
   const baseId=info.base_id;
   if(!baseId) return taTableIds();
-  const baseTables=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`).catch(()=>({list:[]}));
+  // No .catch here: a failed listing read as "no tables" would drop every stored ID below.
+  const baseTables=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/bases/${baseId}/tables`);
   const existingTableMap={};
   (baseTables.list||[]).forEach(t=>{ existingTableMap[t.title]=t.id; });
   const ids=taTableIds();
   Object.entries(TA_TABLE_TITLES).forEach(([key,title])=>{
     if(existingTableMap[title]) ids[key]=existingTableMap[title];
+    // Table is really gone from the base — drop its stale ID so the setup screen / "Set up now"
+    // banner (both keyed off missing IDs) offers to recreate it; keeping it left the user with an
+    // error pointing at a Create Tables Now button that never appeared.
+    else delete ids[key];
   });
   const tableIdsJson=JSON.stringify(ids);
   // Same bug class already fixed for Appointments (see SETUP.md "Fixed: 'Enabled' not actually
@@ -852,7 +1074,7 @@ async function taRepairTableIds(){
   // over a real save failure with a value that was never actually persisted. Only cache locally
   // after patchClient() (which itself now retries through NocoDB's schema-cache lag — see its own
   // comment) confirms the write actually stuck; let a genuine failure propagate to this function's
-  // caller (taWithRepair already has its own .catch(()=>({})) around this specific call).
+  // caller (taWithRepair reports it instead of mislabelling it as a missing table).
   await patchClient({ta_table_ids:tableIdsJson});
   taSaveLocal('ta_table_ids',tableIdsJson);
   clientRecord.ta_table_ids=tableIdsJson;
@@ -870,9 +1092,16 @@ async function taWithRepair(key,fn){
     return await fn(id);
   }catch(e){
     if(e.message!=='HTTP 404') throw e;
-    const repaired=await taRepairTableIds().catch(()=>({}));
+    const title=TA_TABLE_TITLES[key]||key;
+    let repaired;
+    try{ repaired=await taRepairTableIds(); }
+    catch(e2){ throw new Error(`${title} returned HTTP 404 and re-checking the tables failed (${e2.message}). Reload and try again.`); }
     const newId=repaired[key];
-    if(!newId||newId===id) throw new Error(`${TA_TABLE_TITLES[key]||key} table is missing in NocoDB (it may have been deleted). Re-run "Create Tables Now" in the Agency module to recreate it.`);
+    if(!newId){
+      if(typeof taUpdateMissingBanner==='function') taUpdateMissingBanner();
+      throw new Error(`${title} table is missing in NocoDB (it may have been deleted). Close this and reopen the Agency module — it will offer to recreate it.`);
+    }
+    if(newId===id) throw e; // table is still there under the same ID, so the 404 is about something else
     return await fn(newId);
   }
 }
@@ -887,6 +1116,46 @@ async function taCreate(key,record){
 }
 async function taUpdate(key,rowId,record){
   await taWithRepair(key,id=>ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId,...record}));
+}
+// Columns added after these tables first shipped. taSetupTables() creates them on new tables;
+// accounts whose tables already exist get them from taEnsureColumns() on the first save, the
+// same check-then-add the clients table uses for its newer fields.
+const TA_ADDED_COLUMNS={
+  packages:[
+    {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},{title:'infant_price',uidt:'Decimal'},
+    {title:'image_url',uidt:'LongText'},{title:'image_url_2',uidt:'LongText'},{title:'image_url_3',uidt:'LongText'},
+    {title:'pdf_url',uidt:'LongText'},
+  ],
+  visas:[
+    {title:'services_included',uidt:'LongText'},{title:'not_included',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+  ],
+  itineraries:[
+    {title:'nights',uidt:'Number'},{title:'departure_city',uidt:'SingleLineText'},
+    {title:'hotel_category',uidt:'SingleLineText'},{title:'meal_plan',uidt:'SingleLineText'},
+    {title:'transport',uidt:'SingleLineText'},
+    {title:'adults',uidt:'Number'},{title:'children',uidt:'Number'},
+    {title:'children_nobed',uidt:'Number'},{title:'infants',uidt:'Number'},
+    {title:'currency',uidt:'SingleLineText'},{title:'adult_price',uidt:'Decimal'},
+    {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},
+    {title:'infant_price',uidt:'Decimal'},
+    {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},
+  ],
+};
+const _taColumnsChecked=new Set();
+async function taEnsureColumns(key){
+  const add=TA_ADDED_COLUMNS[key];
+  if(!add||_taColumnsChecked.has(key)) return;
+  await taWithRepair(key,async id=>{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}`);
+    const have=new Set((info.columns||[]).map(c=>c.title));
+    for(const c of add){
+      if(have.has(c.title)) continue;
+      // Rethrown with its own message so a failed column add isn't read as the table 404ing.
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${id}/columns`,{column_name:c.title,...c})
+        .catch(e=>{ throw new Error(`Couldn't add the ${c.title} column to ${TA_TABLE_TITLES[key]} (${e.message})`); });
+    }
+  });
+  _taColumnsChecked.add(key);
 }
 async function taDeleteRow(key,rowId){
   await taWithRepair(key,id=>ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records`,{Id:rowId}));
@@ -909,6 +1178,39 @@ const TA_IMPORT_SCHEMAS={
     sample:['Dubai 5N City Tour','tour','Dubai, UAE','5','1','20','AED','800','1200','Visa;Return flights;4-star hotel','Travel insurance','Popular package'],
     list:()=>_taPackages, renderRow:r=>({c1:r.name||'—',c2:(r.currency||'AED')+' '+(r.sell_price||r.base_price||0)}),
     afterImport:()=>renderAgencySubPage('packages'),
+  },
+  // Visa packages straight from the agency's Google Sheet (File → Download → CSV). Service columns
+  // (transportation, hotel_stay, meals, border_fees, insurance, other_services) become the visa's
+  // Services Included list. One row per country + type + duration, so a 30- and a 60-day visa
+  // for the same country stay separate records.
+  visas:{
+    label:'Visas', taKey:'visas', matchKey:'visa_country', col1:'Visa', col2:'Price',
+    matchLabel:'country + visa type + duration',
+    hint:' In the service columns write the details (e.g. "1 night 3★"), "Yes" when included, or leave blank / "No". Several documents or exclusions in one cell are separated by ";". Your sheet\'s own headers (Hotel, Transport, Validity, Price …) are recognised too.',
+    matchOf:r=>[r.visa_country,visaTypeKey(r.visa_type)||'single_entry',visaDurationKey(r.duration)].map(x=>String(x||'').trim().toLowerCase()).join('|'),
+    fields:[
+      {key:'visa_country',label:'Country',required:true,aliases:['visa country','destination','visa']},{key:'visa_type',label:'Visa Type',aliases:['type','entry']},
+      {key:'duration',label:'Duration',aliases:['stay','stay duration','days']},{key:'entry_type',label:'Entry Type',aliases:['purpose']},
+      {key:'adult_price',label:'Adult Price',type:'float',aliases:['price','adult','adult rate','rate','cost']},{key:'child_price',label:'Child Price',type:'float',aliases:['child','child rate']},
+      {key:'currency',label:'Currency'},{key:'processing_time',label:'Processing Time',aliases:['processing','processing days']},{key:'visa_validity',label:'Visa Validity',aliases:['validity']},
+      {key:'transportation',label:'Transportation',aliases:['transport','transfer','transfers']},{key:'hotel_stay',label:'Hotel Stay',aliases:['hotel','accommodation','stay hotel']},
+      {key:'meals',label:'Meals',aliases:['meal','food','meal plan']},{key:'border_fees',label:'Border Fees',aliases:['border fee','border charges','border']},
+      {key:'insurance',label:'Travel Insurance',aliases:['insurance']},{key:'other_services',label:'Other Services',aliases:['services included','service included','others','other inclusions','inclusions']},
+      {key:'not_included',label:'Not Included',type:'lines',aliases:['exclusions','excludes']},{key:'required_documents',label:'Required Documents',type:'lines',aliases:['documents','documents required']},
+      {key:'notes',label:'Notes'},{key:'status',label:'Status'},
+    ],
+    sample:['Oman','single_entry','30 Days','Tourist','350','300','AED','2-3 working days','30 days from entry','Dubai ⇄ Oman border, AC bus','1 night 3-star','Breakfast','Exit & entry fees paid','','Sightseeing: Khasab city tour','Flight tickets','Passport copy;Photo;Emirates ID','Same-day border crossing','active'],
+    toRecord:d=>{
+      const svc=[['transportation','Transportation'],['hotel_stay','Hotel Stay'],['meals','Meals'],['border_fees','Border Fees'],['insurance','Travel Insurance']]
+        .map(([k,label])=>{const val=String(d[k]||'').trim();delete d[k];if(!val||/^(?:no|none|not included|n\/a|-|0)$/i.test(val))return null;return {item:label,detail:/^(?:yes|y|included|✓|✔)$/i.test(val)?'':val};}).filter(Boolean);
+      visaLines(d.other_services).forEach(line=>{const m=/^([^:]{2,40}):\s*(.+)$/.exec(line);svc.push(m?{item:m[1].trim(),detail:m[2].trim()}:{item:line,detail:''});});
+      delete d.other_services;
+      // A blank Status cell leaves an existing visa's status as it is.
+      if(d.status) d.status=/^inactive$/i.test(d.status)?'inactive':'active'; else delete d.status;
+      return {...d,visa_type:visaTypeKey(d.visa_type)||'single_entry',duration:visaDurationKey(d.duration),currency:(d.currency||'AED').toUpperCase(),services_included:JSON.stringify(svc)};
+    },
+    list:()=>_taVisas, renderRow:r=>({c1:[r.visa_country,VISA_TYPE_LABELS[r.visa_type]||r.visa_type,VISA_DURATION_LABELS[r.duration]||r.duration].filter(Boolean).join(' · ')||'—',c2:(r.currency||'AED')+' '+(r.adult_price||0)}),
+    afterImport:()=>renderAgencySubPage('visas'),
   },
   cases:{
     label:'Service Cases', taKey:'cases', matchKey:'ref_no', col1:'Client', col2:'Type',
@@ -939,7 +1241,7 @@ function taOpenImport(entity){
   _taImportEntity=entity; _taImportRows=[];
   const schema=TA_IMPORT_SCHEMAS[entity];
   $id('taImportTitle').textContent=`Upload ${schema.label} CSV`;
-  $id('taImportHint').innerHTML=`Use the same headers as the <a href="#" onclick="taDownloadTemplate('${entity}');return false">CSV template</a>: <code style="font-family:var(--mono);font-size:11px">${schema.fields.map(f=>f.key).join(', ')}</code>. Only <strong>${schema.fields.find(f=>f.required).label}</strong> is required.${schema.fields.some(f=>f.type==='list')?' List fields (inclusions/exclusions) use ";" to separate items within a cell.':''} Rows whose <strong>${schema.matchKey}</strong> matches an existing record update it in place — everything else is created as new.`;
+  $id('taImportHint').innerHTML=`Use the same headers as the <a href="#" onclick="taDownloadTemplate('${entity}');return false">CSV template</a>: <code style="font-family:var(--mono);font-size:11px">${schema.fields.map(f=>f.key).join(', ')}</code>. Only <strong>${schema.fields.find(f=>f.required).label}</strong> is required.${schema.fields.some(f=>f.type==='list')?' List fields (inclusions/exclusions) use ";" to separate items within a cell.':''}${schema.hint||''} Rows whose <strong>${esc(schema.matchLabel||schema.matchKey)}</strong> matches an existing record update it in place — everything else is created as new.`;
   $id('taImportCol1').textContent=schema.col1; $id('taImportCol2').textContent=schema.col2;
   $id('taImportFile').value='';
   $id('taImportPreviewWrap').style.display='none';
@@ -966,12 +1268,14 @@ function taParseImportRows(text,schema){
   schema.fields.forEach(f=>{
     let idx=headerRow.indexOf(f.key);
     if(idx===-1) idx=headerRow.indexOf(f.label.toLowerCase());
+    for(const a of f.aliases||[]) if(idx===-1) idx=headerRow.indexOf(a);
     if(idx!==-1) colIndex[f.key]=idx;
   });
   const requiredField=schema.fields.find(f=>f.required);
   if(colIndex[requiredField.key]===undefined) throw new Error(`CSV must have a "${requiredField.key}" column`);
 
-  const existingByKey=new Map(schema.list().filter(r=>r[schema.matchKey]).map(r=>[String(r[schema.matchKey]).trim().toLowerCase(),r]));
+  const keyOf=schema.matchOf||(r=>String(r[schema.matchKey]||'').trim().toLowerCase());
+  const existingByKey=new Map(schema.list().filter(r=>r[schema.matchKey]).map(r=>[keyOf(r),r]));
 
   return lines.slice(1).map((line,i)=>{
     const cells=parseCSVLine(line);
@@ -982,11 +1286,13 @@ function taParseImportRows(text,schema){
       if(f.type==='int') data[f.key]=parseInt(raw,10)||0;
       else if(f.type==='float') data[f.key]=parseFloat(raw)||0;
       else if(f.type==='list') data[f.key]=JSON.stringify(raw?raw.split(';').map(s=>s.trim()).filter(Boolean):[]);
+      else if(f.type==='lines') data[f.key]=raw.split(';').map(s=>s.trim()).filter(Boolean).join('\n');
       else data[f.key]=raw;
     });
+    const record=schema.toRecord?schema.toRecord({...data}):data;
     const matchVal=get(schema.matchKey);
-    const existing=matchVal?existingByKey.get(matchVal.toLowerCase()):null;
-    return { rowNum:i+2, valid:!!get(requiredField.key), action:existing?'update':'create', existingId:existing?existing.Id:null, data };
+    const existing=matchVal?existingByKey.get(keyOf(record)):null;
+    return { rowNum:i+2, valid:!!get(requiredField.key), action:existing?'update':'create', existingId:existing?existing.Id:null, data:record };
   });
 }
 
@@ -1014,6 +1320,7 @@ async function taConfirmImport(){
   if(!valid.length) return;
   const btn=$id('taImportConfirmBtn'), msg=$id('taImportMsg');
   btn.disabled=true;
+  try{ await taEnsureColumns(schema.taKey); }catch(e){ msg.textContent=e.message; btn.disabled=false; return; }
   let done=0, failed=0;
   for(const r of valid){
     msg.textContent=`Importing… ${done+failed}/${valid.length}`;
@@ -1026,26 +1333,62 @@ async function taConfirmImport(){
   btn.disabled=false;
   msg.textContent=failed?`Done — ${done} imported, ${failed} failed`:`✓ Imported ${done} record(s)`;
   _taLoaded=false;
-  await taLoad();
+  await taLoad([schema.taKey]);
   schema.afterImport();
   if(!failed) setTimeout(()=>closeModal('modalTaImport'),1200);
 }
 
-async function taLoad(){
+// Every list the Agency module shows: how to fetch it and where it lives. taLoad() fetches them
+// all in parallel; taLoad(['visas']) after a visa save refetches just that one instead of all 12.
+const TA_SOURCES={
+  packages:{get:()=>taFetch('packages'),set:v=>{_taPackages=v;},cur:()=>_taPackages},
+  bookings:{get:()=>taFetch('bookings'),set:v=>{_taBookings=v;},cur:()=>_taBookings},
+  cases:{get:()=>taFetch('cases'),set:v=>{_taCases=v;},cur:()=>_taCases},
+  itineraries:{get:()=>taFetch('itineraries'),set:v=>{_taItineraries=v.map(r=>({...r,days:safeJson(r.days)}));},cur:()=>_taItineraries},
+  umrah_groups:{get:()=>taFetch('umrah_groups'),set:v=>{_taUmrahGroups=v.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));},cur:()=>_taUmrahGroups},
+  cars:{get:()=>taFetch('cars'),set:v=>{_taCars=v;},cur:()=>_taCars},
+  car_bookings:{get:()=>taFetch('car_bookings'),set:v=>{_taCarBookings=v;},cur:()=>_taCarBookings},
+  visas:{get:()=>taFetch('visas'),set:v=>{_taVisas=v;},cur:()=>_taVisas},
+  group_fares:{get:()=>taFetch('group_fares'),set:v=>{_taGroupFares=v;},cur:()=>_taGroupFares},
+  special_fares:{get:()=>taFetch('special_fares'),set:v=>{_taSpecialFares=v;},cur:()=>_taSpecialFares},
+  attest:{get:()=>fetch(`${WORKER_BASE}/attest/services?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).then(d=>d.list||[]).catch(()=>[]),set:v=>{_attestServices=v;},cur:()=>_attestServices},
+  properties:{get:()=>fetch(`${WORKER_BASE}/ta/properties?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).then(d=>d.list||[]).catch(()=>[]),set:v=>{_taProperties=v;},cur:()=>_taProperties},
+};
+async function taLoad(keys){
   if(!taTablesReady())return;
-  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares]=await Promise.all([
-    taFetch('packages'),taFetch('bookings'),taFetch('cases'),
-    taFetch('itineraries'),taFetch('umrah_groups'),
-    taFetch('cars'),taFetch('car_bookings'),
-    taFetch('visas'),taFetch('group_fares'),taFetch('special_fares')
-  ]);
-  _taPackages=pkgs; _taBookings=bks; _taCases=cs;
-  _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
-  _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
-  _taCars=cars; _taCarBookings=carbks;
-  _taVisas=visas; _taGroupFares=gfares; _taSpecialFares=sfares;
+  const want=keys&&keys.length?keys.filter(k=>TA_SOURCES[k]):Object.keys(TA_SOURCES);
+  const lists=await Promise.all(want.map(k=>TA_SOURCES[k].get()));
+  want.forEach((k,i)=>TA_SOURCES[k].set(lists[i]));
   _taLoaded=true;
+  _taFresh=true;
+  taSaveSnapshot();
   sendTaBadgeCount();
+}
+
+// Last loaded copy of every list, per account, so reopening the module paints at once while the
+// fresh copy loads behind it (taBoot). Per-browser convenience only — never the source of truth:
+// anything that edits a record waits for the fresh copy first (see openItinModal). Itinerary logos
+// (base64 images) are left out to keep it small.
+let _taFresh=false, _taFreshPromise=null;
+const TA_SNAPSHOT_VERSION=1;
+function taSnapshotKey(){ return `ta_snapshot_v${TA_SNAPSHOT_VERSION}_${clientId}`; }
+function taSaveSnapshot(){
+  try{
+    const data={};
+    for(const k of Object.keys(TA_SOURCES)){
+      const v=TA_SOURCES[k].cur();
+      data[k]=k==='itineraries'?v.map(r=>{const {logo_url,...rest}=r;return {...rest,days:JSON.stringify(r.days||[])};}):k==='umrah_groups'?v.map(r=>({...r,pilgrims:JSON.stringify(r.pilgrims||[])})):v;
+    }
+    localStorage.setItem(taSnapshotKey(),JSON.stringify({at:Date.now(),data}));
+  }catch(e){}
+}
+function taApplySnapshot(){
+  try{
+    const snap=JSON.parse(localStorage.getItem(taSnapshotKey())||'null');
+    if(!snap||!snap.data||Date.now()-snap.at>7*86400000) return false;
+    for(const k of Object.keys(TA_SOURCES)) if(Array.isArray(snap.data[k])) TA_SOURCES[k].set(snap.data[k]);
+    return true;
+  }catch(e){ return false; }
 }
 
 // Notifies the parent dashboard.html (notification bell/nav badge) of how many bookings have a
@@ -1074,7 +1417,7 @@ async function taSetupTables(){
     for(const f of clientFields){
       if(!existingCols.includes(f.title)){
         msg.textContent=`Adding ${f.title} column…`;
-        await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,f).catch(()=>{});
+        await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,f).catch(()=>{});
       }
     }
 
@@ -1088,6 +1431,7 @@ async function taSetupTables(){
         {title:'nights',uidt:'Number'},{title:'pax_min',uidt:'Number'},{title:'pax_max',uidt:'Number'},
         {title:'currency',uidt:'SingleLineText'},{title:'base_price',uidt:'Decimal'},{title:'sell_price',uidt:'Decimal'},
         {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},{title:'notes',uidt:'LongText'},
+        ...TA_ADDED_COLUMNS.packages,
       ]},
       bookings:{title:'ta_bookings',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'client_name',uidt:'SingleLineText'},
@@ -1109,6 +1453,7 @@ async function taSetupTables(){
         {title:'destination',uidt:'SingleLineText'},{title:'from_date',uidt:'Date'},
         {title:'to_date',uidt:'Date'},{title:'days',uidt:'LongText'},{title:'notes',uidt:'LongText'},
         {title:'logo_url',uidt:'LongText'},
+        ...TA_ADDED_COLUMNS.itineraries,
       ]},
       umrah_groups:{title:'ta_umrah_groups',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'name',uidt:'SingleLineText'},
@@ -1143,6 +1488,7 @@ async function taSetupTables(){
         {title:'currency',uidt:'SingleLineText'},{title:'required_documents',uidt:'LongText'},
         {title:'processing_time',uidt:'SingleLineText'},{title:'visa_validity',uidt:'SingleLineText'},
         {title:'entry_type',uidt:'SingleLineText'},{title:'status',uidt:'SingleLineText'},
+        ...TA_ADDED_COLUMNS.visas,
       ]},
       group_fares:{title:'ta_group_fares',columns:[
         {title:'client_id',uidt:'SingleLineText'},{title:'sector',uidt:'SingleLineText'},
@@ -1261,6 +1607,8 @@ function renderAgencySubPage(page) {
     case 'packages':    el.innerHTML = renderTaPackages(); break;
     case 'itineraries': el.innerHTML = renderTaItineraries(); if(_itinSubTab==='send') sqFilterLeads(); break;
     case 'services':    el.innerHTML = renderTaServices(); break;
+    case 'attestation': el.innerHTML = renderTaAttestation(); break;
+    case 'properties':  el.innerHTML = renderTaProperties(); break;
     case 'visas':       el.innerHTML = renderTaVisas(); break;
     case 'groupfares':  el.innerHTML = renderTaGroupFares(); break;
     case 'specialfares':el.innerHTML = renderTaSpecialFares(); break;
@@ -1286,13 +1634,13 @@ function renderTaDashboard() {
   const upcomingDeps = [..._taBookings].filter(b => b.departure_date && b.departure_date >= TODAY && b.status !== 'cancelled').sort((a,b) => a.departure_date.localeCompare(b.departure_date)).slice(0,5);
   const revK = totalRevenue >= 1000 ? (totalRevenue/1000).toFixed(1)+'k' : totalRevenue.toFixed(0);
   return `
-  <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Packages</div><div class="stat-val">${totalPkg}</div><div class="stat-sub">in catalogue</div></div>
     <div class="stat"><div class="stat-lbl">Active Bookings</div><div class="stat-val">${activeBookings}</div><div class="stat-sub">in progress</div></div>
     <div class="stat"><div class="stat-lbl">Open Cases</div><div class="stat-val">${pendingCases}</div><div class="stat-sub">visa/attest/ticket</div></div>
     <div class="stat"><div class="stat-lbl">Revenue</div><div class="stat-val">${revK}</div><div class="stat-sub">total booked</div></div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">🎫 Recent Bookings</div>
       ${recentBookings.length ? recentBookings.map(b => `
@@ -1321,7 +1669,7 @@ function renderTaDashboard() {
       }).join('') : '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No upcoming departures</div>'}
     </div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">🗂️ Open Service Cases</div>
       ${_taCases.filter(c=>c.status!=='closed').slice(0,5).map(c=>`
@@ -1355,7 +1703,7 @@ function caseIcon(type) {
   return m[type] || '🗂️';
 }
 
-// Travel leads separation — Ticket / Package / Hotel / Other Services (LEAD_CATEGORIES). This
+// Travel leads separation by Service Category (LEAD_CATEGORIES). This
 // reads allLeads directly rather than a _ta* entity array: for a travel teammate restricted to
 // specific categories (User Management → profile), allLeads itself only ever contains the leads
 // the server-side /nocodb passthrough allowed through, so this widget — and every other view that
@@ -1367,7 +1715,7 @@ function renderTaLeadsByCategory(){
   return `
   <div class="ta-card" style="margin-bottom:14px">
     <div class="ta-card-title">🗂️ Leads by Category</div>
-    <div style="display:grid;gap:12px;grid-template-columns:repeat(${LEAD_CATEGORIES.length},1fr);margin-bottom:14px">
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:14px">
       ${LEAD_CATEGORIES.map(c=>`
         <div class="stat" style="cursor:pointer" onclick="taOpenLeadCategory('${esc(c)}')" title="View ${esc(c)} leads">
           <div class="stat-lbl">${serviceCategoryIcon(c)} ${esc(c)}</div>
@@ -1428,7 +1776,7 @@ function renderPkgCard(p) {
       </div>
     </div>
     <div class="pkg-name">${esc(p.name||'—')}</div>
-    <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax</div>
+    <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax${p.image_url||p.image_url_2||p.image_url_3?' · 📷':''}${p.pdf_url?' · 📄':''}</div>
     ${inc.length ? `<div style="margin-bottom:12px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${incArr.length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${incArr.length-3} more</div>`:''}</div>` : ''}
     <div style="display:flex;align-items:baseline;gap:4px;margin-top:auto">
       <span class="pkg-price">${esc(p.currency||'AED')} ${(parseFloat(p.sell_price||p.base_price)||0).toLocaleString()}</span>
@@ -1448,6 +1796,17 @@ function filterPkgs(type) {
 }
 
 let _editPkgId=null;
+// Package photos / brochure the bot forwards into WhatsApp (worker.js taDeliverPackageMedia).
+const PKG_MEDIA_INPUTS=[['image_url','pkgImage1','Photo 1'],['image_url_2','pkgImage2','Photo 2'],['image_url_3','pkgImage3','Photo 3'],['pdf_url','pkgPdfUrl','PDF Brochure']];
+// Same checks as the Resorts & Hotels links (ta-properties.js taPropertyMediaUrlError): a Drive
+// folder or a Drive link with no file id can't be forwarded, so it's caught here at save time.
+function pkgMediaUrlError(label,url){
+  if(!url) return '';
+  if(!/^https?:\/\//i.test(url)) return `${label}: paste a full link starting with https://`;
+  if(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(url)) return `${label}: paste the Google Drive link of the file itself, not a folder.`;
+  if(/(?:drive|docs)\.google\.com/i.test(url)&&!/\/(?:file|document|presentation|spreadsheets)\/d\/[\w-]+|[?&]id=[\w-]+/.test(url)) return `${label}: this doesn't look like a Google Drive file share link.`;
+  return '';
+}
 function openPkgModal(id){
   _editPkgId=id||null;
   const p=id?(_taPackages.find(x=>String(x.Id)===String(id))||{}):{};
@@ -1457,9 +1816,11 @@ function openPkgModal(id){
   $id('pkgPaxMin').value=p.pax_min||1; $id('pkgPaxMax').value=p.pax_max||99;
   $id('pkgCurrency').value=p.currency||'AED'; $id('pkgBasePrice').value=p.base_price||'';
   $id('pkgSellPrice').value=p.sell_price||'';
+  $id('pkgChildPrice').value=p.child_price||''; $id('pkgChildNoBedPrice').value=p.child_nobed_price||''; $id('pkgInfantPrice').value=p.infant_price||'';
   $id('pkgInclusions').value=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]).join('\n');
   $id('pkgExclusions').value=safeJson(p.exclusions,p.exclusions instanceof Array?p.exclusions:[]).join('\n');
   $id('pkgNotes').value=p.notes||'';
+  PKG_MEDIA_INPUTS.forEach(([f,elId])=>{ $id(elId).value=p[f]||''; });
   openModal('modalPkg');
 }
 
@@ -1468,20 +1829,26 @@ async function savePkg(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const inc=$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const exc=$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
+  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
   if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
+  for(const [f,elId,label] of PKG_MEDIA_INPUTS){
+    p[f]=$id(elId).value.trim();
+    const err=pkgMediaUrlError(label,p[f]);
+    if(err){msg.textContent=err;msg.className='save-msg err';btn.disabled=false;return;}
+  }
   try{
+    await taEnsureColumns('packages');
     if(_editPkgId) await taUpdate('packages',_editPkgId,p); else await taCreate('packages',p);
     msg.textContent='✓ Saved';
     _taLoaded=false;
-    setTimeout(async()=>{closeModal('modalPkg');await taLoad();renderAgencySubPage('packages');},600);
+    setTimeout(async()=>{closeModal('modalPkg');await taLoad(['packages']);renderAgencySubPage('packages');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deletePkg(id){
   if(!confirm('Delete this package?'))return;
-  await taDeleteRow('packages',id);_taLoaded=false;await taLoad();renderAgencySubPage('packages');
+  await taDeleteRow('packages',id);_taLoaded=false;await taLoad(['packages']);renderAgencySubPage('packages');
 }
 
 /* ── TA: ITINERARIES ── */
@@ -1498,6 +1865,13 @@ let _itinLogoDims = null;
 // this instead of _itinLogoDims when sending, since the modal that set _itinLogoDims usually
 // isn't open at send time.
 let _itinSendLogoDims = null;
+// The account logo's (CLIENTS.quote_logo_url) natural size, measured the same way before a
+// preview or send so both PDF layouts can keep its aspect ratio.
+let _quoteLogoDims = null;
+function sqMeasureImage(url){
+  if(!url) return Promise.resolve(null);
+  return new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=url; });
+}
 // Which inner tab the Itineraries page is showing — the itinerary list, or the bulk
 // "send this as a quotation to leads" compose view (state lives here, not in
 // renderAgencySubPage, since it's local to the itineraries ta-tab).
@@ -1529,9 +1903,11 @@ function renderItinList() {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
         <div>
           <div style="font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:3px">${esc(it.title||'—')}</div>
-          <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${(it.days||[]).length} days · Created ${esc(it.created_at||'')}</div>
+          <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${it.nights?`${it.nights}N / ${(it.days||[]).length}D`:`${(it.days||[]).length} days`}${taPaxSummary(it)?' · '+esc(taPaxSummary(it)):''} · Created ${esc(it.created_at||'')}</div>
+          ${parseFloat(it.adult_price)?`<div style="font-size:11.5px;color:var(--accent-ink);font-weight:600;margin-top:3px">${esc(it.currency||'AED')} ${parseFloat(it.adult_price).toLocaleString()} / adult${parseFloat(it.child_price)?` · ${esc(it.currency||'AED')} ${parseFloat(it.child_price).toLocaleString()} / child`:''}</div>`:''}
         </div>
         <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" title="Duplicate" onclick="duplicateItin('${it.Id}')">⧉</button>
           <button class="btn btn-sm" onclick="printItinerary('${it.Id}')">🖨️ PDF</button>
           ${clientRecord?.wa_phone_id?`<button class="btn btn-sm" onclick="sendItinViaWa('${it.Id}')">📲 WA</button>`:''}
           <button class="btn btn-secondary btn-sm" onclick="openItinModal('${it.Id}')">Edit</button>
@@ -1562,11 +1938,70 @@ const ITIN_TYPE_META={
 function itinTypeMeta(type){ return ITIN_TYPE_META[type]||ITIN_TYPE_META.note; }
 function itinItemIcon(type) { return itinTypeMeta(type).icon; }
 
+// Traveller types a quote is priced by — the count and price field names are the same on an
+// itinerary record and in the Send Quotation form, so one list drives both.
+const TA_PAX_TYPES=[
+  {label:'Adult',count:'adults',price:'adult_price'},
+  {label:'Child (with bed)',count:'children',price:'child_price'},
+  {label:'Child (no bed)',count:'children_nobed',price:'child_nobed_price'},
+  {label:'Infant',count:'infants',price:'infant_price'},
+];
+// One line per traveller type that has travellers: {label,count,price,total}.
+function taPaxLines(rec){
+  return TA_PAX_TYPES.map(t=>{
+    const count=parseInt(rec?.[t.count])||0,price=parseFloat(rec?.[t.price])||0;
+    return {label:t.label,count,price,total:count*price};
+  }).filter(l=>l.count>0);
+}
+// "2 Adults, 1 Child (with bed)" — for meta lines and list cards.
+function taPaxSummary(rec){
+  return taPaxLines(rec).map(l=>`${l.count} ${l.label.replace(/^(Adult|Child|Infant)/,w=>l.count>1?(w==='Child'?'Children':w+'s'):w)}`).join(', ');
+}
+// Lists stored as a JSON array (or older newline/";" text) → array of trimmed strings.
+function taList(v){
+  if(Array.isArray(v)) return v.map(x=>String(x).trim()).filter(Boolean);
+  if(v==null||v==='') return [];
+  const a=safeJson(v,null);
+  if(Array.isArray(a)) return a.map(x=>String(x).trim()).filter(Boolean);
+  return String(v).split(/\n|;/).map(x=>x.trim()).filter(Boolean);
+}
+function itinNightsFromDates(from,to){
+  if(!from||!to) return 0;
+  const n=Math.round((new Date(to)-new Date(from))/86400000);
+  return n>0?n:0;
+}
+// Day N's calendar date when the trip has a start date, e.g. "Sat, 14 Nov 2026".
+function itinDayDate(fromDate,dayNo){
+  if(!fromDate) return '';
+  const d=new Date(fromDate+'T00:00:00');
+  if(isNaN(d)) return '';
+  d.setDate(d.getDate()+(dayNo-1));
+  return d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+}
+const ITIN_MEALS=[['B','Breakfast'],['L','Lunch'],['D','Dinner']];
+function itinMealsText(meals){
+  return ITIN_MEALS.filter(([k])=>(meals||[]).includes(k)).map(([,label])=>label).join(', ');
+}
+function itinUpdateRateTotal(){
+  const el=$id('itinRateTotal'); if(!el) return;
+  const rec={};
+  [['adults','itinAdults'],['children','itinChildren'],['children_nobed','itinChildrenNoBed'],['infants','itinInfants'],
+   ['adult_price','itinAdultPrice'],['child_price','itinChildPrice'],['child_nobed_price','itinChildNoBedPrice'],['infant_price','itinInfantPrice']]
+    .forEach(([k,id])=>{rec[k]=$id(id).value;});
+  const lines=taPaxLines(rec).filter(l=>l.price);
+  const cur=$id('itinCurrency').value||'AED';
+  el.textContent=lines.length
+    ? 'Estimated total: '+lines.map(l=>`${l.count} × ${l.label} @ ${cur} ${l.price.toLocaleString()}`).join(' + ')+` = ${cur} ${lines.reduce((s,l)=>s+l.total,0).toLocaleString()}`
+    : '';
+}
+
 // `prefill` (title/destination/from_date/to_date/notes/days — same shape as an itinerary record)
 // lets pkgCreateItin/groupFareCreateItin/specialFareCreateItin below open this as a brand-new,
 // pre-populated itinerary instead of a blank one. Only used when `id` is falsy — an existing
 // itinerary always wins over a stale prefill.
 function openItinModal(id, prefill) {
+  // The quick-load copy has no itinerary logos — wait for the fresh one so a save keeps the logo.
+  if(id&&!_taFresh&&_taFreshPromise){ _taFreshPromise.then(()=>openItinModal(id,prefill)).catch(()=>{}); return; }
   _editItinId = id||null;
   const it = id?(_taItineraries.find(x=>String(x.Id)===String(id))||{}):(prefill||{});
   _itinDays = JSON.parse(JSON.stringify(it.days||[]));
@@ -1574,6 +2009,17 @@ function openItinModal(id, prefill) {
   $id('itinTitle').value=it.title||''; $id('itinDest').value=it.destination||'';
   $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
   $id('itinNotes').value=it.notes||'';
+  $id('itinNights').value=it.nights||''; $id('itinDepCity').value=it.departure_city||'';
+  $id('itinHotelCat').value=it.hotel_category||''; $id('itinMealPlan').value=it.meal_plan||'';
+  $id('itinTransport').value=it.transport||'';
+  $id('itinAdults').value=it.adults??1; $id('itinChildren').value=it.children||0;
+  $id('itinChildrenNoBed').value=it.children_nobed||0; $id('itinInfants').value=it.infants||0;
+  $id('itinCurrency').value=it.currency||'AED';
+  $id('itinAdultPrice').value=it.adult_price||''; $id('itinChildPrice').value=it.child_price||'';
+  $id('itinChildNoBedPrice').value=it.child_nobed_price||''; $id('itinInfantPrice').value=it.infant_price||'';
+  $id('itinInclusions').value=taList(it.inclusions).join('\n');
+  $id('itinExclusions').value=taList(it.exclusions).join('\n');
+  itinUpdateRateTotal();
   _itinLogoUrl=it.logo_url||''; _itinLogoDims=null;
   if(_itinLogoUrl) itinLoadLogoDims(_itinLogoUrl);
   itinRenderLogoWrap();
@@ -1589,12 +2035,12 @@ function openItinModal(id, prefill) {
 function pkgToItinPrefill(p){
   const nights=Math.max(1,parseInt(p.nights)||1);
   const days=[];
-  for(let i=0;i<nights;i++) days.push({day_no:i+1,title:'',items:[]});
+  for(let i=0;i<=nights;i++) days.push({day_no:i+1,title:'',items:[]});
   const inc=safeJson(p.inclusions,p.inclusions instanceof Array?p.inclusions:[]);
-  const notesParts=[];
-  if(inc.length) notesParts.push('Includes: '+inc.join(', '));
-  if((p.notes||'').trim()) notesParts.push(p.notes.trim());
-  return {title:p.name||'',destination:p.destination||'',from_date:'',to_date:'',notes:notesParts.join('\n\n'),days};
+  return {title:p.name||'',destination:p.destination||'',from_date:'',to_date:'',notes:(p.notes||'').trim(),days,
+    nights:parseInt(p.nights)||'',currency:p.currency||'AED',adults:Math.max(1,parseInt(p.pax_min)||1),
+    adult_price:p.sell_price||p.base_price||'',child_price:p.child_price||'',child_nobed_price:p.child_nobed_price||'',
+    infant_price:p.infant_price||'',inclusions:inc,exclusions:safeJson(p.exclusions,p.exclusions instanceof Array?p.exclusions:[])};
 }
 function pkgCreateItin(id){
   const p=_taPackages.find(x=>String(x.Id)===String(id));
@@ -1671,12 +2117,25 @@ function itinLoadLogoDims(url){
 }
 
 function renderItinDays() {
+  const from=$id('itinFrom').value;
+  const last=_itinDays.length-1;
+  const iconBtn='background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)';
   $id('itinDaysList').innerHTML = _itinDays.map((d,di)=>`
     <div style="background:var(--bg);border-radius:var(--r-sm);padding:14px;margin-bottom:10px;border-left:3px solid var(--accent)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px">Day ${d.day_no}</span>
-        <input class="form-input" style="flex:1;padding:6px 10px;font-size:13px" placeholder="Day title" value="${esc(d.title||'')}" oninput="_itinDays[${di}].title=this.value">
-        <button onclick="removeItinDay(${di})" style="background:none;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;color:var(--muted)">✕</button>
+        ${from?`<span style="font-size:11px;color:var(--muted)">${esc(itinDayDate(from,d.day_no))}</span>`:''}
+        <input class="form-input" style="flex:1;min-width:160px;padding:6px 10px;font-size:13px" placeholder="Day title, e.g. Arrival & Charminar visit" value="${esc(d.title||'')}" oninput="_itinDays[${di}].title=this.value">
+        <button title="Move up" onclick="moveItinDay(${di},-1)" style="${iconBtn}" ${di===0?'disabled':''}>↑</button>
+        <button title="Move down" onclick="moveItinDay(${di},1)" style="${iconBtn}" ${di===last?'disabled':''}>↓</button>
+        <button title="Duplicate day" onclick="duplicateItinDay(${di})" style="${iconBtn}">⧉</button>
+        <button title="Remove day" onclick="removeItinDay(${di})" style="${iconBtn}">✕</button>
+      </div>
+      <textarea class="form-input" rows="2" style="padding:6px 10px;font-size:12.5px;margin-bottom:8px" placeholder="What the day looks like (shown on the PDF under the day title)" oninput="_itinDays[${di}].description=this.value">${esc(d.description||'')}</textarea>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <input class="form-input" style="flex:1;min-width:180px;padding:6px 10px;font-size:12.5px" placeholder="Overnight stay (hotel / city)" value="${esc(d.overnight||'')}" oninput="_itinDays[${di}].overnight=this.value">
+        <span style="font-size:11.5px;color:var(--muted)">Meals:</span>
+        ${ITIN_MEALS.map(([k,label])=>`<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" ${(d.meals||[]).includes(k)?'checked':''} onchange="toggleItinMeal(${di},'${k}',this.checked)">${label}</label>`).join('')}
       </div>
       ${(d.items||[]).map((item,ii)=>{
         const meta=itinTypeMeta(item.type);
@@ -1689,6 +2148,7 @@ function renderItinDays() {
               <select class="form-input" style="padding:4px 8px;font-size:12px;flex:0 0 130px" onchange="_itinDays[${di}].items[${ii}].type=this.value;renderItinDays()">
                 ${ITIN_TYPES.map(t=>`<option value="${t}" ${item.type===t?'selected':''}>${ITIN_TYPE_META[t].label}</option>`).join('')}
               </select>
+              <input class="form-input" type="time" title="Time (optional)" style="padding:4px 8px;font-size:12px;flex:0 0 110px" value="${esc(item.time||'')}" oninput="_itinDays[${di}].items[${ii}].time=this.value">
               <button onclick="removeItinItem(${di},${ii})" style="margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:12px;flex-shrink:0">✕</button>
             </div>
             <input class="form-input" style="padding:6px 10px;font-size:13px" placeholder="e.g. flight number & time, hotel name, activity details" value="${esc(item.description||'')}" oninput="_itinDays[${di}].items[${ii}].description=this.value">
@@ -1704,9 +2164,20 @@ function renderItinDays() {
     </div>`).join('')+'<button onclick="addItinDay()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px;margin-top:4px">+ Add Day</button>';
 }
 
-function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',items:[]});renderItinDays();}
-function removeItinDay(i){_itinDays.splice(i,1);_itinDays.forEach((d,j)=>d.day_no=j+1);renderItinDays();}
-function addItinItem(di){_itinDays[di].items.push({type:'activity',description:'',image:''});renderItinDays();}
+function itinRenumberDays(){ _itinDays.forEach((d,j)=>d.day_no=j+1); renderItinDays(); }
+function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',description:'',overnight:'',meals:[],items:[]});renderItinDays();}
+function removeItinDay(i){_itinDays.splice(i,1);itinRenumberDays();}
+function moveItinDay(i,dir){
+  const j=i+dir; if(j<0||j>=_itinDays.length) return;
+  [_itinDays[i],_itinDays[j]]=[_itinDays[j],_itinDays[i]]; itinRenumberDays();
+}
+function duplicateItinDay(i){ _itinDays.splice(i+1,0,JSON.parse(JSON.stringify(_itinDays[i]))); itinRenumberDays(); }
+function toggleItinMeal(di,k,on){
+  const m=new Set(_itinDays[di].meals||[]);
+  if(on) m.add(k); else m.delete(k);
+  _itinDays[di].meals=ITIN_MEALS.map(([x])=>x).filter(x=>m.has(x));
+}
+function addItinItem(di){_itinDays[di].items.push({type:'activity',time:'',description:'',image:''});renderItinDays();}
 function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
 
 // Stored as a base64 data URL directly on the item, same pattern as CLIENTS.quote_logo_url — no
@@ -1726,18 +2197,34 @@ async function saveItin() {
   const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
-  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:$id('itinFrom').value,to_date:$id('itinTo').value,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),logo_url:_itinLogoUrl,created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  const num=id=>parseFloat($id(id).value)||0;
+  const lines=id=>JSON.stringify($id(id).value.split('\n').map(x=>x.trim()).filter(Boolean));
+  const from=$id('itinFrom').value,to=$id('itinTo').value;
+  const it={title:$id('itinTitle').value.trim(),destination:$id('itinDest').value.trim(),from_date:from,to_date:to,notes:$id('itinNotes').value.trim(),days:JSON.stringify(_itinDays),logo_url:_itinLogoUrl,created_at:existing.created_at||new Date().toISOString().slice(0,10),
+    nights:parseInt($id('itinNights').value)||itinNightsFromDates(from,to)||Math.max(0,_itinDays.length-1),
+    departure_city:$id('itinDepCity').value.trim(),hotel_category:$id('itinHotelCat').value,meal_plan:$id('itinMealPlan').value,transport:$id('itinTransport').value.trim(),
+    adults:parseInt($id('itinAdults').value)||0,children:parseInt($id('itinChildren').value)||0,children_nobed:parseInt($id('itinChildrenNoBed').value)||0,infants:parseInt($id('itinInfants').value)||0,
+    currency:$id('itinCurrency').value,adult_price:num('itinAdultPrice'),child_price:num('itinChildPrice'),child_nobed_price:num('itinChildNoBedPrice'),infant_price:num('itinInfantPrice'),
+    inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions')};
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
+    await taEnsureColumns('itineraries');
     if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad();renderAgencySubPage('itineraries');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad(['itineraries']);renderAgencySubPage('itineraries');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
+function duplicateItin(id){
+  const it=_taItineraries.find(x=>String(x.Id)===String(id));
+  if(!it) return;
+  const {Id,CreatedAt,UpdatedAt,created_at,...copy}=JSON.parse(JSON.stringify(it));
+  openItinModal(null,{...copy,title:(it.title||'Itinerary')+' (copy)'});
+}
+
 async function deleteItin(id){
   if(!confirm('Delete this itinerary?'))return;
-  await taDeleteRow('itineraries',id);_taLoaded=false;await taLoad();renderAgencySubPage('itineraries');
+  await taDeleteRow('itineraries',id);_taLoaded=false;await taLoad(['itineraries']);renderAgencySubPage('itineraries');
 }
 
 /* ── TA: SEND QUOTATION TO LEADS ──
@@ -1761,6 +2248,24 @@ const SQ_CAPTION_TEMPLATES={
   itinerary_full:`Hi {{lead_name}}, thank you for your interest in {{business_name}}! Please find your itinerary for {{trip_title}} attached. Let us know if you'd like to proceed or have any questions.`,
 };
 
+// Child / infant rows on a quotation — priced and counted separately from the adult price/pax.
+// Field names match TA_PAX_TYPES, so a package's or itinerary's own rates prefill them.
+const SQ_CHILD_FIELDS=[
+  {label:'Child (with bed)',plural:'children w/ bed',price:'child_price',count:'children',priceId:'sqChildPrice',countId:'sqChildren'},
+  {label:'Child (no bed)',plural:'children no bed',price:'child_nobed_price',count:'children_nobed',priceId:'sqChildNoBedPrice',countId:'sqChildrenNoBed'},
+  {label:'Infant',plural:'infants',price:'infant_price',count:'infants',priceId:'sqInfantPrice',countId:'sqInfants'},
+];
+// Price / pax / child rows / validity as currently typed in the Send Quotation form.
+function sqReadPricing(){
+  return {
+    price:parseFloat($id('sqPrice').value)||0,
+    currency:$id('sqCurrency').value||'AED',
+    pax:parseInt($id('sqPax').value)||1,
+    validity:parseInt($id('sqValidity').value)||7,
+    kids:SQ_CHILD_FIELDS.map(f=>({label:f.label,price:parseFloat($id(f.priceId)?.value)||0,count:parseInt($id(f.countId)?.value)||0})).filter(k=>k.count>0),
+  };
+}
+
 let _sqFormat='package';       // 'package' | 'group_fare' | 'travel_service' — PDF wording/layout only
 let _sqSourceKey='';           // e.g. 'pkg-12' or 'itin-7'
 let _sqSelectedIds=new Set();  // lead Ids selected for this bulk send
@@ -1769,7 +2274,7 @@ let _sqFilteredLeads=[];
 function sqSources(){
   return[
     ..._taPackages.map(p=>({key:'pkg-'+p.Id,type:'package',rec:p,label:'📦 '+(p.name||'Unnamed package'),price:p.sell_price||p.base_price||'',currency:p.currency||'AED',group:'Packages'})),
-    ..._taItineraries.map(it=>({key:'itin-'+it.Id,type:'itinerary',rec:it,label:'🗺️ '+(it.title||'Untitled itinerary'),price:'',currency:'AED',group:'Itineraries'})),
+    ..._taItineraries.map(it=>({key:'itin-'+it.Id,type:'itinerary',rec:it,label:'🗺️ '+(it.title||'Untitled itinerary'),price:parseFloat(it.adult_price)||'',currency:it.currency||'AED',group:'Itineraries'})),
   ];
 }
 
@@ -1790,7 +2295,7 @@ function sqSetFormat(fmt){
   _sqFormat=fmt;
   const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
   const priceLabel=$id('sqPriceLabel'); if(priceLabel) priceLabel.textContent=fmt==='group_fare'?'Fare / person':fmt==='travel_service'?'Service price':'Price / person';
-  const paxLabel=$id('sqPaxLabel'); if(paxLabel) paxLabel.textContent=fmt==='group_fare'?'Seats available':'Pax';
+  const paxLabel=$id('sqPaxLabel'); if(paxLabel) paxLabel.textContent=fmt==='group_fare'?'Adults':'Adults (pax)';
   // No pricing table on a full-itinerary send — the price/currency/pax/validity row is irrelevant.
   const grid=$id('sqPricingGrid'); if(grid) grid.style.display=fmt==='itinerary_full'?'none':'grid';
 }
@@ -1802,6 +2307,18 @@ function sqOnSourceChange(){
     $id('sqPrice').value=src.price||'';
     $id('sqCurrency').value=src.currency||'AED';
     if(_sqFormat==='itinerary_full') _sqFormat='package';
+  }
+  if(src){
+    // Rates (and, for an itinerary, traveller counts) come from the picked source.
+    if(src.type==='itinerary'){
+      if(parseFloat(src.rec.adult_price)) $id('sqPrice').value=src.rec.adult_price;
+      if(src.rec.currency) $id('sqCurrency').value=src.rec.currency;
+      $id('sqPax').value=parseInt(src.rec.adults)||1;
+    }
+    SQ_CHILD_FIELDS.forEach(f=>{
+      $id(f.priceId).value=parseFloat(src.rec[f.price])||'';
+      $id(f.countId).value=src.type==='itinerary'?(parseInt(src.rec[f.count])||0):0;
+    });
   }
   const pills=$id('sqFormatPills'); if(pills) pills.innerHTML=sqFormatPillsHtml();
   const grid=$id('sqPricingGrid'); if(grid) grid.style.display=_sqFormat==='itinerary_full'?'none':'grid';
@@ -1820,7 +2337,7 @@ function renderItinSendQuote(){
     <div class="ta-card-title">📤 Send Quotation to Leads</div>
     <div style="font-size:12.5px;color:var(--muted);margin-bottom:16px">Pick a package or itinerary, choose how it should read on the PDF, then select any number of leads to send it to.</div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:14px">
       <div class="form-group">
         <label class="form-label">Source</label>
         <select class="form-input" id="sqSource" onchange="sqOnSourceChange()">
@@ -1837,19 +2354,27 @@ function renderItinSendQuote(){
       </div>
     </div>
 
-    <div id="sqPricingGrid" style="display:${_sqFormat==='itinerary_full'?'none':'grid'};grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
+    <div id="sqPricingGrid" style="display:${_sqFormat==='itinerary_full'?'none':'grid'};grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px;margin-bottom:16px">
       <div class="form-group"><label class="form-label">Currency</label>
         <select class="form-input" id="sqCurrency">${['AED','USD','EUR','GBP','SAR','QAR','KWD','INR','OMR','BHD'].map(c=>`<option value="${c}"${(selected?.currency||'AED')===c?' selected':''}>${c}</option>`).join('')}</select>
       </div>
       <div class="form-group"><label class="form-label" id="sqPriceLabel">Price / person</label>
         <input class="form-input" type="number" min="0" id="sqPrice" value="${esc(String(selected?.price||''))}" placeholder="0">
       </div>
-      <div class="form-group"><label class="form-label" id="sqPaxLabel">Pax</label>
-        <input class="form-input" type="number" min="1" id="sqPax" value="1">
+      <div class="form-group"><label class="form-label" id="sqPaxLabel">${_sqFormat==='group_fare'?'Adults':'Adults (pax)'}</label>
+        <input class="form-input" type="number" min="1" id="sqPax" value="${parseInt(selected?.rec?.adults)||1}">
       </div>
       <div class="form-group"><label class="form-label">Valid for (days)</label>
         <input class="form-input" type="number" min="1" id="sqValidity" value="7">
       </div>
+      <div style="grid-column:1/-1;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:-6px">👶 Child &amp; infant rates <span style="font-weight:400">— leave the count at 0 to quote adults only</span></div>
+      ${SQ_CHILD_FIELDS.map(f=>`
+      <div class="form-group"><label class="form-label">${f.label} price</label>
+        <input class="form-input" type="number" min="0" id="${f.priceId}" value="${esc(String(parseFloat(selected?.rec?.[f.price])||''))}" placeholder="0">
+      </div>
+      <div class="form-group"><label class="form-label">No. of ${f.plural}</label>
+        <input class="form-input" type="number" min="0" id="${f.countId}" value="${parseInt(selected?.rec?.[f.count])||0}">
+      </div>`).join('')}
     </div>
 
     <div class="s-head" style="margin-bottom:8px">Select Leads</div>
@@ -1975,14 +2500,17 @@ function sqShade(rgb,percent){
 // Builds the itemized rows for the quotation table (Description / No. of Persons / Price /
 // Total), one row per unit the client's charging for plus zero-priced context rows (inclusions,
 // itinerary days, notes) — mirrors a standard line-item quote layout regardless of format.
-function sqBuildLineItems(src,format,price,currency,pax){
+function sqBuildLineItems(src,format,price,currency,pax,kids){
   const rows=[];
   const unitPrice=parseFloat(price)||0;
+  // Adult row label suffix + one row per child/infant type, added right after the adult row.
+  const adultTag=(kids||[]).length?' — Adult':'';
+  const kidRows=label=>(kids||[]).map(k=>({desc:`${label} — ${k.label}`,persons:k.count,price:k.price,total:k.price*k.count}));
   if(format==='package'){
     if(src.type==='package'){
       const p=src.rec;
       safeJson(p.inclusions,[]).forEach(inc=>rows.push({desc:'Included: '+inc,persons:'',price:0,total:0}));
-      rows.push({desc:p.name||'Package',persons:pax,price:unitPrice,total:unitPrice*pax});
+      rows.push({desc:(p.name||'Package')+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(p.name||'Package'));
       if((p.notes||'').trim()) rows.push({desc:'Note: '+p.notes.trim(),persons:'',price:0,total:0});
     }else{
       const it=src.rec;
@@ -1990,15 +2518,16 @@ function sqBuildLineItems(src,format,price,currency,pax){
         const items=(d.items||[]).map(i=>i.description).filter(Boolean).join(', ');
         rows.push({desc:`Day ${d.day_no}: ${d.title||''}${items?' — '+items:''}`,persons:'',price:0,total:0});
       });
-      rows.push({desc:it.title||'Itinerary',persons:pax,price:unitPrice,total:unitPrice*pax});
+      rows.push({desc:(it.title||'Itinerary')+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(it.title||'Itinerary'));
       if((it.notes||'').trim()) rows.push({desc:'Note: '+it.notes.trim(),persons:'',price:0,total:0});
     }
   }else if(format==='group_fare'){
-    rows.push({desc:src.rec.destination?`Group Fare — ${src.rec.destination}`:'Group Fare',persons:pax,price:unitPrice,total:unitPrice*pax});
+    const fareLabel=src.rec.destination?`Group Fare — ${src.rec.destination}`:'Group Fare';
+    rows.push({desc:fareLabel+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(fareLabel));
     if((src.rec.notes||'').trim()) rows.push({desc:'Note: '+src.rec.notes.trim(),persons:'',price:0,total:0});
   }else{ // travel_service
     const label=src.type==='package'?(src.rec.name||'Travel Service'):(src.rec.title||'Travel Service');
-    rows.push({desc:label,persons:pax,price:unitPrice,total:unitPrice*pax});
+    rows.push({desc:label+adultTag,persons:pax,price:unitPrice,total:unitPrice*pax},...kidRows(label));
     if((src.rec.notes||'').trim()) rows.push({desc:'Note: '+src.rec.notes.trim(),persons:'',price:0,total:0});
   }
   const subtotal=rows.reduce((s,r)=>s+(r.total||0),0);
@@ -2089,14 +2618,20 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   // as the Quotation PDF's own meta grid (sqBuildPdfDoc), just itinerary-specific fields, so a
   // customer receiving both document types from this business sees one consistent format.
   const dateRange=it.from_date&&it.to_date?`${it.from_date} to ${it.to_date}`:(it.from_date||it.to_date||'');
-  const metaLeft=[['Destination:',it.destination||'—'],['Trip Dates:',dateRange||'—'],['Duration:',`${(it.days||[]).length} day(s)`]];
+  const nDays=(it.days||[]).length,nights=parseInt(it.nights)||0;
+  const metaLeft=[['Destination:',it.destination||'—'],['Trip Dates:',dateRange||'—'],['Duration:',nights?`${nights} Night(s) / ${Math.max(nDays,nights+1)} Day(s)`:`${nDays} day(s)`]];
+  if((it.departure_city||'').trim()) metaLeft.push(['Departure From:',it.departure_city.trim()]);
+  if(taPaxSummary(it)) metaLeft.push(['Travellers:',taPaxSummary(it)]);
   const metaRight=[['Itinerary No.:',quoteNumber||'—'],['Issued On:',new Date().toLocaleDateString()],['Prepared By:',clientRecord.client_name||'—']];
+  [['Hotel:',it.hotel_category],['Meal Plan:',it.meal_plan],['Transport:',it.transport]].forEach(([lab,val])=>{ if((val||'').trim()) metaRight.push([lab,val.trim()]); });
   doc.setFontSize(9);
   let my=y;
   metaLeft.forEach(([lab,val])=>{
     doc.setFont('helvetica','bold');doc.setTextColor(60);doc.text(lab,marginX,my);
-    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(String(val),marginX+120,my);
-    my+=15;
+    // Wrapped so a long value (e.g. "2 Adults, 1 Child (with bed), 1 Infant") stays out of the right column.
+    const lines=doc.splitTextToSize(String(val),contentW/2-130);
+    doc.setFont('helvetica','normal');doc.setTextColor(20);doc.text(lines,marginX+120,my);
+    my+=15+(lines.length-1)*11;
   });
   let my2=y;
   metaRight.forEach(([lab,val])=>{
@@ -2145,8 +2680,18 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
     doc.roundedRect(marginX,y,contentW,22,4,4,'F');
     doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(255,255,255);
     doc.text(`Day ${d.day_no}${d.title?' — '+d.title:''}`,marginX+10,y+15);
+    const dayDate=itinDayDate(it.from_date,d.day_no);
+    if(dayDate){ doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.text(dayDate,pageW-marginX-10,y+15,{align:'right'}); }
     doc.setTextColor(0);
     y+=32;
+
+    if((d.description||'').trim()){
+      const lines=doc.splitTextToSize(d.description.trim(),contentW-8);
+      doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(40);
+      lines.forEach(line=>{ ensureSpace(14); doc.text(line,marginX+4,y); y+=12; });
+      doc.setTextColor(0);
+      y+=6;
+    }
 
     (d.items||[]).forEach(item=>{
       const meta=itinTypeMeta(item.type);
@@ -2173,7 +2718,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       doc.rect(marginX+4,y,contentW-4,blockH,'F');
 
       doc.setFont('helvetica','bold');doc.setFontSize(7.5);
-      const pillLabel=meta.label.toUpperCase();
+      const pillLabel=(item.time?item.time+' · ':'')+meta.label.toUpperCase();
       const pillW=doc.getTextWidth(pillLabel)+14;
       doc.setFillColor(...typeRgb);
       doc.roundedRect(marginX+innerLeft,y+6,pillW,13,3,3,'F');
@@ -2194,7 +2739,77 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       doc.setTextColor(0);
       y+=blockH+8;
     });
+
+    const dayFacts=[itinMealsText(d.meals)?'Meals: '+itinMealsText(d.meals):'',(d.overnight||'').trim()?'Overnight: '+d.overnight.trim():''].filter(Boolean).join('     ·     ');
+    if(dayFacts){
+      ensureSpace(18);
+      doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
+      doc.text(doc.splitTextToSize(dayFacts,contentW-8)[0],marginX+4,y+4);
+      doc.setTextColor(0);
+      y+=16;
+    }
+    y+=4;
   });
+
+  // Inclusions / Exclusions side by side, each as a bulleted list.
+  const inc=taList(it.inclusions),exc=taList(it.exclusions);
+  if(inc.length||exc.length){
+    const colW=(inc.length&&exc.length)?(contentW-12)/2:contentW;
+    const boxes=[['Inclusions',inc,'+'],['Exclusions',exc,'-']].filter(([,list])=>list.length).map(([title,list,mark])=>{
+      const lines=list.flatMap(x=>doc.splitTextToSize(`${mark}  ${x}`,colW-20));
+      return {title,lines,h:26+lines.length*11};
+    });
+    const boxH=Math.max(...boxes.map(b=>b.h));
+    ensureSpace(boxH+16);
+    boxes.forEach((b,i)=>{
+      const x=marginX+i*(colW+12);
+      doc.setFillColor(...accentSoft);
+      doc.roundedRect(x,y,colW,boxH,4,4,'F');
+      doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(...accentInk);
+      doc.text(b.title,x+10,y+15);
+      doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(50);
+      doc.text(b.lines,x+10,y+28);
+    });
+    doc.setTextColor(0);
+    y+=boxH+16;
+  }
+
+  // Package price per traveller type (adult / child with bed / child no bed / infant).
+  const cur=it.currency||'AED';
+  const priced=TA_PAX_TYPES.map(t=>({label:t.label,price:parseFloat(it[t.price])||0,count:parseInt(it[t.count])||0})).filter(r=>r.price>0);
+  if(priced.length){
+    const rowH=18,boxH=22+rowH*priced.length+(priced.some(r=>r.count)?rowH+4:0);
+    ensureSpace(boxH+16);
+    const colCount=marginX+contentW-190,colPrice=marginX+contentW-100,colTotal=marginX+contentW-12;
+    doc.setFillColor(...accent);
+    doc.rect(marginX,y,contentW,22,'F');
+    doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(255,255,255);
+    doc.text('PACKAGE PRICE',marginX+12,y+14);
+    doc.text('TRAVELLERS',colCount,y+14,{align:'right'});
+    doc.text('PER PERSON',colPrice,y+14,{align:'right'});
+    doc.text('TOTAL',colTotal,y+14,{align:'right'});
+    y+=22;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(20);
+    let grand=0;
+    priced.forEach((r,i)=>{
+      if(i%2===1){doc.setFillColor(...accentSoft);doc.rect(marginX,y,contentW,rowH,'F');}
+      doc.text(r.label,marginX+12,y+13);
+      doc.text(r.count?String(r.count):'—',colCount,y+13,{align:'right'});
+      doc.text(`${cur} ${r.price.toLocaleString()}`,colPrice,y+13,{align:'right'});
+      doc.text(r.count?`${cur} ${(r.count*r.price).toLocaleString()}`:'—',colTotal,y+13,{align:'right'});
+      grand+=r.count*r.price;
+      y+=rowH;
+    });
+    if(priced.some(r=>r.count)){
+      doc.setDrawColor(...accent);doc.setLineWidth(1);doc.line(marginX,y,pageW-marginX,y);
+      doc.setFont('helvetica','bold');doc.setTextColor(...accentInk);
+      doc.text('Total',colPrice,y+14,{align:'right'});
+      doc.text(`${cur} ${grand.toLocaleString()}`,colTotal,y+14,{align:'right'});
+      y+=rowH+4;
+    }
+    doc.setTextColor(0);
+    y+=12;
+  }
 
   if((it.notes||'').trim()){
     const noteLines=doc.splitTextToSize(it.notes.trim(),contentW-20);
@@ -2236,7 +2851,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   return doc;
 }
 
-function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
+function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber,kids){
   if(format==='itinerary_full') return itinBuildFullPdfDoc(lead,src.rec,quoteNumber);
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({unit:'pt',format:'a4'});
@@ -2283,7 +2898,8 @@ function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
 
   // Meta grid — trip basics on the left, document identity on the right
   const departure=src.type==='itinerary'?(src.rec.from_date||'—'):'—';
-  const metaLeft=[['Departure:',departure],['Operator:',clientRecord.client_name||'—'],['No. of Passengers:',String(pax)]];
+  const paxText=(kids||[]).length?[`${pax} Adult${pax===1?'':'s'}`,...kids.map(k=>`${k.count} ${k.label}`)].join(', '):String(pax);
+  const metaLeft=[['Departure:',departure],['Operator:',clientRecord.client_name||'—'],['No. of Passengers:',paxText]];
   const metaRight=[['Quote No.:',quoteNumber||'—'],['Quote Date:',new Date().toLocaleDateString()],['Valid Until:',new Date(Date.now()+validity*86400000).toLocaleDateString()]];
   doc.setFontSize(9);
   let my=y;
@@ -2331,7 +2947,7 @@ function sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber){
   y=Math.max(fy,ty)+18;
 
   // Line-items table (Description / No. of Persons / Price / Total)
-  const {rows,subtotal}=sqBuildLineItems(src,format,price,currency,pax);
+  const {rows,subtotal}=sqBuildLineItems(src,format,price,currency,pax,kids);
   const taxPct=parseFloat(clientRecord.quote_tax_percent)||0;
   const tax=subtotal*taxPct/100;
   const grandTotal=subtotal+tax;
@@ -2456,17 +3072,18 @@ async function sqPreviewPdf(){
   const format=_sqFormat;
   const isItinFull=format==='itinerary_full';
   if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
-  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  const pr=sqReadPricing();
+  const price=isItinFull?0:pr.price,kids=isItinFull?[]:pr.kids;
+  const {currency,pax,validity}=pr;
   if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
-  const currency=$id('sqCurrency').value||'AED';
-  const pax=parseInt($id('sqPax').value)||1;
-  const validity=parseInt($id('sqValidity').value)||7;
+  const missingKid=kids.find(k=>!k.price);
+  if(missingKid){msg.textContent=`Enter the ${missingKid.label} price, or set its count to 0.`;msg.className='save-msg err';return;}
 
   // Same batch-wide logo dims measurement sqSend does before its loop — a preview is just a
   // one-off "batch" of one.
-  _itinSendLogoDims=isItinFull&&src.rec.logo_url
-    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
-    : null;
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url?await sqMeasureImage(src.rec.logo_url):null;
+  _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
+  const pdfSrc=isItinFull?{...src,rec:await itinWithAutoImages(src.rec)}:src;
 
   // Prefers the first selected lead so the preview shows real customer details; falls back to a
   // placeholder when none are picked yet, since previewing shouldn't require selecting leads first.
@@ -2474,7 +3091,8 @@ async function sqPreviewPdf(){
   const lead=leads[0]||{Name:'Sample Customer',Phone:'971500000000'};
   const previewNum=(isItinFull?'ITN-':'QUO-')+'0000 (preview)';
   msg.textContent='';msg.className='save-msg';
-  const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum);
+  try{ await loadJsPdf(); }catch(e){ msg.textContent=e.message; msg.className='save-msg err'; return; }
+  const doc=sqBuildPdfDoc(lead,pdfSrc,format,price,currency,pax,validity,previewNum,kids);
   window.open(doc.output('bloburl'),'_blank');
 }
 
@@ -2487,18 +3105,20 @@ async function sqSend(){
   // Full-itinerary sends have no pricing table, so the price field isn't required for them.
   const isItinFull=format==='itinerary_full';
   if(isItinFull&&src.type!=='itinerary'){msg.textContent='Full Itinerary needs an itinerary source.';msg.className='save-msg err';return;}
-  const price=isItinFull?0:(parseFloat($id('sqPrice').value)||0);
+  const pr=sqReadPricing();
+  const price=isItinFull?0:pr.price,kids=isItinFull?[]:pr.kids;
+  const {currency,pax,validity}=pr;
   if(!isItinFull&&!price){msg.textContent='Enter a price first.';msg.className='save-msg err';return;}
-  const currency=$id('sqCurrency').value||'AED';
-  const pax=parseInt($id('sqPax').value)||1;
-  const validity=parseInt($id('sqValidity').value)||7;
+  const missingKid=kids.find(k=>!k.price);
+  if(missingKid){msg.textContent=`Enter the ${missingKid.label} price, or set its count to 0.`;msg.className='save-msg err';return;}
 
   // Measured once for the whole batch (not per lead) — itinBuildFullPdfDoc reads this instead of
   // _itinLogoDims, since the itinerary modal that measured the latter usually isn't open anymore
   // by the time a bulk send runs.
-  _itinSendLogoDims=isItinFull&&src.rec.logo_url
-    ? await new Promise(resolve=>{ const img=new Image(); img.onload=()=>resolve({w:img.naturalWidth,h:img.naturalHeight}); img.onerror=()=>resolve(null); img.src=src.rec.logo_url; })
-    : null;
+  _itinSendLogoDims=isItinFull&&src.rec.logo_url?await sqMeasureImage(src.rec.logo_url):null;
+  _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
+  // Auto-added photos (Travel Settings) are looked up once for the whole batch.
+  const pdfSrc=isItinFull?{...src,rec:await itinWithAutoImages(src.rec)}:src;
 
   const leads=allLeads.filter(l=>_sqSelectedIds.has(String(l.Id)));
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
@@ -2516,7 +3136,13 @@ async function sqSend(){
   let quoteSeq=parseInt(clientRecord.quote_number_seq)||0;
   let itinSeq=parseInt(clientRecord.itin_number_seq)||0;
 
+  // The caption's {{total}}: a group fare quotes the per-person fare; the other formats quote the
+  // whole quotation (adults + children + infants, plus tax) — the same Grand Total the PDF shows.
+  const captionTotal=isItinFull?0:format==='group_fare'?price
+    :sqBuildLineItems(src,format,price,currency,pax,kids).subtotal*(1+(parseFloat(clientRecord.quote_tax_percent)||0)/100);
+
   let sent=0,failed=0,skipped=0;
+  try{ await loadJsPdf(); }catch(e){ logRow('❌ '+e.message,'#DC2626'); btn.disabled=false; return; }
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
     const convId=leadConvId(lead);
@@ -2530,9 +3156,9 @@ async function sqSend(){
       let quoteNumber;
       if(isItinFull){ itinSeq++; quoteNumber='ITN-'+String(itinSeq).padStart(4,'0'); }
       else { quoteSeq++; quoteNumber='QUO-'+String(quoteSeq).padStart(4,'0'); }
-      const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,quoteNumber);
+      const doc=sqBuildPdfDoc(lead,pdfSrc,format,price,currency,pax,validity,quoteNumber,kids);
       const pdfBlob=doc.output('blob');
-      const caption=sqBuildCaption(lead,format,price,currency,validity,isItinFull?{trip_title:src.rec.title||'your trip'}:null);
+      const caption=sqBuildCaption(lead,format,captionTotal,currency,validity,isItinFull?{trip_title:src.rec.title||'your trip'}:null);
       const fd=new FormData();
       fd.append('conv_id',convId);
       fd.append('caption',caption);
@@ -2546,7 +3172,7 @@ async function sqSend(){
       if(!tags.includes(tagName)) tags.push(tagName);
       lead.Tags=tags.join(',');
       const sentAt=new Date().toISOString();
-      const totalLabel=isItinFull?'':`${currency} ${price.toLocaleString()}`;
+      const totalLabel=isItinFull?'':`${currency} ${captionTotal.toLocaleString()}`;
       try{
         const hist=await freshConvHistory(lead);
         hist.push({role:'assistant',content:caption+(isItinFull?`\n[Itinerary PDF — ${src.rec.title||'Itinerary'}]`:`\n[Quotation PDF — ${SQ_FORMAT_TITLES[format]}, ${totalLabel}]`),ts:sentAt});
@@ -2668,14 +3294,14 @@ async function saveCase(){
   if(!c.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editCaseId) await taUpdate('cases',_editCaseId,c); else await taCreate('cases',c);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCase');await taLoad();renderAgencySubPage('services');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCase');await taLoad(['cases']);renderAgencySubPage('services');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteCase(id){
   if(!confirm('Delete this case?'))return;
-  await taDeleteRow('cases',id);_taLoaded=false;await taLoad();renderAgencySubPage('services');
+  await taDeleteRow('cases',id);_taLoaded=false;await taLoad(['cases']);renderAgencySubPage('services');
 }
 
 /* ── TA: VISA ── */
@@ -2683,14 +3309,66 @@ let _editVisaId=null;
 const VISA_TYPE_LABELS={single_entry:'Single Entry',multiple_entry:'Multiple Entry',transit:'Transit'};
 const VISA_DURATION_LABELS={'10_days':'10 Days','14_days':'14 Days','30_days':'30 Days','60_days':'60 Days','90_days':'90 Days','1_year':'1 Year'};
 
+// "Services Included" on a visa package (Tripcod's sheet: transportation, hotel stay, meals,
+// border fees ...), stored on the record as services_included = [{item,detail}] — the same list
+// the WhatsApp bot shows (live-travel-wa-menu.js ltPortalRows). Visa validity keeps its own column.
+const VISA_SERVICE_ITEMS=[
+  {key:'transport',icon:'🚌',label:'Transportation',hint:'e.g. Dubai ⇄ Oman border, AC bus'},
+  {key:'hotel',icon:'🏨',label:'Hotel Stay',hint:'e.g. 1 night 3★, twin sharing'},
+  {key:'meals',icon:'🍽️',label:'Meals',hint:'e.g. Breakfast & dinner'},
+  {key:'border_fees',icon:'🛃',label:'Border Fees',hint:'e.g. Exit & entry fees paid'},
+  {key:'insurance',icon:'🛡️',label:'Travel Insurance',hint:'e.g. Medical cover'},
+];
+function visaServicesList(v){
+  const raw=safeJson(v?.services_included,Array.isArray(v?.services_included)?v.services_included:[]);
+  return (Array.isArray(raw)?raw:[]).map(x=>typeof x==='string'?{item:x,detail:''}:{item:String(x?.item||'').trim(),detail:String(x?.detail||'').trim()}).filter(x=>x.item);
+}
+function visaLines(v){ return String(v||'').split(/\n|;/).map(x=>x.trim()).filter(Boolean); }
+function visaRenderServiceRows(list){
+  const byItem=new Map(list.map(x=>[x.item.toLowerCase(),x]));
+  $id('visaServicesRows').innerHTML=VISA_SERVICE_ITEMS.map(it=>{
+    const have=byItem.get(it.label.toLowerCase());
+    return `<div style="display:grid;grid-template-columns:170px 1fr;gap:10px;align-items:center">
+      <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer"><input type="checkbox" id="visaSvc_${it.key}" ${have?'checked':''}> ${it.icon} ${esc(it.label)}</label>
+      <input class="form-input" id="visaSvcDetail_${it.key}" value="${esc(have?.detail||'')}" placeholder="${esc(it.hint)}" oninput="if(this.value.trim())$id('visaSvc_${it.key}').checked=true">
+    </div>`;
+  }).join('');
+  const std=new Set(VISA_SERVICE_ITEMS.map(it=>it.label.toLowerCase()));
+  $id('visaOtherServices').value=list.filter(x=>!std.has(x.item.toLowerCase())).map(x=>x.detail?`${x.item}: ${x.detail}`:x.item).join('\n');
+}
+function visaCollectServices(){
+  const out=VISA_SERVICE_ITEMS.filter(it=>$id('visaSvc_'+it.key).checked).map(it=>({item:it.label,detail:$id('visaSvcDetail_'+it.key).value.trim()}));
+  visaLines($id('visaOtherServices').value).forEach(line=>{
+    const m=/^([^:]{2,40}):\s*(.+)$/.exec(line);
+    out.push(m?{item:m[1].trim(),detail:m[2].trim()}:{item:line,detail:''});
+  });
+  return out;
+}
+// Sheet / CSV text → the select values the visa form uses ("30 Days" → 30_days, "Multiple" → multiple_entry).
+function visaDurationKey(v){
+  const t=String(v||'').trim(); if(!t) return '';
+  const hit=Object.entries(VISA_DURATION_LABELS).find(([k,l])=>k===t||l.toLowerCase()===t.toLowerCase());
+  return hit?hit[0]:t;
+}
+function visaTypeKey(v){
+  const t=String(v||'').trim().toLowerCase(); if(!t) return '';
+  if(/multi/.test(t)) return 'multiple_entry';
+  if(/transit/.test(t)) return 'transit';
+  if(/single/.test(t)) return 'single_entry';
+  return String(v).trim();
+}
+
 function renderTaVisas(){
   const active=_taVisas.filter(v=>v.status!=='inactive').length;
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🛂 Visa Catalogue</div>
-    <button class="btn btn-primary btn-sm" onclick="openVisaModal()">+ New Visa</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="taOpenImport('visas')">⬆ Upload CSV</button>
+      <button class="btn btn-primary btn-sm" onclick="openVisaModal()">+ New Visa</button>
+    </div>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(2,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Visas</div><div class="stat-val">${_taVisas.length}</div></div>
     <div class="stat"><div class="stat-lbl">Active</div><div class="stat-val">${active}</div></div>
   </div>
@@ -2707,7 +3385,9 @@ function renderVisaRow(v){
     <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🛂</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.visa_country||'—')}</div>
-      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(VISA_TYPE_LABELS[v.visa_type]||v.visa_type||'—')} · ${esc(VISA_DURATION_LABELS[v.duration]||v.duration||'—')} · ${esc(v.entry_type||'—')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(VISA_TYPE_LABELS[v.visa_type]||v.visa_type||'—')} · ${esc(VISA_DURATION_LABELS[v.duration]||v.duration||'—')} · ${esc(v.entry_type||'—')}${v.processing_time?` · ⏱️ ${esc(v.processing_time)}`:''}${v.visa_validity?` · ⏳ ${esc(v.visa_validity)}`:''}</div>
+      ${(()=>{const svc=visaServicesList(v);if(!svc.length)return '';const icon=i=>(VISA_SERVICE_ITEMS.find(x=>x.label.toLowerCase()===i.toLowerCase())||{}).icon||'✓';
+        return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${svc.slice(0,6).map(x=>`<span title="${esc(x.detail)}" style="font-size:10.5px;padding:2px 7px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);white-space:nowrap">${icon(x.item)} ${esc(x.item)}${x.detail?': '+esc(x.detail.length>28?x.detail.slice(0,27)+'…':x.detail):''}</span>`).join('')}${svc.length>6?`<span style="font-size:10.5px;color:var(--muted)">+${svc.length-6} more</span>`:''}</div>`;})()}
     </div>
     <div style="text-align:right;flex-shrink:0">
       <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(v.currency||'AED')} ${(parseFloat(v.adult_price)||0).toLocaleString()}</div>
@@ -2727,24 +3407,28 @@ function openVisaModal(id){
   $id('visaProcessingTime').value=v.processing_time||''; $id('visaValidity').value=v.visa_validity||'';
   $id('visaEntryType').value=v.entry_type||''; $id('visaStatus').value=v.status||'active';
   $id('visaRequiredDocs').value=v.required_documents||'';
+  $id('visaNotIncluded').value=v.not_included||''; $id('visaNotes').value=v.notes||'';
+  visaRenderServiceRows(visaServicesList(v));
   openModal('modalVisa');
 }
 
 async function saveVisa(){
   const btn=$id('saveVisaBtn'),msg=$id('saveVisaMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  const v={visa_country:$id('visaCountry').value.trim(),visa_type:$id('visaType').value,duration:$id('visaDuration').value,adult_price:parseFloat($id('visaAdultPrice').value)||0,child_price:parseFloat($id('visaChildPrice').value)||0,currency:$id('visaCurrency').value,required_documents:$id('visaRequiredDocs').value.trim(),processing_time:$id('visaProcessingTime').value.trim(),visa_validity:$id('visaValidity').value.trim(),entry_type:$id('visaEntryType').value.trim(),status:$id('visaStatus').value};
+  const v={visa_country:$id('visaCountry').value.trim(),visa_type:$id('visaType').value,duration:$id('visaDuration').value,adult_price:parseFloat($id('visaAdultPrice').value)||0,child_price:parseFloat($id('visaChildPrice').value)||0,currency:$id('visaCurrency').value,required_documents:$id('visaRequiredDocs').value.trim(),processing_time:$id('visaProcessingTime').value.trim(),visa_validity:$id('visaValidity').value.trim(),entry_type:$id('visaEntryType').value.trim(),status:$id('visaStatus').value,
+    services_included:JSON.stringify(visaCollectServices()),not_included:$id('visaNotIncluded').value.trim(),notes:$id('visaNotes').value.trim()};
   if(!v.visa_country){msg.textContent='Visa country required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
+    await taEnsureColumns('visas');
     if(_editVisaId) await taUpdate('visas',_editVisaId,v); else await taCreate('visas',v);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalVisa');await taLoad();renderAgencySubPage('visas');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalVisa');await taLoad(['visas']);renderAgencySubPage('visas');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteVisa(id){
   if(!confirm('Delete this visa?'))return;
-  await taDeleteRow('visas',id);_taLoaded=false;await taLoad();renderAgencySubPage('visas');
+  await taDeleteRow('visas',id);_taLoaded=false;await taLoad(['visas']);renderAgencySubPage('visas');
 }
 
 /* ── TA: GROUP FARE ── */
@@ -2758,7 +3442,7 @@ function renderTaGroupFares(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">👥 Group Fares</div>
     <button class="btn btn-primary btn-sm" onclick="openGroupFareModal()">+ New Group Fare</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-bottom:14px">
     ${[['available','Available','#DCFCE7','#166534'],['limited','Limited','#FEF3C7','#92400E'],['closed','Closed','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
       <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
@@ -2811,14 +3495,14 @@ async function saveGroupFare(){
   if(!g.sector){msg.textContent='Sector required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editGroupFareId) await taUpdate('group_fares',_editGroupFareId,g); else await taCreate('group_fares',g);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalGroupFare');await taLoad();renderAgencySubPage('groupfares');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalGroupFare');await taLoad(['group_fares']);renderAgencySubPage('groupfares');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteGroupFare(id){
   if(!confirm('Delete this group fare?'))return;
-  await taDeleteRow('group_fares',id);_taLoaded=false;await taLoad();renderAgencySubPage('groupfares');
+  await taDeleteRow('group_fares',id);_taLoaded=false;await taLoad(['group_fares']);renderAgencySubPage('groupfares');
 }
 
 /* ── TA: SPECIAL FARE ── */
@@ -2832,7 +3516,7 @@ function renderTaSpecialFares(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎟️ Special Fares</div>
     <button class="btn btn-primary btn-sm" onclick="openSpecialFareModal()">+ New Special Fare</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-bottom:14px">
     ${[['available','Available','#DCFCE7','#166534'],['limited','Limited','#FEF3C7','#92400E'],['closed','Closed','#FEE2E2','#991B1B']].map(([st,l,bg,col])=>`
       <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
@@ -2886,14 +3570,14 @@ async function saveSpecialFare(){
   if(!s.sector){msg.textContent='Sector required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editSpecialFareId) await taUpdate('special_fares',_editSpecialFareId,s); else await taCreate('special_fares',s);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalSpecialFare');await taLoad();renderAgencySubPage('specialfares');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalSpecialFare');await taLoad(['special_fares']);renderAgencySubPage('specialfares');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteSpecialFare(id){
   if(!confirm('Delete this special fare?'))return;
-  await taDeleteRow('special_fares',id);_taLoaded=false;await taLoad();renderAgencySubPage('specialfares');
+  await taDeleteRow('special_fares',id);_taLoaded=false;await taLoad(['special_fares']);renderAgencySubPage('specialfares');
 }
 
 /* ── TA: UMRAH ── */
@@ -2919,7 +3603,7 @@ function renderTaUmrah(){
           <button onclick="event.stopPropagation();deleteUmrahGroup('${g.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px">
         <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:2px">${esc(g.makkah_hotel||'—')}</div><div style="font-size:10px;color:var(--muted)">Makkah Hotel</div></div>
         <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:2px">${esc(g.madinah_hotel||'—')}</div><div style="font-size:10px;color:var(--muted)">Madinah Hotel</div></div>
         <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:18px;font-weight:700">${g.makkah_nights||0}</div><div style="font-size:10px;color:var(--muted)">Makkah Nights</div></div>
@@ -2966,14 +3650,14 @@ async function saveUmrah(){
   if(!g.name){msg.textContent='Group name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editUmrahId) await taUpdate('umrah_groups',_editUmrahId,g); else await taCreate('umrah_groups',g);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalUmrah');await taLoad();renderAgencySubPage('umrah');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalUmrah');await taLoad(['umrah_groups']);renderAgencySubPage('umrah');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteUmrahGroup(id){
   if(!confirm('Delete this group?'))return;
-  await taDeleteRow('umrah_groups',id);_taLoaded=false;await taLoad();renderAgencySubPage('umrah');
+  await taDeleteRow('umrah_groups',id);_taLoaded=false;await taLoad(['umrah_groups']);renderAgencySubPage('umrah');
 }
 
 function openAddPilgrimModal(groupId){
@@ -2994,7 +3678,7 @@ async function savePilgrim(){
     if(!grp)throw new Error('Group not found');
     const pilgrims=[...(grp.pilgrims||[]),p];
     await taUpdate('umrah_groups',_editPilgrimGroupId,{pilgrims:JSON.stringify(pilgrims)});
-    msg.textContent='✓ Added';_taLoaded=false;setTimeout(async()=>{closeModal('modalPilgrim');await taLoad();renderAgencySubPage('umrah');},600);
+    msg.textContent='✓ Added';_taLoaded=false;setTimeout(async()=>{closeModal('modalPilgrim');await taLoad(['umrah_groups']);renderAgencySubPage('umrah');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
@@ -3010,7 +3694,7 @@ function renderTaBookings(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎫 Bookings & Quotes</div>
     <button class="btn btn-primary btn-sm" onclick="openBookingModal()">+ New Quote</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     ${[['quoted','Quoted','#FEF3C7','#92400E'],['confirmed','Confirmed','#DCFCE7','#166534'],['completed','Completed','var(--accent-soft)','var(--accent-ink)'],['cancelled','Cancelled','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
       <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
@@ -3066,14 +3750,14 @@ async function saveBooking(){
   if(!b.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editBookingId) await taUpdate('bookings',_editBookingId,b); else await taCreate('bookings',b);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalBooking');await taLoad();renderAgencySubPage('bookings');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalBooking');await taLoad(['bookings']);renderAgencySubPage('bookings');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteBooking(id){
   if(!confirm('Delete this booking?'))return;
-  await taDeleteRow('bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('bookings');
+  await taDeleteRow('bookings',id);_taLoaded=false;await taLoad(['bookings']);renderAgencySubPage('bookings');
 }
 
 /* ── TA: CARS ── */
@@ -3098,7 +3782,7 @@ function renderTaCars(){
       <button class="btn btn-primary btn-sm" onclick="openCarModal()">+ Add Car</button>
     </div>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Cars</div><div class="stat-val">${_taCars.length}</div></div>
     <div class="stat"><div class="stat-lbl">Available</div><div class="stat-val">${available}</div></div>
     <div class="stat"><div class="stat-lbl">Out Today</div><div class="stat-val">${bookedToday}</div></div>
@@ -3254,14 +3938,14 @@ async function saveCar(){
   if(!c.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editCarId) await taUpdate('cars',_editCarId,c); else await taCreate('cars',c);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCar');await taLoad();renderAgencySubPage('cars');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCar');await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteCar(id){
   if(!confirm('Delete this car? All its bookings will remain.'))return;
-  await taDeleteRow('cars',id);_taLoaded=false;await taLoad();renderAgencySubPage('cars');
+  await taDeleteRow('cars',id);_taLoaded=false;await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');
 }
 
 function populateCarSelect(selectedCarId){
@@ -3311,14 +3995,14 @@ async function saveCarBooking(){
   if(!b.customer_name||!b.car_id||!b.pickup_date||!b.dropoff_date){msg.textContent='Customer, car and dates required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editCarBkId) await taUpdate('car_bookings',_editCarBkId,b); else await taCreate('car_bookings',b);
-    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCarBooking');await taLoad();renderAgencySubPage('cars');},600);
+    msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalCarBooking');await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
 }
 
 async function deleteCarBooking(id){
   if(!confirm('Delete this booking?'))return;
-  await taDeleteRow('car_bookings',id);_taLoaded=false;await taLoad();renderAgencySubPage('cars');
+  await taDeleteRow('car_bookings',id);_taLoaded=false;await taLoad(['cars', 'car_bookings']);renderAgencySubPage('cars');
 }
 
 /* ── TA: FINANCE ── */
@@ -3336,13 +4020,13 @@ function renderTaFinance(){
   const pendingPay=_taBookings.filter(b=>b.status!=='cancelled'&&b.status!=='completed'&&parseFloat(b.sell_price)>parseFloat(b.deposit||0));
   return `
   <div style="font-family:var(--disp);font-size:16px;font-weight:700;margin-bottom:14px">💰 Finance</div>
-  <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Revenue</div><div class="stat-val">${(totalRev/1000).toFixed(1)}k</div><div class="stat-sub">bookings + cases</div></div>
     <div class="stat"><div class="stat-lbl">Total Cost</div><div class="stat-val">${(totalCost/1000).toFixed(1)}k</div><div class="stat-sub">cost of services</div></div>
     <div class="stat"><div class="stat-lbl">Gross Margin</div><div class="stat-val">${(totalMargin/1000).toFixed(1)}k</div><div class="stat-sub">${marginPct}% margin</div></div>
     <div class="stat"><div class="stat-lbl">Transactions</div><div class="stat-val">${allTxns.length}</div><div class="stat-sub">total records</div></div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">📊 Revenue by Category</div>
       ${Object.entries(byType).map(([t,v])=>`
@@ -3384,23 +4068,148 @@ function renderTaFinance(){
   </div>`;
 }
 
+/* ── TRAVEL SETTINGS (Dashboard → Settings → Industry Modules → Travel Agency) ── */
+// itin_share_pdf: every itinerary send/print uses the itinerary PDF instead of WhatsApp text.
+// itin_auto_images: items without their own photo get one from a matching Property or another itinerary.
+let _taTravelSettings={itin_share_pdf:false,itin_auto_images:true};
+function taLoadTravelSettings(){
+  _taTravelSettings={itin_share_pdf:clientRecord?.itin_share_pdf==='Yes',itin_auto_images:clientRecord?.itin_auto_images!=='No'};
+  // Saved by the worker (D1) — the CLIENTS copy above is only a fallback.
+  return fetch(`${CONFIG.WORKER_BASE}/live-travel/travel-settings`,{headers:ncAuthHeaders()}).then(r=>r.ok?r.json():null).then(d=>{
+    if(d&&typeof d.itin_share_pdf==='boolean') _taTravelSettings={itin_share_pdf:d.itin_share_pdf,itin_auto_images:d.itin_auto_images!==false};
+  }).catch(()=>{});
+}
+
+// Property photos are Drive links; jsPDF needs the bytes, which the worker fetches (no CORS on Drive).
+const _itinPropImgCache=new Map();
+function itinPropertyImage(p){
+  const id=propDriveId(p.image_url||p.image_url_2||p.image_url_3);
+  if(!id) return Promise.resolve('');
+  if(!_itinPropImgCache.has(id)){
+    _itinPropImgCache.set(id,fetch(`${CONFIG.WORKER_BASE}/travel/drive-image?id=${encodeURIComponent(id)}`,{headers:ncAuthHeaders()})
+      .then(r=>r.ok?r.json():{}).then(d=>d.data_url||'').catch(()=>''));
+  }
+  return _itinPropImgCache.get(id);
+}
+// A copy of the itinerary with photos filled in for items that have none (the saved record is
+// untouched): first the photo already used for the same item text in another itinerary, then a
+// Property whose name appears in the item (or, for a hotel item, the day's overnight stay).
+// At most one added photo per day keeps the PDF small enough for WhatsApp.
+async function itinWithAutoImages(it){
+  if(!_taTravelSettings.itin_auto_images||!it) return it;
+  const key=v=>String(v||'').trim().toLowerCase();
+  const library=new Map();
+  _taItineraries.forEach(x=>(x.days||[]).forEach(d=>(d.items||[]).forEach(i=>{ if(i.image&&key(i.description)&&!library.has(key(i.description))) library.set(key(i.description),i.image); })));
+  const props=_taProperties.filter(p=>key(p.name).length>=4&&propDriveId(p.image_url||p.image_url_2||p.image_url_3));
+  const days=[];
+  for(const d of (it.days||[])){
+    let added=false;
+    const items=[];
+    for(const item of (d.items||[])){
+      if(item.image||added){ items.push(item); continue; }
+      const text=key(item.description)+(item.type==='hotel'?' '+key(d.overnight):'');
+      let image=library.get(key(item.description))||'';
+      if(!image){ const p=props.find(p=>text.includes(key(p.name))); if(p) image=await itinPropertyImage(p); }
+      if(image){ added=true; items.push({...item,image}); } else items.push(item);
+    }
+    days.push({...d,items});
+  }
+  return {...it,days};
+}
+// The full itinerary PDF for one lead (or a placeholder lead), numbered from itin_number_seq.
+async function itinBuildSharePdf(it,lead,quoteNumber){
+  await loadJsPdf();
+  _itinSendLogoDims=it.logo_url?await sqMeasureImage(it.logo_url):null;
+  _quoteLogoDims=await sqMeasureImage(clientRecord.quote_logo_url);
+  return itinBuildFullPdfDoc(lead,await itinWithAutoImages(it),quoteNumber);
+}
+const itinPhoneDigits=v=>String(v||'').replace(/\D/g,'');
+// Sends the itinerary PDF into the lead's WhatsApp chat (same route as the bulk send). Returns
+// false when that number has no linked chat, so the caller can fall back to a text message.
+async function itinSendPdfToPhone(it,phone){
+  const digits=itinPhoneDigits(phone);
+  const lead=allLeads.find(l=>{ const p=itinPhoneDigits(l.Phone); return p&&(p===digits||(p.length>=9&&digits.endsWith(p))||(digits.length>=9&&p.endsWith(digits))); });
+  const convId=leadConvId(lead);
+  if(!convId) return false;
+  const itinSeq=(parseInt(clientRecord.itin_number_seq)||0)+1;
+  const doc=await itinBuildSharePdf(it,lead,'ITN-'+String(itinSeq).padStart(4,'0'));
+  const fd=new FormData();
+  fd.append('conv_id',convId);
+  fd.append('lead_id',String(lead.Id||''));
+  fd.append('caption',sqBuildCaption(lead,'itinerary_full',0,'','',{trip_title:it.title||'your trip'}));
+  fd.append('file',doc.output('blob'),`Itinerary-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+  const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{method:'POST',headers:ncAuthHeaders(),body:fd});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+  try{ await patchClient({itin_number_seq:itinSeq}); clientRecord.itin_number_seq=itinSeq; }catch(e){}
+  return true;
+}
+
 /* ── ITINERARY PDF + WA ── */
-function printItinerary(id){
+async function printItinerary(id){
   const it=_taItineraries.find(x=>String(x.Id)===String(id));
   if(!it)return;
+  if(_taTravelSettings.itin_share_pdf){
+    // Open the tab now: a window opened after the awaits below would be blocked as a popup.
+    const tab=window.open('','_blank');
+    try{
+      const doc=await itinBuildSharePdf(it,{},'');
+      if(tab) tab.location.href=doc.output('bloburl'); else window.open(doc.output('bloburl'),'_blank');
+    }catch(e){ if(tab) tab.close(); alert('Error: '+e.message); }
+    return;
+  }
   const days=it.days||[];
   const w=window.open('','_blank');
   if(!w)return;
-  let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${esc(it.destination||'')} &middot; ${days.length} days</p>`;
+  const facts=[it.destination,it.nights?`${it.nights} nights / ${days.length} days`:`${days.length} days`,it.departure_city?'From '+it.departure_city:'',it.hotel_category,it.meal_plan,it.transport,taPaxSummary(it)].filter(Boolean);
+  let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${facts.map(esc).join(' &middot; ')}</p>`;
   days.forEach(d=>{
-    body+=`<h2>Day ${d.day_no}: ${esc(d.title||'')}</h2><ul>`;
-    (d.items||[]).forEach(i=>{body+=`<li>${esc(i.description||'')}</li>`;});
+    const date=itinDayDate(it.from_date,d.day_no);
+    body+=`<h2>Day ${d.day_no}: ${esc(d.title||'')}${date?` <small>${esc(date)}</small>`:''}</h2>`;
+    if(d.description) body+=`<p>${esc(d.description)}</p>`;
+    body+='<ul>';
+    (d.items||[]).forEach(i=>{body+=`<li>${i.time?`<b>${esc(i.time)}</b> `:''}${esc(i.description||'')}</li>`;});
     body+='</ul>';
+    const dayFacts=[itinMealsText(d.meals)?'Meals: '+itinMealsText(d.meals):'',d.overnight?'Overnight: '+d.overnight:''].filter(Boolean);
+    if(dayFacts.length) body+=`<p class="facts">${dayFacts.map(esc).join(' &middot; ')}</p>`;
   });
+  const inc=taList(it.inclusions),exc=taList(it.exclusions);
+  if(inc.length) body+=`<h2>Inclusions</h2><ul>${inc.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  if(exc.length) body+=`<h2>Exclusions</h2><ul>${exc.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  const cur=it.currency||'AED';
+  const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
+  if(priced.length) body+=`<h2>Package Price</h2><table>${priced.map(t=>`<tr><td>${t.label}</td><td>${esc(cur)} ${parseFloat(it[t.price]).toLocaleString()} per person</td></tr>`).join('')}</table>`;
   if(it.notes)body+=`<p><em>${esc(it.notes)}</em></p>`;
-  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}ul{margin:8px 0 0 18px}li{margin-bottom:4px}</style></head><body>${body}</body></html>`);
+  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}h2 small{font-size:12px;color:#666;font-weight:normal}ul{margin:8px 0 0 18px}li{margin-bottom:4px}.facts{font-size:13px;color:#555}td{padding:4px 16px 4px 0}</style></head><body>${body}</body></html>`);
   w.document.close();
   w.print();
+}
+
+// The itinerary as a WhatsApp message — same content as the PDF, in WhatsApp formatting.
+function itinWaText(it){
+  const days=it.days||[];
+  const facts=[it.destination,it.nights?`${it.nights}N / ${days.length}D`:`${days.length} days`].filter(Boolean).join(' · ');
+  let body=`*${it.title}*\n${facts}\n`;
+  if(it.from_date) body+=`📅 ${it.from_date}${it.to_date?' to '+it.to_date:''}\n`;
+  if(taPaxSummary(it)) body+=`👥 ${taPaxSummary(it)}\n`;
+  [['🏨',it.hotel_category],['🍽️',it.meal_plan],['🚌',it.transport]].forEach(([icon,v])=>{ if(v) body+=`${icon} ${v}\n`; });
+  body+='\n';
+  days.forEach(d=>{
+    body+=`*Day ${d.day_no}: ${d.title||''}*\n`;
+    if(d.description) body+=`${d.description}\n`;
+    (d.items||[]).forEach(i=>{body+=`• ${i.time?i.time+' ':''}${i.description||''}\n`;});
+    if(itinMealsText(d.meals)) body+=`🍽️ ${itinMealsText(d.meals)}\n`;
+    if(d.overnight) body+=`🌙 Overnight: ${d.overnight}\n`;
+    body+='\n';
+  });
+  const inc=taList(it.inclusions),exc=taList(it.exclusions);
+  if(inc.length) body+=`✅ *Includes*\n${inc.map(x=>'• '+x).join('\n')}\n\n`;
+  if(exc.length) body+=`❌ *Excludes*\n${exc.map(x=>'• '+x).join('\n')}\n\n`;
+  const cur=it.currency||'AED';
+  const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
+  if(priced.length) body+=`💰 *Price per person*\n${priced.map(t=>`• ${t.label}: ${cur} ${parseFloat(it[t.price]).toLocaleString()}`).join('\n')}\n\n`;
+  if(it.notes)body+=`_${it.notes}_`;
+  return body.trim();
 }
 
 async function sendItinViaWa(id){
@@ -3408,14 +4217,13 @@ async function sendItinViaWa(id){
   if(!it)return;
   const phone=prompt('Send to phone (with country code, e.g. 971501234567):');
   if(!phone)return;
-  const days=it.days||[];
-  let body=`*${it.title}*\n${it.destination||''} · ${days.length} days\n\n`;
-  days.forEach(d=>{
-    body+=`*Day ${d.day_no}: ${d.title||''}*\n`;
-    (d.items||[]).forEach(i=>{body+=`• ${i.description||''}\n`;});
-    body+='\n';
-  });
-  if(it.notes)body+=`_${it.notes}_`;
+  if(_taTravelSettings.itin_share_pdf){
+    try{
+      if(await itinSendPdfToPhone(it,phone)){ alert('✓ Itinerary PDF sent via WhatsApp'); return; }
+      if(!confirm('No WhatsApp chat is linked to this number yet, so the PDF cannot be attached. Send the itinerary as a text message instead?')) return;
+    }catch(e){ alert('Error: '+e.message); return; }
+  }
+  const body=itinWaText(it);
   try{
     const resp=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{
       method:'POST',
@@ -3520,7 +4328,7 @@ function renderTravelAnalyticsSection(){
     <div class="ta-card-title">🧳 Trip Types</div>
     <div class="trip-types">${tripTypesHtml}</div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">📅 Upcoming Trip Inquiries <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400">${upcomingCount}</span></div>
       ${upcomingHtml}
@@ -3540,9 +4348,19 @@ function renderTravelAnalyticsSection(){
 const TODAY = new Date().toISOString().slice(0,10);
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 function fmtDateShort(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}catch{return String(d).slice(0,10);}}
-const LEAD_CATEGORIES = ['Ticket','Package','Hotel','Other Services'];
+const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Family Resort','Couple Resort','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+// Built-in + the account's own categories (CLIENTS.lead_categories_custom, edited in the dashboard's
+// Settings → 🗂️ Service Categories) — same list as dashboard.html.
+function leadCategoriesFor(rec){
+  let v=[]; try{ v=JSON.parse(rec?.lead_categories_custom||'[]'); }catch(e){}
+  const custom=Array.isArray(v)?v.map(x=>String(x||'').trim()).filter(c=>c&&!BASE_LEAD_CATEGORIES.includes(c)):[];
+  return [...new Set([...BASE_LEAD_CATEGORIES, ...custom])];
+}
+let LEAD_CATEGORIES = BASE_LEAD_CATEGORIES.slice();
 function serviceCategoryIcon(cat){
-  return {Ticket:'✈️',Package:'📦',Hotel:'🏨','Other Services':'🧳'}[cat]||'🗂️';
+  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Family Resort':'👨‍👩‍👧','Couple Resort':'💑','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
+    Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
+    'Umrah and Hajj':'🕋','Marketing Messages':'📣','Other Services':'🧳'}[cat]||'🏷️';
 }
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
@@ -3582,6 +4400,229 @@ const QUOTE_DEFAULT_TERMS=`• This quotation is valid for the period stated abo
 • All prices are exclusive of taxes unless stated otherwise.
 • Payment terms and delivery/service timelines will be confirmed upon order confirmation.
 • This document does not constitute a binding contract until formally accepted by both parties.`;
+
+/* ── TA: RESORTS & HOTELS ── */
+const PROP_TYPE_LABELS={resort:'Resort',hotel:'Hotel',villa:'Villa',homestay:'Homestay',houseboat:'Houseboat',apartment:'Apartment',camp:'Camp',other:'Other'};
+function propDriveId(url){
+  const m=String(url||'').match(/\/(?:file|document|presentation|spreadsheets)\/d\/([\w-]+)|[?&]id=([\w-]+)/);
+  return m?(m[1]||m[2]):'';
+}
+function propThumb(p){
+  const id=propDriveId(p.image_url||p.image_url_2||p.image_url_3);
+  return id?`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w600`:'';
+}
+// Who a resort is for — its own sections and filter chips. A Family & Couple resort is in both.
+const PROP_CATS=[['family','👨‍👩‍👧','Family Resorts'],['couple','💑','Couple Resorts'],['other','🏨','Other Resorts & Hotels']];
+const PROP_CAT_BADGE={family:'👨‍👩‍👧 Family',couple:'💑 Couple',both:'👨‍👩‍👧 💑 Family & Couple'};
+let _propCat='all';
+const propInCat=(p,cat)=>cat==='all'?true:cat==='other'?!['family','couple','both'].includes(p.category):(p.category===cat||p.category==='both');
+function setPropCat(cat){ _propCat=cat; renderAgencySubPage('properties'); }
+function renderTaProperties(){
+  const card=p=>{
+    const thumb=propThumb(p);
+    const photos=[p.image_url,p.image_url_2,p.image_url_3].filter(Boolean).length;
+    const media=[photos?`📷 ${photos}`:'',p.video_url?'🎬 Video':'',p.pdf_url?'📄 PDF':''].filter(Boolean).join(' · ');
+    return `
+    <div class="ta-card" style="padding:0;overflow:hidden;cursor:pointer;margin:0" onclick="openPropertyModal('${p.id}')">
+      <div style="height:140px;background:var(--bg) center/cover no-repeat;${thumb?`background-image:url('${escAttr(thumb)}')`:''};display:flex;align-items:center;justify-content:center;font-size:36px">${thumb?'':'🏨'}</div>
+      <div style="padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+          <div style="font-weight:700">${esc(p.name)}</div>
+          <span class="stage-pill ${p.status==='active'?'stage-done':'stage-blocked'}">${esc(p.status||'active')}</span>
+        </div>
+        ${PROP_CAT_BADGE[p.category]?`<div class="prop-cat" style="display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;background:${p.category==='couple'?'#FCE7F3;color:#9D174D':p.category==='family'?'#DBEAFE;color:#1E40AF':'#EDE9FE;color:#5B21B6'}">${PROP_CAT_BADGE[p.category]}</div>`:''}
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(PROP_TYPE_LABELS[p.property_type]||'Resort')}${p.star_rating?' · '+'⭐'.repeat(p.star_rating):''}${p.location?' · '+esc(p.location):''}</div>
+        <div style="font-family:var(--mono);font-size:13px;margin-top:6px">${Number(p.price_from)>0?`From ${esc(p.currency||'INR')} ${fmtMoney(p.price_from)} <span style="color:var(--muted)">${esc(p.price_unit||'per night')}</span>`:'<span style="color:var(--muted)">Price on request</span>'}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px">${media||'No media yet'}</div>
+      </div>
+    </div>`;
+  };
+  const grid=list=>`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">${list.map(card).join('')}</div>`;
+  const count=cat=>_taProperties.filter(p=>propInCat(p,cat)).length;
+  const chips=[['all','','All'],...PROP_CATS].map(([k,icon,label])=>
+    `<button class="btn btn-sm ${_propCat===k?'btn-primary':'btn-secondary'}" data-propcat="${k}" onclick="setPropCat('${k}')">${icon?icon+' ':''}${label} <span style="opacity:.75">${count(k)}</span></button>`).join('');
+  // All: one section per category; a chip: just that category.
+  const sections=(_propCat==='all'?PROP_CATS:PROP_CATS.filter(([k])=>k===_propCat)).map(([k,icon,label])=>{
+    const list=_taProperties.filter(p=>propInCat(p,k));
+    if(!list.length&&_propCat==='all') return '';
+    return `<div class="prop-sec" data-sec="${k}" style="margin-bottom:18px">
+      <div style="font-family:var(--disp);font-size:14px;font-weight:700;margin:4px 2px 10px">${icon} ${label} <span style="color:var(--muted);font-weight:500">(${list.length})</span></div>
+      ${list.length?grid(list):`<div class="ta-card" style="text-align:center;padding:30px;color:var(--muted);font-size:13px">No ${label.toLowerCase()} yet — set <strong>Resort Category</strong> on a property to list it here.</div>`}
+    </div>`;
+  }).join('');
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🏨 Resorts &amp; Hotels</div>
+    <button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button>
+  </div>
+  ${_taProperties.length?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${chips}</div>${sections}`
+    :'<div class="ta-card" style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No resorts or hotels yet — click <strong>+ Add Property</strong> to add one with its photos, video and PDF brochure.</div>'}
+  <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
+    💡 The bot sends a property's photos, video and PDF straight to the lead when they name it, ask for its photos/video/brochure, or the bot recommends it. It suggests Family Resorts for trips with kids or family and Couple Resorts for honeymoons and couples, and files the lead under that category in the CRM.
+  </div>`;
+}
+
+let _editPropId=null;
+const PROP_INPUTS={name:'propName',property_type:'propType',category:'propCategory',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',video_url:'propVideo',pdf_url:'propPdf'};
+const PROP_DEFAULTS={property_type:'resort',category:'',status:'active',currency:'INR',price_unit:'per night'};
+function openPropertyModal(id){
+  _editPropId=id||null;
+  const p=id?(_taProperties.find(x=>String(x.id)===String(id))||{}):{};
+  $id('propModalTitle').textContent=id?'Edit Property':'New Resort / Hotel';
+  for(const [f,el] of Object.entries(PROP_INPUTS)) $id(el).value=p[f]??PROP_DEFAULTS[f]??'';
+  $id('savePropMsg').textContent='';
+  $id('deletePropBtn').style.display=id?'':'none';
+  openModal('modalProperty');
+}
+
+async function saveProperty(){
+  const btn=$id('savePropBtn'),msg=$id('savePropMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={client_id:clientId};
+  for(const [f,el] of Object.entries(PROP_INPUTS)) body[f]=$id(el).value.trim();
+  if(!body.name){msg.textContent='Property name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    const res=await fetch(`${WORKER_BASE}/ta/properties`,{method:_editPropId?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_editPropId?{...body,Id:_editPropId}:body)});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||data.error) throw new Error(data.error||'Save failed');
+    msg.textContent='✓ Saved';
+    setTimeout(async()=>{closeModal('modalProperty');_taLoaded=false;await taLoad(['properties']);renderAgencySubPage('properties');},600);
+  }catch(e){msg.textContent=e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteProperty(){
+  if(!_editPropId||!confirm('Delete this property?'))return;
+  await fetch(`${WORKER_BASE}/ta/properties`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,Id:_editPropId})});
+  closeModal('modalProperty');_taLoaded=false;await taLoad(['properties']);renderAgencySubPage('properties');
+}
+
+/* ── TA: ATTESTATION SERVICES ── */
+const ATTEST_TYPE_LABELS={mea:'MEA',embassy:'Embassy',mofa:'MOFA',apostille:'Apostille',hrd:'HRD',state:'State Auth',notary:'Notary',coc:'Chamber of Commerce',police_clearance:'Police Clearance',birth:'Birth Cert',marriage:'Marriage Cert',degree:'Degree Cert',custom:'Custom'};
+
+const ATTEST_DEFAULTS=[
+  {name:'MEA Attestation',service_type:'mea',turnaround_time:'3-5 working days',required_docs:'Original document\nPassport copy\nApplication form',description:'Ministry of External Affairs attestation for use abroad'},
+  {name:'Embassy Attestation',service_type:'embassy',turnaround_time:'5-10 working days',required_docs:'MEA attested document\nPassport copy\nEmbassy fee',description:'Embassy attestation after MEA for country-specific use'},
+  {name:'MOFA Attestation',service_type:'mofa',turnaround_time:'3-7 working days',required_docs:'Embassy attested document\nPassport copy',description:'Ministry of Foreign Affairs attestation (destination country)'},
+  {name:'Apostille',service_type:'apostille',turnaround_time:'3-5 working days',required_docs:'Original document\nPassport copy',description:'Apostille stamp for Hague Convention member countries'},
+  {name:'HRD Attestation',service_type:'hrd',turnaround_time:'5-7 working days',required_docs:'Original degree / mark sheet\nUniversity verification letter',description:'Human Resource Development attestation for education documents'},
+  {name:'State Authentication',service_type:'state',turnaround_time:'2-4 working days',required_docs:'Original document\nIdentity proof',description:'State government / home department authentication'},
+  {name:'Notary Attestation',service_type:'notary',turnaround_time:'1 working day',required_docs:'Original document\nIdentity proof',description:'Notary public attestation — first step in the attestation chain'},
+  {name:'Chamber of Commerce',service_type:'coc',turnaround_time:'1-2 working days',required_docs:'Original commercial document\nCompany registration certificate',description:'Chamber of Commerce attestation for commercial documents'},
+  {name:'Police Clearance Certificate',service_type:'police_clearance',turnaround_time:'7-14 working days',required_docs:'Application form\nPassport copy\nAddress proof\nFee payment receipt',description:'PCC issued by local police for visa / employment abroad'},
+  {name:'Birth Certificate Attestation',service_type:'birth',turnaround_time:'3-5 working days',required_docs:'Original birth certificate\nParent ID proof',description:'Attestation of birth certificate for use abroad'},
+  {name:'Marriage Certificate Attestation',service_type:'marriage',turnaround_time:'3-5 working days',required_docs:'Original marriage certificate\nID proof of both spouses',description:'Attestation of marriage certificate for visa / residency'},
+  {name:'Degree Certificate Attestation',service_type:'degree',turnaround_time:'7-15 working days',required_docs:'Original degree\nMark sheets\nUniversity letter\nID proof',description:'Full attestation chain: HRD + MEA + Embassy attestation'},
+];
+
+function renderTaAttestation(){
+  const active=_attestServices.filter(s=>s.status==='active');
+  const inactive=_attestServices.filter(s=>s.status!=='active');
+  const isEmpty=_attestServices.length===0;
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">📋 Attestation Services</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${isEmpty?`<button class="btn btn-secondary btn-sm" onclick="seedAttestDefaults()">🌱 Seed Default Services</button>`:''}
+      <button class="btn btn-primary btn-sm" onclick="openAttestModal()">+ Add Service</button>
+    </div>
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    ${_attestServices.length?`
+    <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:var(--bg);border-bottom:1px solid var(--line)">
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Service</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Type</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Country</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Fee</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Turnaround</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">PDF</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Status</th>
+      </tr></thead>
+      <tbody>
+      ${_attestServices.map(s=>`
+        <tr style="border-bottom:1px solid var(--line);cursor:pointer" onclick="openAttestModal('${s.id}')">
+          <td style="padding:10px 14px;font-weight:600">${esc(s.name)}</td>
+          <td style="padding:10px 14px;color:var(--muted)">${esc(ATTEST_TYPE_LABELS[s.service_type]||s.service_type||'—')}</td>
+          <td style="padding:10px 14px;color:var(--muted)">${esc(s.country||'—')}</td>
+          <td style="padding:10px 14px;font-family:var(--mono)">${s.fee?esc(s.currency||'INR')+' '+fmtMoney(s.fee):'—'}</td>
+          <td style="padding:10px 14px;color:var(--muted)">${esc(s.turnaround_time||'—')}</td>
+          <td style="padding:10px 14px">${s.pdf_url?`<a href="${escAttr(s.pdf_url)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent);font-size:12px">📄 View</a>`:'—'}</td>
+          <td style="padding:10px 14px"><span class="stage-pill ${s.status==='active'?'stage-done':'stage-blocked'}">${esc(s.status||'active')}</span></td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>`:'<div style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No attestation services yet — click <strong>Seed Default Services</strong> to pre-fill common types, or <strong>+ Add Service</strong> to create one.</div>'}
+  </div>
+  <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
+    💡 When a customer asks about a specific service via the bot, its PDF checklist is automatically sent if a <strong>PDF URL</strong> is set.
+  </div>`;
+}
+
+let _editAttestId=null;
+function openAttestModal(id){
+  _editAttestId=id||null;
+  const s=id?(_attestServices.find(x=>String(x.id)===String(id))||{}):{};
+  $id('attestModalTitle').textContent=id?'Edit Service':'New Attestation Service';
+  $id('attestName').value=s.name||'';
+  $id('attestType').value=s.service_type||'mea';
+  $id('attestStatus').value=s.status||'active';
+  $id('attestFee').value=s.fee||'';
+  $id('attestCurrency').value=s.currency||'INR';
+  $id('attestTAT').value=s.turnaround_time||'';
+  $id('attestCountry').value=s.country||'';
+  $id('attestDocs').value=s.required_docs||'';
+  $id('attestDesc').value=s.description||'';
+  $id('attestPdf').value=s.pdf_url||'';
+  const delBtn=$id('deleteAttestBtn'); if(delBtn) delBtn.style.display=id?'':'none';
+  openModal('modalAttest');
+}
+
+async function saveAttestService(){
+  const btn=$id('saveAttestBtn'),msg=$id('saveAttestMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={
+    client_id:clientId,
+    name:$id('attestName').value.trim(),
+    service_type:$id('attestType').value,
+    status:$id('attestStatus').value,
+    fee:parseFloat($id('attestFee').value)||null,
+    currency:$id('attestCurrency').value,
+    turnaround_time:$id('attestTAT').value.trim(),
+    country:$id('attestCountry').value.trim(),
+    required_docs:$id('attestDocs').value.trim(),
+    description:$id('attestDesc').value.trim(),
+    pdf_url:$id('attestPdf').value.trim(),
+  };
+  if(!body.name){msg.textContent='Service name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editAttestId){
+      await fetch(`${WORKER_BASE}/attest/services`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,Id:_editAttestId})}).then(r=>r.json());
+    } else {
+      await fetch(`${WORKER_BASE}/attest/services`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    }
+    msg.textContent='✓ Saved';
+    setTimeout(async()=>{closeModal('modalAttest');_taLoaded=false;await taLoad(['attest']);renderAgencySubPage('attestation');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteAttestService(){
+  if(!_editAttestId||!confirm('Delete this service?'))return;
+  await fetch(`${WORKER_BASE}/attest/services`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,Id:_editAttestId})});
+  closeModal('modalAttest');_taLoaded=false;await taLoad(['attest']);renderAgencySubPage('attestation');
+}
+
+async function seedAttestDefaults(){
+  if(!confirm('This will add 12 standard attestation services to your catalog. Continue?'))return;
+  const btn=event.target;btn.disabled=true;btn.textContent='Seeding…';
+  try{
+    for(const s of ATTEST_DEFAULTS){
+      await fetch(`${WORKER_BASE}/attest/services`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,...s})});
+    }
+    _taLoaded=false;await taLoad(['attest']);renderAgencySubPage('attestation');
+  }catch(e){alert('Seed failed: '+e.message);}
+  finally{btn.disabled=false;}
+}
 
 /* openModal/closeModal/closeAllModals + the #overlay element (see body) — duplicated from
    dashboard.html because every TA modal (below) uses that bottom-sheet .modal/#overlay

@@ -1,0 +1,15 @@
+name = "leadvyne-poomas-bridge"
+main = "poomas-bridge.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "leadvyne-d1"
+database_id = "eeb0ce10-dd0d-4e5a-92c1-d9ebe485ea52"
+
+[vars]
+ALLOWED_ORIGINS = "https://leadvyne.com,https://www.leadvyne.com,https://app.leadvyne.com"
+
+# Secret required for live POOMAS PNR lookups:
+#   wrangler secret put POOMAS_INTEGRATION_KEY --config wrangler.poomas.toml

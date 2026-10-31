@@ -60,6 +60,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
+| gsheet_url / gsheet_cols / gsheet_last_sync_at / gsheet_last_sync_status / gsheet_sync_hash | Single line / Long text — Integrations → Google Sheets Sync (leads export). Auto-created by the Worker on first save; see "Google Sheets leads sync" below. |
 | authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
 | chatwoot_user_id | Single line (Chatwoot user id created by the Channels module — used for the Shopify SSO login link) |
 | stripe_customer_id | Single line (created on first checkout) |
@@ -70,8 +71,9 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
-| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. The only gate on the voice-to-voice reply feature — not tied to `voice_addon_active`/billing in any way. See "Voice-to-voice replies" below. |
-| voice_tts_provider | Single line (blank/`sarvam`/`ai4bharat`, default blank = Auto) — Settings → Voice → 🔧 TTS Provider (testing) dropdown. Overrides which TTS engine `engineTtsWithFallback` (worker.js) and `ttsWithFallback` (backend/recovery.js) use for this client: blank is normal production behavior (Sarvam primary, AI4Bharat standby on failure); `ai4bharat` forces the standby directly; `sarvam` skips the standby. A testing/debug knob, not a production feature — see "Voice-to-voice replies" below. |
+| sarvam_api_key | Single line, secret — optional client-level Sarvam credential in Settings → Voice. Never returned by `safeClient`; when blank, live voice replies use the Worker-level `SARVAM_API_KEY`. |
+| voice_reply_enabled | Legacy field, no longer used for live voice-to-voice replies. Incoming voice notes now automatically receive cache → Sarvam → text fallback. |
+| voice_tts_provider | Legacy/testing field retained for non-live paths only. It is no longer shown in client Voice settings or read by live voice-to-voice delivery. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -387,7 +389,31 @@ no SSO into these the way there is for the primary account (`handleChannelsChatw
 this Worker's `CHATWOOT_PLATFORM_TOKEN` only reaches accounts it created itself — an externally
 owned account needs its own normal Chatwoot login.
 
-**Creating users directly (User Management → Create New User):** `POST /team/create-user`
+**Inviting teammates (User Management → ✉️ Invite Teammate — the primary way to add someone):**
+`POST /team/invite` (session-gated, takes `name`/`email`) creates a single-use Authentik
+**Invitation** (expires in 7 days) instead of an Authentik user. Email, username (= email) and name
+are fixed on the invitation, so the invitee only chooses a password. The Worker adds them to
+`team_emails`/`team_names` immediately, creates their Chatwoot agent if Chatwoot is connected, and
+emails `https://app.leadvyne.com/dashboard.html?invite=<id>` via Resend (link also shown to the
+admin to share directly). That link starts a normal PKCE login in the same tab via the invite flow,
+so they land in the dashboard as soon as they've set a password. If the email already has an
+Authentik login, they're just added to the team with no invite. Initial signup is unchanged.
+
+Setup (once): apply `authentik/leadvyne-team-access-blueprint.yaml` (creates the
+`leadvyne-team-invite` enrollment flow and the `leadvyne-magic-link` sign-in flow — test both on
+your instance first, see the file header), and give the `AUTHENTIK_API_TOKEN` service account
+`authentik_stages_invitation.add_invitation` + `authentik_flows.view_flow`. Until the invite flow
+exists, `/team/invite` returns 503 `INVITE_FLOW_MISSING` and the "Create User With a Password"
+form below still works. Optional Worker vars: `AUTHENTIK_INVITE_FLOW_SLUG`, `APP_BASE_URL`.
+
+**Emailed sign-in link (passwordless):** once the magic-link flow is applied and Authentik's email
+settings are configured, set `CONFIG.AUTHENTIK_MAGIC_LINK_FLOW = 'leadvyne-magic-link'` in
+`dashboard.html` to show "Email me a sign-in link instead" under the login button. Users enter
+their email, Authentik emails them a link, and it signs them in — still a normal Authentik login,
+so disabling a user in Authentik blocks it too. If the link is opened in a different tab,
+`handleAuthentikCallback` retries the authorize step once to finish the login there.
+
+**Creating users directly (User Management → Or Create User With a Password):** `POST /team/create-user`
 (session-gated, takes only `name`/`username`/`email` — no password field anymore) calls Authentik's
 own Core API — `POST /api/v3/core/users/` to create the account (`username`/`email`/`name`/
 `is_active`), then `POST /api/v3/core/users/{id}/set_password/` with a server-generated random
@@ -985,6 +1011,24 @@ the frontend.
 migrated** to this Worker. `dashboard.html`, `index.html`, `admin.html`, and now `broadcast.html`
 (see "Campaigns module" below) are fully migrated.
 
+## Google Sheets leads sync (Integrations → 📊 Google Sheets Sync)
+
+Runs entirely in the Worker — no n8n workflow needed (the old `leadvyne-gsheet-sync` webhook is
+no longer called). Save Config (`POST /gsheet/config`) creates the `gsheet_*` CLIENTS columns if
+missing, saves, and runs a first sync; Sync Now is `POST /gsheet/sync`; the `*/15 * * * *` cron
+re-syncs every client with a sheet configured (skipped when leads haven't changed).
+
+One-time setup:
+1. Google Cloud Console → enable the **Google Sheets API** → create a **service account** →
+   Keys → Add key → JSON.
+2. `wrangler secret put GOOGLE_SHEETS_SA_JSON` and paste the whole key JSON.
+3. Each client shares their sheet with the service account's `client_email` as **Editor** (the
+   dashboard shows that email under the Sync buttons).
+
+The sync writes a header row plus one row per lead (oldest first) into columns A..N of the tab
+the link points at (`#gid=…`, else the first tab), clearing only those columns first — columns to
+the right are left alone, so they can hold the client's own notes.
+
 ## Admin panel (admin.html)
 `admin.html` used to hold **three** master credentials in plaintext, extractable via view-source
 regardless of its passcode login screen: the master NocoDB token, a full n8n API key, and the
@@ -1095,6 +1139,9 @@ plainly rather than showing a WhatsApp button that would just fail against a non
    API's one-time login link (`/platform/api/v1/users/{chatwoot_user_id}/login`) so the client
    lands in Chatwoot already signed in (they were never shown the random password step 1
    generated), then they click Settings → Integrations → Shopify → Connect themselves.
+   **Not needed for Shopify clients any more** — the Worker's own Shopify app connection
+   ("Shopify module" below, Ecommerce → 🛍️ Shopify) is the one way to connect a store; this
+   Chatwoot-side integration only adds order context inside a Chatwoot conversation.
 
 **Status view**: `GET /channels/status` reads the client's real inbox list straight from
 Chatwoot (`GET /api/v1/accounts/{id}/inboxes`), not just the local CLIENTS columns — the
@@ -1112,9 +1159,52 @@ on it for production onboarding.
 A separate connection from item 4 above — Chatwoot's Shopify integration only shows order
 context inside a conversation. This one lets the Worker itself read a client's Shopify store
 (order/fulfillment/checkout webhooks → WhatsApp templates straight through Meta's Graph API).
-Connect, notification-template setup and the send log all live on one page now —
-**Settings → Integrations** (`dashboard.html`) — instead of the connect step being there and the
-notification setup living in a separate Ecommerce-module tab.
+**Everything Shopify lives on one page: Ecommerce → 🛍️ Shopify** (`ecom.html`) — connect (the
+Shopify app's OAuth only; nothing is pasted by hand), the switches below, notification templates
+and the send log. Settings → Integrations in `dashboard.html` only shows the status and a "Manage
+in Ecommerce → Shopify" button.
+
+**Settings** (stored in `shopify_notify_config.settings`, read server-side by `shopifySettings()`
+in `shopify-sync.js`; a missing key keeps the default):
+- `notify` (default on) — WhatsApp order updates (`sendShopifyNotification` returns early when off).
+- `low_stock` (default 5) — the Shopify Stock low-stock threshold, shared by the whole team.
+
+**Shopify products and orders are ordinary Ecom Products and Orders** — always, for every
+connected client, so the Products/Orders pages, Reports, the storefront and the WhatsApp bot treat
+them exactly like ones added by hand. `shopify-sync.js` hands every product/order payload
+(webhooks and Sync now) to `worker.js` (`shopifySyncEcomProducts` / `shopifySyncEcomStock` /
+`shopifySyncEcomOrders`); the field mapping is pure and tested in `shopify-sync.js`.
+- **Products** — one Ecom product per Shopify product (`shopifyEcomProductFields`), keyed by a
+  self-provisioned `shopify_product_id` column. Shopify owns name, SKU (first variant's), price
+  (lowest variant), stock (tracked variants summed; any untracked variant → 999, "always
+  available"), status (only `active` **and** published to the Online Store → `active`; draft, unlisted,
+  archived, or `published_at: null` → `inactive`, so the bot never offers or links them; an
+  inactive product's semantic-memory chunks are dropped too, `engineMemoryForgetProduct`) and
+  `shopify_product_url` (the bot's order link). Existing rows are corrected on the product's next
+  `products/update` webhook or a Resync.
+  **Photos:** Shopify CDN image URLs are shared by the bot like any product photo — every send path
+  (`engineResolveDirectImageUrl`, and `sendDriveMediaToChatwoot` for extra angles) asks Shopify's
+  CDN for a 1200px JPEG (`shopifyCdnImageUrl`: `width=1200&format=jpg`), since originals can be over
+  WhatsApp's 5 MB cap or WebP, which WhatsApp won't take as a photo.
+  Description (HTML → text), category (product type), brand (vendor), colours/sizes (from the
+  Color/Size options), variant names and up to 5 photos are written only when Shopify has them, so
+  anything added in Ecom on top (extra photos, audio, style fields) is kept. First sync adopts a
+  hand-made product with a matching SKU instead of duplicating it; new drafts aren't imported;
+  products deleted in Shopify (or gone at a resync) become `inactive`, never deleted. Unchanged
+  products aren't rewritten. Every write is mirrored to D1, drops the KV product cache and
+  re-indexes the bot's product memory (a resync indexes up to 60; the nightly backfill does the
+  rest). `inventory_levels/update` updates the product's stock. In ecom.html these rows carry a
+  "🛍️ Shopify" badge, stock is read-only, and Edit Product says which fields come from Shopify.
+- **Orders** — `orders/*` webhooks, fulfillment webhooks and Sync now (last 90 days, so history
+  shows too) upsert into the Ecom Orders table, matched on `shopify_order_id`. Status comes from
+  the order (`shopifyEcomOrderStatus`: cancelled/refunded → `cancelled`, all fulfillments delivered
+  → `delivered`, any fulfillment → `shipped`, paid → `processing`, else `received`) and never moves
+  backwards (`shopifyEcomNextStatus`), so a manual "delivered" in Ecom sticks. Only new or changed
+  orders are written (`shopifyEcomOrderPlan`). `shopify_order_id` and `line_items_json` columns
+  are created on the orders table automatically.
+
+**Store link:** on connect, Settings → Order Link (`external_store_link`) is filled from the
+store's primary domain (`/shop.json`) when it's still blank.
 
 **One-time Shopify Partners setup:**
 1. Create an app in [partners.shopify.com](https://partners.shopify.com) (Custom or Public
@@ -1130,7 +1220,8 @@ notification setup living in a separate Ecommerce-module tab.
 **New CLIENTS columns** (add alongside the Channels-module ones): `shopify_shop_domain`,
 `shopify_access_token`, `shopify_connected_at`, `shopify_notify_config` (Long text, JSON — same
 shape as `ecom_wa_templates`: `{config:{received,paid,shipped,delivered,abandoned}, templates:[...]}`),
-`shopify_notify_log` (Long text, JSON array, capped at the last 30 entries).
+`shopify_notify_log` (Long text, JSON array, capped at the last 30 entries). `shopify_notify_config`
+also carries `settings` (the Shopify page's switches, above).
 
 **NocoDB table** `shopify_checkouts` (abandoned-cart tracking) — fields: `client_id`,
 `checkout_token`, `phone`, `customer_name`, `cart_summary`, `total`, `currency`, `recovery_url`,
@@ -1141,12 +1232,12 @@ resolved id for the life of the Worker isolate. Nothing to create by hand or pas
 constant — this used to require creating the table manually in NocoDB and pasting its id into a
 `SHOPIFY_CHECKOUTS_TABLE` constant (same pattern as `EMAIL_CAMPAIGNS_TABLE`); that step is gone.
 
-**New Ecommerce Orders column** `shopify_order_id` (Single line text) — add this to whatever
-table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
+**Ecommerce Orders column** `shopify_order_id` (Single line text) — now created automatically
+(`ensureEcomShopifyOrderFields`) on whatever table `ecom_table_ids.orders` resolves to (the shared default `mjqaeatoe88gay6`, or a client's own
 override), alongside the existing `ORDER_FIELDS` columns (`order_id`, `customer_name`,
 `customer_phone`, `order_date`, `items`, `total`, `currency`, `status`, `delivery_address`,
 `notes` — see `ecom.html`). Every Shopify order webhook now also upserts a row into this same
-table via `syncShopifyOrderToEcom()`, matched on `shopify_order_id` (Shopify's own numeric order
+table via `shopifySyncEcomOrders()`, matched on `shopify_order_id` (Shopify's own numeric order
 id, stable even if the merchant edits the order name) — so a Shopify order shows up in the
 Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp notification.
 `status` tracks the lifecycle: `received` (order created) → `processing` (paid) → `shipped`
@@ -1158,18 +1249,19 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
    carrying the client id) and the browser navigates there directly (full-page redirect, not a
    popup — Shopify's authorize screen refuses to render in an iframe/popup on some plans).
 2. **Callback** — `GET /shopify/oauth/callback` verifies Shopify's query-param HMAC, verifies
-   `state`, exchanges `code` for a permanent access token, registers the eight webhooks this
+   `state`, exchanges `code` for a permanent access token, registers the webhooks this
    module needs (`orders/create`, `orders/paid`, `orders/cancelled`, `fulfillments/create`,
-   `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`) pointing at `/shopify/webhook`,
+   `fulfillments/update`, `checkouts/create`, `checkouts/update`, `app/uninstalled`, plus the
+   Shopify Orders/Stock topics listed under "Shopify Orders + Shopify Stock" below) pointing at `/shopify/webhook`,
    writes `shopify_shop_domain`/`shopify_access_token`/`shopify_connected_at`, then redirects back
-   into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`). This is the "automatic
-   webhook" — Settings → Integrations → Shopify shows the endpoint URL for reference/debugging
-   once connected, but there's nothing to paste into Shopify by hand; the OAuth callback registers
-   it directly via Shopify's Admin API. **Stores connected before `orders/paid` was added** won't
-   have that webhook registered — disconnect and reconnect (Settings → Integrations → Shopify) to
-   pick it up; reconnecting re-runs the full webhook registration step.
-3. **Notifications** — set up per-event WhatsApp templates right below the connect card on the
-   same **Settings → Integrations** page (`GET /ecom/wa-templates` pulls approved templates
+   into `dashboard.html?shopify=connected` (or `?shopify=error&msg=...`), which forwards straight
+   into Ecommerce → 🛍️ Shopify; that page runs the first Sync now. Nothing to paste into Shopify
+   by hand — the callback registers the webhooks via the Admin API, and Sync now registers any a
+   store is missing. **Reconnecting the same store is allowed without disconnecting** (`oauth/start`
+   only refuses a *different* store) — that's the "Grant access" / "Reconnect" button on the
+   Shopify page for stores missing a newer scope or whose token was revoked.
+3. **Notifications** — set up per-event WhatsApp templates on the same **Ecommerce → 🛍️ Shopify**
+   page (`GET /ecom/wa-templates` pulls approved templates
    straight from Meta's Graph API — no n8n
    hop, unlike the existing Order Delivery Notifications section which still uses the
    `leadvyne-ecom-wa-templates` n8n webhook). `POST /shopify/webhook` verifies each webhook's
@@ -1206,9 +1298,117 @@ Ecommerce module's own Orders page (`ecom.html`) too, not just as a WhatsApp not
 **Known limitation**: Shopify only reports a fulfillment as `delivered` for carriers it tracks
 natively — the "Order Delivered" notification is best-effort and won't fire for every order.
 
-**Disconnect**: `POST /shopify/disconnect` (Settings → Integrations) clears the stored
+**Disconnect**: `POST /shopify/disconnect` (Ecommerce → 🛍️ Shopify) clears the stored
 domain/token on this side. It does not revoke the app from the Shopify Admin — for a full
 uninstall the merchant should also remove the app from their store's Apps page.
+
+### 📲 WhatsApp Shop (`cloudflare-worker/wa-commerce.js`, Ecom → WhatsApp Shop)
+Customers browse the catalog, add to cart and order inside WhatsApp, on top of the client's own Ecom
+Products/Orders (= the Shopify catalog and orders for a Shopify-connected store). Five steps on the page:
+1. **Catalog** — paste the Meta catalog ID (Commerce Manager → Add catalog → Ecommerce). "Link to my
+   WhatsApp" calls `POST /{waba}/product_catalogs` and `POST /{phone_id}/whatsapp_commerce_settings`
+   (catalog visible, cart on).
+2. **Sync** — every active product goes to the catalog via the Catalog Batch API (`items_batch`,
+   retailer_id `lv_<Ecom product Id>`); inactive ones are removed; products missing a price, photo or
+   name are listed back to the merchant. Re-synced daily by the 02:00 cron. If the WhatsApp token lacks
+   `catalog_management`, paste a System User token under Advanced (`wa_shop_catalog_token`, never returned).
+3. **Cart orders** — needs the **relay**: Chatwoot drops WhatsApp `order` payloads (same gap as Native
+   Forms, chatwoot/chatwoot#13970). Turning it on sets a per-WABA `override_callback_uri` to
+   `/wa/shop/webhook/<client>`; every request is forwarded byte-for-byte to the Chatwoot WhatsApp
+   webhook first (default `{chatwoot_base}/webhooks/whatsapp/+<number>`, overridable under Advanced),
+   502 on a failed forward so Meta retries, then carts become Ecom orders (`taken_by=whatsapp_cart`,
+   status pending, idempotent on the message id via D1 `wa_shop_events`). Turning it off removes the
+   override. Cart processing needs `META_APP_SECRET` to verify signatures (embedded-signup numbers).
+4. **Payment** — Cash on delivery; WhatsApp Pay (India, `order_details` "Review and pay" through the
+   Razorpay/PayU/… configuration named in WhatsApp Manager → Payments — the payment status webhook
+   marks the order processing); or Shopify checkout (a `/cart/<variant>:<qty>` link; Shopify's order
+   syncs back by webhook, so no Ecom order is created for the cart).
+5. **Share** — the AI assistant answers "show me your collection / what do you sell" with a WhatsApp
+   product list (≤30 products, ≤10 category sections; a named category narrows it) instead of photos,
+   and leaves a private note in Chatwoot; staff can send it from the page.
+Routes: session-authed `GET /ecom/wa-shop/status`, `POST /ecom/wa-shop/{config,connect,sync,carts,send}`.
+Built from Meta's published docs, not yet verified against a live Meta account — test one real cart and
+one WhatsApp Pay payment end to end before relying on it.
+
+### Store workspace for ecommerce clients (`frontend/commerce-view.js`, desktop only)
+Ecommerce-industry clients get a store-admin shell on desktop (≥768px), same layering as the travel
+workspace (`travel-view.js`): a left sidebar — Home · Orders · Products (Categories) · Customers ·
+Inbox · Handovers · Shopify (when connected) · Marketing · Analytics · Finance · Store settings ·
+Settings — and a commerce Home (`#pageStorehome`: sales, orders, AOV, chat→order conversion,
+returning customers, daily sales chart, to-do queue, recent orders, top products, sales by
+channel, chat-to-delivery funnel, newest customers, inventory). Nothing is rebuilt: Customers is
+the Leads page, Inbox is Chats, and every store screen is an `ecom.html` sub-page in
+`#ecommerceFrame`, opened with `&shell=commerce&tab=<screen>` (hides ecom.html's own sidebar and
+uses the dashboard palette) and switched afterwards without a reload. Sidebar items follow the same
+module permissions and module toggles as the classic nav. Phones are unchanged (no `cv-mode`
+below 768px). Users can switch to the classic CRM nav from the sidebar (per browser,
+`localStorage lv_commerce_view_<client>`) and back via "🛒 Store workspace". Bump `?v=` on the
+`commerce-view.js` script tag when changing it (sw.js serves scripts cache-first).
+
+### Shopify Orders + Shopify Stock (`cloudflare-worker/shopify-sync.js`, `ecom.html` desktop)
+Two desktop-only pages in the Ecommerce module's sidebar (under **Shopify**), shown only when the
+client has Shopify connected (Ecommerce → 🛍️ Shopify). The phone layout is unchanged — these nav
+entries (and the desktop **Home** overview) are hidden below 768px and nothing is fetched there.
+
+- **Shopify Orders** — every Shopify order with payment status (paid / pending / refunded…) and
+  fulfillment status (unfulfilled / partial / fulfilled / delivered / cancelled), saved views,
+  search, 7/30/90-day KPIs, CSV export and an order drawer (items, totals, tracking, customer,
+  WhatsApp link, "Open in Shopify").
+- **Shopify Stock** — one row per variant: price, SKU, type/vendor/status, `available` summed over
+  every location, stock value, low/out-of-stock views (threshold shared via the Shopify page's
+  `low_stock` setting, default 5).
+
+**Tables (auto-provisioned, nothing to create):** `shopify_orders` and `shopify_inventory`, created
+in the clients table's base on first use, like `shopify_checkouts`. Rows carry `client_id` + `shop`,
+so switching stores never shows the old store's data. These are separate from the shared Ecom
+orders table — `shopifySyncEcomOrders` keeps feeding the regular Orders page too.
+
+**Sync:** webhooks keep both tables live — `orders/create|updated|paid|cancelled|fulfilled`,
+`fulfillments/create|update` (tracking), `products/create|update|delete`, and
+`inventory_levels/update` (re-reads every location for that item so the total is exact). Older
+payloads never overwrite newer rows (`updated_at` guard). The pages refresh once a minute while open.
+
+**Scopes:** `SHOPIFY_SCOPES` now also asks for `read_products,read_inventory`. Stores connected
+before this keep syncing orders; the Stock and Shopify pages show a **Grant access** button that
+re-runs OAuth for the same store (no disconnect). **Sync now** (`POST
+/ecom/shopify/resync`, rate-limited to 6/hour) backfills the last 90 days of orders and the whole
+catalog, and registers any of the webhooks above the store is missing.
+
+**Routes** (client_id-keyed like the rest of `/ecom/*`): `GET /ecom/shopify/status`,
+`GET /ecom/shopify/orders`, `GET /ecom/shopify/stock`, `POST /ecom/shopify/resync`.
+
+### Shopify-style guided shopping chat (`cloudflare-worker/shopify-flow.js`)
+For Ecom clients on **Settings → Bot Behavior → Ecom Communication Style → Shopify / general
+store**, the WhatsApp bot runs a button-led shopping flow. It's on by default for that style;
+**Guided shopping chat** on the same card switches it off (`bot_config.shopify_flow_enabled=false`).
+Works with or without a connected Shopify store: with one, sizes carry per-size stock and the
+checkout link opens the exact variant.
+
+1. **Menu** — "hi"/"menu"/a first message that's just a greeting → "👋 Welcome to *Store*!" with the
+   in-stock categories (most products first, up to 9) + **📦 Track my order**.
+2. **Category** → up to 6 product photos (name · price) + a product picker (in-stock only).
+3. **Product** → photo with name, price, short description and "Sizes in stock", then a size
+   picker. Sizes come from the synced Shopify variants (`shopify_inventory`, matched by handle;
+   sold-out sizes left out), else the product's Size field. One size (or none) → straight to step 4.
+4. **Size** (tapped or typed) → "Great choice 👌" + **Buy now** link — a Shopify cart permalink
+   (`https://{shop}/cart/{variant}:1`) that opens checkout with that size, else the product's own
+   link — then [More from category] [Track my order] [Main menu]. A sold-out size says so and
+   re-offers the ones left.
+5. **Track my order** (button or "where is my order") → the latest orders for this WhatsApp
+   number (last 10 digits) with status and tracking (`shopify_orders`, or Ecom Orders without
+   Shopify); none found → asks for the order number. An order number only ever shows an order
+   whose phone matches the customer's — never someone else's.
+
+**Questions in between:** anything that isn't a flow step (e.g. "is it cotton?", "COD
+available?") goes to the normal AI answer — told to stay short and leave navigation to the
+buttons — and then `engineShopifyFlowResume` sends the prompt for where the customer was as a
+**second message**: the size picker for the product in view (or the one the AI path just matched
+by name), the category's product picker, the order-number ask, or the main menu.
+
+Mechanics: button values are `SHOP_MENU|TRACK|CAT:<name>|PROD:<id>|SIZE:<variant>`; position is
+kept in `Stage` (`shop_menu`/`shop_category`/`shop_product`/`shop_track`) + the `OrderCollect`
+seed (`{category, productId}`). Only `SHOP_*` taps skip intent classification. Flow turns skip the
+keyword-triggered extras (category media, promo, photoshoot) since the step already sent its own.
 
 ## Hospitality module (`frontend/dashboard.html` — 🏨 Hospitality tab; houseboats/hotels/tourism stays)
 A new industry (`hospitality`) plus an independently-toggleable module (`hospitality_enabled`,
@@ -1334,6 +1534,209 @@ through UTC, which silently shifts the date by a day for any positive-UTC-offset
 etc. — this app's actual client base), truncating the calendar's last day. Worth remembering if
 this module grows more date logic — Cloudflare Workers themselves have no such trap (there's no
 "local timezone" server-side, `Date` is always UTC there), but browser-side JS very much does.
+
+## Hospitality API Import (`cloudflare-worker/hospitality-import.js` — 🏨 Hospitality → 🔗 API Import)
+
+Imports properties and their units/rooms from another system's REST API — e.g. a property site that
+offers `GET https://example.com/api/v1/properties` with `Authorization: Bearer <key>` (or `X-API-Key`)
+— and keeps them in live sync.
+
+- **Setup:** none. API keys are stored encrypted with `AI_KEY_ENC_SECRET` when it's set (as for AI
+  provider keys), otherwise with a key derived from `SESSION_SIGNING_KEY`; each stored key records which. The tables (`migrations/0125_hospitality_api_import.sql`) are also created on first
+  use, so applying the migration is optional.
+- **Using it:** paste the link and key, **🔍 Test link** to preview what will be imported, then
+  **Import & keep in sync**. Each link has its own live-sync interval (15 min – daily) and a
+  **⟳ Sync now** button. Add filters to the link itself (e.g. `?destination=Munnar`) to import part of a
+  catalogue.
+- **Sync rules:** the feed is the source of truth for the fields it fills (name, location, description,
+  amenities, photos/videos, unit prices/capacity), so edit those at the source. Records that leave the
+  feed are switched off, never deleted (bookings keep their unit), and switched back on if they return.
+  A record deleted here stays deleted. An empty response switches nothing off.
+- **Feed shapes:** a bare array or `{data|properties|items|results: […]}`; paging via `?page=&limit=`,
+  `meta.total_pages`, `has_more` or a same-origin `next` link (max 20 pages per sync). Rooms are read from
+  `units` / `rooms` / `room_types` / …; a property with no rooms list is imported as a single unit.
+- **Cron:** the `*/15` tick syncs up to 5 due links (`hiRunDue`), only for clients with Hospitality on.
+- **Safety:** https only, no private/internal hosts, the key is only ever sent to the link's own origin
+  (redirects and `next` links included), 20 s timeout, 5 MB response cap.
+
+## Hospitality Pro (`cloudflare-worker/hospitality-pro.js` — 🏨 Hospitality → ⭐ Pro)
+An add-on on top of the Hospitality module that makes the WhatsApp bot *sell* stays, not just
+answer questions. **Off by default and invisible to every existing client**: it only does
+anything when a client has both `hospitality_enabled='Yes'` **and** `hospitality_pro_enabled='Yes'`
+(`hpEnabled(c)`). A blank or missing `hospitality_pro_enabled` column means off. It's plan-gated
+like the other modules (`PLAN_TIERS` Business Intelligence / Enterprise). Legacy clients with no
+`plan_tier` can turn it on themselves.
+
+**Enable:** apply the migration once (`wrangler d1 migrations apply leadvyne-d1 --remote`, which
+creates `migrations/0109_hospitality_pro.sql`'s `hosp_pro_*` tables). Then, per client, go to
+Settings → 🧩 Modules → 🏨 Hospitality → ↳ ⭐ Hospitality Pro → Enabled. The `hospitality_pro_enabled`
+CLIENTS column is created on first save, the same way as `hospitality_enabled`. Then configure it
+under 🏨 Hospitality → ⭐ Pro → ⚙️ Settings.
+
+**What it does on WhatsApp** (each feature can be toggled in Pro → Settings):
+1. **Instant quote + "🔒 Hold this room"**. A booking intent ("book", "availability", "quote", or a
+   price question that includes dates or a unit name) starts a short flow: dates → guests → room →
+   quote. It understands free text such as "12-14 Dec", "Dec 12 to 14", "12/12 - 14/12",
+   "tomorrow for 2 nights", "this weekend", "2 adults 1 kid" and "family of 5". Prices use the same
+   rule as the availability calendar: a per-date override, else the weekend rate on Sat/Sun nights,
+   else the base rate. "Hold" reserves the room for `hold_minutes` and sends the deposit link.
+   - With **Razorpay**, an automatic Payment Link is created. When paid,
+     `POST /hospitality/pro/razorpay/webhook` (HMAC-verified, event `payment_link.paid`) confirms it.
+   - With **Manual**, the client's UPI/bank text is shown. When the guest replies "PAID" or sends a
+     screenshot, the hold is marked *Says paid* and the team confirms it in Pro → Holds.
+2. **Virtual tour first, then price**. The room's photos (from 🏠 Units) and any tour links (Pro →
+   🎥 Tours: 360°, YouTube, reels) go out before the quote. With this on, the room picker shows no
+   prices.
+3. **Add-ons**. Pro → ✨ Add-ons are offered as tap-to-add extras, priced per booking, per night,
+   per guest or per guest per night.
+4. **Loyalty**. Returning guests are matched by phone (last 10 digits) against past stays in
+   `hospitality_bookings`. Silver (1+ stays), Gold (3+) and Platinum (5+) get their tier's discount
+   on the room rate, and the quote opens with "Welcome back".
+5. **Abandoned-inquiry recovery**. A guest who saw a quote but didn't hold gets up to N nudges after
+   `recovery_hours` idle hours, from the `*/15` cron (`hpRunForAllClients`). Every nudge re-checks
+   real availability first, and the only scarcity line it uses ("Only 2 stays are left") is a true
+   count. Nudges are never sent after 23h idle (WhatsApp's 24h window), in quiet hours, to OptOut
+   leads, to manually taken-over or `human_handover` leads, or once Pro is turned off. An expired
+   unpaid hold gets one "hold it again?" message.
+6. **Group & event enquiries**. Weddings, corporate offsites, college tours, any party of at least
+   `group_min_guests`, and any party too big for a single room go through a 4-question brief
+   (occasion, size, dates, needs). That brief is saved to Pro → 🎉 Groups and posted as a private
+   note in the chat.
+7. **Digital guest registration**. When a hold is confirmed (by staff or Razorpay), the guest gets
+   the confirmation and is asked for ID photos. Each photo's Chatwoot attachment URL is stored in
+   Pro → 📋 Check-in, where staff mark it Verified.
+
+**Isolation (why existing clients see no change):**
+- **Bot hook.** `handleEngineWebhook` makes one guarded call, `hpHandleTurn`, placed just before the
+  resort first-inquiry gate. It is skipped entirely unless `hpEnabled(c)` is true. When Pro doesn't
+  recognise the message, it returns `handled:false` and the turn continues down the existing
+  resort/hotel/houseboat path unchanged. If Pro throws, the error goes to `reportOpsError` and the
+  turn continues the same way. Only on a turn Pro actually answered (`hpTurnHandled`) are the
+  greeting showcase and `engineMaybeSendHospitalityMedia` skipped, so photos aren't sent twice.
+- **Never trapping a guest.** A side question in the middle of a flow ("is there a pool?") falls
+  through to the normal bot. Two misses in a row abandon the flow. "cancel" or "stop", asking for a
+  human, and opting out all release the lead immediately.
+- **Data.** Everything lives in new `hosp_pro_*` tables, including per-lead flow state in
+  `hosp_pro_state` rather than new NocoDB lead columns. Holds are their own table, not a new
+  `hospitality_bookings.status`, so the existing overlap check, calendar and stats are untouched. A
+  hold only becomes a normal `confirmed` booking when it's confirmed, and that step re-runs the
+  overlap check: a clash marks the hold `conflict` rather than creating a double booking. Holds by
+  other guests block a room for Pro quotes only, not for staff adding bookings by hand.
+- **Code.** `hospitality-pro.js` imports nothing from `worker.js`. Helpers are passed in as
+  `HP_DEPS`, so `hospitality-pro.test.js` exercises the whole flow against the real migrations on
+  node:sqlite. The dashboard side is `frontend/hospitality-pro.js`. Bump its `?v=` in
+  `dashboard.html` on changes, because `sw.js` serves scripts cache-first.
+
+**Routes** (session-gated, and 403 unless Pro is enabled): `GET /hospitality/pro/overview`,
+`GET/PATCH /hospitality/pro/settings` (the Razorpay secrets are write-only),
+`GET/POST/PATCH/DELETE /hospitality/pro/addons`, `GET/POST/DELETE /hospitality/pro/tours`,
+`GET /hospitality/pro/holds`, `POST /hospitality/pro/holds/confirm` (`{id, payment_ref}`),
+`POST /hospitality/pro/holds/release`, `GET /hospitality/pro/guests`,
+`GET/PATCH /hospitality/pro/registrations`, `GET/PATCH /hospitality/pro/groups`,
+`GET /hospitality/pro/recovery`. The one public route is the Razorpay webhook.
+
+## Hospitality Front Desk in the CRM (`frontend/hospitality-view.js` + `frontend/hospitality.html`)
+The CRM (`dashboard.html`) is always the first view. For clients with `hospitality_enabled='Yes'` on a
+PC, `hospitality-view.js` (called from `applyTheme` / `navigate`, like `travel-view.js`) adds:
+- **🛎️ Front Desk ▾ menu** in the desktop nav: Today, Bookings, Calendar, Rooms/Boats, Guests,
+  ⭐ Direct Sales (Pro) and every Pro Suite screen whose switch is on, plus Front Desk Settings.
+  Each opens **inside the CRM**: `#pageHospdesk` embeds `hospitality.html?embed=1#<screen>`.
+- **New Home layout.** A hospitality block sits on top: greeting, today's arrivals / departures /
+  in-house with Check in / Check out, occupancy, revenue, Pro to-dos and the daily insight. The
+  CRM's own 🏆 Weekly Arena, Staff Performance and lead cards follow. The classic hero, AI row,
+  briefing strip and NBA strip are hidden while `html.hv-mode` is on.
+- **No new tabs.** Embedded screens hand Chats, lead details and other CRM pages to the CRM by
+  `postMessage({source:'lv-hospdesk', type:'chat'|'lead'|'crm'})`. A guest chat opens in the CRM's
+  Chats, matched by lead id or phone; a prepared message is copied for pasting.
+
+**Unchanged:**
+- Phones (`LV_LITE` → `m.html`).
+- Non-hospitality clients.
+- Teammates whose module permissions leave out 🏨 Hospitality.
+
+`hospitality.html` opened on its own (without `?embed=1`) hands over to the CRM. Data for the
+menu and Home is one `GET /hospitality/desk/bootstrap`. The calendar is one
+`GET /hospitality/desk/calendar?start&end`. Pro Suite screens (`hospitality-desk-suite.js`)
+and Direct Sales (`hospitality-pro.js`, unchanged) load only when opened.
+
+Bump the `?v=` on `hospitality-view.js` (in `dashboard.html`) and on `hospitality-desk.js` /
+`hospitality-desk-suite.js` (in `hospitality.html`) when changing them, because `sw.js` serves
+scripts cache-first.
+
+## Hospitality Pro Suite (`cloudflare-worker/hospitality-suite.js`)
+Six modules on top of Hospitality Pro with **30 features, each its own switch** in
+🛎️ Front Desk → ⚙️ Front Desk Settings. **Every switch starts off**, so nothing changes for an existing client until they turn
+one on. A screen appears in the 🛎️ Front Desk menu only once its feature is on. Everything also
+requires `hpEnabled(c)`.
+
+**Enable:** apply `migrations/0123_hospitality_suite.sql` once
+(`wrangler d1 migrations apply leadvyne-d1 --remote`). It only creates new `hosp_suite_*` tables.
+
+**The six modules:**
+1. **Guest Journey.**
+   - Balance reminders N days before arrival, with a Razorpay link when Direct Sales uses Razorpay.
+     Payment is confirmed through the existing Pro webhook (notes `kind:'hosp_suite_balance'`).
+   - A payments / refunds ledger per booking.
+   - Web check-in on WhatsApp: ETA → preferences → ID photos.
+   - AI ID scan: Gemini reads the fields from the ID photo, and Aadhaar is stored masked.
+   - Pre-arrival upsell of add-ons, plus an upgrade to a pricier unit that is free on those dates.
+   - Welcome and checkout messages.
+   - In-stay requests become tasks ("AC not working" → a high-priority maintenance task).
+2. **Houseboat Operations.**
+   - Fleet details: bedrooms, deck, AC, and day-cruise / overnight / night-stay rates.
+   - Jetties with boarding and cruising hours, plus a Cruise Day sheet.
+   - Weather alerts from Open-Meteo for each departure, offering "Keep my plan / Reschedule".
+   - Crew assignment, with a double-booking warning.
+   - Meal pre-order on WhatsApp, plus a kitchen sheet.
+   - Pickup details the evening before, and "boat ready / driver on the way" buttons.
+   - Fuel / service log with a service-due alert.
+3. **Revenue & Channels.**
+   - iCal import and export with OTAs. Imported nights become `hospitality_blocked_dates` rows that
+     are tracked in `hosp_suite_blocks`, so a sync only ever removes its own blocks, never a manual
+     one. Export: `GET /hospitality/ical/<token>/<unit>.ics`.
+   - Pricing rules (weekend / season / event / high demand / last minute) produce suggestions. The
+     owner applies them, which writes `hospitality_rate_overrides`.
+   - Competitor rates with drop alerts.
+   - A daily plain-language summary, also sent to the owner by template.
+4. **Housekeeping & Staff.**
+   - Room status board.
+   - Automatic clean tasks (urgent on a same-day turnover) and prepare tasks.
+   - Tasks with a WhatsApp send to the assignee.
+   - Staff WhatsApp bot: `tasks`, `start 12`, `done 12`, `issue: …`.
+5. **Reviews & Guest Memory.**
+   - Guest profiles: birthday, anniversary, preferences.
+   - Post-stay rating: 4–5★ get the Google review link; 1–3★ alert the manager and ask what went
+     wrong.
+   - AI-drafted replies to pasted reviews.
+   - Rebooking offers, and birthday / anniversary offers.
+6. **Agent Desk.**
+   - Agents with commission % and credit limit.
+   - Agents get net rates on WhatsApp and request a booking, which becomes an `inquiry` booking.
+   - Allotments: blocked for everyone except that agent, and released automatically N days
+     before.
+   - Commission ledger.
+
+**Messages outside WhatsApp's 24-hour window.**
+- **Inside the window:** if the guest wrote in the last 23h (`hosp_suite_contacts`), the message
+  goes as free text in their chat.
+- **Template set:** otherwise, the client's approved template from Settings is used. Its body is
+  `Hi {{1}}, {{2}}`, sent through the Graph API with `wa_phone_id` / `wa_token`.
+- **No template:** otherwise, it becomes a 🔔 Alert with a one-click WhatsApp link for staff.
+
+Guest messages respect Direct Sales' quiet hours.
+
+**Isolation:**
+- **Bot hook.** `hsHandleTurn` runs just before Hospitality Pro's turn, only for Pro clients. It
+  returns `handled:false` straight away when no suite feature is on, and for anything it doesn't
+  own, so the turn carries on to Pro and the normal bot unchanged.
+- **Cron.** `hsRunForAllClients` runs on the `*/15` tick and skips clients with no feature on.
+- **Missing migration.** If the migration hasn't been applied, the code treats every feature as
+  off.
+
+**Code.** `hospitality-suite.js` imports only `hospitality-pro.js` helpers; `worker.js` passes
+`HS_DEPS`. `hospitality-suite.test.js` runs the flows, cron jobs and routes against the real
+migrations on node:sqlite. Routes: `/hospitality/desk/*` needs Hospitality on;
+`/hospitality/suite/*` needs Pro and 403s per feature switch.
 
 ## B2B module (Smart Lists, trackable Documents/CPQ, brand classification, B2B analytics)
 A new industry (`b2b`) plus an independently-toggleable module, following the same pattern as
@@ -2038,7 +2441,20 @@ we already know which CLIENTS row this is):
    can't be bypassed by calling the API directly.
 8. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
    (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
-   this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.
+   this month = leads captured, terminal-stage ratio = conversion rate). **Templates Sent** comes
+   from the Worker: every WhatsApp template send path (Chats, Broadcast, Follow-ups, Automations,
+   Calendar events, Monthly marketing, Shopify, Meetings, Hot-lead alerts, Lead-ad welcomes, Support,
+   Payment reminders, Appointments, CEO Bot) logs a row to D1 `wa_template_sends`
+   (`logWaTemplateSend`, `migrations/0113_wa_template_sends.sql`) after a successful send, and
+   `GET /billing/usage?month=YYYY-MM` returns the month's total plus a per-source breakdown (shown as
+   the card's hover tooltip). Messages Sent = non-template bot/agent replies + templates sent.
+   Templates staff send by hand from inside Chatwoot itself aren't counted (they never pass through
+   the Worker's send code).
+   **Ecommerce conversions**: for ecommerce clients (`industry==='ecommerce'` or `ecom_enabled`),
+   a lead also counts as converted once its phone (last 10 digits) has an order in the Orders table
+   that isn't draft/collecting/cancelled/refunded/failed — `GET /ecom/order-phones`, read by the
+   dashboard into `leadHasEcomOrder`, which `isWonLead` checks. Every conversion number (Home,
+   Agent Performance, the PDF report, this card) goes through `isWonLead`.
 
 **Not yet verified against a live Stripe account**: the Checkout/Portal/webhook request shapes
 follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
@@ -2082,6 +2498,175 @@ NocoDB/Chatwoot), and a different credential (Stripe secret key — a much highe
 than anything else this repo's n8n workflows hold) — keeping it isolated means a bug in one
 workflow's JS can't touch the other, and the credential only needs to be granted to the one
 workflow that actually needs it.
+
+## Razorpay subscriptions (Indian customers) — `razorpay-billing.js`
+Stripe stays the gateway for everyone else. Razorpay is the INR gateway, so Indian customers can
+pay with **UPI AutoPay, RuPay / Indian cards and net-banking e-mandates**. Razorpay sends the RBI
+pre-debit notification before every recurring charge itself, so nothing extra is needed for that.
+
+**Same plans.** Each Razorpay Plan is stored in D1 (`rzp_plans`, migration `0116_razorpay_billing.sql`)
+and mapped to the same `plan_tier` (Basic / Standard / Business Intelligence / Enterprise) the
+Stripe prices sell. When a Razorpay subscription activates, the client's `plan_tier` is set from
+that mapping, so limits and modules work exactly as they do for a Stripe customer. `plan_tier` is
+never cleared on cancel: an empty tier means "legacy, unlimited", so clearing it would *grant*
+access. Change it from Admin → Billing → Manage instead.
+
+### One-time setup
+1. Razorpay Dashboard → **Subscriptions** must be enabled on your account (KYC-activated;
+   UPI AutoPay / e-mandate may need a separate activation request).
+2. Razorpay Dashboard → Account & Settings → **API Keys** → generate keys (test first, then live).
+3. Worker secrets (`cloudflare-worker/`):
+   ```
+   wrangler secret put RAZORPAY_KEY_ID        # rzp_live_… (or rzp_test_…)
+   wrangler secret put RAZORPAY_KEY_SECRET
+   wrangler secret put RAZORPAY_WEBHOOK_SECRET   # any strong random string, same as step 4
+   ```
+4. Razorpay Dashboard → Account & Settings → **Webhooks** → Add:
+   - URL: `https://leadvyne-api-proxy.leadvyne.workers.dev/billing/razorpay/webhook`
+     (Admin → **API & Webhooks** shows it with a Copy button)
+   - Secret: the same value as `RAZORPAY_WEBHOOK_SECRET`
+   - Events: `subscription.authenticated`, `subscription.activated`, `subscription.charged`,
+     `subscription.pending`, `subscription.halted`, `subscription.paused`, `subscription.resumed`,
+     `subscription.cancelled`, `subscription.completed`, `subscription.updated`
+5. Run the migration: `wrangler d1 migrations apply leadvyne-d1 --remote` (the module also creates
+   its tables lazily, so a deploy without it still works).
+6. Admin → **Plans** → **Import from Stripe (same plans)**. This creates one Razorpay Plan per Stripe
+   **INR** plan price in `STRIPE_PLAN_PRICE_IDS` with the same name, amount and interval, and
+   guesses the tier from `plan_tier` price/product metadata or the plan name. Check the Tier column,
+   then fix any blank tier. You can also link a plan you made in the Razorpay Dashboard
+   (plan id + tier) or create one from the form.
+7. Admin → **API & Webhooks** → every Razorpay secret should show ✓ and "reachable".
+
+Once there is at least one visible Razorpay plan, customers who pick **INR** on the Billing page
+see the Razorpay plans. A "Pay with Stripe" link is still there for international cards.
+
+### Customer flow
+- **Subscribe** → `POST /billing/razorpay/subscribe {plan_id}` creates a Razorpay subscription
+  (notes carry `client_id`) and redirects to Razorpay's hosted AutoPay page (`short_url`).
+  - **Free trial:** a first-time subscriber gets `TRIAL_PERIOD_DAYS` (15), the same as Stripe, via
+    `start_at`. They approve the mandate now and the first charge happens when the trial ends. The
+    trial is given once per account (`razorpay_trial_used`) and never to an account that already
+    had a Stripe subscription.
+  - A link that was never approved is reused for the same plan. A different plan cancels the old
+    link and starts a new one. The Billing page shows a "Finish setup" banner until it's approved.
+  - Razorpay's hosted page doesn't redirect back, so the Billing page pulls
+    `GET /billing/razorpay/status` whenever a subscription is still settling.
+- **Manage:** Invoices (`GET /billing/razorpay/invoices`), Change plan
+  (`POST /billing/razorpay/change-plan {plan_id, when:'now'|'cycle_end'}`), and Cancel
+  (`POST /billing/razorpay/cancel`, which cancels at the end of the cycle and keeps access until
+  then). Razorpay only allows **plan changes on card mandates**. For UPI / bank mandates the API
+  returns an error, and the customer cancels and subscribes to the new plan instead.
+- A client can't have a live Stripe and a live Razorpay subscription at the same time. Each
+  checkout refuses while the other one is active, with one exception:
+- **Switching from a failing Stripe subscription** (`past_due`, `unpaid`, `incomplete`): the
+  Billing page shows a "Switch to UPI AutoPay / Indian cards / net-banking" card with the Razorpay
+  plans (no free trial; the first charge happens when the mandate is approved). Until that
+  mandate is approved, only the `razorpay_*` link fields are saved, so the Stripe subscription
+  and the plan fields stay exactly as they were, and an abandoned switch changes nothing. When the
+  mandate is approved (webhook or the Billing page's status pull, whichever comes first),
+  `rzpSyncSubscription` moves the client to Razorpay and cancels the old Stripe subscription
+  immediately (`DELETE /v1/subscriptions/:id`), so Stripe's retries can't charge twice. After that,
+  Stripe's late `customer.subscription.updated/deleted` events for the old subscription are ignored
+  for that client (`clientMovedToRazorpay`). Both outcomes are logged: `stripe.cancelled_after_switch`,
+  or `stripe.cancel_after_switch_failed`, in which case cancel it by hand in Stripe.
+
+### Status mapping (`rzpPlanStatus`)
+Razorpay statuses are written onto the same `plan_status` field Stripe uses, so every existing
+banner and badge works unchanged. The raw value is kept in `razorpay_status`.
+
+| Razorpay | plan_status |
+|---|---|
+| created (link not approved yet) | incomplete |
+| authenticated, first charge in the future | trialing |
+| active | active |
+| pending (charge failed, retrying) | past_due |
+| halted (retries exhausted) | unpaid |
+| paused | paused |
+| cancelled / completed | canceled |
+| expired | incomplete_expired |
+
+Emails (via `sendBillingEmail`, Resend) go out on trial start, each successful charge (receipt),
+`pending`, `halted` and `cancelled`. Webhooks are de-duplicated on `X-Razorpay-Event-Id`. An event
+for an older subscription can't overwrite a newer one; it's logged with the note
+`stale_subscription`.
+
+### New CLIENTS columns (auto-created on first use)
+`billing_provider` (stripe / razorpay / manual), `razorpay_subscription_id`, `razorpay_customer_id`,
+`razorpay_plan_id`, `razorpay_status`, `razorpay_short_url`, `razorpay_trial_used`,
+`billing_admin_note`. These and the existing subscription fields (`plan_status`, `plan_name`,
+`plan_renews_at`, `plan_cancel_at_period_end`, `plan_message_limit`, `stripe_customer_id`,
+`stripe_subscription_id`) are now in `PLAN_MANAGED_FIELDS`, so a client session can't write them
+through the `/nocodb/` passthrough. Before this, a client could set `stripe_customer_id` and open
+someone else's Stripe Portal.
+
+## Customer Billing page (`dashboard.html` → Billing, `billing-portal.js`)
+The page reads the same way for Stripe, Razorpay and admin-set (manual) plans. Sections, in order:
+1. **Your plan** (`GET /billing/portal/overview`): readable plan name (never a raw `price_…` id),
+   price, a plain-words status badge (Active, Free trial · N days left, Payment retrying, Action
+   needed, Paused, Cancelled), next charge or end date, how it's paid, and who it's billed to. The
+   alerts above it cover a failed payment ("Fix payment" opens the Stripe portal, or for Razorpay
+   refreshes and then points to Help), the switch to Razorpay, cancellation at period end, and a
+   card that expires within 45 days.
+2. **Plan & usage**: user and channel meters that turn amber at 80% and red at the limit, with an
+   upgrade nudge, plus the modules the plan includes.
+3. **Compare plans**: every tier with its users, channels, modules and price in the account's
+   currency. Razorpay plans price INR when Razorpay is set up; otherwise Stripe prices are used.
+   The button on each tier depends on the account:
+   - No plan: **Choose** goes to Razorpay or Stripe checkout.
+   - Razorpay: **Upgrade** applies now; **Downgrade** applies at the next cycle.
+   - Stripe: Stripe Portal's "confirm this plan" screen (`POST /billing/portal/stripe-change`),
+     falling back to the portal home if plan switching isn't enabled in the Stripe portal settings.
+   - Manual plans: "Talk to us".
+4. **Payment method**: card brand, last 4 digits and expiry, or UPI / bank mandate. **Change** opens
+   the Stripe portal; AutoPay mandates can't be edited, so the card explains how to switch.
+5. **Invoices & receipts** (`GET /billing/portal/invoices`): Stripe and Razorpay invoices in one list,
+   with View and PDF links.
+6. **Billing history** (`GET /billing/portal/history`): a timeline built from `billing_events`. Only
+   customer-safe entries are shown; admin notes and internal rows are never included.
+7. **Usage this month**.
+8. **Company & GST details**: company name, billing email, **GSTIN** (validated, and the state fills
+   in from its first 2 digits), state, and address. The GSTIN is also added to the Stripe customer
+   as an `in_gst` tax id so Stripe invoices carry it. New CLIENTS columns `gstin` and `billing_state`
+   are created on first save.
+9. **Need help with billing?**: WhatsApp and email buttons from the Worker vars
+   `BILLING_SUPPORT_WHATSAPP` (digits with country code) and `BILLING_SUPPORT_EMAIL`. Either can be
+   left unset to hide its button. A short FAQ follows.
+
+**Cancelling** asks for a reason first. "Too expensive" or "not using it" offers the next cheaper
+plan, and "missing features" or "support" offers to talk to us. The reason is logged
+(`POST /billing/portal/cancel-feedback`) and appears in Admin → API & Webhooks → event log under
+"Customer feedback". Then a Razorpay plan cancels at the cycle end, and a Stripe plan goes to the
+Stripe portal to confirm.
+
+**On phones** a sticky bottom button holds the one action that matters right now: Choose a plan,
+Fix payment, or Update card.
+
+## Admin console — Billing, Plans, API & Webhooks (`admin.html`)
+- **Billing tab** (`GET /admin/billing/overview`): MRR / ARR per currency (active subscriptions,
+  normalised to a month — Stripe amounts come from the live `STRIPE_PLAN_PRICE_IDS` prices,
+  Razorpay from `rzp_plans`), paying / trialing / at-risk / cancelling / renewing-in-7-days counts,
+  gateway status, search + gateway + status filters, CSV export. **Manage** on a row opens:
+  - Stripe: Refresh from Stripe, Open Stripe Portal, Reset cycle (existing routes).
+  - Razorpay (`POST /admin/razorpay/subscription {client_id, action}`): `sync`, `pause`, `resume`,
+    `cancel_cycle_end`, `cancel_now`, `change_plan` (+ `plan_id`, `when`). There's also an
+    invoices list (`GET /admin/razorpay/invoices?client_id=`) and a "Copy mandate link" button for
+    a link that hasn't been approved yet.
+  - **Manual plan / override** (`POST /admin/billing/manual-plan {client_id, plan_tier,
+    plan_status, renews_at, plan_name, note}`) for bank-transfer / offline customers, comps and
+    corrections. It sets `billing_provider='manual'` only when there is no live gateway
+    subscription. If there is one, the next webhook will overwrite status and renewal.
+  - The client's recent billing events.
+- **Plans tab**: the Razorpay catalog (`GET/POST/PATCH /admin/razorpay/plans`,
+  `POST /admin/razorpay/plans/import-stripe`). From here you can change a plan's tier, its display
+  order, or hide it (hidden plans stay valid for existing subscribers). The tab also lists the
+  Stripe plan prices and shows which INR ones are already imported. Razorpay plans can't be edited
+  or deleted once created; to change a price, create a new plan and hide the old one.
+- **API & Webhooks tab** (`GET /admin/api-status`): for Stripe, Razorpay, NocoDB, Resend and the
+  platform secrets, it shows which secrets are set (never their values), live/test mode, and a live
+  round trip with latency. It also shows each gateway's webhook URL with the event list to
+  subscribe and when the last webhook arrived. Below that is the **billing event log**
+  (`GET /admin/billing/events?provider=&type=&client_id=`), D1 `billing_events`: every Stripe and
+  Razorpay webhook plus every admin billing action.
 
 ## AI sales rep: sentiment/objection handling, deal forecast, team ops (engine.json + notifications.json)
 Four additions on top of the original regex-only engine, aimed at closing the gap between
@@ -2302,6 +2887,161 @@ request/response shape, so no frontend page needed to change for this migration.
 3. `wrangler d1 migrations apply leadvyne-d1 --remote` (applies every migration file in
    `cloudflare-worker/migrations/` in order — running it again after adding a new migration file
    only applies what's new).
+
+## Cal.com Meetings (Settings → Integrations → 📞 Cal.com Meetings)
+
+Calls and meetings with leads (intro calls, demos, consultations), booked on the client's own
+Cal.com. **Separate from the Appointment Booking module** and its "🗓️ Cal.com Sync" card above: it
+never reads or writes `appt_table_ids` tables, and it has its own webhook URL. It has no tab of its
+own. Everything, including the meetings list, is in the one card in Settings → Integrations.
+
+**Setup:** apply `cloudflare-worker/migrations/0104_calcom_meetings.sql`
+(`wrangler d1 migrations apply leadvyne-d1 --remote`). `WORKER_BASE_URL` must be set for tracked
+links; without it, links go straight to Cal.com and clicks aren't counted.
+
+**Enabling:** the module is off until the client saves at least one meeting link (name + https
+Cal.com URL, up to 6). Until then the card shows only the links step. After the first save:
+- **Connect Cal.com:** the card shows the webhook URL (`{WORKER_BASE}/calcom/meetings/{clientId}`)
+  and a secret, generated on the first save. The client adds these in Cal.com → Settings → Developer
+  → Webhooks and presses **Ping test**. The card then shows "✅ Connected — last event …"
+  (`meetings_config.last_event_at`).
+- **Send a meeting link:** search a lead, pick the meeting type, then **Send on WhatsApp** or
+  **Copy link**. `POST /meetings/send` creates a `meetings` row (`link_sent`) with a random token and
+  returns `{WORKER_BASE_URL}/m/<token>`. `GET /m/<token>` records the click (`clicked`) and
+  redirects to the Cal.com link, prefilled with `name`, `email` and `attendeePhoneNumber`, and tagged
+  with `metadata[lead_id]` and `metadata[mtg_id]`.
+- **Webhook** `POST /calcom/meetings/<clientId>` (`handleCalcomMeetingsWebhook`): same hex
+  `X-Cal-Signature-256` check as the Appointment Cal.com sync, but checked against
+  `meetings_config.webhook_secret`. A booking is matched to its row in this order: `metadata.mtg_id`,
+  then the pre-reschedule uid, then the booking uid, then the lead's latest open tracked link. The
+  lead itself comes from `metadata.lead_id`, then phone (last 9 digits), then email; a booking with
+  no matching row gets a new row.
+- **Event handling:**
+  - `BOOKING_CREATED` / `BOOKING_RESCHEDULED` → `scheduled`
+  - `BOOKING_REQUESTED` → `pending`
+  - `BOOKING_CANCELLED` / `BOOKING_REJECTED` → `cancelled`
+  - `MEETING_ENDED` → `completed`
+  - `BOOKING_NO_SHOW_UPDATED` → outcome `no_show`
+  - Any other event is only logged as the last event received.
+- **WhatsApp messages** (each can be switched off): a confirmation with the join link and
+  reschedule link on booking or reschedule, "pick another time?" on cancel, 24h and 1h reminders,
+  and one nudge 24–72h after an unbooked link (inside the Follow-up Engine quiet-hours window).
+  Each message is sent as plain text first. If Meta rejects it (outside the 24h window) and the
+  client set a template name, that template is sent instead, with 3 body variables: {{1}} name,
+  {{2}} date & time, {{3}} link.
+- **Cron** (`runMeetingsForAllClients`, every 15 minutes): sends reminders and nudges. Each row's
+  `*_at` column is claimed before sending, so a message is never sent twice. Meetings more than
+  30 minutes past their end time are marked `completed`.
+- **Outcomes:** "How did it go?" lists completed meetings that have no outcome yet. The choices are
+  Interested / Not interested / Follow-up / No-show (`POST /meetings/outcome`). Follow-up also
+  adds a normal task (via `manual_tasks`) due in 2 days.
+- **Stats** (last 90 days): links sent → clicked → booked → attended / no-show → interested,
+  meetings this week, and a per-rep table (`sent_by` = the signed-in rep's email).
+- **Bot:** "Let the bot share the meeting link" copies the links into `mtg_bot_links` on CLIENTS
+  (the column is created on demand). `buildKbProcessorText()` then adds a `## MEETING LINK` section
+  to the knowledge base. With the option off, the field is empty and nothing is added.
+
+### Lead meetings (lead ⋯ menu) — works with or without Cal.com
+
+**Setup:** apply `cloudflare-worker/migrations/0119_meetings_manual.sql` (the Worker also adds these
+columns itself on first use, `mtgEnsureSchema`).
+
+- **Where the buttons are:** only in the lead's **⋯** menu (Leads list/table row, and the ⋯ in the
+  lead detail) and in Chats **⋮ → 📅 Meeting…**. The menu shows only what fits the lead's state:
+  📅 Mark meeting scheduled / 🕓 Meeting pending → ✏️ Reschedule / ❌ Cancel → 📝 Log meeting outcome,
+  plus 🔗 Send booking link (when Cal.com links exist) and 🗂 Meeting history. Log Call also has a
+  **Next step** dropdown (📅 Meeting scheduled / 🕓 Meeting pending).
+- **Badge:** each lead shows its meeting state (`GET /meetings/lead-states`, `mtgLeadState`):
+  📅 date/time (scheduled), 🕓 pending (agreed without a time, Cal.com request, or link sent in the
+  last 14 days), ✅ log outcome (time has passed), ⚠️ no-show / cancelled. Shown on list/table rows,
+  kanban cards, the lead detail and the Chats header. The Leads filters have a **Meeting** filter.
+  Home shows **📅 Today's Meetings** when there are any.
+- **Mark meeting scheduled** (`POST /meetings/manual`): date, time, length, video/phone/in person,
+  link or address, owner, note, and "send the lead a WhatsApp confirmation and reminders"
+  (`meetings.notify`). These meetings get the same confirmation, 24h/1h reminders and auto-complete
+  as Cal.com bookings, even when the client has no Cal.com link. A lead with an active meeting is
+  refused (409 `MEETING_EXISTS`) unless the rep confirms. A later Cal.com booking for the same lead
+  updates the rep's meeting instead of adding a second one.
+- **Meeting pending** stores `status='agreed'` (no time) and adds a "Fix meeting time" task due in 2 days.
+- **No duplicate meeting requests:** while a lead's meeting is scheduled, pending (agreed) or
+  waiting for its outcome, the classic follow-up ladder, Smart Follow-ups and Follow-up V3 hold
+  the lead (V3 shows "On hold — meeting booked"). The AI bot's prompt says the meeting is already
+  booked, so it doesn't ask again. Sending a booking link to a lead with a fixed meeting asks the rep first.
+- **Points:** meeting points go into the Home 🏆 Weekly Arena (`GET /meetings/points` → events):
+  meeting booked +25 (counted once the meeting is held, one per lead), held +20, outcome logged
+  within 24h +5, interested +15, no-show rebooked within 3 days +10, outcome not logged after
+  48h −10. There is a new 📅 Meeting Maker badge. Team Performance → 📅 Meetings by Rep shows
+  booked / held / show rate / interested. Point values are editable in the Cal.com Meetings card
+  (`settings.points`).
+- **Rep brief** (optional, "Sales team" in the card): 30 minutes before a meeting, the rep gets a
+  WhatsApp with the lead's details, answers and last messages. It goes to their number from User
+  Management, the same one Hot Lead Alerts use.
+
+
+## AI Models — bring your own key (Settings → Integrations → 🤖 AI Models)
+
+By default every client runs on the shared Gemini key (`GEMINI_API_KEY`). With this card a client
+can connect their own AI account, and their bot's text generation runs on it instead. **Nothing
+changes for a client until they save a key.** A client with no `ai_provider_config` row, or a
+disabled one, takes exactly the same code path as before.
+
+**Providers:**
+- **Claude (Anthropic):** `claude-opus-5-5` is the default and newest; also `claude-opus-5`,
+  `claude-sonnet-5`, `claude-haiku-5-5` (the cheapest and fastest, with light thinking), `claude-haiku-4-5`
+  and `claude-fable-5-1`.
+- **Claude Haiku 5.5 (Leadvyne, no key needed):** runs on the Worker's own `ANTHROPIC_API_KEY`
+  secret, billed to Leadvyne, and is locked to `claude-haiku-5-5` (low effort). It only appears on the card once
+  that secret is set. If it fails and the client left fallback on, Leadvyne AI (Gemini) answers.
+- **ChatGPT (OpenAI).**
+- **Google Gemini:** the client's own key, not the shared one.
+- **OpenRouter, Groq, DeepSeek, Mistral.**
+- **Custom:** any OpenAI-compatible `/chat/completions` endpoint, such as Together, Fireworks, Azure
+  OpenAI, xAI, or self-hosted vLLM/Ollama behind public https.
+
+**Load models** lists the models the key can use (`/models`).
+
+**Setup (once per deployment):**
+1. Apply `cloudflare-worker/migrations/0105_ai_provider_config.sql`
+   (`wrangler d1 migrations apply leadvyne-d1 --remote`).
+2. Set the encryption secret: `wrangler secret put AI_KEY_ENC_SECRET` (a long random string, e.g.
+   `openssl rand -base64 48`). Client keys are stored AES-GCM encrypted with it, and **changing it
+   later makes saved keys unreadable**. Affected clients silently go back to Leadvyne AI until they
+   re-enter their key. Until the secret is set, the card says the feature isn't enabled and saving
+   is refused.
+3. Optional, for the "Claude Haiku 5.5 (Leadvyne)" option: `wrangler secret put ANTHROPIC_API_KEY`.
+   Removing the secret later sends clients on that option back to Leadvyne AI (Gemini) automatically.
+
+**What runs on the client's key:**
+- Bot replies (`engineCallLlm`)
+- Intent/sentiment classification
+- Reply translation
+- AI follow-ups
+- Flight-request extraction
+- Every `engineGeminiGenerateWithFallback` helper (dashboard AI assist, option extraction, spoken
+  replies)
+
+Voice-note transcription, image reading and the Financial Planner helpers stay on the shared Gemini
+key.
+
+**Safety:**
+- **Keys are write-only.** `GET /ai-provider/config` returns only the last 4 characters. A blank key
+  field on save/test reuses the stored key, but only if the provider and base URL are unchanged.
+- **Keys are checked before saving.** Save runs a real one-line test call first, so a bad key or
+  model never switches a live bot over.
+- **Custom base URLs are limited to public hosts.** They must be public `https://` hosts: no
+  credentials, localhost, `.local`/`.internal`, private IPv4 or IPv6 literals (`aiValidateBaseUrl`).
+- **Fallback to Leadvyne AI (default on).** If the client's provider errors, times out (25 s), or
+  Claude declines, that turn falls back to the shared Gemini path. With fallback off, the bot sends
+  "One moment 🙏" and the failure goes to ops.
+- **The card shows live status.** The last success and last error (`last_ok_at` / `last_error`) are
+  shown in the card, throttled to avoid a D1 write on every call.
+
+**Routes** (session-authenticated):
+- `GET /ai-provider/config`
+- `POST /ai-provider/config`
+- `POST /ai-provider/test`
+- `POST /ai-provider/models`
+- `POST /ai-provider/remove` (switches back to Leadvyne AI)
 
 ## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
 Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of
@@ -2539,6 +3279,42 @@ logged to a new CLIENTS field, `broadcast_log` (Long text, JSON array of `{ts, t
 failed}`, capped to the most recent 50 — same capped-list pattern as `fulfilled_addon_events`).
 Read/written via the existing generic `/nocodb/*` passthrough, no dedicated Worker route needed for
 it. Add this column to the CLIENTS table before using the Tracking tab.
+
+## Monthly Marketing (Campaigns → 📅 Monthly Marketing)
+Sends one approved WhatsApp template a month to leads, chosen by **lead category**
+(`ServiceCategory`/`ProductCategory`) or **lead tag** (`Tags`, from the Leads panel). Each rule has
+an ordered list of templates, and each lead gets the first one it hasn't received yet.
+
+**Setup:** apply the migration once with `wrangler d1 migrations apply leadvyne-d1 --remote`
+(`migrations/0100_monthly_marketing.sql`), then `wrangler deploy`. No new cron, queue or secret is
+needed. Nothing is sent for any client until they save a rule with a frequency and at least one
+template and switch it on, so existing clients see no change.
+
+**Who gets a message** (`monthlyMktSkipReason` in `worker.js`):
+- `Score` is `Hot` or `Warm` ("medium" = Warm);
+- not won (`reportIsWonLead`, plus `Won`/`Converted`). Lost leads **are** included;
+- not opted out, and has a phone number;
+- if the lead already got a monthly message, they must have replied since (`LastCustomerMsgAt`);
+- category rules take priority over tag rules. A lead matching both still gets one message; if
+  every template in its category rule has been sent, the matching tag rule is used instead.
+
+**Duplicate guards:** partial unique indexes on `monthly_marketing_sends` allow at most one message
+per lead and per phone number per month, and never the same template twice to a lead or phone
+number. A row is reserved as `pending` *before* the Graph API call, so repeated ticks, retries and
+duplicate lead records can't cause a second send. Only an explicit Meta error marks a row `failed`,
+which frees it for a retry (up to 3 a month). A network error leaves it `pending`, because Meta may
+already have delivered it.
+
+**Sending:** runs on the existing `*/15` cron (`runMonthlyMarketingForAllClients`), on or after the
+rule's day of month (in the client's `bot_config.timezone`), inside the Follow-up Engine's send
+window. Each tick is capped at 60 sends shared across all clients, so large lists go out over
+several ticks. A fully scanned client is rescanned every 6 hours to pick up leads that qualify later
+in the month. Sends go straight through the Graph API (same request as the Follow-up Engine's
+template steps), with every `{{n}}` filled with the lead's name.
+
+**Routes (session-gated):** `GET/POST/DELETE /monthly-marketing/rules`,
+`GET /monthly-marketing/options` (categories and tags on the client's leads),
+`GET /monthly-marketing/summary?month=YYYY-MM` (this month's preview plus the send log).
 
 ## Task manager (frontend/dashboard.html — Tasks page)
 Reworked from three static, un-actionable read-only cards (Reminders Due Today / Hot Moments /
@@ -3714,6 +4490,62 @@ Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload direc
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
 
+## Hot Lead Alerts (Settings → 👥 User Management → 🔥 Hot Lead Alerts)
+
+WhatsApp message to the staff member who owns a lead the moment it turns hot, sent from the
+client's own WhatsApp Business number (`engineMaybeSendHotLeadAlert` in `cloudflare-worker/worker.js`).
+
+- **Staff numbers:** each user's WhatsApp number lives in `team_whatsapp` on CLIENTS
+  (`{"email":"919876543210"}`, the account owner included). Set from the Create New User form or
+  a user's profile (👤) → 📱 WhatsApp for alerts, via `POST /team/whatsapp` — the account owner
+  can set anyone's, a teammate only their own.
+- **Triggers** (each can be switched off): the lead's Score becomes `Hot` (booking intent), the
+  lead's first `HotMoment` (asks about price / availability / booking), or a new Facebook /
+  Instagram lead-form lead. Only transitions count, and a per-lead cooldown (default 12h)
+  stops repeats.
+- **Recipient:** the lead's Owner. The account owner gets it instead when the lead has no owner
+  or the owner has no number, and as a copy when "Also copy me" is ticked.
+- **Template:** staff rarely have an open 24h window with their own business number, so alerts
+  need an approved template. "✨ Create ready-made template" submits `hot_lead_alert_leadvyne`
+  (UTILITY, 4 variables: name, +phone, reason, lead link) to the client's WABA and selects it.
+  Without a template the alert goes as plain text, which only reaches someone who messaged the
+  number in the last 24h.
+- **Link:** `{{4}}` is `APP_BASE_URL?lead=<id>` — the dashboard opens that lead's detail panel
+  with the 📞 Call button (which starts the call timer and prompts for the outcome on return).
+- **Log:** D1 `hot_lead_alerts` (`migrations/0107_hot_alerts_lead_forms.sql`; also created
+  lazily). The last 20 show on the card.
+
+## Facebook & Instagram Lead Forms (Settings → Integrations → 📋 Lead Forms)
+
+Meta Lead Ads → lead created, routed to an owner, instant WhatsApp welcome, owner alerted
+(`processMetaLeadgenChange` in `cloudflare-worker/worker.js`).
+
+**One-time, per Meta app (platform side):**
+1. Worker secret `META_LEADGEN_VERIFY_TOKEN` — any random string (`wrangler secret put
+   META_LEADGEN_VERIFY_TOKEN`). Signatures are checked with the existing `META_APP_SECRET`, so
+   this must be the same Meta app.
+2. Meta app → Webhooks → **Page** → callback `<WORKER_BASE_URL>/meta/leadgen/webhook`, verify
+   token from step 1, subscribe to the **leadgen** field.
+3. The app needs `leads_retrieval`, `pages_manage_metadata`, `pages_show_list`,
+   `pages_read_engagement` (Advanced Access for other businesses' Pages). `ads_read` is optional:
+   with it, the campaign and ad names are saved on the lead too.
+
+**Per client (dashboard):** paste the Page ID and a Page access token generated for **this same
+app** (e.g. a System User token in the client's Business Settings with the app assigned) →
+**Connect Page**. The Worker checks the token can read the Page and subscribes the Page to the
+app's `leadgen` webhook. The token is stored in `meta_leadgen_page_token` (stripped by
+`safeClient`, rejected by the `/nocodb` passthrough); `meta_leadgen_page_id` is the webhook lookup
+key; everything else is in `meta_leadgen_config`.
+
+**What happens per lead:** the `leadgen_id` is claimed in D1 `meta_leadgen_events` (Meta's retries
+never double-send) → answers fetched from the Graph API → phone normalised with the card's default
+country code → lead created (or updated, keeping its name/stage/history) with `LeadSource`,
+`AdCampaign`, `AdName`, `LeadFormName`, `MetaLeadgenId` and the other answers in `QualAnswers` →
+normal lead routing picks an Owner → the welcome template goes out (skipped for opted-out leads)
+and is written to ConvHistory, so the bot has context when the customer replies → 🔥 alert to the
+owner. "✨ Create ready-made template" submits `lead_form_welcome_leadvyne` (`{{1}}` first name,
+`{{2}}` business name).
+
 ## Meta Ads ROI Report (`frontend/dashboard.html` — now the 📈 Reports page's Marketing tab)
 Ad spend against conversions and revenue this CRM already tracks, last 6 months. **Originally**
 built as its own view inside the Team page (a local tab toggle, `showTeamView()`); **since
@@ -3767,6 +4599,127 @@ counts (which come from `allLeads`, not this log).
   lead loaded), and joins them by month key. Stat tiles (Total Spend, Total Revenue, ROAS, Cost/
   Lead, Cost/Booking) and the monthly table show spend-dependent figures as `—` rather than hiding
   the whole report when `ads_read` isn't connected.
+
+## Ads ROI (Reports → 💸 Ads ROI — `cloudflare-worker/meta-ads-report.js`, `frontend/ads-report.js`)
+Per-campaign attribution, which the blended report above couldn't do. Ads are still created and
+edited in Meta Ads Manager. This tab covers what Ads Manager can't see: what happened after the click.
+
+**What it needs** (same credentials as above, nothing new to paste):
+- Settings → Integrations → Meta Ads: **Ad Account ID** + token with **ads_read** (spend), and the
+  **Pixel/Dataset ID** for results sent back to Meta. Link the Dataset to the WhatsApp Business
+  Account in Events Manager so click-to-WhatsApp events can match on `ctwa_clid`.
+- Click-to-WhatsApp leads: Chatwoot passes Meta's referral on the first message; the engine now
+  stores `AdId` and `CtwaClid` on the lead (`engineLeadAdClick`). Lead-form leads store `AdId`,
+  `AdsetId`, `CampaignId` (`processMetaLeadgenChange`). Older leads still match by campaign name or
+  the old `AdCampaign` = "Ad ID …" value.
+- Run `migrations/0118_meta_ads_report.sql` (the Worker also creates the tables lazily, except the
+  `meta_capi_events.match_key` column, which it falls back without).
+
+**How it works**
+1. **Spend sync** (`marSync`): Ads Insights `level=ad, time_increment=1` → D1 `meta_ads_daily`
+   (one row per ad per day, account timezone). 90 days on first open, the last 3 days every morning
+   (Meta restates recent days), 30 days on "Sync now"; the window is replaced in one batch.
+2. **Report** (`GET /meta/ads-report/data?from&to`): per-ad totals for the range; the dashboard joins
+   them with leads (`adsMatchLead` mirrors `marMatchLead`) at campaign / ad set / ad level: spend,
+   Meta's lead count, CRM leads, qualified (Hot or won), sales, revenue, cost per lead / qualified /
+   sale, ROAS (hidden when ad and deal currencies differ). Sales = leads that arrived in the period
+   and are won now. A lead's arrival is NocoDB `CreatedAt` (the bot rewrites `Date` every turn).
+3. **Lead quality**: Hot / Warm / Cold, junk (`HandoverOutcome` Spam), not reachable (called, never
+   answered), lost — per campaign/ad set/ad.
+4. **Results sent to Meta**: Conversions API events now carry the strongest match key — an Instant
+   Form lead's `lead_id` (`action_source: system_generated`, CRM integration), a WhatsApp ad lead's
+   `ctwa_clid` (+ WABA id), else hashed phone/email — logged in `meta_capi_events.match_key`. New:
+   `Purchase` with the deal value when a lead is won (dashboard), `Lead` for a new ad lead and
+   `QualifiedLead` when the bot scores it Hot (server side, `engineReportCapiFromTurn`). Each event
+   goes once per lead.
+   **Purchase by label**: a lead given one of the account's purchase labels (Tags; default
+   "Order placed", editable in Ads ROI → settings, blank = off) from the dashboard (the `/nocodb`
+   passthrough) or Chats sends `Purchase` with the deal value — or, for ecommerce, the customer's
+   latest order total (`capiPurchaseFromLabels`).
+5. **Speed to lead**: first call after arrival — within 5 min / 1 h / 24 h, never called, median;
+   a list of open ad leads not called yet.
+6. **Staff on ad leads**: per owner — called, answered, median first call, qualified, sales, revenue,
+   conversion (junk excluded).
+7. **Daily summary + alerts** (`marRunDue`, 15-minute cron, 3 accounts per tick from 01:00 UTC, once
+   per account per day): after the morning sync, yesterday's spend, ad leads, qualified, junk, sales,
+   ROAS and top campaign to chosen staff on WhatsApp (numbers from User Management) and to email.
+   Alerts: campaign spend ≥ X with no leads, cost per lead > X, junk ≥ X% of the last 7 days (min 5
+   leads), Meta sync failing. Plain-text WhatsApp only reaches staff who messaged the business in the
+   last 24 h — set an approved Utility template with 3 body variables ({{1}} business, {{2}} date,
+   {{3}} summary) for reliable delivery. Log: `meta_ads_report_sends`.
+8. **Accounting** (`marPostExpenses`, needs the Accounting module): one `accounting_expenses` row per
+   month (vendor "Meta Platforms", category "Advertising — Meta Ads" → Advertising & Marketing),
+   updated daily until the month closes (the previous month is finalised on days 1–5). A row the user
+   deletes is never recreated (`meta_ads_expense_posts.status='deleted'`). GST on Meta's invoice
+   isn't split out.
+
+**Which ads ran when, and matching leads with no ad id** (`migrations/0120_meta_ads_running.sql`):
+each sync also stores Meta's hourly results per ad for the last 30 days (`meta_ads_hourly`), every
+ad's status / ad set / campaign / headline / text (`meta_ads_ads`) and any new ad or status change
+since the last sync (`meta_ads_changes`). The dashboard (`adsAttribute`) then matches every lead by
+the strongest method: exact (ad id, form, campaign) → **ad code** (`#K26` in the ad's pre-filled
+message and in its name in Ads Manager; the bot stores it as `AdCode`) → **message match** (first
+message vs the headline of ads live that day; `GET first-messages` from D1 `lead_messages`) →
+**time-window share** (a chat with no ad id is split across the click-to-WhatsApp ads with
+conversations in the hour it arrived — the day when that hour has none — in proportion to Meta's
+counts, never more leads than conversations Meta counted; a lead whose source says "ad" always
+counts). Numbers show "exact + estimated", estimates can be switched off, and every leads number opens
+the leads behind it with how each was matched. Also on the tab: ads running in the period (status,
+first/last day, days live, timeline strip), what changed, day by day, creative leaderboard (cost per
+sale, fatigue = cost per result +40% in the ad's later days), hour × weekday heatmap, and ▲/▼ against
+the previous period of the same length.
+
+Routes (session-gated, `/meta/ads-report/*`): `GET data`, `GET first-messages`, `POST sync`, `GET|POST settings` (POST is
+owner only), `POST test-summary`, `POST accounting/post`, `GET capi`. Settings live in D1
+`meta_ads_report_state.config_json`, not on the CLIENTS row.
+
+### Growth tools (funnel events, audiences, Pixel, sales-based rules, tracking health)
+
+Apply `cloudflare-worker/migrations/0122_meta_ads_growth.sql` (the Worker also creates these on
+first use): budgets on `meta_ads_ads`, plus `meta_capi_errors`, `meta_ads_audiences` and
+`meta_ads_actions`. All settings are in Ads ROI → settings (owner only).
+
+- **Funnel events / Conversion Leads.** Map pipeline stages (plus won / lost) to event names. When a
+  lead reaches a mapped stage, through a Leads PATCH or a bot turn, that event goes to Meta's Conversions
+  API once per lead. Form leads go with their `lead_id` (`action_source: system_generated`,
+  `event_source: crm`), WhatsApp-ad chats with `ctwa_clid`, and web leads with `fbc`/`fbp`. "Spam"
+  sends `Junk` unless that's switched off. Refused events are logged in `meta_capi_errors`. Once
+  the 🩺 Tracking health checklist is green, switch the lead-form campaign's goal to **Conversion leads**.
+- **CRM audiences** (daily after the spend sync, or 🔄 Refresh now): Buyers (180 days), Buyers by
+  value (value-based), Hot not bought (90 days) and Exclude (won, junk, opted out). Phone and email are
+  SHA-256 hashed and replaced with `usersreplace`. A 1–10% lookalike of the buyer audiences is created
+  once one reaches 100 people.
+  - The token needs **ads_management**, and the ad account must have accepted the Custom Audience terms
+    (business.facebook.com/ads/manage/customaudiences/tos.php).
+  - An audience that becomes empty keeps its last members, because Meta can't replace an audience with zero rows.
+- **Pixel on the store, order and booking pages** (`frontend/lv-pixel.js`). The Pixel ID comes from the
+  public client endpoints (`meta_pixel_id`).
+  - `fbclid` is kept as `_fbc` for 90 days.
+  - Order and booking requests carry `capi:{event_id,url,fbc,fbp}`. The Worker sends Purchase or Schedule
+    with the same `event_id` as the browser event, so Meta deduplicates them.
+  - The optional consent banner holds the Pixel and the click ids until the visitor taps Allow.
+  - nginx CSP allows `connect.facebook.net`.
+  - A web order has no CRM lead, so a later "Order placed" label can send a second Purchase for the same sale.
+- **Sales-based rules.** Each rule is: metric (cost per sale, qualified or lead; ROAS; junk %; spend
+  with no sale) above or below a value, over 3/7/14/30 days, per ad set or campaign, with a minimum spend.
+  The action is pause, cut budget or raise budget.
+  - A triggered rule appears under 🧭 Suggested actions. Nothing changes until the owner taps Approve
+    (`POST actions/apply`), which writes `status` or `daily_budget` through the Graph API.
+  - Changes are capped by "largest budget change" and the budget floor, logged in `meta_ads_actions`,
+    and can be undone (`POST actions/undo`).
+  - On Advantage campaign budget, budget changes go to the campaign.
+  - Needs **ads_management**.
+- **Staff-capacity guard.** When N or more ad leads from the last 48 h have no logged call, the page
+  suggests cutting the budgets of the active click-to-WhatsApp ad sets.
+- **Tracking health** (`GET health?days=7`) shows:
+  - events sent and refused, by event
+  - the share matched by an ad click (lead id, ctwa_clid or fbc)
+  - Meta's refusal reasons
+  - what Meta says the dataset received (`/{pixel}/stats`)
+  - the Conversion Leads checklist
+
+  The daily alert also flags refused events, and flags when no events reached Meta for 3 days while ad
+  leads kept arriving.
 
 ## Meta Ads Automation module (`frontend/dashboard.html` — Reports page's 🤖 Ads Automation tab)
 A **standalone module**, separate from the read-only Marketing/ROI tab above — genuinely
@@ -3909,7 +4862,7 @@ not be fine for anything billing-accuracy-sensitive (nothing here is).
 **Bug fixed**: this originally required Shopify specifically connected (`shopify_shop_domain`) to
 show anything at all — a client using only the built-in storefront checkout (`onshope.com`,
 `handleEcomPublicOrder`) got an empty "connect Shopify" wall despite having real orders sitting in
-the exact same Ecommerce Orders table `syncShopifyOrderToEcom` (Shopify) and
+the exact same Ecommerce Orders table `shopifySyncEcomOrders` (Shopify) and
 `handleEcomPublicOrder` (built-in storefront) both write to. Every order source lands in the same
 table, so the report now only gates on **whether an orders table resolves at all**
 (`has_orders_table` — i.e. the Ecommerce module is set up), never on Shopify specifically.
@@ -3918,7 +4871,7 @@ auto-sync those orders too" nudge shown *alongside* the real data, not a wall in
 - **Revenue trend/order count/AOV** come from the Ecommerce Orders table's `total` field (always
   present on any order regardless of source, cancelled orders excluded) — no new schema needed.
 - **Top products** prefer a new `line_items_json` column on that same orders table (Long text,
-  JSON array of `{title, quantity, price, sku}`), populated by `syncShopifyOrderToEcom()`
+  JSON array of `{title, quantity, price, sku}`), populated by `shopifySyncEcomOrders()`
   (Shopify-synced orders only — the built-in storefront's `handleEcomPublicOrder` only ever
   creates one line per order and doesn't populate it) alongside the pre-existing flattened `items`
   text column (kept unchanged — `items` is what `ecom.html`'s own Orders table already renders,
@@ -4188,7 +5141,7 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   `engineTtsWithFallback(env, text, langCode)` helper instead of `engineSarvamTts` directly: it
   tries Sarvam first, and only when that returns `null` (missing key, unsupported language,
   transient failure) does it try `engineAi4BharatTts` — a self-hosted AI4Bharat Indic Parler-TTS
-  model running on the Marketing Studio render pipeline (`render-pipeline/lib/ai4bharatTts.js`,
+  model running on the dedicated Coolify voice service (`render-pipeline/lib/ai4bharatTts.js`,
   `POST /synthesize-voice-reply`, gated behind that service's own `AI4BHARAT_TTS_ENABLED`). Reuses
   the render pipeline's existing `MARKETING_RENDER_WEBHOOK_URL`/`_SECRET` Worker secrets — no new
   secret to configure on the Worker. Same scope as this app's other AI4Bharat integration (the 10
@@ -4932,98 +5885,51 @@ are still swallowed silently by design — alerting on every best-effort fallbac
 file would be noisy without much operational value. The three wiring points above were chosen as
 the highest-signal: total silence to a customer, or a fully unhandled crash.
 
-## Instagram DM module (`POST /ig/webhook` — native, no Chatwoot)
-Unlike WhatsApp above, Instagram DMs never touch Chatwoot at all: this Worker receives Meta's raw
-webhook itself, sends replies straight through the Graph API, and conversations show up in
-`dashboard.html`'s existing Chats page (a new "📷 Instagram" switch — same `ConvHistory` shape,
-same Leads table). Reuses the engine's classify/route/reply pipeline
-(`engineClassifyIntent`/`engineRouteFlow`/`engineCallLlm`) unchanged — confirmed channel-agnostic
-— but is deliberately leaner than `handleEngineWebhook`: only the qualify/FAQ/objection/human/drop
-routes are implemented. Incoming text, image, voice, video/file attachments, story replies and
-postbacks are preserved in Chats. The ecommerce order-link automation, hospitality/category media
-sends and booking-signal auto-send that WhatsApp also gets are **not** replicated here.
+## Instagram DMs (through Chatwoot, same pipeline as WhatsApp)
+Instagram is connected as a **Chatwoot Instagram inbox** (`Channel::Instagram`) — added in Chatwoot
+itself, it then shows under Settings → Channels → Connected Channels with the same assignment
+dropdown, "Move existing leads" and AI Reply toggle as a WhatsApp inbox. No Worker secrets or Meta
+app setup are needed on this side.
 
-**Uses "Instagram API with Instagram Login"**, not the Facebook-Login-for-Business/Page-linked
-variant — a deliberately separate app credential pair from `META_APP_ID`/`META_APP_SECRET`
-(WhatsApp's), authenticating directly against the Instagram professional account with no Facebook
-Page involved, and its own OAuth host (`instagram.com`/`graph.instagram.com`, not
-`graph.facebook.com`). This means the connect flow is a plain browser-redirect OAuth (same shape
-as the Shopify module's connect flow) rather than the Meta JS SDK's `FB.login` popup WhatsApp uses.
+Chatwoot delivers Instagram messages to the same account-wide engine webhook as WhatsApp
+(`/engine/webhook/<secret>` — Chatwoot webhooks are account-level, so every inbox's
+`message_created` reaches it). `engineParseChatwootPayload` sees `conversation.channel ===
+'Channel::Instagram'` and, since an Instagram contact has no phone number, keys the contact as
+`ig:<instagram id>` (Chatwoot's `conversation.contact_inbox.source_id`) in the `phone` slot.
+Everything downstream — lead lookup/creation, owner from the channel assignment, AI reply (sent
+back through the Chatwoot conversation), Chats thread, follow-ups — then runs exactly as it does
+for WhatsApp. The lead row stores that key in `Phone`, plus `Channel='instagram'` and `IgId`.
 
-**One-time Meta setup:**
-1. In [developers.facebook.com](https://developers.facebook.com) → your app (can be the same app
-   as WhatsApp's, or a separate one — see the note on that in the PR discussion; nothing about
-   this flow depends on which) → **Add use case** → check **"Manage messaging & content on
-   Instagram"** → Save.
-2. Under that use case → **1. Add required messaging permissions** → **Add all required
-   permissions** (`instagram_business_basic`, `instagram_business_manage_messages`,
-   `instagram_business_manage_comments`).
-3. **2. Generate access tokens** → **Add account** → log in with the Instagram professional
-   account you want connected (also adds you as a tester, needed before the app is published).
-4. **3. Configure webhooks** → Callback URL: `{WORKER_BASE_URL}/ig/webhook` (this Worker's
-   production URL is `https://leadvyne-api-proxy.leadvyne.workers.dev/ig/webhook`) → Verify Token:
-   any string you choose. Set that same string as a Worker secret: `wrangler secret put
-   META_IG_VERIFY_TOKEN`.
-5. Copy that use case's **Instagram app ID** / **Instagram app secret** (shown at the top of its
-   setup page — distinct from the main app's own ID/secret) → Worker secrets `META_IG_APP_ID` /
-   `META_IG_APP_SECRET`.
-6. Nothing else to create by hand — connecting auto-provisions every NocoDB column it needs and
-   calls `/{ig_user_id}/subscribed_apps` for `messages`, `messaging_postbacks`,
-   `message_reactions`, and `messaging_seen`. Settings → Integrations shows live token/subscription
-   health and its **Repair & recheck** action re-subscribes an already-connected account.
+WhatsApp-only sends skip Instagram leads: WhatsApp templates (manual, follow-up template steps,
+monthly marketing) and direct Graph API sends refuse an `ig:` number, and the hot-lead alert shows
+"Instagram" instead of a number. In the dashboard, `maskPhone` shows `📷 Instagram` for these
+leads, and Call/WhatsApp buttons become "📷 Chat", which opens the lead in Chats. In Chats,
+Instagram replies, attachments and voice notes go through `/chat/send` and `/quote/send` with the
+lead's Chatwoot conversation id, the same as WhatsApp. The 24-hour template lock and
+template picker stay WhatsApp-only.
 
-**Before submitting for App Review** (only needed once you want *other clients'* Instagram
-accounts to connect — any account you've added as a tester works right now without review):
-under that use case's **Business login settings**, set:
-- **Deauthorize Callback URL**: `{WORKER_BASE_URL}/ig/deauthorize` — `handleInstagramDeauthorize`
-  in `worker.js` verifies Meta's signed request and clears that client's `ig_*` fields the moment
-  they revoke access from their own Instagram/Meta settings, instead of the stored token just
-  silently failing on every send afterward.
-- **Data Deletion Request URL**: point this at wherever your actual data-deletion process is
-  documented (`privacy.html`'s "Your Rights" section touches on it, but tighten the wording with a
-  concrete method — email address, self-serve link — before relying on it for review; this is a
-  business decision, not something to leave generic).
+The earlier direct Instagram connection (Instagram Login OAuth, `/ig/*` routes, `/instagram/send`,
+the token-refresh cron and the Settings → Integrations "📷 Instagram DM" card) has been removed.
+A lead created by that connection (`IgId` set, `Phone` empty) is taken over by the first Chatwoot
+message from the same Instagram id (`engineAdoptLegacyInstagramLead`) instead of becoming a second
+card. If you had that connection set up, remove the webhook from the Meta app, or it will keep
+posting to a route that no longer exists.
 
-**Connect flow:** Settings → Integrations → "📷 Instagram DM" → Connect → `POST /ig/oauth/start`
-returns `https://www.instagram.com/oauth/authorize?...` (client id + scope + a signed `state`
-carrying the client id, same `signOauthState`/`verifyOauthState` helper Shopify/Google Search
-Console use) and the browser navigates there directly (full-page redirect). `GET
-/ig/oauth/callback` verifies `state`, exchanges `code` for a short-lived (1h) token via
-`api.instagram.com`, swaps that for a long-lived (60-day) token via `graph.instagram.com`, and
-stores `ig_id` (the `user_id` Instagram returns — an Instagram-scoped id, not a phone number),
-`ig_access_token`, `ig_username`, `ig_connected_at` on the CLIENTS row — auto-created via
-NocoDB's Meta API the moment you connect (`ensureClientColumns()` in `worker.js`). The long-lived
-token is refreshed daily by `runInstagramTokenRefreshForAllClients` (piggybacked on the existing
-2am cron tick) — Meta's tokens expire 60 days after issue if never refreshed, so this has to run
-on an ongoing basis, not just at connect time.
+## Lead origin (`LEADS.CreatedVia` / `CreatedBy`)
+Every lead records where it came from, stamped by the Worker where the lead is created (columns
+created on first use): `chatwoot` (WhatsApp / Instagram chat via the engine webhook, or the n8n
+track hook), `manual` (dashboard Add Lead form or a real-estate walk-in — `CreatedBy` = who),
+`import` (CSV import), `lead_ad` (Facebook / Instagram lead form), `web` (website / property
+capture), `partner` (channel-partner portal), `calendar` (calendar contact), `unknown` (an older lead
+the backfill couldn't place). Dashboard-created leads are stamped server-side in the `/nocodb`
+passthrough; if NocoDB refuses the stamped row the lead is saved without it.
 
-Inbound webhook POSTs require Meta's `X-Hub-Signature-256` signed with `META_IG_APP_SECRET` and
-are acknowledged immediately with `ctx.waitUntil`; processing failures therefore do not cause
-Meta retry storms. All events in every batch are processed. A valid inbound DM is always saved to
-Chats even when the global engine, this client's engine, Bot Auto-Reply, or the AI provider is
-disabled; those settings suppress only the automated outbound reply. `ig_webhook_debug` stores
-only `received:<timestamp>` for the matched client and never stores message content or another
-client's payload.
-
-**Data model** — Instagram leads live in the *same* Leads table as WhatsApp, not a separate one
-(one unified pipeline/dashboard): a new `IgId` column (Instagram has no phone number, only an
-IGSID) and a `Channel` column (`whatsapp`/`instagram`, defaults to `whatsapp` for every existing
-row). Both auto-created the same way (`ensureLeadsColumns()`), the first time a DM comes in.
-`engineGetLeadState`/`engineBuildLeadUpsertBody` both take an optional identity-field parameter
-now (`'Phone'` by default — every WhatsApp call site is unaffected) so the same upsert logic works
-for either channel.
-
-**Human handover** reuses the exact same `Handover`/`HandoverAt`/`SlaAlerted` fields
-`engineBuildLeadUpsertBody` already sets for WhatsApp — the SLA-breach alert
-(`n8n/notifications.json`) polls the Leads table generically, not by channel, so an Instagram
-handover surfaces there for free. There's no Chatwoot conversation to label
-(`engineSendHandoverLabel`), so the Instagram path simply doesn't call it; the lead shows up under
-the Chats page's existing "Needs You" filter exactly like a WhatsApp handover does.
-
-**Manual replies** — the Chats page's "📷 Instagram" switch reuses the exact same contact
-list/thread UI as WhatsApp (`chatConvoLeads`/`chatSelectLead`, filtered by `Channel`); sending
-posts to `POST /instagram/send` (`{lead_id, text}`) instead of `/chat/send`, since there's no
-Chatwoot conversation id to send through.
+The dashboard shows a badge and colour per origin (Leads list / table / kanban, lead detail
+"Created via … by …"), a Source chip filter on the Leads page and in Chats, and 🧭 Leads by source
+on Home. Leads created before this have no `CreatedVia`: the owner / an admin taps **Fill in
+sources** on the Leads page (`POST /leads/created-via/backfill`), which guesses from the lead —
+a Chatwoot conversation or Instagram → `chatwoot`, lead-form data → `lead_ad`, the Calendar Contact
+tag → `calendar`, anything else → `unknown` — and only ever fills blanks.
 
 ### Order Link Sending toggle + chat-based order collection (`cloudflare-worker/worker.js`, `frontend/ecom.html`)
 
@@ -5376,10 +6282,11 @@ today" (or "✨ You're all caught up" when the Needs Action queue is empty) abov
 reuses the same `isWonLead`/7-day-window convention Home/Team already use. Empty states on every
 view are worded positively ("✨ You're all caught up — nothing needs action right now. Nice work!",
 "🌱 No dormant leads to reconnect with right now.") instead of a bare "no results."
-- **"N hot right now" is clickable**, not just a stat — `jumpToHotLead()` opens the single hottest
-  Hot-scored lead's detail directly (the one lead itself when there's exactly one, otherwise
-  whichever Hot lead ranks highest by `leadNeedsActionScore`), instead of making a rep filter for
-  it manually. `.momentum-link` (new CSS) is the shared underline-on-hover treatment.
+- **"N hot right now" is clickable**, not just a stat — `jumpToHotLead()` opens the lead's detail
+  directly when there's exactly one; with more, it switches the list to a temporary **🔥 Hot** view
+  tab (`_leadsActiveView==='hot'`, filter `isActiveHotLead`: Score Hot, not won/lost), clearing
+  search/category/source filters so all N show. The count uses `leadsInScope()` so it matches the
+  list. `.momentum-link` (new CSS) is the shared underline-on-hover treatment.
 
 ### Contact-attempt counter ("2nd no-answer" / "3rd no-answer")
 Reuses the three existing `Follow up 1`/`Follow up 2`/`Follow up 3` Yes/No fields already on the
@@ -5632,7 +6539,12 @@ grouping Leads by phone (what the base Churn & LTV view does) misses real repeat
 entirely for ecommerce clients. Rendered as a supplementary card beneath the main Churn & LTV table
 — genuine order-based LTV, not a proxy.
 
-## Marketing Studio module (`frontend/marketing-studio.html`, `feat_marketing_studio_enabled`)
+## Marketing Studio module — removed (historical reference)
+
+Marketing Studio was retired on 2026-09-06. Its frontend and public product controls were removed,
+all `/marketing/*` Worker routes return HTTP 410, and `render-pipeline/` is now a voice-only
+Coolify service for AI4Bharat/Piper/PCM conversion. The detailed notes below are retained only to
+explain existing D1 migration history; they do not describe an available product feature.
 A standalone short-form video repurposing tool — upload a long video, auto-transcribe it, edit
 captions, pick a caption style, render a vertical/square/landscape clip, send it out. Deliberately
 a **different kind of "marketing" module** from Campaigns/Email Marketing (`broadcast.html`/
@@ -6637,10 +7549,9 @@ Plan Instagram posts (title + caption, scheduled to a date) ahead of time, on th
 NocoDB `marketing_content_posts` table the rest of this module uses. This is the **planning layer
 only** — the table already has `image_key`/`approved_at`/`ig_media_id` columns reserved for two
 later increments that build on top of it without a schema change: AI image generation/editing via
-fal.ai (Image Studio), and the actual approval-gated auto-publish to Instagram (reusing the
-Instagram DM module's `ig_id`/`ig_access_token` connection, whose OAuth scope already requests
-`instagram_business_content_publish` — see that module's own comment for the reconnect caveat on
-accounts connected before this scope existed).
+fal.ai (Image Studio), and the actual approval-gated auto-publish to Instagram (which will need
+its own Instagram publishing connection — the old direct Instagram DM connection it was going to
+reuse has been removed now that DMs come through Chatwoot; see "Instagram DMs (through Chatwoot)").
 
 ### CRUD (`handleContentPost{List,Create,Update,Delete}` in worker.js)
 Standard per-client CRUD on `marketing_content_posts`. A post with `scheduled_at` set gets
@@ -6790,6 +7701,75 @@ applied so far to the current image (Generated → Restyled → Watermarked → 
 "restyle again on the current image" flow (already fully iterative — each restyle already operates
 on whatever the workspace currently holds) a visible, chat-like trail instead of just a silently
 updating preview.
+
+## Accounting ledger (`frontend/accounting.html` — 🏠 Overview / 📒 Books / 🔁 Subscriptions / 🧾 Tax / ⚙️ Operations tabs, `frontend/accounting-ledger.js`, `frontend/accounting-portal.html`, `cloudflare-worker/accounting-*.js`, `cloudflare-worker/migrations/0117_accounting_ledger.sql`)
+
+A double-entry General Ledger under the existing Documents / Expense Entry / Vendor Bills / Bank &
+Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and operations tooling.
+
+- **Layout.** Seven sections — a left sidebar on PC (≥1024px), a scrollable pill strip on phones:
+  Home (figures + quick actions) · Sales (invoices & quotes, customers, recurring billing,
+  subscriptions, reminders, payment links, SaaS insights) · Purchases (expenses, vendor bills, fixed
+  monthly, suppliers, approvals, categorise, cost allocation) · Banking · Reports & tax (statements,
+  aging, business reports, GSTR-1/3B, ITC, TDS, e-invoice, FX) · Books & payroll (journals, chart of
+  accounts, notes, assets, payroll, period close, audit) · Settings. Each section has a heading, one
+  primary action and a grouped sub-menu (`SECTIONS` in `accounting-ledger.js`; sub keys are unique,
+  and `L.ALIASES` maps the old 14-tab names so old links still land). A header "＋ New" menu opens
+  invoice / quotation / expense / bill / payment / journal forms from anywhere. Every screen exists
+  once: the older Documents / Vendor Bills / Financial Planning / Expense Entry / Reports / Bank &
+  Cash panels are hidden containers that `accounting-ledger.js` mounts into a section
+  (`L.legacy(id)`), parking them back (still in the DOM) when you switch away. Those panels never
+  wait for the ledger settings call; only ledger sub-sections do, and they show the error with Retry
+  in place if it fails. Settings → Business & Tax writes currency + GST to both `acc_settings`
+  and `fp_config`, so invoices and the books never disagree. No AI or receipt OCR in this module.
+- **Enabling it.** Off by default per client. Turn it on in **Leadvyne admin → Edit client → 💰
+  Accounting module** (`POST /admin/accounting-module`, admin session only). The switch is stored
+  in D1 (`client_modules`, migrations/0124 — also created on first use), not in NocoDB: no column to
+  add. `GET /admin/accounting-module` lists it for admin, `GET /accounting/module-status` returns it
+  for the signed-in client (dashboard tab + `accounting.html`), and `isAccountingEnabled()` in
+  worker.js gates everything else (memoised ~30 s per isolate). A client with no D1 row yet falls
+  back once to the old NocoDB `clients.accounting_enabled` value, which is then copied into D1.
+  Until it's on: the dashboard's Accounting tab is
+  hidden and the page shows a lock message, `accounting.html` refuses to load, every
+  `/accounting/ledger/*` route returns 403, portal links return 404, and the daily accounting jobs
+  (ledger billing / recurring journals / reminders, Financial Planning monthly dues and WhatsApp
+  reminders) skip the client. The older `/accounting/documents` etc. routes stay open because
+  Real Estate creates its invoices through them. The client's own Modules → Accounting toggle still
+  works, but only as an extra "hide it" switch once admin has enabled the module.
+- **How posting works.** Nothing in the existing handlers posts anything. `ledgerSync()`
+  (`accounting-core.js`) rebuilds the journal entry each source document *should* have (invoice →
+  AR / revenue / GST output; receipt → bank or Undeposited Funds / AR; expense and bill → expense /
+  GST input / TDS / AP; payment entries, opening balances, credit and debit notes, revenue
+  recognition, depreciation, gateway settlements, TDS, payroll…) and writes only the differences.
+  It runs before every ledger report, so editing an invoice re-posts it and deleting it voids its
+  entry. Entries dated on or before the **lock date** are never changed; a change to a locked
+  source shows up as a warning instead. Manual journals, recurring-template journals and year-end
+  closing entries are written once and never re-derived.
+- **Schema.** Created lazily on first use (`accLedgerEnsureSchema`), like `accEnsureSchema` for
+  Bank & Cash. Applying the migration is optional but recommended:
+  `npx wrangler d1 migrations apply <db> --remote`.
+- **Daily job.** `accLedgerRunDaily` runs on the existing `0 2 * * *` tick for clients who have
+  opened the ledger: subscription billing run (creates ordinary invoices in Documents), recurring
+  journals and dunning / invoice reminders. (The ledger itself syncs whenever a report is opened.)
+- **Payment links.** Created with the client's own Razorpay keys (Financial Planning → Settings).
+  To have a paid link mark its invoice paid automatically, enable the **`payment_link.paid`** event
+  on that client's existing Razorpay webhook (`/financial/razorpay-webhook/<clientId>`).
+- **Reminders.** Email goes through the client's Resend connection; WhatsApp uses the same approved
+  template as the Financial Planning reminder sweep.
+- **Expense categorisation** (Operations → Categorise Expenses) is rule-based: saved category
+  mappings first, then keywords (rent, software, ads…), else General Expenses. No AI or OCR.
+- **Roles.** `acc_user_roles` (Operations → Roles), keyed by session email: admin, accountant,
+  approver, viewer, ca. Anyone unlisted gets `acc_settings.default_role` (default `admin`, so turning
+  roles on never locks the owner out). Roles apply to the `/accounting/ledger/*` routes.
+- **Client portal.** `accounting-portal.html?t=<token>` calls the public
+  `GET /accounting/portal/<token>`; the token is the only credential and shows that one customer's
+  invoices, payments and credit notes. Revoke it from Operations → Payment Links & Portal.
+- **Reports tab.** Profit & Loss, Trial Balance and Cash Flow there now read the ledger (accrual
+  basis), so the app has one set of numbers. The old Trial Balance mixed receipts and recurring
+  collections and counted an invoice paid via "Mark Paid" twice; the ledger skips the duplicate
+  auto-recorded Financial Planning collection.
+- **Tests.** `cloudflare-worker/accounting-ledger.test.js` (node:sqlite with the real migrations)
+  and `frontend/tests/accounting-ledger.spec.js` (Playwright, UI driven against the real module).
 
 ## Financial Planning module (`frontend/accounting.html` — "💰 Financial Planning" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0015_financial_planning.sql`)
 
@@ -8390,3 +9370,237 @@ npx wrangler deploy
 
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
+
+## Live Travel Agency
+
+`frontend/live-travel-agency.html` is an isolated, D1-backed flight operations module. The legacy
+`travel-agency.html` remains on its existing NocoDB tables and only links to the new page. Apply
+the D1 migration before opening Live Agency:
+
+```bash
+cd cloudflare-worker
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+```
+
+Configure one platform encryption key as a Worker secret. This key encrypts/decrypts tenant-owned
+supplier credentials but is not itself a Riya, TripJack or SerpApi credential:
+
+```bash
+npx wrangler secret put LIVE_TRAVEL_CREDENTIALS_KEY
+```
+
+Each client enters its own API keys, supplier account identifiers and certified endpoint URLs from
+**Live Agency → Suppliers**. The Worker encrypts those values before writing them to that client's
+D1 row and never returns saved credentials to the browser. Blank credential fields preserve the
+saved value; **Clear credentials** removes them. Keep Riya and TripJack in sandbox until supplier
+UAT/certification passes. SerpApi Google Flights is always non-bookable comparison data; only a
+revalidated Riya or TripJack offer can become a booking. Never point staging at production
+credentials or the production D1 database.
+
+### Default currency & live exchange rates (`cloudflare-worker/live-travel-fx.js`)
+
+Each agency sets its currency in **Live Agency → 💱 Currency**: INR, AED, SAR, QAR, OMR, KWD, BHD,
+USD, EUR or GBP, plus an FX buffer % (default 1.5), a rounding rule and two switches (allow other
+display currencies; WhatsApp currency from the customer's country code). Migration
+`0108_live_travel_currency.sql` creates the settings and rate tables. The FX columns on offers,
+quotes and bookings are added at runtime by `ltEnsureSchema`.
+
+- **Pricing order:** supplier fare (its own currency) → converted at live rate + buffer → supplier
+  markup added *in the agency currency* (so a fixed markup of 50 is 50 AED for every supplier) →
+  rounded. Offers keep `supplier_currency`/`supplier_total`/`fx_rate` for staff and accounting.
+  A fare whose currency has no known rate is never guessed: it stays in its supplier currency,
+  is flagged `fx_status='unconverted'` and is listed last.
+- **Rates:** USD-based, **one platform-wide snapshot** (`live_travel_fx_rates`, a single row
+  with no client key) shared by every Live Agency client. Every path (search, revalidate,
+  quotes, booking drift check, payments, wallet, WhatsApp, Currency page) reads that same row
+  on each request. There is no per-instance memory cache, so all clients and all Worker
+  instances price with identical rates.
+- **No API wastage:** the provider is called by the `*/15` cron at most **once per 6-hour UTC
+  slot** (00:00, 06:00, 12:00, 18:00), so **at most 4 calls per day for the whole platform**.
+  Every call counts, successful or not. A failed slot isn't retried until the next slot, and
+  the last snapshot stays in use (flagged stale after 12h). The slot, the daily count and a
+  60-second lock are claimed atomically in D1 before calling, so concurrent instances can't
+  double-call. Agencies can't trigger a refresh; `GET /live-travel/fx-rates` is read-only.
+  Rates come from Open Exchange Rates if the optional `FX_API_KEY` secret is set
+  (`npx wrangler secret put FX_API_KEY`; 4/day ≈ 120/month, inside its free 1,000/month),
+  otherwise from ExchangeRate-API's keyless open endpoint. On a brand-new deployment the first
+  request seeds the snapshot through the same slot claim. If nothing was ever stored, only the
+  USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
+- **Rate lock:** quotes and bookings store the rate they were priced at. Creating a booking
+  returns `409 code:'fx_drift'` when the market has moved past the buffer since the quote. Staff
+  can re-quote, or confirm to book at the quoted price (`confirm_fx_drift:true`).
+- **Wallet / payments:** the wallet ledger is kept in the agency currency only. Entries in another
+  currency convert at the linked booking's locked rate, or else at today's rate. Payments in
+  another currency convert into the booking currency. The original amount is kept in the notes.
+- **WhatsApp:** fares are shown in the agency currency. The customer can name one in their search
+  ("in INR", "rupees") or reply with just a currency to re-price the listed options. When the
+  setting is on, the phone prefix (+91 INR, +971 AED, +966 SAR, +974 QAR, +968 OMR, +965 KWD,
+  +973 BHD) picks the currency. Converted fares note that POOMAS checkout charges in the
+  supplier currency.
+
+## Product photoshoot folder (`frontend/ecom.html` — Ecommerce products)
+
+Each product has an optional **Photoshoot Folder Link** (`photoshoot_folder_url`) — a Google Drive
+folder shared as "Anyone with the link can view". When a customer's message names the product
+(exact name / short label, or every word of it in any order), `engineMaybeSendProductPhotoshoot`
+(worker.js) sends **5 random images** from that folder after the turn's reply. This is additive:
+the existing product image/media bundle and its tier/window rules are unchanged.
+
+- Folder listing: Drive API when the optional `GOOGLE_DRIVE_API_KEY` secret is set, then Drive's
+  public embedded folder view, then the normal `drive/folders/<id>` page. Cached in KV for 10 min.
+- Each image is fetched as a real JPEG/PNG ≤5 MB (Drive thumbnail → lh3 CDN → original, verified
+  by magic bytes) and posted to Chatwoot as an image attachment, so WhatsApp shows it inline.
+  The shuffled folder is walked until 5 images deliver. An empty/private folder or zero delivered
+  images is reported via the ops alert (`engineMaybeSendProductPhotoshoot`).
+- A truncated WhatsApp button tap ("Royal Sofa Se...") also counts as naming the product.
+- Run `wrangler d1 migrations apply leadvyne-d1 --remote` for
+  `migrations/0099_ecom_product_photoshoot_folder.sql` (the D1 product mirror also self-adds the
+  column on first save if the migration hasn't run yet).
+
+## Leadvyne v2 (Bot Behavior → 🧠 Leadvyne v2)
+
+Off by default (`bot_config.leadvyne_v2`); with it off nothing below runs. When on:
+
+- Staff messages sent from Chatwoot or the Chats page (and templates sent through Chatwoot) are added to `ConvHistory` (`by:'agent'` / `by:'template'`), labelled in the reply prompts, and shown in the Chats thread. They are processed ~8s after the webhook so the bot's own replies echoing back are recognised and skipped.
+- A Chatwoot **private note** starting `/bot` is a hidden instruction for that chat (LEADS `StaffNotes`, last 5, 14 days). `/bot clear` removes them.
+- **Hand back to bot** summarises the takeover into Customer Facts; customer messages during a takeover stay in `ConvHistory`.
+- Staff promises ("I'll call you at 5") are saved as Customer Facts (`Staff promised: …`).
+- Staff turns are excluded from loop detection; a short customer reply after staff wrote in Malayalam/Tamil/Hindi/Arabic etc. is answered in that language.
+- The daily 02:00 cron copies staff messages from Won/Converted chats into D1 `staff_win_examples` (created automatically); the latest 5 guide the bot's tone.
+- **360° welcome video:** set a Google Drive MP4 link (public, under 16 MB) and an optional caption (`{name}` works) under the toggle (`bot_config.v2_welcome_video_url` / `v2_welcome_video_caption`). A fresh lead — one who has never written to us, including lead-form leads — gets the video first, then the bot's reply. Each phone number is recorded once in D1 `v2_fresh_leads` (created automatically). A failed send is reported to ops and the chat continues normally.
+- **Video per ad or source:** `bot_config.v2_source_videos` = `[{match, video_url, caption}]`, edited as `match | link | caption` lines. `match` is looked for (case-insensitive) in the first message (click-to-WhatsApp ads pre-fill it), any ad referral Chatwoot passes on, the website-widget page, the lead-form `LeadSource`/`AdCampaign`/`AdName`/`LeadFormName`, and `inbox:<id>`. First match wins; otherwise the default video.
+- **Reply-gap nudge:** `v2_nudge_enabled`, `v2_nudge_hours` (default 2), `v2_nudge_text`. The 15-minute cron sends one check-in to a fresh lead whose chat has gone quiet after our side spoke last: only within 23h of the customer's last message, inside the follow-up send hours, never during handover/takeover/opt-out or after staff replied, translated to the lead's language. Marked in `v2_fresh_leads.nudged_at`.
+- **Staff quality score:** Reports → Team shows a Staff vs Bot table when v2 is on (`GET /reports/staff-score?days=30`): first responder to each customer message, median reply time, chats and win rate. It is built from `ConvHistory`, so it only counts staff messages recorded since v2 was switched on; staff names come from the Chatwoot sender (Chats-page sends show the Chatwoot token owner's name).
+
+## CEO Bot (`cloudflare-worker/ceo-bot.js` — Projects → 🤖 CEO Bot)
+An add-on on top of the Projects module: an AI operations manager for **staff tasks only**, on its
+own WhatsApp number. It never reads or replies to leads, never goes through Chatwoot or the lead
+engine, and never messages customers.
+
+**Who gets it**
+- Super-admin enables it per client in `admin.html` → client → 🤖 CEO Bot (`POST /admin/ceo-bot`,
+  creates the `ceo_bot_enabled` CLIENTS column on first use). It is in `PLAN_MANAGED_FIELDS`, so a
+  client session can't switch it on through the NocoDB passthrough.
+- Only the account owner (`authentik_email`) sees the tab or can call any `/ceo/*` route (403 for
+  staff, 403 when the flag is off). `GET /ceo/status` is the only route any session can read.
+- Staff never see the console or the chat log — only their own WhatsApp thread with the bot.
+
+**Setup (owner, Projects → 🤖 CEO Bot → Settings)**
+1. Add a separate number to the Meta WhatsApp Business account; paste its Phone number ID + a
+   permanent token (optionally the app secret if it's on the client's own Meta app). The leads
+   number is refused. Tokens are AES-GCM encrypted (`AI_KEY_ENC_SECRET`, same as AI provider keys).
+2. In Meta → WhatsApp → Configuration set the callback URL + verify token shown there
+   (`/ceo/wa/webhook/<hook_key>`), subscribe to `messages`. Requests are verified with the app
+   secret saved in step 1, else the platform `META_APP_SECRET`.
+3. Staff numbers default to User Management's WhatsApp (`team_whatsapp`); override per person.
+4. Optional: an approved Utility template whose body is just `{{1}}` — used when someone hasn't
+   messaged the CEO number in 24 hours (otherwise that send is logged as skipped).
+5. Apply `migrations/0110_ceo_bot.sql` (`wrangler d1 migrations apply leadvyne-d1 --remote`).
+
+**What it does** (each playbook can be turned on/off; runs on the existing `*/15` cron, client-local
+time via `tz_offset_min`, skips quiet hours and non-work days, once-only via `ceo_bot_runs`)
+- ☀️ Morning brief to the owner (open/due/overdue/blocked, workload, unassigned) + 📋 each staff
+  member's due/overdue list.
+- ⏰ Overdue nudges to staff with Done / Need more time / Blocked buttons (an hour after the brief,
+  once a day), then 🚨 owner escalation once per task per due date.
+- 🗣️ Optional daily standup; answers are stored and a mentioned blocker alerts the owner.
+- 🌙 Day wrap and 📊 weekly report with team scorecard; 👏 recognition for 3+ tasks, none overdue.
+- Staff replies: `DONE 12`, `BLOCKED 12 reason`, `DELAY 12 friday`, `PROGRESS 12 note` (free text
+  falls back to AI). Deadline extensions go to the owner for approval unless switched off.
+- Owner (WhatsApp or the web console): ask anything about the team's tasks, or instruct ("move #12
+  to Friday", "assign #8 to Priya"). Keywords: BRIEF, WRAP, REPORT, APPROVE n, REJECT n, PAUSE, RESUME.
+- Autonomy: Observe (reports only) / Suggest (every change waits for approval, default) / Auto-safe
+  (status/date/priority + staff messages run; reassign & new tasks wait) / Full.
+- Task changes write only `pm_tasks` (status, due date, priority, assignee, new task with
+  `ai_created=1`) and go through `pmQueueTaskLifecycle`, exactly like a Projects-page edit.
+- Monthly AI call cap (`ceo_bot_usage`); deterministic messages (brief/wrap/report) use no AI.
+
+**Team reports** — `GET /ceo/team-report?days=N` scorecard per member: done, on-time %, open,
+overdue, blocked, standups answered, updates sent to the bot, nudges, hours logged, and a score
+(40% on-time + 40% completion + 20% standups, over whatever has data). Shown in Projects → CEO Bot →
+Team report and, for the owner, in Dashboard → Reports → Team (above the agents table).
+
+Tests: `cloudflare-worker/ceo-bot.test.js` (node:sqlite against the real migrations) and
+`frontend/tests/ceo-bot.spec.js`.
+
+## Follow-up V3 (`cloudflare-worker/followup-v3.js` — 🔁 Follow-ups → Settings)
+
+Off until a client ticks **Enable Follow-up V3**. While it's on, the classic follow-up cron
+(`classicFollowupProcessClient`) and the Smart Follow-ups Durable Object skip that client, so nothing
+is sent twice. Turning it off hands the client straight back to the classic engine, settings intact.
+
+**No setup after switching on.** The switch-on (and an hourly pass from the 15-minute cron) runs
+`fv3Setup`:
+- Nudges 1-2 (session messages, 1h/6h): keeps what the client wrote, fills only empty ones from
+  presets, and has the AI write a Variant B so the existing auto-weighted A/B testing starts on day one.
+- Day 1 / 3 / 7 and re-engage templates: submitted to Meta as MARKETING templates
+  (`lv_followup_s3`, `_s4`, `_s5`, `_reengage`; variables = lead first name, business name, what
+  they asked about), polled hourly, and plugged into the ladder step once APPROVED. A template the
+  client picked themselves is never replaced. Rejected ones show in the checklist with a
+  **Resubmit** button. Needs the WhatsApp Cloud API connected (Settings → Channels); nudges 1-2 work
+  without it.
+
+**Sending rules** (`fv3Decide`, also what the lead card shows):
+- Only leads created after the first switch-on (unless "Also follow up leads from before V3").
+- Stops for good on opt-out, won/converted, booked stages, lost/closed, an ecommerce order placed
+  around/after the conversation, or any extra stage the client lists. Pauses while handed over or
+  when a person on the team replied last (the bot's own instant reply and our own follow-up message
+  don't count).
+- Every step waits at least `min_gap_hours` (default 3) after the previous follow-up — fixes nudge 1
+  and 2 landing minutes apart after a night-time silence.
+- Night quiet hours (default 21:00–09:00, client timezone) instead of a narrow evening window.
+- A session nudge that can't go out inside WhatsApp's 24h window is skipped; template steps more than
+  3 days overdue are dropped rather than sent late (protects old leads).
+- Template steps go out at the hour this lead usually writes, once it has written 3+ times.
+- Nudges 1-2 answer the lead's last objection with the Objection Playbook's approved response
+  (logged as variant `OBJ`).
+- Re-engage after `reengage_after_days` (30) of silence, up to `reengage_max` (2), once its template
+  is approved.
+- Caps: 50/day in the first week, then `daily_cap` (300); `lead_cap_30d` (8) per lead.
+- Failures: Meta frequency hold (131049) → retry in 24h; customer stopped marketing (131050) → no
+  more template steps; token/template errors → whole account waits 6h; others retry with backoff, then
+  skip the step. Each failure is logged once a day per lead/step/code with a plain-language fix.
+- A reply credits only the latest follow-up, within `attribution_hours` (72).
+
+**Follow-up status** — every lead card (CRM) and chat (header line + info panel) shows whether a
+follow-up was sent, whether the customer replied, what's next and when (or why nothing is next),
+and lets staff skip the next step (`frontend/followup-status.js`, `GET /followups/v3/lead`).
+
+**Report** (same tab): leads in a sequence, leads re-engaged, conversions and revenue after a reply
+(last-touch: the latest replied follow-up within 14 days before the lead was won/booked/ordered,
+revenue = DealValue or the order total), opt-outs, per-step reply/conversion/opt-out rate with a
+health flag, A/B results, an anonymised same-industry benchmark (3+ V3 accounts with 20+ sends), weekly
+trend, reply heatmap by weekday × hour, send problems with fixes, click-through to the leads. A
+Monday-morning summary email goes to the account owner (`weekly_digest`, needs `RESEND_API_KEY`).
+
+Delivered/read ticks aren't tracked: the Chatwoot webhook only subscribes to `message_created`, and
+templates go straight through the Graph API, whose status webhooks go to Chatwoot.
+
+**On by default for new signups**: set `FOLLOWUP_V3_NEW_CLIENTS = "on"` in wrangler `[vars]`.
+Unset = each client switches it on themselves.
+
+Storage: `migrations/0114_followup_v3.sql` (also created lazily by `fv3EnsureSchema`, so it works
+before the migration is applied). Routes: `/followups/v3/settings|setup|lead|lead/skip|upcoming|report|report/leads`.
+
+## Campaigns and Follow-ups inside the dashboard (`frontend/broadcast.html`, embedded)
+
+Campaigns no longer opens in a separate browser tab. The dashboard menu has **📢 Campaigns** and
+**🔁 Follow-ups**; both show `#pageBroadcast`, one iframe of `broadcast.html?embed=1&view=…`, loaded on
+first visit. Later clicks switch its workspace by `postMessage` (`{source:'lv-dash', type:'workspace',
+ws}`) instead of reloading. The page reports switches it makes itself back
+(`{source:'lv-campaigns', …}`) so the menu highlight follows. `embed=1` hides the page's own top bar;
+if it can't load the account it shows a retry message instead of reloading the dashboard.
+Follow-ups follows the Campaigns permission and the "Campaigns" module toggle.
+
+- **Campaigns workspace** — left sidebar (Home, Send, Recurring, Templates, Intelligence). Home has
+  four "start a campaign" cards with live counts (leads reachable in the 24h window, approved
+  templates, active flows), audience tiles, the follow-up status and the Chat Page links.
+- **Follow-ups workspace** — one header (V3 status pill, Pause/Turn on, headline numbers) and a
+  switcher: **Overview** (performance report, or the classic step stats plus a "turn on V3" card),
+  **Sequence** (the ladder as a row of steps showing what's set and each step's reply rate; click a
+  step to jump to its editor), **Upcoming** (next 24h, with Skip), **Leads** (the classic in-sequence
+  list), **Settings** (V3 switch, setup checklist, settings; classic send window and Smart Follow-ups
+  while V3 is off).
+
+Opened directly (e.g. B2B's 📢 links, `broadcast.html?stage=…`) the page still works on its own, with
+a Campaigns / Follow-ups switch in its top bar. `#fuengine`/`#followups` in the URL open Follow-ups.

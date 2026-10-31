@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>Leadvyne · Live Travel Agency</title>
+<meta name="theme-color" content="#073B4C">
+<style>
+:root{--navy:#073B4C;--navy2:#0B5368;--teal:#00A896;--cyan:#E8F8F6;--gold:#FFB703;--bg:#F4F7F9;--card:#fff;--ink:#102A35;--muted:#667E87;--line:#DDE7EB;--red:#C63C3C;--green:#138A62;--shadow:0 4px 18px rgba(7,59,76,.08)}
+*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--bg)}button,input,select,textarea{font:inherit}button{cursor:pointer}
+body{display:flex;flex-direction:column;overflow:hidden}.top{height:62px;background:var(--navy);color:#fff;display:flex;align-items:center;padding:0 20px;gap:12px;flex:none}.brand{font-size:19px;font-weight:800}.brand i{font-style:normal;color:#67E8D5}.live{background:#E62E2E;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.05em}.back{margin-left:auto;color:#D7ECF2;border:1px solid #467383;background:transparent;border-radius:8px;padding:8px 12px}.shell{display:flex;flex:1;min-height:0}.side{width:225px;background:#fff;border-right:1px solid var(--line);padding:16px 10px;overflow:auto;flex:none}.nav{width:100%;border:0;background:transparent;border-radius:9px;padding:11px 12px;text-align:left;color:var(--muted);font-weight:650;margin:2px 0}.nav:hover{background:var(--bg)}.nav.active{background:var(--cyan);color:#05766B}.main{flex:1;overflow:auto;padding:22px}.pagehead{display:flex;align-items:center;gap:12px;margin-bottom:18px}.pagehead h1{font-size:23px;margin:0}.pagehead p{color:var(--muted);margin:4px 0 0;font-size:13px}.actions{margin-left:auto;display:flex;gap:8px}.btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 13px;border-radius:8px;font-weight:650}.btn:hover{box-shadow:var(--shadow)}.btn.primary{background:var(--teal);border-color:var(--teal);color:#fff}.btn.danger{color:var(--red)}.btn.sm{padding:6px 9px;font-size:12px}.btn:disabled{opacity:.5;cursor:not-allowed}.grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:12px}.stat,.card{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}.stat{padding:16px}.stat b{font-size:24px;display:block}.stat span{font-size:12px;color:var(--muted)}.card{padding:17px;margin-top:14px}.card h3{margin:0 0 13px;font-size:15px}.twocol{display:grid;grid-template-columns:1.4fr 1fr;gap:14px}.formgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.field label{display:block;color:var(--muted);font-size:11px;font-weight:750;margin-bottom:5px;text-transform:uppercase;letter-spacing:.03em}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px;color:var(--ink)}.field textarea{min-height:75px;resize:vertical}.span2{grid-column:span 2}.span4{grid-column:1/-1}.tablewrap{overflow:auto;background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:14px}table{width:100%;border-collapse:collapse;min-width:760px}th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);text-align:left;padding:11px;border-bottom:1px solid var(--line);background:#FAFCFD}td{padding:12px 11px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}tr:last-child td{border-bottom:0}.badge{display:inline-flex;border-radius:999px;padding:4px 9px;font-size:10.5px;font-weight:800;background:#EEF3F5;color:#50666F}.badge.ok{background:#DDF6EB;color:var(--green)}.badge.warn{background:#FFF2CC;color:#8A5A00}.badge.bad{background:#FCE3E3;color:var(--red)}.notice{padding:11px 13px;background:#FFF7DE;border:1px solid #F5D87A;border-radius:9px;color:#705617;font-size:12.5px;margin:12px 0}.offer{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px;margin:10px 0;display:grid;grid-template-columns:1fr auto;gap:10px}.offer h3{margin:0 0 4px;font-size:16px}.sub{color:var(--muted);font-size:12px}.price{text-align:right;font-size:20px;font-weight:800}.empty{text-align:center;color:var(--muted);padding:45px 20px}.supplier{display:grid;grid-template-columns:1fr repeat(4,minmax(100px,140px)) auto;gap:10px;align-items:end;padding:14px 0;border-bottom:1px solid var(--line)}.supplier:last-child{border-bottom:0}.supplier strong{text-transform:capitalize}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#A9B8BD;margin-right:5px}.dot.ok{background:var(--green)}.modalback{display:none;position:fixed;inset:0;background:rgba(4,35,45,.55);z-index:100;align-items:center;justify-content:center;padding:18px}.modalback.show{display:flex}.modal{width:min(650px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.3)}.modalhd{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center}.modalhd h2{font-size:17px;margin:0}.modalbody{padding:20px}.modalft{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--line)}.error{background:#FCE3E3;color:var(--red);padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px}.ap{position:relative}.aplist{display:none;position:absolute;z-index:20;left:0;right:0;top:100%;margin-top:3px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:0 10px 28px rgba(7,59,76,.16);max-height:300px;overflow:auto;min-width:260px}.aplist.show{display:block}.apopt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid #F0F4F6}.apopt:last-child{border-bottom:0}.apopt b{display:inline-block;min-width:36px;color:var(--navy)}.apopt.on,.apopt:hover{background:var(--cyan)}.apopt .sub{display:block;padding-left:40px}.aphead{padding:7px 11px;font-size:10.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;background:#FAFCFD}.aphint{font-size:11.5px;margin-top:4px;min-height:15px;color:var(--muted)}.aphint.ok{color:var(--green)}.aphint.warn{color:#8A5A00}.aphint.bad{color:var(--red)}.routebar{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}.routechips{flex:1;min-width:240px}.chiprow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px}.chiplbl{font-size:11px;font-weight:750;color:var(--muted);min-width:76px}.chip{border:1px solid var(--line);background:#F7FAFB;color:var(--ink);border-radius:999px;padding:4px 10px;font-size:12px;font-weight:650}.chip:hover{background:var(--cyan);border-color:#9FDCD3}.btn.on{background:#FFF7DE;border-color:#F5D87A}.quick{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.stepper{display:flex;gap:5px;align-items:center}.stepper input{text-align:center}.wmgrid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start}.wmgrid>div:last-child{position:sticky;top:0}.wmtoggle{display:flex;gap:8px;align-items:center;font-size:15px}.wmitem{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;background:#FBFDFD}.wmitem.off{opacity:.6}.wmhead{display:flex;gap:6px;align-items:center}.wmhead input[type=text],.wmhead input:not([type]){border:1px solid var(--line);border-radius:8px;padding:8px}.wmemoji{width:52px;text-align:center}.wmtitle{flex:1;min-width:0;font-weight:700}.wmfields{margin-top:9px}.wmphone{background:#E9E2D8;border-radius:22px;border:8px solid #1F2C33;overflow:hidden;height:600px;display:flex;flex-direction:column}.wmbar{background:#075E54;color:#fff;padding:12px 14px;font-weight:700;font-size:14px}.wmbar span{display:block;font-weight:400;font-size:11px;opacity:.8}.wmchat{flex:1;overflow:auto;padding:12px 10px;font-size:13px}.wmbubble{max-width:85%;padding:7px 9px;border-radius:8px;margin:6px 0;box-shadow:0 1px 1px rgba(0,0,0,.1);line-height:1.4}.wmbubble.out{background:#D9FDD3;margin-left:auto;width:max-content}.wmbubble.in{background:#fff}.wmbtn{border-top:1px solid #E5E5E5;margin:8px -9px -7px;padding:8px;text-align:center;color:#008069;font-weight:650}.wmsheet{background:#fff;border-radius:12px 12px 0 0;margin:12px -10px -12px;padding-bottom:8px;box-shadow:0 -2px 10px rgba(0,0,0,.1)}.wmsheethd{text-align:center;font-weight:700;padding:12px;border-bottom:1px solid #EEE}.wmsec{color:#008069;font-size:12px;font-weight:700;padding:10px 14px 4px}.wmrow{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #F2F2F2}.wmrow>div{flex:1}.wmrow b{display:block;font-weight:500}.wmrow span{display:block;color:#667781;font-size:12px}.wmrow i{width:16px;height:16px;border:2px solid #8696A0;border-radius:50%}@media(max-width:1100px){.wmgrid{grid-template-columns:1fr}.wmgrid>div:last-child{position:static}.wmphone{height:auto;max-height:600px}}.spinner{display:inline-block;width:15px;height:15px;border:2px solid #BCD1D6;border-top-color:var(--teal);border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:900px){.side{width:70px}.nav{font-size:0;text-align:center}.nav::first-letter{font-size:20px}.grid{grid-template-columns:repeat(2,1fr)}.formgrid{grid-template-columns:repeat(2,1fr)}.supplier{grid-template-columns:1fr 1fr}.main{padding:14px}.twocol{grid-template-columns:1fr}}
+@media(max-width:520px){.brand{font-size:15px}.grid,.formgrid{grid-template-columns:1fr}.span2,.span4{grid-column:auto}.side{display:none}.offer{grid-template-columns:1fr}.price{text-align:left}.pagehead{align-items:flex-start}.actions{flex-direction:column}}
+</style>
+</head>
+<body>
+<header class="top"><div class="brand">Leadvyne<i>.</i> Travel</div><span class="live">● LIVE AGENCY</span><button class="back" onclick="goLegacy()">← Existing Agency</button></header>
+<div class="shell"><aside class="side" id="nav"></aside><main class="main" id="main"><div class="empty"><span class="spinner"></span><p>Loading Live Agency…</p></div></main></div>
+<div class="modalback" id="modal"><div class="modal"><div class="modalhd"><h2 id="modalTitle"></h2></div><div class="modalbody" id="modalBody"></div><div class="modalft" id="modalFoot"></div></div></div>
+<script>
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const qs=new URLSearchParams(location.search),clientId=qs.get('client')||'',sessionToken=qs.get('token')||'';
+let page='dashboard',data={suppliers:[],poomas_settings:{enabled:false,checkout_base:'https://flypoomas.com'},searches:[],quotes:[],bookings:[],service_requests:[],wallet:[],wallet_entries:[],agents:[],commissions:[],currency_settings:{default_currency:'AED',fx_buffer_pct:1.5,rounding:'auto',allow_currency_override:1,auto_detect_phone_currency:1},supported_currencies:[],fx:null},lastSearch=null;
+const pages=[['dashboard','📊 Dashboard'],['search','🔎 Flight Search'],['quotes','📄 Quotes'],['bookings','🎫 Bookings'],['servicing','🔄 Servicing'],['wallet','💰 Wallet'],['agents','👥 Agents'],['suppliers','🔌 Suppliers'],['settings','⚙️ Travel Settings']];
+const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const agencyCur=()=>data.currency_settings?.default_currency||'AED';
+const curDecimals=c=>['KWD','BHD','OMR'].includes(String(c).toUpperCase())?3:2;
+const money=(n,c=agencyCur())=>`${esc(c)} ${Number(n||0).toLocaleString(undefined,{minimumFractionDigits:curDecimals(c),maximumFractionDigits:curDecimals(c)})}`;
+const currencyCodes=()=>(data.supported_currencies||[]).map(x=>x.code).length?(data.supported_currencies||[]).map(x=>x.code):['INR','AED','SAR','QAR','OMR','KWD','BHD','USD','EUR','GBP'];
+const currencyOptions=(sel=agencyCur())=>currencyCodes().map(c=>`<option ${c===sel?'selected':''}>${c}</option>`).join('');
+function fxAge(at){if(!at)return 'no live rate yet';const m=Math.round((Date.now()-new Date(at).getTime())/60000);return m<1?'just now':m<60?`${m} min ago`:`${Math.round(m/60)} h ago`}
+function auth(extra={}){return {'Authorization':'Bearer '+sessionToken,'Content-Type':'application/json',...extra}}
+async function api(path,opts={}){const r=await fetch(WORKER_BASE+path,{...opts,headers:auth(opts.headers||{})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(d.error||`HTTP ${r.status}`),{code:d.code,data:d});return d}
+function goLegacy(){location.href=`travel-agency.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}`}
+function statusBadge(s){const ok=['complete','confirmed','ticketed','paid','accepted','approved','completed','configured'],bad=['failed','cancelled','rejected','expired','not_configured'];return `<span class="badge ${ok.includes(s)?'ok':bad.includes(s)?'bad':'warn'}">${esc(String(s||'—').replaceAll('_',' '))}</span>`}
+function drawNav(){$('nav').innerHTML=pages.map(([k,l])=>`<button class="nav ${page===k?'active':''}" onclick="show('${k}')">${l}</button>`).join('')}
+function head(title,sub,actions=''){return `<div class="pagehead"><div><h1>${title}</h1><p>${sub}</p></div>${actions?`<div class="actions">${actions}</div>`:''}</div>`}
+function show(k){page=k;drawNav();({dashboard:renderDashboard,search:renderSearch,quotes:renderQuotes,bookings:renderBookings,servicing:renderServicing,wallet:renderWallet,agents:renderAgents,suppliers:renderSuppliers,settings:renderTravelSettings}[k])()}
+function renderDashboard(){
+ const supplierReady=data.suppliers.filter(s=>s.enabled&&s.credentials_configured).length, cur=agencyCur(),inCur=data.bookings.filter(b=>(b.currency||cur)===cur),revenue=inCur.reduce((a,b)=>a+Number(b.amount_paid||0),0),due=inCur.reduce((a,b)=>a+Number(b.balance_due||0),0);
+ const poomasOn=data.poomas_settings?.enabled;
+ $('main').innerHTML=head('Live Travel Dashboard','Real-time supplier search, booking and servicing operations')+`<div class="grid"><div class="stat"><b>${data.searches.length}</b><span>Recent searches</span></div><div class="stat"><b>${data.bookings.length}</b><span>Bookings</span></div><div class="stat"><b>${money(revenue)}</b><span>Collected</span></div><div class="stat"><b>${money(due)}</b><span>Balance due</span></div></div><div class="twocol"><div class="card"><h3>Recent bookings</h3>${bookingTable(data.bookings.slice(0,7))}</div><div class="card"><h3>Supplier health</h3>${data.suppliers.map(s=>`<p><span class="dot ${s.credentials_configured||s.supplier==='poomas'?'ok':''}"></span><b style="text-transform:capitalize">${esc(supplierName(s))}</b> · ${s.enabled?'Enabled':'Disabled'} · ${s.supplier==='poomas'?(poomasOn?'POOMAS checkout enabled':'Toggle on in Suppliers'):(s.credentials_configured?'Credentials ready':'Needs secrets')}</p>`).join('')}<div class="notice">${supplierReady} supplier${supplierReady===1?'':'s'} ready. SerpApi is comparison-only. POOMAS offers can be held and then completed via POOMAS checkout.</div></div></div>`;
+}
+// ── Flight Search: airport picker, quick buttons and per-agency memory ──
+// Airports as CODE|City|Airport|Country|extra search words. Gulf ⇄ India first (where these
+// agencies sell most), then the usual onward hubs. Any other valid IATA code still works — it is
+// just flagged "not in the list" so a typo (DBX for DXB) gets a second look before searching.
+const LT_AIRPORTS=`DXB|Dubai|Dubai International|UAE|
+DWC|Dubai|Al Maktoum (Dubai World Central)|UAE|jebel ali
+AUH|Abu Dhabi|Zayed International|UAE|
+SHJ|Sharjah|Sharjah International|UAE|
+RKT|Ras Al Khaimah|Ras Al Khaimah International|UAE|rak
+FJR|Fujairah|Fujairah International|UAE|
+AAN|Al Ain|Al Ain International|UAE|
+DOH|Doha|Hamad International|Qatar|
+MCT|Muscat|Muscat International|Oman|
+SLL|Salalah|Salalah International|Oman|
+BAH|Manama|Bahrain International|Bahrain|bahrain
+KWI|Kuwait City|Kuwait International|Kuwait|kuwait
+RUH|Riyadh|King Khalid International|Saudi Arabia|ksa
+JED|Jeddah|King Abdulaziz International|Saudi Arabia|jiddah umrah
+DMM|Dammam|King Fahd International|Saudi Arabia|khobar
+MED|Madinah|Prince Mohammad bin Abdulaziz|Saudi Arabia|medina umrah
+AHB|Abha|Abha International|Saudi Arabia|
+TIF|Taif|Taif International|Saudi Arabia|
+CCJ|Kozhikode|Calicut International|India|calicut karipur malappuram
+COK|Kochi|Cochin International|India|cochin ernakulam nedumbassery
+TRV|Thiruvananthapuram|Trivandrum International|India|trivandrum
+CNN|Kannur|Kannur International|India|
+IXE|Mangaluru|Mangalore International|India|mangalore
+BOM|Mumbai|Chhatrapati Shivaji Maharaj International|India|bombay
+DEL|New Delhi|Indira Gandhi International|India|delhi
+BLR|Bengaluru|Kempegowda International|India|bangalore
+MAA|Chennai|Chennai International|India|madras
+HYD|Hyderabad|Rajiv Gandhi International|India|
+CCU|Kolkata|Netaji Subhas Chandra Bose International|India|calcutta
+AMD|Ahmedabad|Sardar Vallabhbhai Patel International|India|
+GOI|Goa|Dabolim|India|
+GOX|Goa|Manohar International (Mopa)|India|mopa
+PNQ|Pune|Pune|India|
+COK|Kochi|Cochin International|India|
+TRZ|Tiruchirappalli|Tiruchirappalli International|India|trichy
+IXM|Madurai|Madurai|India|
+CJB|Coimbatore|Coimbatore International|India|
+LKO|Lucknow|Chaudhary Charan Singh International|India|
+ATQ|Amritsar|Sri Guru Ram Dass Jee International|India|
+JAI|Jaipur|Jaipur International|India|
+VNS|Varanasi|Lal Bahadur Shastri International|India|
+GAY|Gaya|Gaya|India|
+CMB|Colombo|Bandaranaike International|Sri Lanka|
+MLE|Malé|Velana International|Maldives|male maldives
+KTM|Kathmandu|Tribhuvan International|Nepal|
+DAC|Dhaka|Hazrat Shahjalal International|Bangladesh|
+CGP|Chattogram|Shah Amanat International|Bangladesh|chittagong
+KHI|Karachi|Jinnah International|Pakistan|
+LHE|Lahore|Allama Iqbal International|Pakistan|
+ISB|Islamabad|Islamabad International|Pakistan|
+MNL|Manila|Ninoy Aquino International|Philippines|
+CEB|Cebu|Mactan–Cebu International|Philippines|
+BKK|Bangkok|Suvarnabhumi|Thailand|
+DMK|Bangkok|Don Mueang|Thailand|
+HKT|Phuket|Phuket International|Thailand|
+KUL|Kuala Lumpur|Kuala Lumpur International|Malaysia|klia
+SIN|Singapore|Changi|Singapore|
+CGK|Jakarta|Soekarno–Hatta International|Indonesia|
+DPS|Bali|Ngurah Rai International|Indonesia|denpasar
+HKG|Hong Kong|Hong Kong International|Hong Kong|
+NRT|Tokyo|Narita International|Japan|
+HND|Tokyo|Haneda|Japan|
+ICN|Seoul|Incheon International|South Korea|
+PEK|Beijing|Beijing Capital International|China|
+PVG|Shanghai|Pudong International|China|
+CAN|Guangzhou|Baiyun International|China|
+SYD|Sydney|Kingsford Smith|Australia|
+MEL|Melbourne|Melbourne|Australia|
+IST|Istanbul|Istanbul Airport|Türkiye|turkey
+SAW|Istanbul|Sabiha Gökçen|Türkiye|turkey
+GYD|Baku|Heydar Aliyev International|Azerbaijan|
+TBS|Tbilisi|Tbilisi International|Georgia|
+EVN|Yerevan|Zvartnots International|Armenia|
+ALA|Almaty|Almaty International|Kazakhstan|
+TAS|Tashkent|Islam Karimov Tashkent International|Uzbekistan|
+CAI|Cairo|Cairo International|Egypt|
+AMM|Amman|Queen Alia International|Jordan|
+BEY|Beirut|Rafic Hariri International|Lebanon|
+NBO|Nairobi|Jomo Kenyatta International|Kenya|
+ADD|Addis Ababa|Bole International|Ethiopia|
+JNB|Johannesburg|O. R. Tambo International|South Africa|
+LHR|London|Heathrow|United Kingdom|uk england
+LGW|London|Gatwick|United Kingdom|uk england
+MAN|Manchester|Manchester|United Kingdom|uk
+CDG|Paris|Charles de Gaulle|France|
+FRA|Frankfurt|Frankfurt|Germany|
+MUC|Munich|Munich|Germany|
+AMS|Amsterdam|Schiphol|Netherlands|
+ZRH|Zurich|Zurich|Switzerland|
+FCO|Rome|Fiumicino|Italy|
+MXP|Milan|Malpensa|Italy|
+MAD|Madrid|Barajas|Spain|
+BCN|Barcelona|El Prat|Spain|
+JFK|New York|John F. Kennedy International|USA|nyc
+EWR|Newark|Newark Liberty International|USA|new york nyc
+ORD|Chicago|O'Hare International|USA|
+IAD|Washington|Dulles International|USA|dc
+LAX|Los Angeles|Los Angeles International|USA|
+SFO|San Francisco|San Francisco International|USA|
+YYZ|Toronto|Pearson International|Canada|`.split('\n').reduce((out,line)=>{const [code,city,name,country,words='']=line.split('|');if(!out.some(a=>a.code===code))out.push({code,city,name,country,hay:`${code} ${city} ${name} ${country} ${words}`.toLowerCase()});return out},[]);
+const LT_POPULAR_ROUTES=[['DXB','COK'],['DXB','CCJ'],['SHJ','CCJ'],['AUH','TRV'],['DOH','COK'],['RUH','CCJ'],['DXB','BOM'],['JED','CCJ']];
+const ltAirport=code=>LT_AIRPORTS.find(a=>a.code===String(code||'').toUpperCase());
+const ltAirportLabel=code=>{const a=ltAirport(code);return a?`${a.city} (${a.code})`:String(code||'').toUpperCase()};
+
+// Memory: server search history (data.searches — shared by the whole agency, any device) plus a
+// per-browser store for things the server doesn't keep — the half-filled form, starred routes and
+// a longer recent list. localStorage can be blocked (private mode) — every access is guarded.
+const ltMemKey=()=>`lt_search_mem_${clientId}`;
+function ltMem(){try{return {draft:null,favs:[],recent:[],...JSON.parse(localStorage.getItem(ltMemKey())||'{}')}}catch(e){return {draft:null,favs:[],recent:[]}}}
+function ltMemSave(patch){const m={...ltMem(),...patch};try{localStorage.setItem(ltMemKey(),JSON.stringify(m))}catch(e){}return m}
+function ltRecentRoutes(){
+  const seen=new Set(),out=[];
+  const all=[...(data.searches||[]).map(s=>({o:s.origin,d:s.destination,at:s.created_at})),...ltMem().recent].sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')));
+  for(const r of all){const k=`${r.o}-${r.d}`;if(!r.o||!r.d||seen.has(k))continue;seen.add(k);out.push([r.o,r.d])}
+  return out.slice(0,8);
+}
+// How often this agency has used each airport — ranks the suggestion list and picks the default origin.
+function ltAirportUse(){
+  const n={};
+  for(const s of data.searches||[]){n[s.origin]=(n[s.origin]||0)+2;n[s.destination]=(n[s.destination]||0)+2}
+  for(const r of ltMem().recent){n[r.o]=(n[r.o]||0)+1;n[r.d]=(n[r.d]||0)+1}
+  for(const k of ltMem().favs){const [o,d]=k.split('-');n[o]=(n[o]||0)+3;n[d]=(n[d]||0)+3}
+  return n;
+}
+function ltHomeOrigin(){const n={};for(const s of data.searches||[])n[s.origin]=(n[s.origin]||0)+1;for(const r of ltMem().recent)n[r.o]=(n[r.o]||0)+1;return Object.entries(n).sort((a,b)=>b[1]-a[1])[0]?.[0]||''}
+
+// Text typed in an airport box → the code to search. Exact code wins, then a single city match
+// ("dubai" → DXB; "london" is ambiguous so the agent must pick from the list).
+function ltResolveAirport(text){
+  const t=String(text||'').trim(),up=t.toUpperCase(),m=up.match(/\(([A-Z]{3})\)\s*$/);
+  if(m)return {code:m[1],known:!!ltAirport(m[1])};
+  if(/^[A-Z]{3}$/.test(up))return {code:up,known:!!ltAirport(up)};
+  const low=t.toLowerCase();if(!low)return {code:'',known:false};
+  const city=LT_AIRPORTS.filter(a=>a.city.toLowerCase()===low);
+  if(city.length===1)return {code:city[0].code,known:true};
+  const hits=ltSuggest(t);
+  if(hits.length===1)return {code:hits[0].code,known:true};
+  return {code:'',known:false,ambiguous:city.length>1||hits.length>1};
+}
+function ltSuggest(text){
+  const q=String(text||'').trim().toLowerCase(),use=ltAirportUse();
+  if(!q)return Object.keys(use).sort((a,b)=>use[b]-use[a]).map(ltAirport).filter(Boolean).slice(0,8);
+  const score=a=>a.code.toLowerCase()===q?100:a.code.toLowerCase().startsWith(q)?60:a.city.toLowerCase().startsWith(q)?50:a.hay.split(/[\s()–-]+/).some(w=>w.startsWith(q))?30:a.hay.includes(q)?10:0;
+  return LT_AIRPORTS.map(a=>({a,s:score(a)})).filter(x=>x.s).sort((x,y)=>(y.s+(use[y.a.code]||0))-(x.s+(use[x.a.code]||0))).map(x=>x.a).slice(0,8);
+}
+
+function airportField(id,label,ph){return `<div class="field"><label>${label}</label><div class="ap"><input id="${id}" placeholder="${ph}" autocomplete="off" required oninput="apInput('${id}')" onfocus="apInput('${id}')" onkeydown="apKey(event,'${id}')" onblur="setTimeout(()=>apClose('${id}'),150)"><div class="aplist" id="${id}List"></div></div><div class="aphint" id="${id}Hint"></div></div>`}
+function apInput(id){
+  const el=$(id),list=$(id+'List'),hits=ltSuggest(el.value);
+  list.innerHTML=hits.length?(el.value.trim()?'':'<div class="aphead">Used most by your agency</div>')+hits.map((a,i)=>`<div class="apopt ${i===0&&el.value.trim()?'on':''}" onmousedown="apPick('${id}','${a.code}')"><b>${a.code}</b> ${esc(a.city)} <span class="sub">${esc(a.name)} · ${esc(a.country)}</span></div>`).join(''):el.value.trim()?'<div class="aphead">No match in the list — type the 3-letter IATA code</div>':'';
+  list.classList.toggle('show',!!list.innerHTML);if(list.innerHTML)$(id+'Hint').className='aphint',$(id+'Hint').textContent='';else apHint(id);ltDraftSave();
+}
+function apClose(id){$(id+'List')?.classList.remove('show');apHint(id)}
+function apPick(id,code){$(id).value=code;apClose(id);ltDraftSave();if(id==='origin'&&!$('destination').value)$('destination').focus()}
+function apKey(e,id){
+  const opts=[...$(id+'List').querySelectorAll('.apopt')],cur=opts.findIndex(o=>o.classList.contains('on'));
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();if(!$(id+'List').classList.contains('show'))return apInput(id);const n=opts.length?(cur+(e.key==='ArrowDown'?1:-1)+opts.length)%opts.length:-1;opts.forEach((o,i)=>o.classList.toggle('on',i===n))}
+  else if((e.key==='Enter'||e.key==='Tab')&&$(id+'List').classList.contains('show')&&cur>=0){if(e.key==='Enter')e.preventDefault();opts[cur].dispatchEvent(new MouseEvent('mousedown'))}
+  else if(e.key==='Escape')apClose(id);
+}
+function apHint(id){
+  const v=$(id)?.value.trim(),h=$(id+'Hint');if(!h)return;
+  if(!v){h.className='aphint';h.textContent='';return}
+  const r=ltResolveAirport(v),a=ltAirport(r.code);
+  if(a){h.className='aphint ok';h.textContent=`✓ ${a.code} · ${a.name}, ${a.country}`}
+  else if(r.code){h.className='aphint warn';h.textContent=`⚠ ${r.code} isn't in the airport list — double-check the code`}
+  else{h.className='aphint bad';h.textContent=r.ambiguous?'Several airports match — pick one from the list':'Unknown airport — pick from the list or type the IATA code'}
+}
+function routeChip(o,d,{fav=false}={}){return `<button type="button" class="chip" title="${esc(ltAirport(o)?.city||o)} → ${esc(ltAirport(d)?.city||d)}" onclick="setRoute('${o}','${d}')">${fav?'★ ':''}${esc(o)} → ${esc(d)}</button>`}
+function routeChipsHtml(){
+  const favs=ltMem().favs.map(k=>k.split('-')),recent=ltRecentRoutes().filter(([o,d])=>!ltMem().favs.includes(`${o}-${d}`)),known=new Set([...favs,...recent].map(r=>r.join('-')));
+  const popular=LT_POPULAR_ROUTES.filter(r=>!known.has(r.join('-'))).slice(0,6);
+  const row=(label,items)=>items.length?`<div class="chiprow"><span class="chiplbl">${label}</span>${items.join('')}</div>`:'';
+  return row('⭐ Saved',favs.map(([o,d])=>routeChip(o,d,{fav:true})))+row('🕘 Recent',recent.map(([o,d])=>routeChip(o,d)))+row('🔥 Popular',popular.map(([o,d])=>routeChip(o,d)));
+}
+function drawRouteChips(){if($('routeChips'))$('routeChips').innerHTML=routeChipsHtml();const fav=$('favBtn');if(fav){const r=curRoute();const on=r&&ltMem().favs.includes(r);fav.textContent=on?'★ Saved route':'☆ Save route';fav.classList.toggle('on',!!on)}}
+function curRoute(){const o=ltResolveAirport($('origin')?.value).code,d=ltResolveAirport($('destination')?.value).code;return o&&d?`${o}-${d}`:''}
+function setRoute(o,d){$('origin').value=o;$('destination').value=d;apHint('origin');apHint('destination');drawRouteChips();ltDraftSave();if(!$('departure').value)$('departure').focus()}
+function swapRoute(){const o=$('origin').value;$('origin').value=$('destination').value;$('destination').value=o;apHint('origin');apHint('destination');drawRouteChips();ltDraftSave()}
+function toggleFavRoute(){const r=curRoute();if(!r)return searchErr('Pick both airports first, then save the route.');const favs=ltMem().favs;ltMemSave({favs:favs.includes(r)?favs.filter(x=>x!==r):[r,...favs].slice(0,10)});drawRouteChips()}
+function isoDay(offset,from){const d=from?new Date(from+'T00:00:00'):new Date();d.setDate(d.getDate()+offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function quickDate(id,offset){if(id==='returnDate'){const dep=$('departure').value;if(!dep)return searchErr('Pick the departure date first.');$('returnDate').value=isoDay(offset,dep)}else{$('departure').value=isoDay(offset);if($('returnDate').value&&$('returnDate').value<$('departure').value)$('returnDate').value=''}ltDraftSave()}
+function stepPax(id,delta){const el=$(id),v=Math.min(Number(el.max||9),Math.max(Number(el.min||0),Number(el.value||0)+delta));el.value=v;ltDraftSave()}
+function searchErr(msg){const el=$('searchErr');if(el){el.innerHTML=msg?`<div class="error">${esc(msg)}</div>`:''}return false}
+const LT_FORM_FIELDS=['tripType','origin','destination','cabin','departure','returnDate','adults','children','infants','currency','leadId'];
+function ltDraftSave(){if(!$('origin'))return;const draft={};for(const f of LT_FORM_FIELDS)draft[f]=$(f)?.value??'';ltMemSave({draft});const r=$('favBtn');if(r)drawRouteChips()}
+function ltDraftRestore(){
+  const d=ltMem().draft||{};
+  for(const f of LT_FORM_FIELDS)if(d[f]!=null&&d[f]!==''&&$(f)&&!(f==='currency'&&$(f).disabled))$(f).value=d[f];
+  // A remembered date that has since passed is useless — drop it rather than fail the search.
+  const today=isoDay(0);if($('departure').value&&$('departure').value<today){$('departure').value='';$('returnDate').value=''}
+  if(!$('origin').value)$('origin').value=ltHomeOrigin();
+  toggleReturn();apHint('origin');apHint('destination');drawRouteChips();
+}
+function clearSearchForm(){ltMemSave({draft:null});renderSearch();$('origin').value='';apHint('origin');$('origin').focus()}
+function repeatLastSearch(){const s=(data.searches||[])[0];if(!s)return searchErr('No previous search yet.');$('tripType').value=s.trip_type==='one_way'?'one_way':'round_trip';setRoute(s.origin,s.destination);$('cabin').value=s.cabin||'economy';for(const [f,k] of [['adults','adults'],['children','children'],['infants','infants']])$(f).value=s[k]??$(f).value;const today=isoDay(0);$('departure').value=s.departure_date>=today?s.departure_date:'';$('returnDate').value=s.return_date&&s.return_date>=today?s.return_date:'';$('leadId').value=s.lead_id||'';toggleReturn();ltDraftSave();if(!$('departure').value)searchErr('The last search was for a date that has passed — pick a new departure date.')}
+// Checked in the browser before anything goes to the suppliers — the server would otherwise take
+// the first 3 letters of whatever was typed ("Dubai" → DUB) and search the wrong airport.
+function validateSearch(){
+  searchErr('');
+  const o=ltResolveAirport($('origin').value),d=ltResolveAirport($('destination').value);
+  if(!o.code)return searchErr(`Origin: ${o.ambiguous?'several airports match — pick one from the list':'pick an airport from the list or type its 3-letter code'}.`);
+  if(!d.code)return searchErr(`Destination: ${d.ambiguous?'several airports match — pick one from the list':'pick an airport from the list or type its 3-letter code'}.`);
+  if(o.code===d.code)return searchErr('Origin and destination are the same airport.');
+  const unknown=[o,d].filter(x=>!x.known).map(x=>x.code);
+  if(unknown.length&&!confirm(`${unknown.join(' and ')} ${unknown.length>1?"aren't":"isn't"} in the airport list. Search anyway?`))return false;
+  $('origin').value=o.code;$('destination').value=d.code;apHint('origin');apHint('destination');
+  const dep=$('departure').value,ret=$('returnDate').value,today=isoDay(0);
+  if(dep&&dep<today)return searchErr('Departure date is in the past.');
+  if($('tripType').value==='round_trip'&&ret&&ret<dep)return searchErr('Return date is before the departure date.');
+  if(Number($('infants').value)>Number($('adults').value))return searchErr('Each infant needs an adult — infants cannot exceed adults.');
+  return true;
+}
+function ltRememberSearch(o,d){const recent=[{o,d,at:new Date().toISOString()},...ltMem().recent.filter(r=>`${r.o}-${r.d}`!==`${o}-${d}`)].slice(0,15);ltMemSave({recent})}
+function renderSearch(){
+ const paxField=(id,label,min,val)=>`<div class="field"><label>${label}</label><div class="stepper"><button type="button" class="btn sm" onclick="stepPax('${id}',-1)" aria-label="Fewer ${label}">−</button><input id="${id}" type="number" min="${min}" max="9" value="${val}" onchange="ltDraftSave()"><button type="button" class="btn sm" onclick="stepPax('${id}',1)" aria-label="More ${label}">+</button></div></div>`;
+ $('main').innerHTML=head('Flight Search','Compare live Riya, TripJack, POOMAS and Google Flights results',`<button class="btn" onclick="repeatLastSearch()" ${(data.searches||[]).length?'':'disabled'}>🔁 Repeat last search</button><button class="btn" onclick="clearSearchForm()">🧹 Clear</button>`)+`<div class="card"><form class="formgrid" onsubmit="runSearch(event)" onchange="ltDraftSave()"><div class="field"><label>Trip type</label><select id="tripType" onchange="toggleReturn()"><option value="round_trip">Round trip</option><option value="one_way">One way</option></select></div>${airportField('origin','Origin — city or code','Dubai or DXB')}${airportField('destination','Destination — city or code','Kochi or COK')}<div class="field"><label>Cabin</label><select id="cabin"><option value="economy">Economy</option><option value="premium_economy">Premium economy</option><option value="business">Business</option><option value="first">First</option></select></div><div class="span4 routebar"><button type="button" class="btn sm" onclick="swapRoute()" title="Swap origin and destination">⇄ Swap</button><button type="button" class="btn sm" id="favBtn" onclick="toggleFavRoute()">☆ Save route</button><div id="routeChips" class="routechips"></div></div><div class="field"><label>Departure</label><input id="departure" type="date" min="${isoDay(0)}" required><div class="quick"><button type="button" class="chip" onclick="quickDate('departure',0)">Today</button><button type="button" class="chip" onclick="quickDate('departure',1)">Tomorrow</button><button type="button" class="chip" onclick="quickDate('departure',7)">+1 week</button><button type="button" class="chip" onclick="quickDate('departure',30)">+1 month</button></div></div><div class="field" id="returnField"><label>Return</label><input id="returnDate" type="date" min="${isoDay(0)}" required><div class="quick"><button type="button" class="chip" onclick="quickDate('returnDate',3)">3 nights</button><button type="button" class="chip" onclick="quickDate('returnDate',7)">1 week</button><button type="button" class="chip" onclick="quickDate('returnDate',14)">2 weeks</button><button type="button" class="chip" onclick="quickDate('returnDate',30)">1 month</button></div></div>${paxField('adults','Adults',1,1)}${paxField('children','Children',0,0)}${paxField('infants','Infants',0,0)}<div class="field"><label>Show prices in</label><select id="currency" ${data.currency_settings?.allow_currency_override?'':'disabled title="Locked to the agency currency in 💱 Currency"'}>${currencyOptions()}</select></div><div class="field span2"><label>CRM Lead ID (optional)</label><input id="leadId" placeholder="Link this search to a lead"></div><div class="span4" id="searchErr"></div><div class="span4"><button class="btn primary" id="searchBtn">🔎 Search live fares</button></div></form></div><div id="results">${renderOffers(lastSearch?.offers||[])}</div>`;
+ ltDraftRestore();
+}
+function toggleReturn(){const one=$('tripType').value==='one_way';$('returnField').style.display=one?'none':'';$('returnDate').required=!one}
+async function runSearch(e){e.preventDefault();if(!validateSearch())return;const btn=$('searchBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Searching suppliers…';try{const payload={trip_type:$('tripType').value,origin:$('origin').value,destination:$('destination').value,departure_date:$('departure').value,return_date:$('returnDate').value,adults:$('adults').value,children:$('children').value,infants:$('infants').value,cabin:$('cabin').value,currency:$('currency').value,lead_id:$('leadId').value};lastSearch=await api('/live-travel/search',{method:'POST',body:JSON.stringify(payload)});ltRememberSearch(payload.origin,payload.destination);$('results').innerHTML=renderOffers(lastSearch.offers);await refresh(false);drawRouteChips()}catch(err){$('results').innerHTML=`<div class="error">${esc(err.message)}</div>`}finally{btn.disabled=false;btn.textContent='🔎 Search live fares'}}
+function offerActions(o){
+  if(o.supplier==='poomas'||o.supplier==='custom'){
+    const checkoutUrl=o.checkout_url||(o.raw&&o.raw._checkout_url)||'';
+    if(!o.bookable)return `<span class="badge warn">Indicative only</span>`;
+    return `<button class="btn sm primary" onclick="quoteModal(${o.id})">Create quote</button>${checkoutUrl?`<a class="btn sm" href="${esc(checkoutUrl)}" target="_blank" rel="noopener">Checkout on ${o.supplier==='custom'?esc(customName()):'POOMAS'} ↗</a>`:''}`;
+  }
+  if(o.bookable)return `<button class="btn sm" onclick="revalidate(${o.id})">✓ Revalidate</button><button class="btn sm primary" onclick="quoteModal(${o.id})">Create quote</button>`;
+  return `<span class="badge warn">Comparison only</span>`;
+}
+// Staff-only: what the supplier actually charges, and the rate used.
+function fxLine(o){
+  if(o.fx_status==='unconverted')return `<div class="sub"><span class="badge warn">No ${esc(agencyCur())} rate</span> shown in supplier currency</div>`;
+  if(o.fx_status!=='converted')return '';
+  return `<div class="sub fxline">Supplier: ${money(o.supplier_total,o.supplier_currency)} @ ${Number(o.fx_rate).toFixed(4)} · markup ${money(o.markup_amount,o.currency)}</div>`;
+}
+function renderOffers(list){
+  if(!list.length)return `<div class="empty">Search results will appear here.</div>`;
+  const hasSerpapi=list.some(o=>o.supplier==='serpapi'), hasPoomas=list.some(o=>o.supplier==='poomas');
+  let notice='Prices can change. Revalidate a Riya or TripJack fare immediately before booking.';
+  if(hasSerpapi)notice+=' Google Flights/SerpApi offers are indicative only.';
+  if(hasPoomas)notice+=' POOMAS offers can be held and checked out on the POOMAS platform.';
+  const fx=lastSearch?.fx;
+  if(list.some(o=>o.fx_status==='converted')&&fx)notice+=` Supplier fares converted to ${esc(fx.currency)} at live rates (${esc(fx.source||'rates')}, updated ${fxAge(fx.fetched_at)}${fx.stale?', stale':''}) incl. ${fx.buffer_pct}% FX buffer.`;
+  if(list.some(o=>o.fx_status==='unconverted'))notice+=' Some fares could not be converted (no exchange rate) and are listed last in their supplier currency.';
+  return `<div class="notice">${notice}</div>${list.map(o=>`<div class="offer"><div><h3>${esc(o.airline_name||o.airline_code||'Flight')} <span class="badge ${o.supplier==='poomas'||o.supplier==='custom'?'ok':''}">${esc(o.supplier==='custom'?customName():o.supplier)}</span></h3><div class="sub">${esc(o.flight_numbers||'Flight details from supplier')} · ${esc(o.cabin)} ${o.seats_left!=null?'· '+o.seats_left+' seats left':''}</div><div class="sub">Baggage and fare rules are saved with the offer.</div>${fxLine(o)}</div><div><div class="price">${money(o.total_amount,o.currency)}</div><div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">${offerActions(o)}</div></div></div>`).join('')}`;
+}
+async function revalidate(id){try{const d=await api('/live-travel/offers/revalidate',{method:'POST',body:JSON.stringify({offer_id:id})});alert(d.price_changed?'Fare revalidated. The price changed; review the new total.':'Fare and availability revalidated.');if(lastSearch){const f=lastSearch.offers.findIndex(o=>o.id===id);if(f>=0)lastSearch.offers[f]=d.offer;renderSearch()}}catch(e){alert(e.message)}}
+function quoteModal(offerId){openModal('Create customer quote',`<div id="merr"></div><div class="formgrid"><div class="field span2"><label>Customer name</label><input id="qname" required></div><div class="field"><label>Phone</label><input id="qphone"></div><div class="field"><label>Email</label><input id="qemail" type="email"></div><div class="field"><label>Service fee</label><input id="qfee" type="number" min="0" value="0"></div><div class="field"><label>Discount</label><input id="qdiscount" type="number" min="0" value="0"></div><div class="field span2"><label>Valid until</label><input id="qvalid" type="datetime-local"></div><div class="field span4"><label>Notes</label><textarea id="qnotes"></textarea></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="createQuote(${offerId})">Create quote</button>`)}
+async function createQuote(offerId){try{await api('/live-travel/quotes',{method:'POST',body:JSON.stringify({offer_id:offerId,customer_name:$('qname').value,customer_phone:$('qphone').value,customer_email:$('qemail').value,service_fee:$('qfee').value,discount:$('qdiscount').value,valid_until:$('qvalid').value?new Date($('qvalid').value).toISOString():null,notes:$('qnotes').value})});closeModal();await refresh();show('quotes')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function renderQuotes(){$('main').innerHTML=head('Quotes','Create, share and convert live fare quotes')+`<div class="tablewrap"><table><thead><tr><th>Quote</th><th>Customer</th><th>Flight</th><th>Total</th><th>Valid until</th><th>Status</th><th></th></tr></thead><tbody>${data.quotes.map(q=>`<tr><td><b>${esc(q.quote_ref)}</b></td><td>${esc(q.customer_name||'—')}<div class="sub">${esc(q.customer_phone)}</div></td><td>${esc(q.airline_name||'—')}<div class="sub">${esc(q.flight_numbers||'')}</div></td><td>${money(q.total_amount,q.currency)}</td><td>${q.valid_until?new Date(q.valid_until).toLocaleString():'—'}</td><td>${statusBadge(q.status)}</td><td><button class="btn sm" onclick="shareQuote(${q.id})">WhatsApp</button> <button class="btn sm" onclick="printQuote(${q.id})">PDF</button> <button class="btn sm" onclick="setQuote(${q.id},'sent')">Mark sent</button> <button class="btn sm primary" onclick="bookingModal(${q.id})">Book</button></td></tr>`).join('')||`<tr><td colspan="7" class="empty">No quotes yet.</td></tr>`}</tbody></table></div>`}
+function shareQuote(id){const q=data.quotes.find(x=>x.id===id);if(!q)return;const text=`Flight Quote ${q.quote_ref}\n${q.airline_name||''} ${q.flight_numbers||''}\nTotal: ${q.currency} ${Number(q.total_amount).toFixed(2)}\nValid until: ${q.valid_until?new Date(q.valid_until).toLocaleString():'subject to availability'}\nPrices are subject to supplier revalidation.`;const phone=String(q.customer_phone||'').replace(/\D/g,'');if(navigator.share)navigator.share({title:`Flight Quote ${q.quote_ref}`,text}).catch(()=>{});else window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`,'_blank')}
+function printQuote(id){const q=data.quotes.find(x=>x.id===id);if(!q)return;const w=window.open('','_blank');w.document.write(`<!doctype html><title>${esc(q.quote_ref)}</title><style>body{font:15px Arial;color:#123;padding:45px;max-width:760px;margin:auto}h1{color:#073B4C}.box{border:1px solid #ddd;border-radius:10px;padding:20px;margin:20px 0}.total{font-size:25px;font-weight:bold}small{color:#667}</style><h1>Leadvyne Travel</h1><p>Flight quotation <b>${esc(q.quote_ref)}</b></p><div class="box"><h2>${esc(q.airline_name||'Flight')} ${esc(q.flight_numbers||'')}</h2><p>Prepared for: ${esc(q.customer_name||'Customer')}</p><p class="total">${money(q.total_amount,q.currency)}</p><p>Valid until: ${q.valid_until?new Date(q.valid_until).toLocaleString():'Subject to availability'}</p></div><small>Fare and availability are subject to supplier revalidation before booking and payment.</small><script>print()<\/script>`);w.document.close()}
+async function setQuote(id,status){try{await api('/live-travel/quotes',{method:'PATCH',body:JSON.stringify({id,status})});await refresh();show('quotes')}catch(e){alert(e.message)}}
+function bookingModal(quoteId){openModal('Passenger & booking record',`<div id="merr"></div><p class="sub">Create the booking record after the selected fare has been revalidated. Add the lead passenger now; more passenger tools remain available in booking details.</p><div class="formgrid"><div class="field"><label>Type</label><select id="ptype"><option value="adult">Adult</option><option value="child">Child</option><option value="infant">Infant</option></select></div><div class="field"><label>Title</label><select id="ptitle"><option>Mr</option><option>Ms</option><option>Mrs</option><option>Master</option></select></div><div class="field"><label>First name</label><input id="pfirst"></div><div class="field"><label>Last name</label><input id="plast"></div><div class="field"><label>Date of birth</label><input id="pdob" type="date"></div><div class="field"><label>Nationality</label><input id="pnat"></div><div class="field"><label>Passport number</label><input id="ppass"></div><div class="field"><label>Passport expiry</label><input id="pexp" type="date"></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="createBooking(${quoteId})">Create booking</button>`)}
+async function createBooking(quoteId){try{const passenger={passenger_type:$('ptype').value,title:$('ptitle').value,first_name:$('pfirst').value,last_name:$('plast').value,date_of_birth:$('pdob').value,nationality:$('pnat').value,passport_number:$('ppass').value,passport_expiry:$('pexp').value};const send=confirm_fx_drift=>api('/live-travel/bookings',{method:'POST',body:JSON.stringify({quote_id:quoteId,passengers:[passenger],confirm_fx_drift})});try{await send(false)}catch(err){if(err.code!=='fx_drift'||!confirm(err.message+'\n\nBook at the quoted price anyway?'))throw err;await send(true)}closeModal();await refresh();show('bookings')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function bookingTable(list){return `<div class="tablewrap" style="margin:0"><table><thead><tr><th>Booking</th><th>Customer</th><th>PNR</th><th>Total</th><th>Payment</th><th>Status</th><th></th></tr></thead><tbody>${list.map(b=>`<tr><td><b>${esc(b.booking_ref)}</b><div class="sub">${esc(b.supplier)}</div></td><td>${esc(b.customer_name||'—')}</td><td>${esc(b.pnr||'Pending')}</td><td>${money(b.total_amount,b.currency)}</td><td>${statusBadge(b.payment_status)}<div class="sub">Due ${money(b.balance_due,b.currency)}</div></td><td>${statusBadge(b.status)}</td><td><button class="btn sm" onclick="bookingDetail(${b.id})">Open</button></td></tr>`).join('')||`<tr><td colspan="7" class="empty">No bookings yet.</td></tr>`}</tbody></table></div>`}
+function renderBookings(){$('main').innerHTML=head('Bookings','PNR, tickets, payments and live supplier status')+bookingTable(data.bookings)}
+function customName(){const s=data.suppliers.find(x=>x.supplier==='custom');return s?supplierName(s):'Custom API'}
+function poomasBookingActions(b){
+  if(b.supplier==='custom')return `<button class="btn primary" onclick="poomasCheckout(${b.id})">Complete on ${esc(customName())} ↗</button>`;
+  const isPoomas=b.supplier==='poomas';
+  if(!isPoomas)return `<button class="btn" onclick="bookingAction(${b.id},'sync')">Sync</button><button class="btn primary" onclick="bookingAction(${b.id},'${b.status==='draft'?'book':'ticket'}')">${b.status==='draft'?'Confirm booking':'Issue ticket'}</button>`;
+  const holdBtn=b.status==='draft'?`<button class="btn primary" onclick="holdPoomas(${b.id})">🔒 Hold fare</button>`:'';
+  const checkoutBtn=b.checkout_url?`<a class="btn primary" href="${esc(b.checkout_url)}" target="_blank" rel="noopener">Complete on POOMAS ↗</a>`:`<button class="btn primary" onclick="poomasCheckout(${b.id})">Complete on POOMAS ↗</button>`;
+  const syncBtn=`<button class="btn" onclick="bookingAction(${b.id},'sync')">Sync status</button>`;
+  return (b.status==='draft'?holdBtn:'')+checkoutBtn+syncBtn;
+}
+async function bookingDetail(id){try{const d=await api(`/live-travel/bookings?id=${id}`),b=d.booking;openModal(`${b.booking_ref} · ${b.pnr||'PNR pending'}`,`<div class="grid"><div class="stat"><b>${money(b.total_amount,b.currency)}</b><span>Total</span></div><div class="stat"><b>${money(b.amount_paid,b.currency)}</b><span>Paid</span></div><div class="stat"><b>${money(b.balance_due,b.currency)}</b><span>Due</span></div><div class="stat"><b>${esc(b.status)}</b><span>Status</span></div></div>${b.supplier==='poomas'&&b.hold_ref?`<div class="notice">POOMAS hold reference: <b>${esc(b.hold_ref)}</b>${b.hold_expires_at?' · Expires '+new Date(b.hold_expires_at).toLocaleString():''}</div>`:''}<div class="card"><h3>Passengers</h3>${d.passengers.map(p=>`<p><b>${esc(p.title)} ${esc(p.first_name)} ${esc(p.last_name)}</b> · ${esc(p.passenger_type)} · ${esc(p.passport_number||'Passport pending')}</p>`).join('')||'<p class="sub">No passenger saved.</p>'}</div><div class="card"><h3>Payments</h3>${d.payments.map(p=>`<p>${esc(p.payment_ref)} · ${money(p.amount,p.currency)} · ${esc(p.method)}</p>`).join('')||'<p class="sub">No payment received.</p>'}</div>`,`<button class="btn" onclick="passengerModal(${b.id})">Add passenger</button><button class="btn" onclick="paymentModal(${b.id})">Add payment</button><button class="btn" onclick="serviceModal(${b.id})">Service request</button>${poomasBookingActions(b)}<button class="btn" onclick="closeModal()">Close</button>`)}catch(e){alert(e.message)}}
+async function holdPoomas(id){try{await api(`/live-travel/bookings/hold`,{method:'POST',body:JSON.stringify({booking_id:id})});closeModal();await refresh();bookingDetail(id)}catch(e){alert('Hold failed: '+e.message)}}
+async function poomasCheckout(id){try{const d=await api(`/live-travel/bookings/book`,{method:'POST',body:JSON.stringify({booking_id:id})});if(d.checkout_url){window.open(d.checkout_url,'_blank')}else{alert('No checkout URL available. Check the checkout settings in Suppliers.')}}catch(e){alert(e.message)}}
+function passengerModal(id){openModal('Add passenger',`<div id="merr"></div><div class="formgrid"><div class="field"><label>Type</label><select id="npType"><option value="adult">Adult</option><option value="child">Child</option><option value="infant">Infant</option></select></div><div class="field"><label>Title</label><input id="npTitle"></div><div class="field"><label>First name</label><input id="npFirst"></div><div class="field"><label>Last name</label><input id="npLast"></div><div class="field"><label>Date of birth</label><input id="npDob" type="date"></div><div class="field"><label>Nationality</label><input id="npNat"></div><div class="field"><label>Passport</label><input id="npPass"></div><div class="field"><label>Passport expiry</label><input id="npExp" type="date"></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="savePassenger(${id})">Add passenger</button>`)}
+async function savePassenger(id){try{await api('/live-travel/passengers',{method:'POST',body:JSON.stringify({booking_id:id,passenger_type:$('npType').value,title:$('npTitle').value,first_name:$('npFirst').value,last_name:$('npLast').value,date_of_birth:$('npDob').value,nationality:$('npNat').value,passport_number:$('npPass').value,passport_expiry:$('npExp').value})});closeModal();await refresh();bookingDetail(id)}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+async function bookingAction(id,action){try{await api(`/live-travel/bookings/${action}`,{method:'POST',body:JSON.stringify({booking_id:id})});closeModal();await refresh();show('bookings')}catch(e){alert(e.message)}}
+function paymentModal(id){openModal('Record payment',`<div id="merr"></div><div class="formgrid"><div class="field"><label>Amount</label><input id="payAmount" type="number" min="0.01" step="0.001"></div><div class="field"><label>Currency</label><select id="payCur">${currencyOptions((data.bookings.find(b=>b.id===id)||{}).currency||agencyCur())}</select></div><div class="field span2"><label>Method</label><select id="payMethod"><option>cash</option><option>bank_transfer</option><option>card</option><option>payment_link</option><option>wallet</option></select></div><div class="field span4"><label>External reference</label><input id="payRef"></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="savePayment(${id})">Save payment</button>`)}
+async function savePayment(id){try{await api('/live-travel/payments',{method:'POST',body:JSON.stringify({booking_id:id,amount:$('payAmount').value,currency:$('payCur').value,method:$('payMethod').value,external_ref:$('payRef').value})});closeModal();await refresh();show('bookings')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function serviceModal(id){openModal('New servicing request',`<div id="merr"></div><div class="formgrid"><div class="field span2"><label>Request type</label><select id="srvType"><option value="cancel">Cancellation</option><option value="refund">Refund</option><option value="reissue">Reissue</option><option value="name_correction">Name correction</option><option value="baggage">Add baggage</option><option value="seat">Seat request</option><option value="other">Other</option></select></div><div class="field span2"><label>Estimated amount</label><input id="srvAmount" type="number" min="0"></div><div class="field span4"><label>Reason</label><textarea id="srvReason"></textarea></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveService(${id})">Create request</button>`)}
+async function saveService(id){try{await api('/live-travel/service-requests',{method:'POST',body:JSON.stringify({booking_id:id,request_type:$('srvType').value,estimated_amount:$('srvAmount').value,reason:$('srvReason').value})});closeModal();await refresh();show('servicing')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function renderServicing(){$('main').innerHTML=head('Servicing','Cancellations, refunds, reissues and post-booking requests')+`<div class="tablewrap"><table><thead><tr><th>Request</th><th>Booking / PNR</th><th>Type</th><th>Reason</th><th>Estimate</th><th>Status</th></tr></thead><tbody>${data.service_requests.map(s=>`<tr><td><b>${esc(s.request_ref)}</b></td><td>${esc(s.booking_ref||s.booking_id)}<div class="sub">${esc(s.pnr||'')}</div></td><td>${esc(s.request_type.replaceAll('_',' '))}</td><td>${esc(s.reason||'—')}</td><td>${money(s.estimated_amount,s.currency)}</td><td>${statusBadge(s.status)}</td></tr>`).join('')||`<tr><td colspan="6" class="empty">No servicing requests.</td></tr>`}</tbody></table></div>`}
+function renderWallet(){const rows=data.wallet||[],entries=data.wallet_entries||[];$('main').innerHTML=head('Wallet & Credit','Agency wallet, receipts, debits, refunds and commissions',`<button class="btn primary" onclick="walletModal()">＋ Ledger entry</button>`)+`<div class="grid">${rows.length?rows.map(w=>`<div class="stat"><b>${money(w.balance,w.currency)}</b><span>${esc(w.currency)} balance</span></div>`).join(''):'<div class="stat"><b>—</b><span>No wallet activity</span></div>'}</div><div class="tablewrap"><table><thead><tr><th>Entry</th><th>Agent</th><th>Type</th><th>Amount</th><th>Balance after</th><th>Created</th></tr></thead><tbody>${entries.map(w=>`<tr><td><b>${esc(w.entry_ref)}</b></td><td>${esc(w.agent_ref)}</td><td>${statusBadge(w.entry_type)}</td><td>${money(w.amount,w.currency)}</td><td>${money(w.balance_after,w.currency)}</td><td>${new Date(w.created_at).toLocaleString()}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No ledger entries.</td></tr>'}</tbody></table></div>`}
+function walletModal(){openModal('Wallet ledger entry',`<div id="merr"></div><div class="formgrid"><div class="field span2"><label>Agent reference</label><input id="wagent" value="owner"></div><div class="field"><label>Type</label><select id="wtype"><option>credit</option><option>debit</option><option>refund</option><option>commission</option></select></div><div class="field"><label>Entered in</label><select id="wcur">${currencyOptions()}</select></div><div class="field span4"><div class="notice" style="margin:0">The ledger is kept in ${esc(agencyCur())}. Other currencies are converted at the live rate (or the booking's locked rate).</div></div><div class="field span2"><label>Amount</label><input id="wamount" type="number" min="0.01"></div><div class="field span2"><label>Notes</label><input id="wnotes"></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveWallet()">Save entry</button>`)}
+async function saveWallet(){try{await api('/live-travel/wallet',{method:'POST',body:JSON.stringify({agent_ref:$('wagent').value,entry_type:$('wtype').value,currency:$('wcur').value,amount:$('wamount').value,notes:$('wnotes').value})});closeModal();await refresh();show('wallet')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function renderAgents(){$('main').innerHTML=head('Agents & Commissions','Master Agent → Agent → Sub-Agent hierarchy with credit controls',`<button class="btn primary" onclick="agentModal()">＋ Add agent</button>`)+`<div class="twocol"><div class="card"><h3>Agency network</h3>${data.agents.map(a=>`<p><b>${esc(a.name)}</b> ${statusBadge(a.status)}<br><span class="sub">${esc(a.agent_type.replaceAll('_',' '))} · ${esc(a.agent_ref)} · Parent ${esc(a.parent_agent_ref)} · Credit ${money(a.credit_limit)}</span></p>`).join('')||'<p class="sub">No agents added.</p>'}</div><div class="card"><h3>Commissions</h3>${data.commissions.map(c=>`<p><b>${esc(c.booking_ref)}</b> · ${esc(c.agent_name||c.agent_ref)}<br><span class="sub">${money(c.commission_amount,c.currency)} · ${esc(c.status)}</span></p>`).join('')||'<p class="sub">No commissions recorded.</p>'}<button class="btn sm" onclick="commissionModal()">＋ Commission</button></div></div>`}
+function agentModal(){const parents=['<option value="owner">Owner</option>',...data.agents.map(a=>`<option value="${esc(a.agent_ref)}">${esc(a.name)}</option>`)].join('');openModal('Add agency user',`<div id="merr"></div><div class="formgrid"><div class="field span2"><label>Name</label><input id="aname"></div><div class="field"><label>Type</label><select id="atype"><option value="master_agent">Master Agent</option><option value="agent">Agent</option><option value="sub_agent">Sub-Agent</option></select></div><div class="field"><label>Parent</label><select id="aparent">${parents}</select></div><div class="field span2"><label>Email</label><input id="aemail" type="email"></div><div class="field"><label>Phone</label><input id="aphone"></div><div class="field"><label>Credit limit</label><input id="acredit" type="number" min="0"></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveAgent()">Add agent</button>`)}
+async function saveAgent(){try{await api('/live-travel/agents',{method:'POST',body:JSON.stringify({name:$('aname').value,agent_type:$('atype').value,parent_agent_ref:$('aparent').value,email:$('aemail').value,phone:$('aphone').value,credit_limit:$('acredit').value})});closeModal();await refresh();show('agents')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function commissionModal(){if(!data.bookings.length){alert('Create a booking first.');return}const bookings=data.bookings.map(b=>`<option value="${b.id}">${esc(b.booking_ref)}</option>`).join(''),agents=['<option value="owner">Owner</option>',...data.agents.map(a=>`<option value="${esc(a.agent_ref)}">${esc(a.name)}</option>`)].join('');openModal('Add commission',`<div id="merr"></div><div class="formgrid"><div class="field span2"><label>Booking</label><select id="cbooking">${bookings}</select></div><div class="field span2"><label>Agent</label><select id="cagent">${agents}</select></div><div class="field span2"><label>Type</label><select id="ctype"><option value="fixed">Fixed</option><option value="percent">Percent</option></select></div><div class="field span2"><label>Value</label><input id="cvalue" type="number" min="0"></div></div>`,`<button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveCommission()">Save commission</button>`)}
+async function saveCommission(){try{await api('/live-travel/commissions',{method:'POST',body:JSON.stringify({booking_id:$('cbooking').value,agent_ref:$('cagent').value,commission_type:$('ctype').value,commission_value:$('cvalue').value})});closeModal();await refresh();show('agents')}catch(e){$('merr').innerHTML=`<div class="error">${esc(e.message)}</div>`}}
+function supplierName(s){return s.supplier==='custom'?(s.endpoints?.name||'Custom API'):s.supplier}
+function customCurrencyOptions(cur){return `<option value="">Agency default (${esc(agencyCur())}, converted)</option>`+(data.supported_currencies||[]).map(c=>`<option value="${esc(c.code)}" ${c.code===cur?'selected':''}>${esc(c.code)}${c.name?' — '+esc(c.name):''}</option>`).join('')}
+function supplierFields(s){
+  if(s.supplier==='custom'){
+    const e=s.endpoints||{},keySaved=(s.credential_fields||[]).includes('api_key');
+    return `<div class="field span2"><label>Connector name</label><input id="cname-custom" value="${esc(e.name||'')}" placeholder="e.g. TripCod"></div><div class="field span2"><label>API key (X-API-Key)</label><input id="skey-custom" type="password" autocomplete="new-password" placeholder="${keySaved?'Saved — leave blank to keep':'pmsk_…'}"></div>`
+      +`<div class="field span2"><label>Search endpoint</label><input id="search-custom" value="${esc(e.search||'')}" placeholder="https://api.tripcod.com/api/search"></div><div class="field span2"><label>Default currency</label><select id="ccur-custom">${customCurrencyOptions(e.currency||'')}</select></div>`
+      +`<div class="field span2"><label>Checkout link (booking site)</label><input id="checkout-custom" value="${esc(e.checkout||'')}" placeholder="https://tripcod.com"></div><div class="field span2"><label>Checkout session endpoint (optional)</label><input id="checkout_session-custom" value="${esc(e.checkout_session||'')}" placeholder="https://api.tripcod.com/api/checkout/session"></div>`
+      +`<div class="field span4"><p class="sub" style="margin:0">Search sends <code>POST</code> with your <code>X-API-Key</code> and <code>{origin, destination, departureDate, adults, cabinClass, tripType, currency}</code>. Customers pay on the checkout session URL when that endpoint is set (<code>{bookingId, whatsappPhone}</code> → <code>{checkoutUrl}</code>), otherwise on <code>&lt;checkout link&gt;/book?fareId=…</code> — or put <code>{fareId}</code> in the checkout link to use your own path. Fares are shown in the default currency exactly as charged at checkout. The connector works only after the API key, search endpoint and a checkout option are saved.</p></div>`;
+  }
+  if(s.supplier==='poomas')return `<div class="field span4"><p class="sub" style="margin:0">POOMAS uses a platform-level integration key — no per-client API credentials are required. Configure checkout and API URLs in the POOMAS Settings card below.</p></div>`;
+  const saved=k=>(s.credential_fields||[]).includes(k)?'Saved — enter only to replace':'Enter value';
+  if(s.supplier==='serpapi')return `<div class="field span2"><label>SerpApi API key</label><input id="skey-${s.supplier}" type="password" autocomplete="new-password" placeholder="${saved('api_key')}"></div><div class="field span2"><label>Search endpoint</label><input id="search-${s.supplier}" value="${esc(s.endpoints?.search||'https://serpapi.com/search.json')}"></div>`;
+  const riya=s.supplier==='riya';
+  return `<div class="field"><label>API key</label><input id="skey-${s.supplier}" type="password" autocomplete="new-password" placeholder="${saved('api_key')}"></div>${riya?`<div class="field"><label>API secret</label><input id="ssecret-${s.supplier}" type="password" autocomplete="new-password" placeholder="${saved('api_secret')}"></div><div class="field"><label>Client ID</label><input id="sclient-${s.supplier}" type="password" autocomplete="new-password" placeholder="${saved('client_id')}"></div>`:''}${['search','revalidate','book','ticket','sync','cancel'].map(k=>`<div class="field"><label>${k} endpoint</label><input id="${k}-${s.supplier}" value="${esc(s.endpoints?.[k]||'')}" placeholder="https://supplier.example/${k}"></div>`).join('')}`;
+}
+function renderSuppliers(){
+  const ps=data.poomas_settings||{};
+  const poomasCard=`<div class="card" style="border-color:var(--teal)"><div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><h3 style="margin:0">POOMAS Settings</h3><span class="badge ok">Platform integration</span></div><div class="notice">POOMAS uses a shared platform integration key. Enable POOMAS in the supplier row above to include its fares in flight searches. Configure the URLs below only if you have a custom POOMAS deployment.</div><div class="formgrid"><div class="field span2"><label>API base URL</label><input id="poomasApi" value="${esc(ps.api_base||'https://api.flypoomas.com')}"></div><div class="field span2"><label>Checkout base URL</label><input id="poomasCheckout" value="${esc(ps.checkout_base||'https://flypoomas.com')}"></div><div class="span4" style="display:flex;gap:8px"><button class="btn primary" onclick="savePoomasSettings()">Save POOMAS settings</button></div></div></div>`;
+  $('main').innerHTML=head('Client Supplier Settings','Each client connects and controls their own SerpApi, Riya, TripJack, POOMAS and Custom API accounts')+`<div class="notice">Credentials are encrypted in this client's D1 settings and are never shown again or sent back to the browser. Keep Riya and TripJack in sandbox until supplier certification is complete.</div>${data.suppliers.map(s=>`<div class="card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><h3 style="margin:0;text-transform:capitalize">${esc(supplierName(s))}</h3>${s.supplier==='custom'?'<span class="badge">Custom API connector</span>':''}<span class="dot ${s.supplier==='poomas'||(s.credentials_configured)?'ok':''}"></span><span class="sub">${s.supplier==='poomas'?'Platform integration key (no per-client credentials needed)':s.supplier==='custom'?(s.credentials_configured?'API key and links saved — ready to enable':'Save the API key, search endpoint and checkout link to activate'):s.credentials_configured?'Client credentials configured':'Client credentials missing'}</span></div><div class="formgrid"><div class="field"><label>Enabled</label><select id="sen-${s.supplier}"><option value="0" ${!s.enabled?'selected':''}>No</option><option value="1" ${s.enabled?'selected':''}>Yes</option></select></div><div class="field"><label>Mode</label><select id="smode-${s.supplier}"><option value="sandbox" ${s.mode==='sandbox'?'selected':''}>Sandbox</option><option value="production" ${s.mode==='production'?'selected':''}>Production</option></select></div>${s.supplier==='custom'?`<div class="field span2"><label>Markup</label><p class="sub" style="margin:8px 0 0">Not added — the fare is charged at the connector's own checkout.</p><input type="hidden" id="stype-custom" value="fixed"><input type="hidden" id="svalue-custom" value="0"></div>`:`<div class="field"><label>Markup</label><select id="stype-${s.supplier}"><option value="fixed" ${s.markup_type==='fixed'?'selected':''}>Fixed</option><option value="percent" ${s.markup_type==='percent'?'selected':''}>Percent</option></select></div><div class="field"><label>Markup value</label><input id="svalue-${s.supplier}" type="number" min="0" value="${Number(s.markup_value||0)}"></div>`}${supplierFields(s)}<div class="span4" style="display:flex;gap:8px;align-items:center"><button class="btn primary" onclick="saveSupplier('${s.supplier}',${s.priority})">Save settings</button>${s.supplier!=='poomas'?`<button class="btn danger" onclick="clearSupplier('${s.supplier}',${s.priority})">Clear credentials</button>`:''}</div></div></div>`).join('')}${poomasCard}`;
+}
+function fieldValue(id){return $(id)?.value||''}
+async function saveSupplier(supplier,priority,clear=false){try{const credentials={api_key:fieldValue(`skey-${supplier}`),api_secret:fieldValue(`ssecret-${supplier}`),client_id:fieldValue(`sclient-${supplier}`)},endpoints={};for(const k of ['search','revalidate','book','ticket','sync','cancel','checkout','checkout_session'])if($(`${k}-${supplier}`))endpoints[k]=fieldValue(`${k}-${supplier}`);if(supplier==='custom'){endpoints.name=fieldValue('cname-custom');endpoints.currency=$('ccur-custom').value}await api('/live-travel/suppliers',{method:'PATCH',body:JSON.stringify({supplier,enabled:clear?false:$(`sen-${supplier}`).value==='1',mode:$(`smode-${supplier}`).value,priority,markup_type:$(`stype-${supplier}`).value,markup_value:$(`svalue-${supplier}`).value,credentials,endpoints,clear_credentials:clear})});await refresh();show('suppliers')}catch(e){alert(e.message)}}
+async function clearSupplier(supplier,priority){if(confirm(`Remove this client's saved ${supplier} credentials?`))await saveSupplier(supplier,priority,true)}
+async function savePoomasSettings(){try{const body={api_base:$('poomasApi').value.trim()||'https://api.flypoomas.com',checkout_base:$('poomasCheckout').value.trim()||'https://flypoomas.com'};await api('/live-travel/poomas/settings',{method:'PATCH',body:JSON.stringify(body)});await refresh();show('suppliers')}catch(e){alert('Failed to save POOMAS settings: '+e.message)}}
+// ⚙️ Travel Settings — every travel setting on one page, as tabs: live fares & booking, currency,
+// the WhatsApp menu and itineraries. Each tab keeps its own renderer and save.
+const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['itinerary','🗺️ Itineraries']];
+let settingsTab='fares';
+function settingsTabs(){return page==='settings'?`<div class="quick" style="margin:0 0 14px">${SETTINGS_TABS.map(([k,l])=>`<button class="btn ${settingsTab===k?'primary':''}" onclick="settingsGo('${k}')">${l}</button>`).join('')}</div>`:''}
+function settingsGo(k){settingsTab=k;renderTravelSettings()}
+function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,itinerary:renderItinerarySettings}[settingsTab]||renderSettings)()}
+// Live fares & booking (worker /live-travel/travel-settings).
+let fareSettings=null;
+const FARE_PREVIEW={
+  classic:{show:'*Option 1: AI Express 359* (Direct)\nDeparts 20:00, arrives 22:30 · 4h 0m\nBaggage: Cabin 7 kg · Check-in 30 kg\nFare: *INR 17,365* · only 1 seat left\n\n*Option 2: IndiGo 1435* (Direct)\nDeparts 21:45, arrives 00:25 · 4h 10m\nBaggage: Cabin 7 kg · Check-in 30 kg\nFare: *INR 17,865* · 2 seats left',
+    hide:'*Option 1: AI Express 359* (Direct)\nDeparts 20:00, arrives 22:30 · 4h 0m\nBaggage: Cabin 7 kg · Check-in 30 kg\nOnly 1 seat left\n\n*Option 2: IndiGo 1435* (Direct)\nDeparts 21:45, arrives 00:25 · 4h 10m\nBaggage: Cabin 7 kg · Check-in 30 kg\n2 seats left'},
+  highlighted:{show:'*Option 1 · AI Express 359*\n💰 Cheapest · ⚡ Fastest\n🕗 20:00 → 22:30 · 4h 0m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n💳 *INR 17,365* · 🔥 Only 1 seat left\n\n*Option 2 · IndiGo 1435*\n🕗 21:45 → 00:25 (+1) · 4h 10m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n💳 *INR 17,865* · 🔥 Only 2 seats left',
+    hide:'*Option 1 · AI Express 359*\n⚡ Fastest\n🕗 20:00 → 22:30 · 4h 0m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n🔥 Only 1 seat left\n\n*Option 2 · IndiGo 1435*\n🕗 21:45 → 00:25 (+1) · 4h 10m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n🔥 Only 2 seats left'},
+};
+function farePreview(){
+  const style=$('fsStyle')?.value==='highlighted'?'highlighted':'classic',show=$('fsShow')?.value!=='0';
+  const body=esc(FARE_PREVIEW[style][show?'show':'hide']).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
+  const el=$('fsPreview'); if(el)el.innerHTML=`<div class="wmbubble in">✈️ I found 2 flights from CCJ to AUH on 10 Nov 2026 (economy).<br><br>${body}</div>`;
+}
+async function renderSettings(){
+  $('main').innerHTML=settingsTabs()+head('Travel Settings','How live flight fares are shared and booked on WhatsApp')+'<div class="card"><span class="spinner"></span> Loading…</div>';
+  try{fareSettings=await api('/live-travel/travel-settings')}catch(e){$('main').innerHTML=settingsTabs()+head('Travel Settings','How live flight fares are shared and booked on WhatsApp')+`<div class="error">${esc(e.message)}</div>`;return}
+  const f=fareSettings,n=Number(f.lt_fare_options)||3;
+  $('main').innerHTML=settingsTabs()+head('Travel Settings','How live flight fares are shared and booked on WhatsApp')+`<div class="wmgrid"><div class="card" style="margin-top:0"><h3>✈️ Live flight fares in WhatsApp</h3><div class="formgrid">
+<div class="field span2"><label>💰 Show live flight prices</label><select id="fsShow" onchange="farePreview()"><option value="1" ${f.lt_show_fares!==false?'selected':''}>Yes — show fares in WhatsApp</option><option value="0" ${f.lt_show_fares===false?'selected':''}>No — fare shown at checkout</option></select><div class="sub" style="margin-top:4px">Live fare options sent by the WhatsApp bot.</div></div>
+<div class="field span2"><label>✈️ Number of flight options</label><select id="fsCount">${[1,2,3,4,5].map(v=>`<option value="${v}" ${v===n?'selected':''}>${v}</option>`).join('')}</select><div class="sub" style="margin-top:4px">Live fares shown per search (4–5 are sent as a WhatsApp list).</div></div>
+<div class="field span4"><label>🎫 Online booking</label><select id="fsBooking" onchange="$('fsQrBox').style.display=this.value==='0'?'block':'none'"><option value="1" ${f.lt_online_booking!==false?'selected':''}>Enabled — send the booking link</option><option value="0" ${f.lt_online_booking===false?'selected':''}>Disabled — collect details, our team books</option></select><div class="sub" style="margin-top:4px">When disabled, no booking link is sent for any supplier: the customer sends the lead passenger's name and email, and the request lands in 📄 Quotes with a note in the chat for your team.</div></div>
+<div class="field span4" id="fsQrBox" style="display:${f.lt_online_booking===false?'block':'none'}"><label>💳 Payment QR codes (optional)</label><div class="sub" style="margin:0 0 8px">Sent as images right after the customer's booking request while online booking is disabled. Paste a Google Drive image link (shared as "Anyone with the link") or a direct image link. Leave empty to send no QR.</div>${[1,2].map(i=>`<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2.5fr) 56px;gap:8px;align-items:center;margin-bottom:8px"><input id="fsQr${i}Label" maxlength="40" placeholder="Name, e.g. ${i===1?'UPI':'Bank transfer'}" value="${esc(f[`lt_pay_qr_${i}_label`]||'')}"><input id="fsQr${i}Url" placeholder="QR link ${i} — https://drive.google.com/file/d/…/view" value="${esc(f[`lt_pay_qr_${i}_url`]||'')}" oninput="qrPreview(${i})"><img id="fsQr${i}Img" alt="" style="width:56px;height:56px;object-fit:contain;border:1px solid var(--line);border-radius:6px;background:#fff;display:none"></div>`).join('')}</div>
+<div class="field span4"><label>✨ Fare card style</label><select id="fsStyle" onchange="farePreview()"><option value="classic" ${f.lt_fare_style!=='highlighted'?'selected':''}>Classic — current layout</option><option value="highlighted" ${f.lt_fare_style==='highlighted'?'selected':''}>Highlighted — labels, compact cards, +1 day</option></select><div class="sub" style="margin-top:4px">Highlighted marks the 💰 cheapest and ⚡ fastest option, uses a short emoji layout and shows (+1) for next-day arrivals.</div></div>
+<div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="fsSave" onclick="saveFareSettings()">Save settings</button><span class="sub" id="fsMsg"></span></div></div></div>
+<div><div class="wmphone" style="height:auto"><div class="wmbar">Preview<span>Example search · CCJ → AUH</span></div><div class="wmchat" id="fsPreview"></div></div></div></div>`;
+  farePreview();qrPreview(1);qrPreview(2);
+}
+// A Drive file link shows as its thumbnail; any other https link is shown as it is.
+function qrImageUrl(url){
+  const u=String(url||'').trim();if(!/^https:\/\//i.test(u))return '';
+  const id=(u.match(/\/file\/d\/([\w-]+)/)||u.match(/[?&]id=([\w-]+)/)||[])[1];
+  return /drive\.google\.com/i.test(u)?(id?`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w200`:''):u;
+}
+function qrPreview(i){
+  const img=$(`fsQr${i}Img`);if(!img)return;
+  const src=qrImageUrl($(`fsQr${i}Url`).value);
+  img.style.display=src?'block':'none';if(src)img.src=src;else img.removeAttribute('src');
+}
+async function saveFareSettings(){
+  const btn=$('fsSave'),msg=$('fsMsg');btn.disabled=true;msg.textContent='';
+  try{
+    fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_show_fares:$('fsShow').value==='1',lt_fare_options:Number($('fsCount').value),lt_fare_style:$('fsStyle').value,lt_online_booking:$('fsBooking').value==='1',
+      lt_pay_qr_1_label:$('fsQr1Label').value.trim(),lt_pay_qr_1_url:$('fsQr1Url').value.trim(),lt_pay_qr_2_label:$('fsQr2Label').value.trim(),lt_pay_qr_2_url:$('fsQr2Url').value.trim()})});
+    msg.textContent='✓ Saved — the bot uses this from the next search';msg.style.color='var(--green)';
+  }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
+  finally{btn.disabled=false}
+}
+// Itineraries (travel-agency.html): PDF sharing and automatic photos — same settings endpoint.
+async function renderItinerarySettings(){
+  const title=()=>settingsTabs()+head('Travel Settings','How itineraries are shared with customers');
+  $('main').innerHTML=title()+'<div class="card"><span class="spinner"></span> Loading…</div>';
+  try{fareSettings=await api('/live-travel/travel-settings')}catch(e){$('main').innerHTML=title()+`<div class="error">${esc(e.message)}</div>`;return}
+  const f=fareSettings;
+  $('main').innerHTML=title()+`<div class="card" style="margin-top:0"><h3>🗺️ Itineraries</h3><div class="formgrid">
+<div class="field span2"><label>🗺️ Share itineraries as PDF</label><select id="itPdf"><option value="0" ${!f.itin_share_pdf?'selected':''}>No — send as WhatsApp text</option><option value="1" ${f.itin_share_pdf?'selected':''}>Yes — always send the itinerary PDF</option></select><div class="sub" style="margin-top:4px">Every itinerary send uses your existing itinerary PDF layout.</div></div>
+<div class="field span2"><label>🖼️ Auto-add images to itinerary PDF</label><select id="itImg"><option value="1" ${f.itin_auto_images!==false?'selected':''}>Yes</option><option value="0" ${f.itin_auto_images===false?'selected':''}>No</option></select><div class="sub" style="margin-top:4px">Items without a photo use a matching hotel or package photo. Photos you upload always win.</div></div>
+<div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="itSave" onclick="saveItinerarySettings()">Save settings</button><span class="sub" id="itMsg"></span></div></div></div>`;
+}
+async function saveItinerarySettings(){
+  const btn=$('itSave'),msg=$('itMsg');btn.disabled=true;msg.textContent='';
+  try{fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({itin_share_pdf:$('itPdf').value==='1',itin_auto_images:$('itImg').value==='1'})});msg.textContent='✓ Saved';msg.style.color='var(--green)'}
+  catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
+  finally{btn.disabled=false}
+}
+function renderCurrency(){
+  const cs=data.currency_settings||{},fx=data.fx||{},cur=cs.default_currency||'AED';
+  const modes=[['auto','Auto (per currency)'],['none','No rounding'],['up_1','Round up to 1'],['up_5','Round up to 5'],['up_10','Round up to 10']];
+  const rows=(fx.rates||[]).map(r=>`<tr><td><b>${esc(r.currency)}</b> <span class="sub">${esc(r.name)}</span></td><td>${r.rate_to_default?`1 ${esc(r.currency)} = ${Number(r.rate_to_default).toFixed(curDecimals(cur)+2)} ${esc(cur)}`:'—'}</td><td>${r.rate_from_default?`1 ${esc(cur)} = ${Number(r.rate_from_default).toFixed(4)} ${esc(r.currency)}`:'—'}</td></tr>`).join('');
+  $('main').innerHTML=settingsTabs()+head('Currency & Exchange Rates','Agency default currency, live conversion of supplier fares and rate protection')+`<div class="card"><div class="formgrid">
+<div class="field span2"><label>Default currency</label><select id="cxCur">${currencyCodes().map(c=>`<option value="${c}" ${c===cur?'selected':''}>${c} — ${esc((data.supported_currencies||[]).find(x=>x.code===c)?.name||c)}</option>`).join('')}</select></div>
+<div class="field"><label>FX buffer %</label><input id="cxBuf" type="number" min="0" max="10" step="0.1" value="${Number(cs.fx_buffer_pct??1.5)}"></div>
+<div class="field"><label>Rounding</label><select id="cxRound">${modes.map(([v,l])=>`<option value="${v}" ${v===cs.rounding?'selected':''}>${l}</option>`).join('')}</select></div>
+<div class="field span2"><label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:13px"><input type="checkbox" id="cxOverride" ${cs.allow_currency_override?'checked':''}> Allow staff/customers to view prices in another currency</label></div>
+<div class="field span2"><label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-size:13px"><input type="checkbox" id="cxPhone" ${cs.auto_detect_phone_currency?'checked':''}> WhatsApp: suggest currency from customer's country code (+91 INR, +971 AED, +966 SAR, +974 QAR…)</label></div>
+<div class="span4"><button class="btn primary" onclick="saveCurrency()">Save currency settings</button></div></div>
+<div class="notice">Supplier fares are converted into ${esc(cur)} at the live rate plus the FX buffer, then your supplier markup is added in ${esc(cur)} and the total is rounded. Quotes and bookings lock the rate they were priced at; booking is blocked if the rate has since moved past the buffer.</div></div>
+<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">Live rates vs ${esc(cur)}</h3><span class="badge ok">Shared · auto-refresh</span></div><p class="sub">Source: ${esc(fx.source||'—')} · rates as of ${fx.fetched_at?new Date(fx.fetched_at).toLocaleString():'—'} (${fxAge(fx.fetched_at)})${fx.stale?' · <span class="badge warn">stale</span>':''}</p><p class="sub">One rate set is shared by every Live Agency on the platform and used across search, quotes, bookings, wallet, payments and WhatsApp. It refreshes automatically every 6 hours (00:00, 06:00, 12:00, 18:00 UTC), at most ${fx.max_refreshes_per_day||4} times a day${fx.next_refresh_at?` · next scheduled ${new Date(fx.next_refresh_at).toLocaleString()}`:''}.</p><div class="tablewrap" style="margin:0"><table><thead><tr><th>Currency</th><th>To ${esc(cur)}</th><th>From ${esc(cur)}</th></tr></thead><tbody>${rows||'<tr><td colspan="3" class="empty">Rates load after the first refresh.</td></tr>'}</tbody></table></div></div>`;
+}
+async function saveCurrency(){try{const d=await api('/live-travel/currency-settings',{method:'PATCH',body:JSON.stringify({default_currency:$('cxCur').value,fx_buffer_pct:Number($('cxBuf').value),rounding:$('cxRound').value,allow_currency_override:$('cxOverride').checked?1:0,auto_detect_phone_currency:$('cxPhone').checked?1:0})});data.currency_settings=d.settings;data.fx=d.fx;data.supported_currencies=d.supported;renderCurrency();alert('Currency settings saved.')}catch(e){alert(e.message)}}
+// ── 💬 WhatsApp Menu: the menu customers get on "hi" / "menu" (worker: live-travel-wa-menu.js) ──
+let wm=null;
+const WM_ACTIONS=[['flight_search','✈️ Live flights'],['portal','📚 Travel Portal list'],['ask','💬 Ask a question'],['link','🔗 Open a link'],['my_bookings','🎫 My bookings'],['handover','👤 Hand to team']];
+const wmRowTitle=it=>`${it.emoji?it.emoji+' ':''}${it.title}`.slice(0,24);
+// Same rule as the bot: Live Flights needs the API connected, a Travel Portal row needs listings.
+const wmAvailable=it=>it.action==='flight_search'?!!wm.flights_connected:it.action==='portal'?(wm.portal_counts?.[it.source]||0)>0:true;
+const wmPortalLabel=src=>wm.portal_sources?.[src]?.label||src;
+async function renderWhatsappMenu(){
+ if(!wm){$('main').innerHTML=settingsTabs()+head('WhatsApp Menu','Loading…')+'<div class="empty"><span class="spinner"></span></div>';try{wm=await api('/live-travel/whatsapp-menu');wm.dirty=false}catch(e){$('main').innerHTML=settingsTabs()+head('WhatsApp Menu','')+`<div class="error">${esc(e.message)}</div>`;return}}
+ const m=wm.menu,on=m.items.filter(i=>i.enabled).length,shown=m.items.filter(i=>i.enabled&&wmAvailable(i)).length;
+ $('main').innerHTML=settingsTabs()+head('WhatsApp Menu','The menu customers get when they say "hi" or type "menu" on WhatsApp',`<button class="btn" onclick="wmReset()">↺ Defaults</button><button class="btn primary" id="wmSave" onclick="wmSaveMenu()">💾 Save menu</button>`)
+ +`<div id="wmErr"></div><div class="wmgrid"><div>
+ <div class="card"><label class="wmtoggle"><input type="checkbox" ${wm.travel_flow?'checked':''} onchange="wmSaveFlow(this)"> <b>✈️ Travel Flow (optional)</b></label>
+ <p class="sub">When on, "hi", "hello", "menu" and every menu tap are answered by this menu, flight questions get live fares with buttons, and a picked flight goes details → Proceed → booking form → your booking site. When off, your WhatsApp bot works exactly as before. Same switch as Dashboard → Settings → Industry Modules → Travel Flow.</p>
+ ${wm.flights_connected?'':'<div class="notice">Live flight search is not connected, so <b>✈️ Live Flights</b> is hidden from customers. Connect POOMAS or a Custom API in 🔌 Suppliers to share live fares and book in chat.</div>'}
+ <p class="sub">Other services come from your Travel Portal (← Existing Agency): an option shows only while that section has something listed.</p>
+ <div class="formgrid" style="grid-template-columns:1fr 180px"><div class="field"><label>Welcome message</label><textarea maxlength="900" placeholder="Leave empty for: 👋 Welcome to {agency}! How can we help you today?…" oninput="wmTop('greeting',this.value)">${esc(m.greeting)}</textarea><span class="sub">Use {name} for the customer's first name and {agency} for your agency name.</span></div>
+ <div class="field"><label>Menu button</label><input maxlength="20" value="${esc(m.button_label)}" oninput="wmTop('button_label',this.value)"></div></div></div>
+ <div class="card"><h3>Menu options <span class="badge ${on>10?'bad':'ok'}">${on} / 10 on</span> <span class="badge">${shown} shown to customers now</span></h3><p class="sub" style="margin-top:-6px">WhatsApp shows up to 10 options. Rows with the same section are grouped under one heading.</p>
+ <div id="wmItems">${m.items.map(wmItemHtml).join('')}</div>
+ <button class="btn" onclick="wmAdd()">＋ Add option</button></div>
+ <div class="card"><h3>✈️ Route buttons for flight search</h3><p class="sub" style="margin-top:-6px">Offered as one-tap routes after the customer picks Flights (their own last search comes first).</p>
+ <div class="field"><label>Pinned routes</label><input id="wmRoutes" placeholder="DXB-COK, SHJ-CCJ, AUH-TRV" value="${esc(m.popular_routes.map(r=>r.join('-')).join(', '))}" oninput="wmRoutes(this.value)"></div>
+ ${(wm.suggested_routes||[]).length?`<div class="chiprow" style="margin-top:8px"><span class="chiplbl">Your top routes</span>${wm.suggested_routes.map(r=>`<button type="button" class="chip" onclick="wmAddRoute('${esc(r[0])}','${esc(r[1])}')">＋ ${esc(r[0])} → ${esc(r[1])}</button>`).join('')}</div>`:''}</div>
+ </div><div><div class="wmphone"><div class="wmbar">${esc('Your agency')} <span>online</span></div><div class="wmchat" id="wmPreview"></div></div><p class="sub" style="text-align:center">Live preview</p></div></div>
+ <datalist id="wmCats">${(wm.categories||[]).map(c=>`<option value="${esc(c)}">`).join('')}</datalist>`;
+ wmPreview();
+}
+function wmItemHtml(it,i){
+ const n=wm.menu.items.length,act=it.action;
+ return `<div class="wmitem ${it.enabled&&wmAvailable(it)?'':'off'}"><div class="wmhead"><input type="checkbox" title="Show in menu" ${it.enabled?'checked':''} onchange="wmItem(${i},'enabled',this.checked,true)">
+ <input class="wmemoji" maxlength="8" value="${esc(it.emoji)}" oninput="wmItem(${i},'emoji',this.value)" aria-label="Emoji">
+ <input class="wmtitle" maxlength="24" value="${esc(it.title)}" oninput="wmItem(${i},'title',this.value)" aria-label="Title">
+ <button class="btn sm" ${i?'':'disabled'} onclick="wmMove(${i},-1)" title="Move up">↑</button><button class="btn sm" ${i<n-1?'':'disabled'} onclick="wmMove(${i},1)" title="Move down">↓</button><button class="btn sm danger" onclick="wmDel(${i})" title="Remove">✕</button></div>
+ <div class="formgrid wmfields"><div class="field"><label>When tapped</label><select onchange="wmItem(${i},'action',this.value,true)">${WM_ACTIONS.map(([k,l])=>`<option value="${k}" ${k===act?'selected':''}>${l}</option>`).join('')}</select></div>
+ <div class="field"><label>Section</label><input maxlength="24" value="${esc(it.section)}" oninput="wmItem(${i},'section',this.value)"></div>
+ <div class="field"><label>Service category</label><input list="wmCats" maxlength="60" value="${esc(it.category)}" placeholder="—" oninput="wmItem(${i},'category',this.value)"></div>
+ <div class="field"><label>Short description</label><input maxlength="72" value="${esc(it.description)}" oninput="wmItem(${i},'description',this.value)"></div>
+ ${act==='portal'?`<div class="field"><label>Travel Portal section</label><select onchange="wmItem(${i},'source',this.value,true)">${Object.entries(wm.portal_sources||{}).map(([k,v])=>`<option value="${k}" ${k===it.source?'selected':''}>${esc(v.label)}</option>`).join('')}</select></div><div class="span4 sub">${(wm.portal_counts?.[it.source]||0)>0?`✓ ${wm.portal_counts[it.source]} listed in Existing Agency → ${esc(wmPortalLabel(it.source))}. Tap → list → details → Enquire Now.`:`⚠ Nothing listed in Existing Agency → ${esc(wmPortalLabel(it.source))} — hidden from customers until you add one.`}</div>`:''}
+ ${act==='ask'||act==='link'?`<div class="field span4"><label>${act==='link'?'Message above the button':'Bot reply'}</label><textarea maxlength="900" oninput="wmItem(${i},'message',this.value)" placeholder="${act==='link'?'e.g. See all our holiday packages:':'e.g. Which country is the visa for? Please share your nationality and travel date.'}">${esc(it.message)}</textarea></div>`:''}
+ ${act==='link'?`<div class="field span2"><label>Link (https://)</label><input value="${esc(it.url)}" placeholder="https://youragency.com/packages" oninput="wmItem(${i},'url',this.value)"></div><div class="field"><label>Button text</label><input maxlength="20" value="${esc(it.button_text)}" placeholder="Open" oninput="wmItem(${i},'button_text',this.value)"></div>`:''}
+ ${act==='flight_search'?`<div class="span4 sub">${wm.flights_connected?'✓ Live API connected. Route → date → passengers buttons → live fares → flight details → Proceed → booking form → your booking site.':'⚠ Live API not connected — hidden from customers.'}</div>`:''}
+ ${act==='handover'?'<div class="span4 sub">The chat is assigned to your team with the usual handover message.</div>':''}
+ ${act==='my_bookings'?'<div class="span4 sub">Lists the customer\'s Live Agency bookings (reference, PNR, status, balance) found for their WhatsApp number.</div>':''}
+ </div></div>`;
+}
+function wmDirty(){wm.dirty=true;wmPreview()}
+function wmTop(k,v){wm.menu[k]=v;wmDirty()}
+function wmItem(i,k,v,redraw){wm.menu.items[i][k]=v;if(redraw)renderWhatsappMenu();wmDirty()}
+function wmMove(i,d){const a=wm.menu.items,j=i+d;[a[i],a[j]]=[a[j],a[i]];wm.dirty=true;renderWhatsappMenu()}
+function wmDel(i){if(!confirm(`Remove "${wm.menu.items[i].title}" from the menu?`))return;wm.menu.items.splice(i,1);wm.dirty=true;renderWhatsappMenu()}
+function wmAdd(){wm.menu.items.push({id:'',emoji:'⭐',title:'New option',description:'',section:'Services',action:'portal',source:'packages',category:'',message:'',url:'',button_text:'',enabled:true});wm.dirty=true;renderWhatsappMenu()}
+function wmReset(){if(!confirm('Replace your menu with the default travel menu? Your changes are not saved until you click Save.'))return;wm.menu={...wm.defaults,enabled:wm.menu.enabled,items:wm.defaults.items.map(x=>({message:'',url:'',button_text:'',enabled:true,...x}))};wm.dirty=true;renderWhatsappMenu()}
+function wmRoutes(v){wm.menu.popular_routes=(String(v).toUpperCase().match(/[A-Z]{3}\s*(?:-|→|>|TO)\s*[A-Z]{3}/g)||[]).map(r=>r.match(/[A-Z]{3}/g).filter(x=>x!=='TO').slice(0,2)).filter(r=>r.length===2&&r[0]!==r[1]).slice(0,8);wmDirty()}
+function wmAddRoute(o,d){const r=wm.menu.popular_routes;if(!r.some(x=>x[0]===o&&x[1]===d)&&r.length<8)r.push([o,d]);$('wmRoutes').value=r.map(x=>x.join('-')).join(', ');wmDirty()}
+function wmPreview(){
+ const m=wm.menu,el=$('wmPreview');if(!el)return;
+ const greet=(m.greeting||`👋 Welcome to your agency!\n\nHow can we help you today? Tap *${m.button_label||'Menu'}* to choose a service, or simply type your question.`).replace(/\{name\}/gi,'Hussain').replace(/\{agency\}/gi,'your agency');
+ const fmt=t=>esc(t).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/_([^_\n]+)_/g,'<i>$1</i>').replace(/\n/g,'<br>');
+ const sections=[];m.items.filter(i=>i.enabled&&wmAvailable(i)).slice(0,10).forEach(it=>{let s=sections.find(x=>x.t.toLowerCase()===String(it.section||'Services').toLowerCase());if(!s){s={t:it.section||'Services',rows:[]};sections.push(s)}s.rows.push(it)});
+ el.innerHTML=`<div class="wmbubble out">hi</div><div class="wmbubble in">${fmt(greet)}<div class="wmbtn">☰ ${esc(m.button_label||'Menu')}</div></div>
+ <div class="wmsheet"><div class="wmsheethd">${esc(m.button_label||'Menu')}</div>${sections.map(s=>`<div class="wmsec">${esc(s.t)}</div>${s.rows.map(r=>`<div class="wmrow"><div><b>${esc(wmRowTitle(r))}</b>${r.description?`<span>${esc(r.description)}</span>`:''}</div><i></i></div>`).join('')}`).join('')||'<div class="wmrow"><span>No options turned on</span></div>'}</div>`;
+}
+// The Travel Flow switch saves the moment it is ticked — no separate Save needed.
+async function wmSaveFlow(box){
+ const on=box.checked;box.disabled=true;$('wmErr').innerHTML='';
+ try{const r=await api('/live-travel/travel-flow',{method:'PUT',body:JSON.stringify({enabled:on})});wm.travel_flow=r.enabled;
+  $('wmErr').innerHTML=`<div class="notice" style="background:#DDF6EB;border-color:#9FDCC0;color:var(--green)">✓ Travel Flow ${r.enabled?'is on — customers get this menu on WhatsApp now':'is off — your WhatsApp bot works as before'}.</div>`}
+ catch(e){box.checked=!on;$('wmErr').innerHTML=`<div class="error">Travel Flow was not saved: ${esc(e.message)}</div>`}
+ finally{box.disabled=false}
+}
+async function wmSaveMenu(){
+ const btn=$('wmSave');btn.disabled=true;$('wmErr').innerHTML='';
+ try{const payload={menu:{...wm.menu,enabled:!!wm.travel_flow}};const r=await api('/live-travel/whatsapp-menu',{method:'PUT',body:JSON.stringify(payload)});wm.menu=r.menu;wm.dirty=false;renderWhatsappMenu();$('wmErr').innerHTML=`<div class="notice" style="background:#DDF6EB;border-color:#9FDCC0;color:var(--green)">✓ Saved — ${wm.travel_flow?'Travel Flow is on: customers get this menu on WhatsApp now':'Travel Flow is off: your WhatsApp bot works as before. Turn it on to use this menu'}.</div>`}
+ catch(e){$('wmErr').innerHTML=`<div class="error">${esc(e.message)}</div>`}
+ finally{if($('wmSave'))$('wmSave').disabled=false}
+}
+function openModal(title,body,foot){$('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalFoot').innerHTML=foot;$('modal').classList.add('show')}
+function closeModal(){$('modal').classList.remove('show')}
+async function refresh(redraw=true){data=await api('/live-travel/bootstrap');if(redraw)show(page)}
+async function init(){drawNav();if(!clientId||!sessionToken){$('main').innerHTML='<div class="empty">🔒 Open Live Agency from the existing Travel Agency module.</div>';return}try{await refresh()}catch(e){$('main').innerHTML=`<div class="empty"><h2>Could not open Live Agency</h2><div class="error">${esc(e.message)}</div><button class="btn" onclick="location.reload()">Retry</button></div>`}}
+$('modal').addEventListener('click',e=>{if(e.target===$('modal'))closeModal()});init();
+</script>
+</body>
+</html>
