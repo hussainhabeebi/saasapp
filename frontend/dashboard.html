@@ -3820,6 +3820,9 @@ const ROLES = {
                 <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtFareOptions">✈️ Number of flight options</label>
                   <select class="form-input" id="cfgLtFareOptions"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select>
                   <div class="s-note" style="margin:2px 0 0">Live fares shown per search (4–5 are sent as a WhatsApp list).</div></div>
+                <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtFareStyle">✨ Fare card style</label>
+                  <select class="form-input" id="cfgLtFareStyle"><option value="classic">Classic — current layout</option><option value="highlighted">Highlighted — labels, compact cards, +1 day</option></select>
+                  <div class="s-note" style="margin:2px 0 0">Highlighted marks the 💰 cheapest and ⚡ fastest option, uses a short emoji layout and shows (+1) for next-day arrivals.</div></div>
               </div>
               <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
                 <button class="save-btn" id="saveTaOptions">Save</button>
@@ -21348,6 +21351,7 @@ function taOptionsApply(d){
   clientRecord.itin_auto_images=yn(d.itin_auto_images);
   clientRecord.lt_show_fares=yn(d.lt_show_fares);
   clientRecord.lt_fare_options=String(d.lt_fare_options);
+  clientRecord.lt_fare_style=d.lt_fare_style==='highlighted'?'highlighted':'classic';
 }
 function taOptionsFill(rec){
   const set=(id,v)=>{const el=$id(id); if(el) el.value=v;};
@@ -21356,6 +21360,7 @@ function taOptionsFill(rec){
   set('cfgLtShowFares',rec.lt_show_fares==='No'?'No':'Yes');
   const n=parseInt(rec.lt_fare_options,10);
   set('cfgLtFareOptions',String(n>=1&&n<=5?n:3));
+  set('cfgLtFareStyle',rec.lt_fare_style==='highlighted'?'highlighted':'classic');
 }
 
 function updateAgencyTabVisibility(){
@@ -21418,6 +21423,7 @@ $id('saveTaOptions').addEventListener('click',async()=>{
       itin_auto_images:$id('cfgItinAutoImages').value==='Yes',
       lt_show_fares:$id('cfgLtShowFares').value==='Yes',
       lt_fare_options:parseInt($id('cfgLtFareOptions').value,10),
+      lt_fare_style:$id('cfgLtFareStyle').value,
     };
     const r=await fetch(`${WORKER_BASE}/live-travel/travel-settings`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));
