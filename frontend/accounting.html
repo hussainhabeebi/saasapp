@@ -3161,9 +3161,9 @@ function openBankAccountModal(id){
     document.getElementById('baOpeningBalDate').value=new Date().toISOString().slice(0,10);
   }
   document.getElementById('baSaveMsg').textContent='';
-  document.getElementById('bankAccountModal').classList.add('open');
+  document.getElementById('bankAccountModal').classList.add('active');
 }
-function closeBankAccountModal(){ document.getElementById('bankAccountModal').classList.remove('open'); }
+function closeBankAccountModal(){ document.getElementById('bankAccountModal').classList.remove('active'); }
 async function saveBankAccount(){
   const msg=document.getElementById('baSaveMsg');
   msg.textContent='Saving…'; msg.className='save-msg';
@@ -3229,9 +3229,9 @@ function openPaymentEntryModal(id){
     renderPePartyPicker();
   }
   document.getElementById('peSaveMsg').textContent='';
-  document.getElementById('paymentEntryModal').classList.add('open');
+  document.getElementById('paymentEntryModal').classList.add('active');
 }
-function closePaymentEntryModal(){ document.getElementById('paymentEntryModal').classList.remove('open'); }
+function closePaymentEntryModal(){ document.getElementById('paymentEntryModal').classList.remove('active'); }
 function renderPePartyPicker(){
   const pt=document.getElementById('pePartyType').value;
   const wrap=document.getElementById('pePartyPickerWrap');
