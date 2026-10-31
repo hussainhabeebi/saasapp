@@ -21,7 +21,7 @@ body{display:flex;flex-direction:column;overflow:hidden}.top{height:62px;backgro
 const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
 const qs=new URLSearchParams(location.search),clientId=qs.get('client')||'',sessionToken=qs.get('token')||'';
 let page='dashboard',data={suppliers:[],poomas_settings:{enabled:false,checkout_base:'https://flypoomas.com'},searches:[],quotes:[],bookings:[],service_requests:[],wallet:[],wallet_entries:[],agents:[],commissions:[],currency_settings:{default_currency:'AED',fx_buffer_pct:1.5,rounding:'auto',allow_currency_override:1,auto_detect_phone_currency:1},supported_currencies:[],fx:null},lastSearch=null;
-const pages=[['dashboard','📊 Dashboard'],['search','🔎 Flight Search'],['quotes','📄 Quotes'],['bookings','🎫 Bookings'],['servicing','🔄 Servicing'],['wallet','💰 Wallet'],['agents','👥 Agents'],['suppliers','🔌 Suppliers'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu']];
+const pages=[['dashboard','📊 Dashboard'],['search','🔎 Flight Search'],['quotes','📄 Quotes'],['bookings','🎫 Bookings'],['servicing','🔄 Servicing'],['wallet','💰 Wallet'],['agents','👥 Agents'],['suppliers','🔌 Suppliers'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['settings','⚙️ Settings']];
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const agencyCur=()=>data.currency_settings?.default_currency||'AED';
 const curDecimals=c=>['KWD','BHD','OMR'].includes(String(c).toUpperCase())?3:2;
@@ -35,7 +35,7 @@ function goLegacy(){location.href=`travel-agency.html?client=${encodeURIComponen
 function statusBadge(s){const ok=['complete','confirmed','ticketed','paid','accepted','approved','completed','configured'],bad=['failed','cancelled','rejected','expired','not_configured'];return `<span class="badge ${ok.includes(s)?'ok':bad.includes(s)?'bad':'warn'}">${esc(String(s||'—').replaceAll('_',' '))}</span>`}
 function drawNav(){$('nav').innerHTML=pages.map(([k,l])=>`<button class="nav ${page===k?'active':''}" onclick="show('${k}')">${l}</button>`).join('')}
 function head(title,sub,actions=''){return `<div class="pagehead"><div><h1>${title}</h1><p>${sub}</p></div>${actions?`<div class="actions">${actions}</div>`:''}</div>`}
-function show(k){page=k;drawNav();({dashboard:renderDashboard,search:renderSearch,quotes:renderQuotes,bookings:renderBookings,servicing:renderServicing,wallet:renderWallet,agents:renderAgents,suppliers:renderSuppliers,currency:renderCurrency,whatsapp:renderWhatsappMenu}[k])()}
+function show(k){page=k;drawNav();({dashboard:renderDashboard,search:renderSearch,quotes:renderQuotes,bookings:renderBookings,servicing:renderServicing,wallet:renderWallet,agents:renderAgents,suppliers:renderSuppliers,currency:renderCurrency,whatsapp:renderWhatsappMenu,settings:renderSettings}[k])()}
 function renderDashboard(){
  const supplierReady=data.suppliers.filter(s=>s.enabled&&s.credentials_configured).length, cur=agencyCur(),inCur=data.bookings.filter(b=>(b.currency||cur)===cur),revenue=inCur.reduce((a,b)=>a+Number(b.amount_paid||0),0),due=inCur.reduce((a,b)=>a+Number(b.balance_due||0),0);
  const poomasOn=data.poomas_settings?.enabled;
@@ -357,6 +357,40 @@ function fieldValue(id){return $(id)?.value||''}
 async function saveSupplier(supplier,priority,clear=false){try{const credentials={api_key:fieldValue(`skey-${supplier}`),api_secret:fieldValue(`ssecret-${supplier}`),client_id:fieldValue(`sclient-${supplier}`)},endpoints={};for(const k of ['search','revalidate','book','ticket','sync','cancel','checkout','checkout_session'])if($(`${k}-${supplier}`))endpoints[k]=fieldValue(`${k}-${supplier}`);if(supplier==='custom'){endpoints.name=fieldValue('cname-custom');endpoints.currency=$('ccur-custom').value}await api('/live-travel/suppliers',{method:'PATCH',body:JSON.stringify({supplier,enabled:clear?false:$(`sen-${supplier}`).value==='1',mode:$(`smode-${supplier}`).value,priority,markup_type:$(`stype-${supplier}`).value,markup_value:$(`svalue-${supplier}`).value,credentials,endpoints,clear_credentials:clear})});await refresh();show('suppliers')}catch(e){alert(e.message)}}
 async function clearSupplier(supplier,priority){if(confirm(`Remove this client's saved ${supplier} credentials?`))await saveSupplier(supplier,priority,true)}
 async function savePoomasSettings(){try{const body={api_base:$('poomasApi').value.trim()||'https://api.flypoomas.com',checkout_base:$('poomasCheckout').value.trim()||'https://flypoomas.com'};await api('/live-travel/poomas/settings',{method:'PATCH',body:JSON.stringify(body)});await refresh();show('suppliers')}catch(e){alert('Failed to save POOMAS settings: '+e.message)}}
+// ⚙️ Settings — how the WhatsApp bot shares live fares (worker /live-travel/travel-settings, the
+// same values the dashboard's Travel Settings used to hold).
+let fareSettings=null;
+const FARE_PREVIEW={
+  classic:{show:'*Option 1: AI Express 359* (Direct)\nDeparts 20:00, arrives 22:30 · 4h 0m\nBaggage: Cabin 7 kg · Check-in 30 kg\nFare: *INR 17,365* · only 1 seat left\n\n*Option 2: IndiGo 1435* (Direct)\nDeparts 21:45, arrives 00:25 · 4h 10m\nBaggage: Cabin 7 kg · Check-in 30 kg\nFare: *INR 17,865* · 2 seats left',
+    hide:'*Option 1: AI Express 359* (Direct)\nDeparts 20:00, arrives 22:30 · 4h 0m\nBaggage: Cabin 7 kg · Check-in 30 kg\nOnly 1 seat left\n\n*Option 2: IndiGo 1435* (Direct)\nDeparts 21:45, arrives 00:25 · 4h 10m\nBaggage: Cabin 7 kg · Check-in 30 kg\n2 seats left'},
+  highlighted:{show:'*Option 1 · AI Express 359*\n💰 Cheapest · ⚡ Fastest\n🕗 20:00 → 22:30 · 4h 0m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n💳 *INR 17,365* · 🔥 Only 1 seat left\n\n*Option 2 · IndiGo 1435*\n🕗 21:45 → 00:25 (+1) · 4h 10m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n💳 *INR 17,865* · 🔥 Only 2 seats left',
+    hide:'*Option 1 · AI Express 359*\n⚡ Fastest\n🕗 20:00 → 22:30 · 4h 0m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n🔥 Only 1 seat left\n\n*Option 2 · IndiGo 1435*\n🕗 21:45 → 00:25 (+1) · 4h 10m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n🔥 Only 2 seats left'},
+};
+function farePreview(){
+  const style=$('fsStyle')?.value==='highlighted'?'highlighted':'classic',show=$('fsShow')?.value!=='0';
+  const body=esc(FARE_PREVIEW[style][show?'show':'hide']).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
+  const el=$('fsPreview'); if(el)el.innerHTML=`<div class="wmbubble in">✈️ I found 2 flights from CCJ to AUH on 10 Nov 2026 (economy).<br><br>${body}</div>`;
+}
+async function renderSettings(){
+  $('main').innerHTML=head('Settings','How live flight fares are shared with customers on WhatsApp')+'<div class="card"><span class="spinner"></span> Loading…</div>';
+  try{fareSettings=await api('/live-travel/travel-settings')}catch(e){$('main').innerHTML=head('Settings','How live flight fares are shared with customers on WhatsApp')+`<div class="error">${esc(e.message)}</div>`;return}
+  const f=fareSettings,n=Number(f.lt_fare_options)||3;
+  $('main').innerHTML=head('Settings','How live flight fares are shared with customers on WhatsApp')+`<div class="wmgrid"><div class="card" style="margin-top:0"><h3>✈️ Live flight fares in WhatsApp</h3><div class="formgrid">
+<div class="field span2"><label>💰 Show live flight prices</label><select id="fsShow" onchange="farePreview()"><option value="1" ${f.lt_show_fares!==false?'selected':''}>Yes — show fares in WhatsApp</option><option value="0" ${f.lt_show_fares===false?'selected':''}>No — fare shown at checkout</option></select><div class="sub" style="margin-top:4px">Live fare options sent by the WhatsApp bot.</div></div>
+<div class="field span2"><label>✈️ Number of flight options</label><select id="fsCount">${[1,2,3,4,5].map(v=>`<option value="${v}" ${v===n?'selected':''}>${v}</option>`).join('')}</select><div class="sub" style="margin-top:4px">Live fares shown per search (4–5 are sent as a WhatsApp list).</div></div>
+<div class="field span4"><label>✨ Fare card style</label><select id="fsStyle" onchange="farePreview()"><option value="classic" ${f.lt_fare_style!=='highlighted'?'selected':''}>Classic — current layout</option><option value="highlighted" ${f.lt_fare_style==='highlighted'?'selected':''}>Highlighted — labels, compact cards, +1 day</option></select><div class="sub" style="margin-top:4px">Highlighted marks the 💰 cheapest and ⚡ fastest option, uses a short emoji layout and shows (+1) for next-day arrivals.</div></div>
+<div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="fsSave" onclick="saveFareSettings()">Save settings</button><span class="sub" id="fsMsg"></span></div></div></div>
+<div><div class="wmphone" style="height:auto"><div class="wmbar">Preview<span>Example search · CCJ → AUH</span></div><div class="wmchat" id="fsPreview"></div></div></div></div>`;
+  farePreview();
+}
+async function saveFareSettings(){
+  const btn=$('fsSave'),msg=$('fsMsg');btn.disabled=true;msg.textContent='';
+  try{
+    fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_show_fares:$('fsShow').value==='1',lt_fare_options:Number($('fsCount').value),lt_fare_style:$('fsStyle').value})});
+    msg.textContent='✓ Saved — the bot uses this from the next search';msg.style.color='var(--green)';
+  }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
+  finally{btn.disabled=false}
+}
 function renderCurrency(){
   const cs=data.currency_settings||{},fx=data.fx||{},cur=cs.default_currency||'AED';
   const modes=[['auto','Auto (per currency)'],['none','No rounding'],['up_1','Round up to 1'],['up_5','Round up to 5'],['up_10','Round up to 10']];
