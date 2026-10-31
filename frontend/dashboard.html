@@ -3806,7 +3806,7 @@ const ROLES = {
             </div>
 
             <div id="taOptionsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
-              <div style="margin-bottom:8px"><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">How itineraries and live flight fares are shared with your customers.</div></div>
+              <div style="margin-bottom:8px"><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">How itineraries are shared with your customers. Live flight fare options (prices, number of options, fare card style) are in ✈️ Flights → ⚙️ Settings.</div></div>
               <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px">
                 <div class="form-group" style="margin:0"><label class="form-label" for="cfgItinSharePdf">🗺️ Share itineraries as PDF</label>
                   <select class="form-input" id="cfgItinSharePdf"><option value="No">No — send as WhatsApp text</option><option value="Yes">Yes — always send the itinerary PDF</option></select>
@@ -3814,15 +3814,6 @@ const ROLES = {
                 <div class="form-group" style="margin:0"><label class="form-label" for="cfgItinAutoImages">🖼️ Auto-add images to itinerary PDF</label>
                   <select class="form-input" id="cfgItinAutoImages"><option value="Yes">Yes</option><option value="No">No</option></select>
                   <div class="s-note" style="margin:2px 0 0">Items without a photo use a matching hotel or package photo. Photos you upload always win.</div></div>
-                <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtShowFares">💰 Show live flight prices</label>
-                  <select class="form-input" id="cfgLtShowFares"><option value="Yes">Yes — show fares in WhatsApp</option><option value="No">No — fare shown at checkout</option></select>
-                  <div class="s-note" style="margin:2px 0 0">Live fare options sent by the WhatsApp bot.</div></div>
-                <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtFareOptions">✈️ Number of flight options</label>
-                  <select class="form-input" id="cfgLtFareOptions"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select>
-                  <div class="s-note" style="margin:2px 0 0">Live fares shown per search (4–5 are sent as a WhatsApp list).</div></div>
-                <div class="form-group" style="margin:0"><label class="form-label" for="cfgLtFareStyle">✨ Fare card style</label>
-                  <select class="form-input" id="cfgLtFareStyle"><option value="classic">Classic — current layout</option><option value="highlighted">Highlighted — labels, compact cards, +1 day</option></select>
-                  <div class="s-note" style="margin:2px 0 0">Highlighted marks the 💰 cheapest and ⚡ fastest option, uses a short emoji layout and shows (+1) for next-day arrivals.</div></div>
               </div>
               <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
                 <button class="save-btn" id="saveTaOptions">Save</button>
@@ -21357,10 +21348,6 @@ function taOptionsFill(rec){
   const set=(id,v)=>{const el=$id(id); if(el) el.value=v;};
   set('cfgItinSharePdf',rec.itin_share_pdf==='Yes'?'Yes':'No');
   set('cfgItinAutoImages',rec.itin_auto_images==='No'?'No':'Yes');
-  set('cfgLtShowFares',rec.lt_show_fares==='No'?'No':'Yes');
-  const n=parseInt(rec.lt_fare_options,10);
-  set('cfgLtFareOptions',String(n>=1&&n<=5?n:3));
-  set('cfgLtFareStyle',rec.lt_fare_style==='highlighted'?'highlighted':'classic');
 }
 
 function updateAgencyTabVisibility(){
@@ -21413,7 +21400,8 @@ $id('saveTaFlow').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
 });
 
-// Travel Settings — itinerary PDF sharing/images (travel-agency.html) and live fares (WhatsApp bot).
+// Travel Settings — itinerary PDF sharing/images (travel-agency.html). Live-fare options moved to
+// Live Agency → ⚙️ Settings (live-travel-agency.html); this PUT only sends the itinerary fields.
 $id('saveTaOptions').addEventListener('click',async()=>{
   const btn=$id('saveTaOptions'),msg=$id('saveTaOptionsMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
@@ -21421,9 +21409,6 @@ $id('saveTaOptions').addEventListener('click',async()=>{
     const body={
       itin_share_pdf:$id('cfgItinSharePdf').value==='Yes',
       itin_auto_images:$id('cfgItinAutoImages').value==='Yes',
-      lt_show_fares:$id('cfgLtShowFares').value==='Yes',
-      lt_fare_options:parseInt($id('cfgLtFareOptions').value,10),
-      lt_fare_style:$id('cfgLtFareStyle').value,
     };
     const r=await fetch(`${WORKER_BASE}/live-travel/travel-settings`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));
