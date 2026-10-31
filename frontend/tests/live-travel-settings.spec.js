@@ -35,11 +35,19 @@ test('live fares & booking: load, preview the chosen style and save only those f
   await expect(page.locator('#fsPreview')).not.toContainText('INR');
   await page.selectOption('#fsShow', '1');
   await page.selectOption('#fsCount', '3');
+  // The payment QR links show only while online booking is disabled.
+  await expect(page.locator('#fsQrBox')).toBeHidden();
   await page.selectOption('#fsBooking', '0');
+  await expect(page.locator('#fsQrBox')).toBeVisible();
+  await page.fill('#fsQr1Label', 'UPI');
+  await page.fill('#fsQr1Url', 'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing');
+  await expect(page.locator('#fsQr1Img')).toHaveAttribute('src', 'https://drive.google.com/thumbnail?id=QRDRIVE1234&sz=w200');
+  await expect(page.locator('#fsQr2Img')).toBeHidden();
   await page.screenshot({ path: test.info().outputPath('settings.png') });
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.locator('#fsMsg')).toContainText('Saved');
-  expect(saved).toEqual({ lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'highlighted', lt_online_booking: false });
+  expect(saved).toEqual({ lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'highlighted', lt_online_booking: false,
+    lt_pay_qr_1_label: 'UPI', lt_pay_qr_1_url: 'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing', lt_pay_qr_2_label: '', lt_pay_qr_2_url: '' });
 });
 
 test('currency, WhatsApp menu and itineraries are tabs of the same page; the old menu items are gone', async ({ page }) => {

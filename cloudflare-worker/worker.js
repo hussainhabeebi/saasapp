@@ -20088,7 +20088,10 @@ export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,p
       const pax=await lastSearch()||{};
       await ltRecordChatBookingForm(env,clientId,phone,leadId,selectedNow,next,{manual:true,pax});
       await hospitalityProPrivateNote(c,convId,ltManualBookingStaffNote(selectedNow,next,phone,pax));
-      return send(ltManualBookingConfirmText(selectedNow,next));
+      const paymentQr=ltPaymentQrs(c).length>0;
+      const reply=await send(ltManualBookingConfirmText(selectedNow,next,{paymentQr}));
+      if(paymentQr)await ltSendPaymentQrs(env,c,clientId,convId);
+      return reply;
     }
     await ltRecordChatBookingForm(env,clientId,phone,leadId,selectedNow,next);
     return openCheckout(selectedNow,next);
@@ -20171,7 +20174,13 @@ async function handleLtTravelFlow(request,env){
 }
 // Travel Agency options (Settings → Industry Modules → Travel Agency). Stored in D1 next to the
 // Travel Flow switch for the same reason, and mirrored onto CLIENTS as Yes/No / a number.
-export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true};
+export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,
+  // Payment QR codes sent as images when online booking is off: a Google Drive image link or a
+  // direct https image link, each with an optional name ("UPI", "Bank transfer").
+  lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''};
+const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
+const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
+const ltPayQrLabel=v=>String(v||'').replace(/\s+/g,' ').trim().slice(0,40);
 export const LT_FARE_STYLES=['classic','highlighted'];
 export const LT_FARE_OPTIONS_MAX=5;
 const ltYesNo=(v,def)=>v==null||v===''?def:typeof v==='boolean'?v:/^(yes|true|1|on)$/i.test(String(v).trim());
@@ -20184,6 +20193,8 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_fare_options:Number.isFinite(n)?Math.min(LT_FARE_OPTIONS_MAX,Math.max(1,n)):d.lt_fare_options,
     lt_online_booking:ltYesNo(raw?.lt_online_booking,d.lt_online_booking),
     lt_fare_style:LT_FARE_STYLES.includes(String(raw?.lt_fare_style||'').toLowerCase())?String(raw.lt_fare_style).toLowerCase():d.lt_fare_style,
+    lt_pay_qr_1_url:ltPayQrUrl(raw?.lt_pay_qr_1_url),lt_pay_qr_1_label:ltPayQrLabel(raw?.lt_pay_qr_1_label),
+    lt_pay_qr_2_url:ltPayQrUrl(raw?.lt_pay_qr_2_url),lt_pay_qr_2_label:ltPayQrLabel(raw?.lt_pay_qr_2_label),
   };
 }
 // The saved D1 settings when present, else the CLIENTS fields, else the defaults.
@@ -20202,7 +20213,7 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
   const yn=v=>v?'Yes':'No';
   try{
     await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS));
-    await patchClientFields(env,clientId,{itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking)});
+    await patchClientFields(env,clientId,{itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
   }catch(e){}
 }
 // GET/PUT /live-travel/travel-settings — Dashboard → Settings → Modules → Travel Agency options.
@@ -20216,6 +20227,8 @@ async function handleLtTravelSettings(request,env){
   for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_fare_style' in body&&!LT_FARE_STYLES.includes(body.lt_fare_style))return json({error:`lt_fare_style must be one of: ${LT_FARE_STYLES.join(', ')}`},400);
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
+  for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
+  for(const k of ['lt_pay_qr_1_label','lt_pay_qr_2_label'])if(k in body&&typeof body[k]!=='string')return json({error:`${k} must be text`},400);
   const next=ltTravelSettingsNormalize({...current,...body});
   await ltTravelSettingsSave(env,auth.cid,next,auth.email);
   await ltAudit(env,auth.cid,'travel_settings','travel_settings','updated',auth.email,next);
@@ -20684,14 +20697,59 @@ async function ltRecordChatBookingForm(env,clientId,phone,leadId,selected,passen
 const ltPaxSummary=(p={})=>{const a=Number(p.adults||1),ch=Number(p.children||0),inf=Number(p.infants||0);return [`${a} adult${a===1?'':'s'}`,ch&&`${ch} child${ch===1?'':'ren'}`,inf&&`${inf} infant${inf===1?'':'s'}`].filter(Boolean).join(', ');};
 const ltSelectedFlightLine=s=>`${s.airline||'Flight'}${s.flightNumber?' '+s.flightNumber:''} · ${s.origin||'—'} → ${s.destination||'—'}${s.departureTime?` · ${ltFlightDate(s.departureTime)}, ${ltFlightTime(s.departureTime)}`:''}`;
 // Online booking off: what the customer is told once the form is complete, and the team's note.
-export function ltManualBookingConfirmText(selected,passenger={}){
+// paymentQr: the agency's payment QR codes follow this message (ltSendPaymentQrs).
+export function ltManualBookingConfirmText(selected,passenger={},{paymentQr=false}={}){
   const first=String(passenger.name||'').split(' ')[0];
-  return `✅ Thanks${first?' '+first:''}! Your booking request is received.\n\n✈️ ${ltSelectedFlightLine(selected)}\n\nOur team will confirm seat availability and the final fare, and send you the payment details here shortly. No payment is taken yet.`;
+  return `✅ Thanks${first?' '+first:''}! Your booking request is received.\n\n✈️ ${ltSelectedFlightLine(selected)}\n\n`+(paymentQr
+    ?'Our team will confirm seat availability and the final fare here shortly. Our payment QR code is below: please pay only after the fare is confirmed, then send the payment screenshot in this chat.'
+    :'Our team will confirm seat availability and the final fare, and send you the payment details here shortly. No payment is taken yet.');
 }
 export function ltManualBookingPendingText(selected,passenger={}){
   return passenger.name
     ?`Your booking request for ${ltSelectedFlightLine(selected)} is with our team. They will confirm the fare and send payment details here shortly.`
     :`To book ${ltSelectedFlightLine(selected)}, tap *Proceed to Book* and send the lead passenger's name and email — our team will confirm it with you.`;
+}
+// The agency's payment QR codes (Flights → ⚙️ Travel Settings), in order, unnamed ones numbered.
+export function ltPaymentQrs(c={}){
+  const s=ltTravelSettingsNormalize(c);
+  return [[s.lt_pay_qr_1_url,s.lt_pay_qr_1_label],[s.lt_pay_qr_2_url,s.lt_pay_qr_2_label]]
+    .filter(([url])=>url).map(([url,label],i,all)=>({url,label:label||(all.length>1?`Payment QR ${i+1}`:'Payment QR')}));
+}
+export function ltPaymentQrCaption(qr){
+  return `💳 *${qr.label}*\nScan to pay once our team confirms the fare, then send the payment screenshot here.`;
+}
+// A QR as image bytes WhatsApp shows inline: Drive links go through driveFetchChatImage (resized,
+// JPEG/PNG-checked); any other link must itself serve a JPEG/PNG/WEBP of at most 5 MB.
+async function ltFetchPaymentQrImage(url){
+  const id=(url.match(/\/file\/d\/([\w-]+)/)||url.match(/[?&]id=([\w-]+)/)||[])[1];
+  if(/drive\.google\.com/i.test(url))return id?driveFetchChatImage(id):null;
+  try{
+    const r=await fetch(url,{redirect:'follow'});
+    const type=(r.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
+    if(!r.ok||!/^image\/(png|jpe?g|webp)$/.test(type))return null;
+    const buf=await r.arrayBuffer();
+    return buf.byteLength&&buf.byteLength<=5242880?new Blob([buf],{type}):null;
+  }catch(e){return null;}
+}
+// Sends each payment QR as a WhatsApp image with its name as the caption; when an image can't be
+// fetched or attached, the caption goes out with the link instead so the customer still gets it.
+async function ltSendPaymentQrs(env,c,clientId,convId){
+  for(const qr of ltPaymentQrs(c)){
+    const caption=ltPaymentQrCaption(qr);
+    let sent=false;
+    try{
+      const blob=c.chatwoot_base&&c.chatwoot_account_id&&c.chatwoot_token&&convId?await ltFetchPaymentQrImage(qr.url):null;
+      if(blob){
+        const fd=new FormData();
+        fd.append('content',caption);fd.append('message_type','outgoing');fd.append('private','false');
+        fd.append('attachments[]',blob,`payment-qr.${blob.type==='image/png'?'png':blob.type==='image/webp'?'webp':'jpg'}`);
+        const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+        sent=r.ok;
+        if(!r.ok)await reportOpsError(env,'Travel payment QR rejected by Chatwoot',new Error(`HTTP ${r.status} — ${(await r.text().catch(()=>'')).slice(0,300)}`),{clientId,convId});
+      }else await reportOpsError(env,'Travel payment QR image not available',new Error(qr.url.slice(0,200)),{clientId,convId});
+    }catch(e){await reportOpsError(env,'Travel payment QR send failed',e,{clientId,convId});}
+    if(!sent)await engineSendChatwootReply(env,c,clientId,convId,`${caption}\n${qr.url}`);
+  }
 }
 export function ltManualBookingStaffNote(selected,passenger,phone,pax={}){
   return `📝 Manual flight booking request (online booking is off)\n✈️ ${ltSelectedFlightLine(selected)}${selected.total?`\nFare shown: ${ltFxFormat(selected.total,selected.currency)}`:''}\nFare ID: ${selected.fareId||'—'}${selected.supplier?` (${selected.supplier})`:''}\n👤 ${passenger.name||'—'} · ${passenger.email||'—'} · ${phone||''}\n👥 ${ltPaxSummary(pax)}\nBook it with the supplier, then send the customer the payment details. Saved in Live Agency → Quotes.`;

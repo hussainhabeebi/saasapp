@@ -384,16 +384,29 @@ async function renderSettings(){
   $('main').innerHTML=settingsTabs()+head('Travel Settings','How live flight fares are shared and booked on WhatsApp')+`<div class="wmgrid"><div class="card" style="margin-top:0"><h3>✈️ Live flight fares in WhatsApp</h3><div class="formgrid">
 <div class="field span2"><label>💰 Show live flight prices</label><select id="fsShow" onchange="farePreview()"><option value="1" ${f.lt_show_fares!==false?'selected':''}>Yes — show fares in WhatsApp</option><option value="0" ${f.lt_show_fares===false?'selected':''}>No — fare shown at checkout</option></select><div class="sub" style="margin-top:4px">Live fare options sent by the WhatsApp bot.</div></div>
 <div class="field span2"><label>✈️ Number of flight options</label><select id="fsCount">${[1,2,3,4,5].map(v=>`<option value="${v}" ${v===n?'selected':''}>${v}</option>`).join('')}</select><div class="sub" style="margin-top:4px">Live fares shown per search (4–5 are sent as a WhatsApp list).</div></div>
-<div class="field span4"><label>🎫 Online booking</label><select id="fsBooking"><option value="1" ${f.lt_online_booking!==false?'selected':''}>Enabled — send the booking link</option><option value="0" ${f.lt_online_booking===false?'selected':''}>Disabled — collect details, our team books</option></select><div class="sub" style="margin-top:4px">When disabled, no booking link is sent for any supplier: the customer sends the lead passenger's name and email, and the request lands in 📄 Quotes with a note in the chat for your team.</div></div>
+<div class="field span4"><label>🎫 Online booking</label><select id="fsBooking" onchange="$('fsQrBox').style.display=this.value==='0'?'block':'none'"><option value="1" ${f.lt_online_booking!==false?'selected':''}>Enabled — send the booking link</option><option value="0" ${f.lt_online_booking===false?'selected':''}>Disabled — collect details, our team books</option></select><div class="sub" style="margin-top:4px">When disabled, no booking link is sent for any supplier: the customer sends the lead passenger's name and email, and the request lands in 📄 Quotes with a note in the chat for your team.</div></div>
+<div class="field span4" id="fsQrBox" style="display:${f.lt_online_booking===false?'block':'none'}"><label>💳 Payment QR codes (optional)</label><div class="sub" style="margin:0 0 8px">Sent as images right after the customer's booking request while online booking is disabled. Paste a Google Drive image link (shared as "Anyone with the link") or a direct image link. Leave empty to send no QR.</div>${[1,2].map(i=>`<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2.5fr) 56px;gap:8px;align-items:center;margin-bottom:8px"><input id="fsQr${i}Label" maxlength="40" placeholder="Name, e.g. ${i===1?'UPI':'Bank transfer'}" value="${esc(f[`lt_pay_qr_${i}_label`]||'')}"><input id="fsQr${i}Url" placeholder="QR link ${i} — https://drive.google.com/file/d/…/view" value="${esc(f[`lt_pay_qr_${i}_url`]||'')}" oninput="qrPreview(${i})"><img id="fsQr${i}Img" alt="" style="width:56px;height:56px;object-fit:contain;border:1px solid var(--line);border-radius:6px;background:#fff;display:none"></div>`).join('')}</div>
 <div class="field span4"><label>✨ Fare card style</label><select id="fsStyle" onchange="farePreview()"><option value="classic" ${f.lt_fare_style!=='highlighted'?'selected':''}>Classic — current layout</option><option value="highlighted" ${f.lt_fare_style==='highlighted'?'selected':''}>Highlighted — labels, compact cards, +1 day</option></select><div class="sub" style="margin-top:4px">Highlighted marks the 💰 cheapest and ⚡ fastest option, uses a short emoji layout and shows (+1) for next-day arrivals.</div></div>
 <div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="fsSave" onclick="saveFareSettings()">Save settings</button><span class="sub" id="fsMsg"></span></div></div></div>
 <div><div class="wmphone" style="height:auto"><div class="wmbar">Preview<span>Example search · CCJ → AUH</span></div><div class="wmchat" id="fsPreview"></div></div></div></div>`;
-  farePreview();
+  farePreview();qrPreview(1);qrPreview(2);
+}
+// A Drive file link shows as its thumbnail; any other https link is shown as it is.
+function qrImageUrl(url){
+  const u=String(url||'').trim();if(!/^https:\/\//i.test(u))return '';
+  const id=(u.match(/\/file\/d\/([\w-]+)/)||u.match(/[?&]id=([\w-]+)/)||[])[1];
+  return /drive\.google\.com/i.test(u)?(id?`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w200`:''):u;
+}
+function qrPreview(i){
+  const img=$(`fsQr${i}Img`);if(!img)return;
+  const src=qrImageUrl($(`fsQr${i}Url`).value);
+  img.style.display=src?'block':'none';if(src)img.src=src;else img.removeAttribute('src');
 }
 async function saveFareSettings(){
   const btn=$('fsSave'),msg=$('fsMsg');btn.disabled=true;msg.textContent='';
   try{
-    fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_show_fares:$('fsShow').value==='1',lt_fare_options:Number($('fsCount').value),lt_fare_style:$('fsStyle').value,lt_online_booking:$('fsBooking').value==='1'})});
+    fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_show_fares:$('fsShow').value==='1',lt_fare_options:Number($('fsCount').value),lt_fare_style:$('fsStyle').value,lt_online_booking:$('fsBooking').value==='1',
+      lt_pay_qr_1_label:$('fsQr1Label').value.trim(),lt_pay_qr_1_url:$('fsQr1Url').value.trim(),lt_pay_qr_2_label:$('fsQr2Label').value.trim(),lt_pay_qr_2_url:$('fsQr2Url').value.trim()})});
     msg.textContent='✓ Saved — the bot uses this from the next search';msg.style.color='var(--green)';
   }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
