@@ -322,13 +322,13 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
   globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
   try{
     let r=await call(env,session,'/live-travel/travel-settings');
-    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true});
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
     assert.equal(r.status,200,JSON.stringify(r.data));
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'highlighted'});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true},'only the style changes');
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''},'only the style changes');
     assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);
@@ -430,5 +430,50 @@ test('Online booking off: no booking link for any supplier, the details become a
     assert.match(chatwoot.pop().content,/is with our team/);
     assert.equal(ctaUrls().length,0,'no booking link was ever sent');
     assert.equal(chatwoot.some(m=>/https?:\/\//.test(m.content||'')),false);
+  }finally{globalThis.fetch=realFetch;}
+});
+
+test('Online booking off: payment QR codes go out as images after the booking request',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY,12);
+  const realFetch=globalThis.fetch,chatwoot=[],fetched=[];
+  const JPEG=new Uint8Array([0xFF,0xD8,0xFF,0xE0,0,0x10,0x4A,0x46,0x49,0x46]);
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u==='https://api.flypoomas.com/api/search')return new Response(JSON.stringify({fares:[{id:'FARE-1',isBookable:true,supplier:'DUFFEL',displayPrice:650,totalFare:650,currency:'AED',airline:'AI',airlineName:'Air India',flightNumber:'AI 6509',origin:'SHJ',destination:'CCJ',departureTime:'2026-12-01T20:00:00',arrivalTime:'2026-12-01T23:59:00',duration:240,stops:0}]}));
+    if(u.startsWith('https://drive.google.com/thumbnail?id=QRDRIVE1234')){fetched.push(u);return new Response(JPEG,{headers:{'content-type':'image/jpeg'}});}
+    if(u==='https://pay.example.com/bank-qr.png'){fetched.push(u);return new Response('gone',{status:404});}
+    if(u.startsWith('https://graph.facebook.com/'))return new Response('{}');
+    if(u.startsWith('https://cw.test/')){
+      if(typeof opts.body==='string'){const b=JSON.parse(opts.body);if(!b.private)chatwoot.push({content:b.content});}
+      else chatwoot.push({content:opts.body.get?.('content'),file:opts.body.get?.('attachments[]')||null,items:opts.body.get?.('content_attributes')?JSON.parse(opts.body.get('content_attributes')).items:null});
+      return new Response('{"id":1}');
+    }
+    return new Response('{}',{status:404});
+  };
+  try{
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_pay_qr_1_url:'http://not-https.example.com/qr.png'})).status,400);
+    let r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_online_booking:false,lt_pay_qr_1_label:'UPI',lt_pay_qr_1_url:'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing',lt_pay_qr_2_url:'https://pay.example.com/bank-qr.png'});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(r.data.lt_pay_qr_2_label,'');
+    const c={Id:12,industry:'travel',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN',...r.data};
+    const phone='+971500000012';
+    await engineHandleLiveTicketingChat(env,c,12,'SHJ to CCJ on 2026-12-01, 1 adult',[],phone);
+    await engineHandleLiveTicketCheckoutChat(env,c,12,'61',phone,'Book Option 1','text','');
+    await engineHandleLiveTicketCheckoutChat(env,c,12,'61',phone,'proceed to book','text','');
+    chatwoot.length=0;
+    await engineHandleLiveTicketCheckoutChat(env,c,12,'61',phone,'Asha Nair\nasha@example.com','text','');
+    // Only real messages (other Chatwoot calls, e.g. labels, carry no content).
+    for(let i=chatwoot.length-1;i>=0;i--)if(chatwoot[i].content==null)chatwoot.splice(i,1);
+    assert.equal(chatwoot.length,3,JSON.stringify(chatwoot.map(m=>m.content)));
+    assert.match(chatwoot[0].content,/booking request is received[\s\S]*payment QR code is below/);
+    // QR 1: the Drive image itself, as an image attachment with its name.
+    assert.ok(chatwoot[1].file,'QR 1 is sent as an attachment');
+    assert.equal(chatwoot[1].file.type,'image/jpeg');
+    assert.match(chatwoot[1].content,/\*UPI\*[\s\S]*Scan to pay/);
+    // QR 2: its image couldn't be fetched, so the link goes out with the caption instead.
+    assert.equal(chatwoot[2].file||null,null);
+    assert.match(chatwoot[2].content,/\*Payment QR 2\*[\s\S]*https:\/\/pay\.example\.com\/bank-qr\.png/);
+    assert.equal(fetched.length,2);
   }finally{globalThis.fetch=realFetch;}
 });
