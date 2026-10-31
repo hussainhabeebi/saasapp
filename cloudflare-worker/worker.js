@@ -19707,7 +19707,7 @@ const ltFareOptionLimit=n=>Math.min(LT_FARE_OPTIONS_MAX,Math.max(1,parseInt(n,10
 // The agency's live-fare chat options, loaded onto c by the webhook (ltTravelSettingsStored).
 export function ltChatFarePrefs(c={}){
   const s=ltTravelSettingsNormalize(c);
-  return {limit:s.lt_fare_options,showFares:s.lt_show_fares,style:s.lt_fare_style};
+  return {limit:s.lt_fare_options,showFares:s.lt_show_fares,style:s.lt_fare_style,onlineBooking:s.lt_online_booking};
 }
 async function ltSaveChatOffers(env,clientId,phone,offers,sort='',limit){
   if(!phone)return;
@@ -20016,8 +20016,11 @@ async function engineHandleLiveTicketCheckoutChatClassic(env,c,clientId,convId,p
   return null;
 }
 // Travel Flow on → a pick shows the flight details; Proceed → booking form → booking-site link.
+// Online booking off (Flights → ⚙️ Settings): no booking link for any supplier — the same steps
+// end in a manual booking request (lead passenger's name + email) handed to the team instead.
 export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,text,mediaType,inboxId,leadId=''){
-  if(!ltTravelFlowOn(c))return engineHandleLiveTicketCheckoutChatClassic(env,c,clientId,convId,phone,text,mediaType,inboxId);
+  const onlineBooking=ltChatFarePrefs(c).onlineBooking;
+  if(!ltTravelFlowOn(c)&&onlineBooking)return engineHandleLiveTicketCheckoutChatClassic(env,c,clientId,convId,phone,text,mediaType,inboxId);
   await ltEnsureChatCheckoutSchema(env);
   const row=await env.DB.prepare(`SELECT * FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
   if(!row)return null;
@@ -20027,6 +20030,7 @@ export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,p
   const lastSearch=()=>ltLoadChatLastSearch(env,clientId,phone).catch(()=>null);
   // Sends the booking-site button for the chosen fare, with the form's details prefilled.
   const openCheckout=async(selected,passenger={})=>{
+    if(!onlineBooking)return send(ltManualBookingPendingText(selected,passenger));
     const pax=await lastSearch()||{};
     const url=await ltChatCheckoutLink(env,clientId,selected,{passenger,phone,adults:pax.adults,children:pax.children,infants:pax.infants});
     if(!url)return send('The booking link for this fare is not available right now. Please try again shortly or ask our team to book it for you.');
@@ -20060,24 +20064,32 @@ export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,p
     if(!selectedNow.fareId)return send('This fare has expired. Please run a new search.');
     await setStep('form',{passenger_json:'{}'});
     const pax=await lastSearch()||{};
-    return send(ltBookingFormText({},{adults:pax.adults||1}),[{title:'⏭️ Skip form',value:'skip form'},{title:'🔁 Other Flights',value:'other flights'}]);
+    return send(ltBookingFormText({},{adults:pax.adults||1,manual:!onlineBooking}),onlineBooking?[{title:'⏭️ Skip form',value:'skip form'},{title:'🔁 Other Flights',value:'other flights'}]:[{title:'🔁 Other Flights',value:'other flights'}]);
   }
   // Booking form: name + email (one message or two), then the booking-site button.
   if(row.step==='form'&&!/^book\b/i.test(input)){
     if(!selectedNow.fareId)return send('This fare has expired. Please run a new search.');
-    if(cmd==='skip_form'){await setStep('checkout_ready');return openCheckout(selectedNow);}
+    if(cmd==='skip_form'&&onlineBooking){await setStep('checkout_ready');return openCheckout(selectedNow);}
+    const formButtons=onlineBooking?[{title:'⏭️ Skip form',value:'skip form'}]:null;
+    if(cmd==='skip_form')return send(ltBookingFormText(ltJson(row.passenger_json,{})||{},{manual:true}));
     // A new route or question is not a form answer — let the normal flow take it.
     if(ltChatFlightIntent(input))return null;
     const prev=ltJson(row.passenger_json,{})||{},next=ltParseBookingForm(input,prev);
     if(next.name===(prev.name||'')&&next.email===(prev.email||'')){
       if(mediaType!=='text'||input.length>160||/\?\s*$/.test(input))return null;
-      return send(ltBookingFormText(prev),[{title:'⏭️ Skip form',value:'skip form'}]);
+      return send(ltBookingFormText(prev,{manual:!onlineBooking}),formButtons);
     }
     if(ltBookingFormMissing(next).length){
       await setStep('form',{passenger_json:JSON.stringify(next)});
-      return send(ltBookingFormText(next),[{title:'⏭️ Skip form',value:'skip form'}]);
+      return send(ltBookingFormText(next,{manual:!onlineBooking}),formButtons);
     }
     await setStep('checkout_ready',{passenger_json:JSON.stringify(next)});
+    if(!onlineBooking){
+      const pax=await lastSearch()||{};
+      await ltRecordChatBookingForm(env,clientId,phone,leadId,selectedNow,next,{manual:true,pax});
+      await hospitalityProPrivateNote(c,convId,ltManualBookingStaffNote(selectedNow,next,phone,pax));
+      return send(ltManualBookingConfirmText(selectedNow,next));
+    }
     await ltRecordChatBookingForm(env,clientId,phone,leadId,selectedNow,next);
     return openCheckout(selectedNow,next);
   }
@@ -20159,7 +20171,7 @@ async function handleLtTravelFlow(request,env){
 }
 // Travel Agency options (Settings → Industry Modules → Travel Agency). Stored in D1 next to the
 // Travel Flow switch for the same reason, and mirrored onto CLIENTS as Yes/No / a number.
-export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic'};
+export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true};
 export const LT_FARE_STYLES=['classic','highlighted'];
 export const LT_FARE_OPTIONS_MAX=5;
 const ltYesNo=(v,def)=>v==null||v===''?def:typeof v==='boolean'?v:/^(yes|true|1|on)$/i.test(String(v).trim());
@@ -20170,6 +20182,7 @@ export function ltTravelSettingsNormalize(raw={}){
     itin_auto_images:ltYesNo(raw?.itin_auto_images,d.itin_auto_images),
     lt_show_fares:ltYesNo(raw?.lt_show_fares,d.lt_show_fares),
     lt_fare_options:Number.isFinite(n)?Math.min(LT_FARE_OPTIONS_MAX,Math.max(1,n)):d.lt_fare_options,
+    lt_online_booking:ltYesNo(raw?.lt_online_booking,d.lt_online_booking),
     lt_fare_style:LT_FARE_STYLES.includes(String(raw?.lt_fare_style||'').toLowerCase())?String(raw.lt_fare_style).toLowerCase():d.lt_fare_style,
   };
 }
@@ -20189,7 +20202,7 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
   const yn=v=>v?'Yes':'No';
   try{
     await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS));
-    await patchClientFields(env,clientId,{itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style});
+    await patchClientFields(env,clientId,{itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking)});
   }catch(e){}
 }
 // GET/PUT /live-travel/travel-settings — Dashboard → Settings → Modules → Travel Agency options.
@@ -20200,7 +20213,7 @@ async function handleLtTravelSettings(request,env){
   const current=await ltTravelSettingsStored(env,auth.cid,client||{});
   if(request.method==='GET')return json(current);
   const body=await request.json().catch(()=>({}));
-  for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
+  for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_fare_style' in body&&!LT_FARE_STYLES.includes(body.lt_fare_style))return json({error:`lt_fare_style must be one of: ${LT_FARE_STYLES.join(', ')}`},400);
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   const next=ltTravelSettingsNormalize({...current,...body});
@@ -20658,14 +20671,30 @@ async function ltMenuBookingsText(env,clientId,phone,leadId){
 
 // A booking form completed in chat is saved as a Live Agency quote, so the team sees who is
 // about to book (Quotes page) even before the booking site confirms the ticket.
-async function ltRecordChatBookingForm(env,clientId,phone,leadId,selected,passenger){
+async function ltRecordChatBookingForm(env,clientId,phone,leadId,selected,passenger,{manual=false,pax={}}={}){
   try{
     await ltEnsureSchema(env);
     const now=ltNow(),route=`${selected.origin||'—'} → ${selected.destination||'—'}`;
-    const notes=`WhatsApp booking form · ${selected.airline||'Flight'}${selected.flightNumber?' '+selected.flightNumber:''} · ${route}${selected.departureTime?` · ${String(selected.departureTime).slice(0,16).replace('T',' ')}`:''} · fare ${selected.fareId||''}`;
+    const paxText=manual?` · ${ltPaxSummary(pax)}`:'';
+    const notes=`${manual?'MANUAL BOOKING REQUEST (online booking off) — confirm with the customer':'WhatsApp booking form'}${paxText} · ${selected.airline||'Flight'}${selected.flightNumber?' '+selected.flightNumber:''} · ${route}${selected.departureTime?` · ${String(selected.departureTime).slice(0,16).replace('T',' ')}`:''} · fare ${selected.fareId||''}`;
     await env.DB.prepare(`INSERT INTO live_travel_quotes (client_id,quote_ref,lead_id,customer_name,customer_phone,customer_email,status,currency,subtotal,service_fee,discount,total_amount,notes,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,'sent',?,?,0,0,?,?,?,?,?)`)
       .bind(Number(clientId),ltRef('QT'),String(leadId||''),ltText(passenger.name,180),ltText(phone,40),ltText(passenger.email,250),selected.currency||'AED',Number(selected.total||0),Number(selected.total||0),notes,'whatsapp-bot',now,now).run();
   }catch(e){await reportOpsError(env,'Travel chat booking form — quote not saved',e,{clientId});}
+}
+const ltPaxSummary=(p={})=>{const a=Number(p.adults||1),ch=Number(p.children||0),inf=Number(p.infants||0);return [`${a} adult${a===1?'':'s'}`,ch&&`${ch} child${ch===1?'':'ren'}`,inf&&`${inf} infant${inf===1?'':'s'}`].filter(Boolean).join(', ');};
+const ltSelectedFlightLine=s=>`${s.airline||'Flight'}${s.flightNumber?' '+s.flightNumber:''} · ${s.origin||'—'} → ${s.destination||'—'}${s.departureTime?` · ${ltFlightDate(s.departureTime)}, ${ltFlightTime(s.departureTime)}`:''}`;
+// Online booking off: what the customer is told once the form is complete, and the team's note.
+export function ltManualBookingConfirmText(selected,passenger={}){
+  const first=String(passenger.name||'').split(' ')[0];
+  return `✅ Thanks${first?' '+first:''}! Your booking request is received.\n\n✈️ ${ltSelectedFlightLine(selected)}\n\nOur team will confirm seat availability and the final fare, and send you the payment details here shortly. No payment is taken yet.`;
+}
+export function ltManualBookingPendingText(selected,passenger={}){
+  return passenger.name
+    ?`Your booking request for ${ltSelectedFlightLine(selected)} is with our team. They will confirm the fare and send payment details here shortly.`
+    :`To book ${ltSelectedFlightLine(selected)}, tap *Proceed to Book* and send the lead passenger's name and email — our team will confirm it with you.`;
+}
+export function ltManualBookingStaffNote(selected,passenger,phone,pax={}){
+  return `📝 Manual flight booking request (online booking is off)\n✈️ ${ltSelectedFlightLine(selected)}${selected.total?`\nFare shown: ${ltFxFormat(selected.total,selected.currency)}`:''}\nFare ID: ${selected.fareId||'—'}${selected.supplier?` (${selected.supplier})`:''}\n👤 ${passenger.name||'—'} · ${passenger.email||'—'} · ${phone||''}\n👥 ${ltPaxSummary(pax)}\nBook it with the supplier, then send the customer the payment details. Saved in Live Agency → Quotes.`;
 }
 
 function ltMergeChatFlightDraft(draft,input,userText,fxPrefs={}){
@@ -20710,9 +20739,11 @@ async function ltLiveTicketsConnected(env,clientId){
 // Travel-agency prompt rules for every AI-written reply. With the live ticketing API connected the
 // bot must never say tickets aren't offered; either way it asks for the destination (plus date)
 // rather than answering a travel enquiry without knowing where the customer is going.
-export function ltTravelAgencyPromptBlock(liveTicketsConnected){
+export function ltTravelAgencyPromptBlock(liveTicketsConnected,onlineBooking=true){
   let block='\n\n## Travel Agency Rules\nWhen a customer asks about travel, a trip, a visa, a package or tickets and has not said where they are going, ask which destination they are travelling to and their travel date. Ask only for what is still missing.';
   if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.\nLive fares are sent automatically as soon as the customer gives the departure city, destination and date. You cannot search fares yourself: never ask which airline they prefer, never ask "shall I check?", and never say you will check and get back. Ask only for whichever of departure city, destination or date is still missing. To book a fare already shown, the customer taps its Book Option button (or replies "book option 1") and the secure booking link is sent automatically: tell them exactly that. Never ask "would you like to proceed?", and never offer to connect them to the team to book or pay for a listed fare.';
+  // Online booking off: no booking link is ever sent — the team confirms and sends payment details.
+  if(liveTicketsConnected&&!onlineBooking) block=block.replace('and the secure booking link is sent automatically: tell them exactly that. Never ask "would you like to proceed?", and never offer to connect them to the team to book or pay for a listed fare.','then sends the lead passenger\'s name and email; our team confirms the booking and sends payment details in this chat. There is no online booking link: never promise or send one.');
   return block;
 }
 
@@ -27533,7 +27564,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead, routing.intent);
       sysPrompt+=await mtgBotPromptBlock(env, c, clientId, state.leadId);
-      if(ltLiveAgencyEnabled(c)) sysPrompt+=ltTravelAgencyPromptBlock(await ltLiveTicketsConnected(env, clientId));
+      if(ltLiveAgencyEnabled(c)) sysPrompt+=ltTravelAgencyPromptBlock(await ltLiveTicketsConnected(env, clientId), ltChatFarePrefs(c).onlineBooking);
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
       // own catalogOrderLink exactly (same pure function, same args), the one real link this

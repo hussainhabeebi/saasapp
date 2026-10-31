@@ -54,14 +54,12 @@ test('Travel Flow is an optional Travel Agency setting, off by default', async (
   await expect(page.locator('#taFlowStatusBadge')).toHaveText('✓ Active');
 });
 
-test('Travel Settings: itinerary PDF/images and live fare options, saved through the worker', async ({ page }) => {
-  const puts = [];
+test('Travel Settings row points to Flights → ⚙️ Travel Settings and still mirrors the saved values', async ({ page }) => {
   await page.route('**/*', async (route) => {
     const req = route.request(), url = req.url();
     if (url.startsWith('file://')) return route.continue();
     if (url.endsWith('/live-travel/travel-flow')) return route.fulfill({ json: { enabled: false } });
-    if (url.endsWith('/live-travel/travel-settings') && req.method() === 'GET') return route.fulfill({ json: { itin_share_pdf: false, itin_auto_images: true, lt_show_fares: true, lt_fare_options: 3 } });
-    if (url.endsWith('/live-travel/travel-settings') && req.method() === 'PUT') { const b = JSON.parse(req.postData()); puts.push(b); return route.fulfill({ json: b }); }
+    if (url.endsWith('/live-travel/travel-settings') && req.method() === 'GET') return route.fulfill({ json: { itin_share_pdf: true, itin_auto_images: true, lt_show_fares: false, lt_fare_options: 5, lt_fare_style: 'classic', lt_online_booking: true } });
     return route.abort();
   });
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
@@ -82,17 +80,9 @@ test('Travel Settings: itinerary PDF/images and live fare options, saved through
     initTaSettings();
   });
   await expect(row).toBeVisible();
-  await expect(page.locator('#cfgItinSharePdf')).toHaveValue('No');
-  await expect(page.locator('#cfgItinAutoImages')).toHaveValue('Yes');
-  await expect(page.locator('#cfgLtShowFares')).toHaveValue('Yes');
-  await expect(page.locator('#cfgLtFareOptions')).toHaveValue('3');
-  await expect(page.locator('#cfgLtFareOptions option')).toHaveCount(5);
-  await page.locator('#cfgItinSharePdf').selectOption('Yes');
-  await page.locator('#cfgLtShowFares').selectOption('No');
-  await page.locator('#cfgLtFareOptions').selectOption('5');
-  await page.locator('#saveTaOptions').click();
-  await expect(page.locator('#saveTaOptionsMsg')).toContainText('Saved');
-  expect(puts).toEqual([{ itin_share_pdf: true, itin_auto_images: true, lt_show_fares: false, lt_fare_options: 5 }]);
+  await expect(row).toContainText('Flights → ⚙️ Travel Settings');
+  await expect(page.locator('#saveTaOptions')).toHaveCount(0);
+  // The saved values are still mirrored onto clientRecord for the travel pages that read them.
   // @ts-ignore
-  expect(await page.evaluate(() => [clientRecord.itin_share_pdf, clientRecord.lt_show_fares, clientRecord.lt_fare_options])).toEqual(['Yes', 'No', '5']);
+  await expect.poll(() => page.evaluate(() => [clientRecord.itin_share_pdf, clientRecord.lt_show_fares, clientRecord.lt_fare_options])).toEqual(['Yes', 'No', '5']);
 });
