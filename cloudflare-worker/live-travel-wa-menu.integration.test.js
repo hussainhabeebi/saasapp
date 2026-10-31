@@ -322,15 +322,18 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
   globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
   try{
     let r=await call(env,session,'/live-travel/travel-settings');
-    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3});
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic'});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
     assert.equal(r.status,200,JSON.stringify(r.data));
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic'});
+    r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'highlighted'});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted'},'only the style changes');
     assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:'no'})).status,400);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'fancy'})).status,400);
   }finally{globalThis.fetch=realFetch;}
 });
 
