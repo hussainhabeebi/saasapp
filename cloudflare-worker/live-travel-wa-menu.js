@@ -268,9 +268,12 @@ export function ltParseBookingForm(text,prev={}){
 
 // The booking-site link for the chosen fare. Contact details ride along so the site can prefill
 // its form; a site that does not read them simply ignores the extra parameters.
+// A checkout link with a {fareId} placeholder (Custom API connector) is used as written, with the
+// same prefill parameters appended.
 export function ltCheckoutUrl(selected,clientId,{passenger={},phone='',adults=0,children=0,infants=0}={}){
   const base=String(selected?.checkoutBase||'https://flypoomas.com').replace(/\/$/,'');
-  const q=new URLSearchParams({fareId:String(selected?.fareId||''),supplier:String(selected?.supplier||''),source:'leadvyne',client:String(clientId)});
+  const template=/\{fareId\}/i.test(base);
+  const q=new URLSearchParams(template?{}:{fareId:String(selected?.fareId||''),supplier:String(selected?.supplier||''),source:'leadvyne',client:String(clientId)});
   const parts=String(passenger.name||'').trim().split(/\s+/).filter(Boolean);
   if(parts.length){q.set('first_name',parts.slice(0,-1).join(' ')||parts[0]);if(parts.length>1)q.set('last_name',parts[parts.length-1]);}
   if(passenger.email)q.set('email',passenger.email);
@@ -279,6 +282,11 @@ export function ltCheckoutUrl(selected,clientId,{passenger={},phone='',adults=0,
   if(adults)q.set('adults',String(adults));
   if(children)q.set('children',String(children));
   if(infants)q.set('infants',String(infants));
+  if(template){
+    const url=base.replace(/\{fareId\}/gi,encodeURIComponent(String(selected?.fareId||''))).replace(/\{supplier\}/gi,encodeURIComponent(String(selected?.supplier||''))).replace(/\{client\}/gi,encodeURIComponent(String(clientId)));
+    const extra=q.toString();
+    return extra?`${url}${url.includes('?')?'&':'?'}${extra}`:url;
+  }
   return `${base}/book?${q.toString()}`;
 }
 

@@ -333,3 +333,46 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:'no'})).status,400);
   }finally{globalThis.fetch=realFetch;}
 });
+
+test('Custom API connector: live fares in chat in its own currency, booking link from its checkout session',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret'},session=await token(env.SESSION_SIGNING_KEY,9);
+  const realFetch=globalThis.fetch,meta=[],chatwoot=[],searches=[];
+  let sessionUp=true;
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u==='https://api.tripcod.com/api/search'){
+      searches.push({key:opts.headers['X-API-Key'],body:JSON.parse(opts.body)});
+      return new Response(JSON.stringify({fares:[{id:'TC-1',isBookable:true,supplier:'DUFFEL',displayPrice:14250,currency:'INR',airline:'6E',airlineName:'IndiGo',flightNumber:'6E 1402',origin:'DXB',destination:'COK',departureTime:'2026-12-01T10:00:00',arrivalTime:'2026-12-01T15:30:00',duration:240,stops:0}]}));
+    }
+    if(u==='https://api.tripcod.com/api/checkout/session')return sessionUp?new Response(JSON.stringify({token:'t1',checkoutUrl:'https://tripcod.com/checkout/t1'})):new Response('{"error":"down"}',{status:503});
+    if(u.startsWith('https://graph.facebook.com/')){meta.push(JSON.parse(opts.body));return new Response('{}');}
+    if(u.startsWith('https://cw.test/')){chatwoot.push({content:opts.body.get?.('content')});return new Response('{"id":1}');}
+    return new Response('{}',{status:404});
+  };
+  try{
+    const c={Id:9,industry:'travel',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
+    const phone='+971500000009';
+    // Not saved yet: the bot does not offer live fares.
+    assert.equal((await engineHandleLiveTicketingChat(env,c,9,'DXB to COK on 2026-12-01, 1 adult flight',[],phone))?.reply,'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.');
+    const r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'custom',enabled:true,priority:50,credentials:{api_key:'pmsk_chat'},endpoints:{name:'TripCod',search:'https://api.tripcod.com/api/search',checkout:'https://tripcod.com',checkout_session:'https://api.tripcod.com/api/checkout/session',currency:'INR'}});
+    assert.equal(r.status,200);
+
+    const step=await engineHandleLiveTicketingChat(env,c,9,'DXB to COK on 2026-12-01, 1 adult flight',[],phone);
+    assert.equal(searches.length,1);
+    assert.equal(searches[0].key,'pmsk_chat');
+    assert.equal(searches[0].body.currency,'INR');
+    assert.match(step.reply,/IndiGo 6E 1402/);
+    assert.match(step.reply,/INR\s?14,250/,'fare shown in the connector currency, unconverted');
+    assert.deepEqual(step.buttons.map(b=>b.title),['Book Option 1']);
+
+    let co=await engineHandleLiveTicketCheckoutChat(env,c,9,'56',phone,'Book Option 1','text','');
+    assert.equal(co.step,'checkout_ready');
+    assert.match(chatwoot.pop().content,/Continue securely on our booking site\./);
+    assert.equal(meta.pop().interactive.action.parameters.url,'https://tripcod.com/checkout/t1');
+
+    // Checkout session API down: the customer still gets the checkout link.
+    sessionUp=false;
+    co=await engineHandleLiveTicketCheckoutChat(env,c,9,'56',phone,'Book Option 1','text','');
+    assert.equal(meta.pop().interactive.action.parameters.url,'https://tripcod.com/book?fareId=TC-1&supplier=DUFFEL&source=leadvyne&client=9');
+  }finally{globalThis.fetch=realFetch;}
+});
