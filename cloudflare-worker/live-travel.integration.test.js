@@ -16,6 +16,10 @@ class D1Database {
   prepare(sql){return new D1Statement(this.db,sql);}
   async batch(statements){return Promise.all(statements.map(statement=>statement.run()));}
 }
+// One database for the whole file, like production: the worker adds its lazy columns once per
+// isolate, so a second fresh database would miss them. Each test uses its own tenant.
+let sharedDb=null;
+const testDb=()=>sharedDb||(sharedDb=new D1Database());
 async function token(secret,cid=7,email='agent@example.com'){
   const body=btoa(JSON.stringify({cid:String(cid),email,exp:Math.floor(Date.now()/1000)+3600}));
   const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
@@ -29,11 +33,11 @@ async function call(env,session,path,method='GET',body){
 }
 
 test('Live Travel authenticated D1 workflow remains tenant scoped and operational',async()=>{
-  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',ALLOWED_ORIGINS:'https://app.leadvyne.com'},session=await token(env.SESSION_SIGNING_KEY);
+  const DB=testDb(),env={DB,SESSION_SIGNING_KEY:'integration-secret',ALLOWED_ORIGINS:'https://app.leadvyne.com'},session=await token(env.SESSION_SIGNING_KEY);
 
   let r=await call(env,session,'/live-travel/bootstrap');
   assert.equal(r.status,200);
-  assert.deepEqual(r.data.suppliers.map(s=>s.supplier),['serpapi','riya','tripjack','poomas']);
+  assert.deepEqual(r.data.suppliers.map(s=>s.supplier),['serpapi','riya','tripjack','poomas','custom']);
   assert.equal(r.data.suppliers.filter(s=>s.supplier!=='poomas').every(s=>s.credentials_configured===false),true);
   assert.equal(r.data.suppliers.find(s=>s.supplier==='poomas')?.credentials_configured,true);
 
@@ -94,3 +98,57 @@ test('Live Travel authenticated D1 workflow remains tenant scoped and operationa
   assert.equal(r.status,404);
 });
 
+
+test('Custom API connector: works only once saved, searches with its key and currency, checks out via its session API',async()=>{
+  const DB=testDb(),env={DB,SESSION_SIGNING_KEY:'integration-secret',ALLOWED_ORIGINS:'https://app.leadvyne.com'},session=await token(env.SESSION_SIGNING_KEY,8);
+  let r=await call(env,session,'/live-travel/bootstrap');
+  assert.equal(r.data.suppliers.find(s=>s.supplier==='custom')?.credentials_configured,false);
+
+  // Enabling before the key, search endpoint and a checkout option are saved is refused.
+  r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'custom',enabled:true,credentials:{api_key:'pmsk_secret'},endpoints:{search:'https://api.tripcod.com/api/search'}});
+  assert.equal(r.status,400);
+  r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'custom',enabled:true,credentials:{api_key:'pmsk_secret'},endpoints:{search:'http://api.tripcod.com/api/search',checkout:'https://tripcod.com'}});
+  assert.equal(r.status,400,'links must be https');
+  r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'custom',enabled:true,priority:50,credentials:{api_key:'pmsk_secret'},endpoints:{name:'TripCod',search:'https://api.tripcod.com/api/search',checkout:'https://tripcod.com',checkout_session:'https://api.tripcod.com/api/checkout/session',currency:'inr'}});
+  assert.equal(r.status,200);
+  assert.equal(r.data.enabled,1);
+  assert.equal(r.data.credentials_configured,true);
+  assert.equal(r.data.endpoints.name,'TripCod');
+  assert.equal(r.data.endpoints.currency,'INR');
+  assert.equal(JSON.stringify(r.data).includes('pmsk_secret'),false,'the API key is never sent back');
+  // Saving again without retyping the key keeps it.
+  r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'custom',enabled:true,priority:50,credentials:{api_key:''},endpoints:{name:'TripCod',search:'https://api.tripcod.com/api/search',checkout:'https://tripcod.com',checkout_session:'https://api.tripcod.com/api/checkout/session',currency:'INR'}});
+  assert.equal(r.data.credentials_configured,true);
+
+  const calls=[],realFetch=globalThis.fetch;
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);calls.push({url:u,opts});
+    if(u==='https://api.tripcod.com/api/search')return new Response(JSON.stringify({fares:[{id:'FARE-1',supplier:'DUFFEL',isBookable:true,displayPrice:21500,currency:'INR',airline:'6E',airlineName:'IndiGo',flightNumber:'6E 1402',origin:'DXB',destination:'BOM',departureTime:'2026-12-01T10:00',arrivalTime:'2026-12-01T14:30',duration:180,stops:0}]}),{status:200});
+    if(u==='https://api.tripcod.com/api/checkout/session')return new Response(JSON.stringify({token:'tok',checkoutUrl:'https://tripcod.com/checkout/tok'}),{status:200});
+    return new Response('{}',{status:200});
+  };
+  try{
+    r=await call(env,session,'/live-travel/search','POST',{trip_type:'one_way',origin:'DXB',destination:'BOM',departure_date:'2026-12-01',adults:1,cabin:'economy'});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    const searchCall=calls.find(c=>c.url==='https://api.tripcod.com/api/search');
+    assert.equal(searchCall.opts.headers['X-API-Key'],'pmsk_secret');
+    const sent=JSON.parse(searchCall.opts.body);
+    assert.deepEqual({origin:sent.origin,destination:sent.destination,departureDate:sent.departureDate,cabinClass:sent.cabinClass,tripType:sent.tripType,currency:sent.currency},{origin:'DXB',destination:'BOM',departureDate:'2026-12-01',cabinClass:'ECONOMY',tripType:'ONEWAY',currency:'INR'});
+    const offer=r.data.offers.find(o=>o.supplier==='custom');
+    assert.ok(offer,'Custom API fare is listed');
+    assert.equal(offer.currency,'INR');
+    assert.equal(offer.total_amount,21500,'shown exactly as charged, no conversion or markup');
+    assert.match(offer.checkout_url,/^https:\/\/tripcod\.com\/book\?fareId=FARE-1&supplier=DUFFEL/);
+
+    r=await call(env,session,'/live-travel/quotes','POST',{offer_id:offer.id,customer_name:'Test Traveller',customer_phone:'+971501234567'});
+    assert.equal(r.status,200);
+    r=await call(env,session,'/live-travel/bookings','POST',{quote_id:r.data.id,passengers:[{first_name:'Test',last_name:'Traveller'}]});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    r=await call(env,session,'/live-travel/bookings/book','POST',{booking_id:r.data.id,customer_phone:'+971501234567'});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(r.data.checkout_url,'https://tripcod.com/checkout/tok');
+    const sessionCall=calls.find(c=>c.url==='https://api.tripcod.com/api/checkout/session');
+    assert.deepEqual(JSON.parse(sessionCall.opts.body),{bookingId:'FARE-1',whatsappPhone:'971501234567'});
+    assert.equal(sessionCall.opts.headers['X-API-Key'],'pmsk_secret');
+  }finally{globalThis.fetch=realFetch;}
+});

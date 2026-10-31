@@ -19717,14 +19717,22 @@ async function ltSaveChatOffers(env,clientId,phone,offers,sort='',limit){
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
     return;
   }
-  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',displayCurrency:o.currency,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',displayCurrency:o.currency,checkoutBase:o.raw?._checkout_base??'https://flypoomas.com',connector:o.supplier==='custom'?'custom':'poomas',...(o.raw?._fixed_currency?{fixedCurrency:true}:{})};});
   const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
   await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
     VALUES (?,?,'select',?,NULL,NULL,?,?)
     ON CONFLICT(client_id,phone) DO UPDATE SET step='select',offers_json=excluded.offers_json,selected_offer_json=NULL,passenger_json=NULL,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
     .bind(Number(clientId),String(phone),JSON.stringify(safe),expires,now.toISOString()).run();
 }
-export function ltCheckoutCtaPayload(phone,url,{text='Your selected flight is ready. Complete passenger details securely on POOMAS.',button='Book Now'}={}){
+// The link the customer pays on: POOMAS's booking site, or the Custom API's checkout session /
+// checkout link. '' when a Custom API fare has no way to check out.
+async function ltChatCheckoutLink(env,clientId,selected,opts={}){
+  if(selected?.connector!=='custom')return ltCheckoutUrl(selected,clientId,opts);
+  const link=selected.checkoutBase?ltCheckoutUrl(selected,clientId,opts):'';
+  try{return await ltCustomCheckoutUrl(await ltCustomSupplierRuntime(env,clientId),{fareId:selected.fareId,phone:opts.phone,fallback:link});}
+  catch(e){await reportOpsError(env,'Custom API checkout session failed',e,{clientId}).catch(()=>{});return link;}
+}
+export function ltCheckoutCtaPayload(phone,url,{text='Your selected flight is ready. Complete passenger details securely on our booking site.',button='Book Now'}={}){
   return {messaging_product:'whatsapp',to:String(phone||'').replace(/\D/g,''),type:'interactive',interactive:{type:'cta_url',body:{text:String(text).slice(0,1024)},action:{name:'cta_url',parameters:{display_text:String(button).slice(0,20),url:String(url)}}}};
 }
 async function engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId,opts={}){
@@ -19794,7 +19802,7 @@ export function ltStoredOfferSelectionIndex(offers,input){
 export function ltFormatChatOffers(offers,opts={}){
   const showFares=opts.showFares!==false;
   const top=ltBookableChatOffers(offers,opts.sort,opts.limit);
-  if(!top.length) return `${opts.note?opts.note+'\n\n':''}No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.`;
+  if(!top.length) return `${opts.note?opts.note+'\n\n':''}No bookable fares were returned for this route and date. Please try another date or nearby airport.`;
   const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
   const dateLabel=ltFlightDate(firstLeg.departureTime);
   const cabin=String(top[0].cabin||'economy').replace('_',' ');
@@ -19835,8 +19843,10 @@ export function ltChatCurrencySwitch(text){
   return ltFxCurrencyFromText(rest);
 }
 // Re-prices stored chat offers (POOMAS, no agency markup) into another currency.
+// A Custom API fare with its own currency is never converted: it is charged exactly as shown.
 export function ltConvertStoredChatOffers(offers,fx){
   return (offers||[]).map(o=>{
+    if(o?.fixedCurrency)return o;
     // Offers saved before currency support have no supplier fields: their currency/total ARE the supplier's.
     const supplierCurrency=o.supplierCurrency||o.currency,supplierTotal=Number(o.supplierTotal??o.total);
     const c=ltFxApplyToOffer({currency:supplierCurrency,total_amount:supplierTotal,base_amount:0,tax_amount:0,markup_amount:0},{fx,markup_type:'fixed',markup_value:0});
@@ -19952,13 +19962,14 @@ async function engineHandleLiveTicketCheckoutChatClassic(env,c,clientId,convId,p
       return null;
     }
     const selected=(await ltRepriceStoredChatOffers(env,clientId,phone,[stored[idx]]))[0];
-    if(!selected?.fareId)return send('This fare has no POOMAS booking ID. Please run a new search.');
+    if(!selected?.fareId)return send('This fare has no booking ID. Please run a new search.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
-    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    const url=await ltChatCheckoutLink(env,clientId,selected,{phone});
+    if(!url)return send('The booking link for this fare is not available right now. Please try again shortly or ask our team to book it for you.');
     const depart=selected.departureTime?`${ltFlightDate(selected.departureTime)}, ${ltFlightTime(selected.departureTime)}`:'—';
     const showFares=ltChatFarePrefs(c).showFares;
     const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}${showFares?`\nFare: ${ltFxFormat(selected.total,selected.currency)}${selected.supplierCurrency&&selected.supplierCurrency!==selected.currency?`\nCharged at checkout: ${ltFxFormat(selected.supplierTotal,selected.supplierCurrency)}`:''}`:''}`;
-    await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
+    await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on our booking site.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
     await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
     return {handled:true,step:'checkout_ready'};
   }
@@ -19977,7 +19988,8 @@ export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,p
   // Sends the booking-site button for the chosen fare, with the form's details prefilled.
   const openCheckout=async(selected,passenger={})=>{
     const pax=await lastSearch()||{};
-    const url=ltCheckoutUrl(selected,clientId,{passenger,phone,adults:pax.adults,children:pax.children,infants:pax.infants});
+    const url=await ltChatCheckoutLink(env,clientId,selected,{passenger,phone,adults:pax.adults,children:pax.children,infants:pax.infants});
+    if(!url)return send('The booking link for this fare is not available right now. Please try again shortly or ask our team to book it for you.');
     const first=String(passenger.name||'').split(' ')[0];
     const body=passenger.name
       ?`✅ Thanks ${first}! Your booking form is ready.\n\nTap *Complete Booking* to confirm passenger details and pay securely on our booking site. The fare is held only until payment.`
@@ -20646,7 +20658,8 @@ export function ltTravelFlowOn(c={}){
 
 async function ltLiveTicketsConnected(env,clientId){
   try{
-    const row=await env.DB.prepare(`SELECT 1 AS ok FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
+    // POOMAS, or a Custom API connector (enabling one already requires its key and links saved).
+    const row=await env.DB.prepare(`SELECT 1 AS ok FROM live_travel_suppliers WHERE client_id=? AND supplier IN ('poomas','custom') AND enabled=1`).bind(Number(clientId)).first();
     return !!row;
   }catch{return false;}
 }
@@ -20679,7 +20692,8 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   }
   await ltEnsureSchema(env);
   await ltSeedSuppliers(env,clientId);
-  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
+  const {results:chatSuppliers}=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier IN ('poomas','custom') AND enabled=1 ORDER BY priority`).bind(Number(clientId)).all();
+  const setting=(chatSuppliers||[])[0];
   if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
   const fxSettings=await ltFxSettings(env,clientId);
   // Travel Flow: a new flight request ("looking for flight ticket") starts the button steps from
@@ -20724,12 +20738,27 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   }
   await ltSaveChatSearchDraft(env,clientId,phone,input);
   try{
-    const runtime=await ltSupplierRuntime(env,setting); runtime.client_id=Number(clientId);
-    const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
-    const data=await ltSupplierSearch(runtime,input,env);
     const fxInfo=await ltFxForClient(env,clientId,input.currency);
-    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId),fx:await ltPoomasFxContext(env,clientId,fxInfo.fx)};
-    const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,200).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
+    // Every enabled chat supplier (POOMAS and/or the Custom API) is searched together; one that
+    // fails is skipped as long as another answered.
+    const searched=await Promise.all(chatSuppliers.map(async row=>{
+      try{
+        const runtime=await ltSupplierRuntime(env,row); runtime.client_id=Number(clientId);
+        const data=await ltSupplierSearch(runtime,input,env);
+        const base={...input,markup_type:row.markup_type,markup_value:row.markup_value,client_id:Number(clientId),fx:fxInfo.fx};
+        let ctx;
+        if(row.supplier==='custom')ctx=ltCustomOfferCtx(runtime,base);
+        else{
+          const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
+          ctx={...base,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',fx:await ltPoomasFxContext(env,clientId,fxInfo.fx)};
+        }
+        return ltExtractOffers(row.supplier,data).slice(0,200).map(raw=>ltNormalizeOffer(row.supplier,raw,ctx));
+      }catch(e){return {error:e};}
+    }));
+    const failed=searched.filter(r=>r?.error);
+    if(failed.length===searched.length)throw failed[0].error;
+    if(failed.length)await reportOpsError(env,'Live ticketing chat search (one supplier failed)',failed[0].error,{clientId}).catch(()=>{});
+    const offers=ltExactRouteOffers(searched.filter(Array.isArray).flat(),input.origin,input.destination);
     // Customer filters (airline, direct, time of day, budget). When nothing matches, say so and
     // show the other fares rather than a dead end.
     const filters=input.filters||{},matching=ltApplyChatFlightFilters(offers,filters);
@@ -37701,8 +37730,24 @@ async function handleReAnalytics(request, env){
    browser. SerpApi is discovery-only; a fare is bookable only
    after Riya or TripJack returns and subsequently revalidates it.
    ═══════════════════════════════════════════════════════════════════════════ */
-const LT_SUPPLIERS=['serpapi','riya','tripjack','poomas'];
-const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack','poomas']);
+const LT_SUPPLIERS=['serpapi','riya','tripjack','poomas','custom'];
+const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack','poomas','custom']);
+// Suppliers whose fares the WhatsApp bot shares and books through a checkout link.
+const LT_CHAT_SUPPLIERS=['poomas','custom'];
+// Custom API connector (Suppliers → Custom API): any POOMAS-style flight API the agency has its own
+// key for, e.g. POST https://api.tripcod.com/api/search with X-API-Key. Its settings live in
+// endpoints_json: search + checkout (booking-site link) + checkout_session (optional API that
+// returns { checkoutUrl }), plus a display name and the currency fares are requested and shown in.
+const LT_CUSTOM_URL_KEYS=['search','checkout','checkout_session'];
+export function ltCustomConnectorName(config){return ltText(config?.endpoints?.name,60)||'Custom API';}
+// The booking-site link for a fare: a template with {fareId}/{supplier}/{client} placeholders, or
+// a site base that takes the POOMAS-style /book?fareId=… path. '' when no checkout link is saved.
+export function ltOfferCheckoutLink(base,{fareId='',supplier='',clientId=''}={}){
+  const link=String(base||'').trim();
+  if(!link||!fareId)return '';
+  if(/\{fareId\}/i.test(link))return link.replace(/\{fareId\}/gi,encodeURIComponent(fareId)).replace(/\{supplier\}/gi,encodeURIComponent(supplier)).replace(/\{client\}/gi,encodeURIComponent(String(clientId)));
+  return `${link.replace(/\/$/,'')}/book?fareId=${encodeURIComponent(fareId)}&supplier=${encodeURIComponent(supplier)}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+}
 const LT_JSON_FIELDS=new Set(['itinerary_json','baggage_json','fare_rules_json','ticket_numbers_json','supplier_errors_json','frequent_flyer_json','raw_json','details_json']);
 let _ltSchemaEnsured=false;
 
@@ -37741,19 +37786,28 @@ function ltSearchParams(body={}){
 export function ltNormalizeOffer(supplier,raw,ctx={}){
   const offer=ltNormalizeOfferNative(supplier,raw,ctx);
   // POOMAS displayPrice already carries POOMAS's own markup; we never add ours on top.
-  const fxCtx=offer.supplier==='poomas'?{...ctx,markup_type:'fixed',markup_value:0}:ctx;
+  // Custom API fares are charged at the connector's own checkout too, so the same applies.
+  const fxCtx=offer.supplier==='poomas'||offer.supplier==='custom'?{...ctx,markup_type:'fixed',markup_value:0}:ctx;
   return ltFxApplyToOffer(offer,fxCtx);
 }
+// POOMAS-platform fare fields (POOMAS, and white-label APIs built on it such as TripCod).
+const ltPoomasShapedFare=raw=>!!raw&&typeof raw==='object'&&['displayPrice','totalFare','isBookable'].some(k=>k in raw);
 function ltNormalizeOfferNative(supplier,raw,ctx={}){
   const source=String(supplier||'').toLowerCase();
-  if(source==='poomas'){
-    const isBook=Boolean(raw?.isBookable);
+  if(source==='custom'&&!ltPoomasShapedFare(raw)){
+    const offer=ltNormalizeOfferNative('custom_generic',raw,ctx);
+    const checkoutUrl=ltOfferCheckoutLink(ctx.checkout_base,{fareId:offer.supplier_offer_id,supplier:String(raw?.supplier||''),clientId:ctx.client_id})||null;
+    return {...offer,supplier:'custom',bookable:!!offer.supplier_offer_id,validating:false,validating_supplier:'',checkout_url:checkoutUrl,
+      raw:{...(raw||{}),_checkout_url:checkoutUrl,_checkout_base:String(ctx.checkout_base||''),_fixed_currency:!!ctx.fixed_currency}};
+  }
+  if(source==='poomas'||source==='custom'){
+    const isBook=source==='custom'&&!('isBookable' in raw)?true:Boolean(raw?.isBookable);
     const fareId=ltOfferFareId(raw);
     const total=ltMoney(raw?.displayPrice??raw?.totalFare??0);
-    const checkoutBase=String(ctx.checkout_base||'https://flypoomas.com');
-    const checkoutUrl=isBook&&fareId?`${checkoutBase}/book?fareId=${encodeURIComponent(fareId)}&supplier=${encodeURIComponent(String(raw?.supplier||''))}&source=leadvyne&client=${encodeURIComponent(String(ctx.client_id||''))}`:null;
+    const checkoutBase=String(ctx.checkout_base??'https://flypoomas.com');
+    const checkoutUrl=isBook?ltOfferCheckoutLink(checkoutBase,{fareId,supplier:String(raw?.supplier||''),clientId:ctx.client_id||''})||null:null;
     return {
-      supplier:'poomas',supplier_offer_id:fareId,
+      supplier:source,supplier_offer_id:fareId,
       bookable:isBook,validating:false,validating_supplier:'',
       airline_code:ltText(raw?.airline||'',12).toUpperCase(),airline_name:ltText(raw?.airlineName||raw?.airline||'Flight',120),
       flight_numbers:ltText(raw?.flightNumber||'',200),
@@ -37763,7 +37817,7 @@ function ltNormalizeOfferNative(supplier,raw,ctx={}){
       currency:ltText(raw?.currency||ctx.currency||'AED',3).toUpperCase(),
       base_amount:ltMoney(raw?.baseFare||0),tax_amount:ltMoney(raw?.taxes||0),markup_amount:0,total_amount:total,
       checkout_url:checkoutUrl,
-      raw:{...raw,_checkout_url:checkoutUrl,_checkout_base:checkoutBase,_poomas_supplier:String(raw?.supplier||'')},
+      raw:{...raw,_checkout_url:checkoutUrl,_checkout_base:checkoutBase,_poomas_supplier:String(raw?.supplier||''),...(source==='custom'?{_fixed_currency:!!ctx.fixed_currency}:{})},
     };
   }
   const price=ltMoney(raw?.total_amount??raw?.totalPrice??raw?.total_price??raw?.price?.total??raw?.price??raw?.fare?.totalFare??raw?.fare?.total_amount);
@@ -37831,6 +37885,8 @@ function ltSupplierConfigured(config){
   if(supplier==='serpapi')return !!credentials.api_key;
   if(supplier==='riya'||supplier==='tripjack')return !!(credentials.api_key&&endpoints.search);
   if(supplier==='poomas')return true; // uses platform-level integration key; no per-client credentials needed
+  // Custom API: works only once its own API key, search endpoint and a way to check out are saved.
+  if(supplier==='custom')return !!(credentials.api_key&&endpoints.search&&(endpoints.checkout||endpoints.checkout_session));
   return false;
 }
 function ltSupplierPublic(config){
@@ -37854,7 +37910,7 @@ async function ltFetchJson(url,options={},timeoutMs=25000){
 function ltExtractOffers(supplier,data){
   if(supplier==='serpapi')return [...(data?.best_flights||[]),...(data?.other_flights||[])];
   if(supplier==='poomas')return Array.isArray(data?.fares)?data.fares:Array.isArray(data?.data?.fares)?data.data.fares:[];
-  for(const candidate of [data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
+  for(const candidate of [data?.fares,data?.data?.fares,data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
   return Array.isArray(data)?data:[];
 }
 async function ltSupplierSearch(config,input,env=null){
@@ -37878,7 +37934,36 @@ async function ltSupplierSearch(config,input,env=null){
     if(input.return_date)payload.returnDate=input.return_date;
     return ltFetchJson(`${apiBase}/api/search`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':apiKey,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(payload)});
   }
+  if(supplier==='custom'){
+    // Same request body as POOMAS /api/search; fares are asked for in the connector's currency.
+    const payload={origin:input.origin,destination:input.destination,departureDate:input.departure_date,adults:input.adults,children:input.children,infants:input.infants,cabinClass:String(input.cabin||'economy').toUpperCase(),tripType:input.trip_type==='round_trip'?'ROUNDTRIP':'ONEWAY',currency:ltFxCode(config.endpoints.currency)||input.currency||'AED'};
+    if(input.return_date)payload.returnDate=input.return_date;
+    return ltFetchJson(config.endpoints.search,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':config.credentials.api_key},body:JSON.stringify(payload)});
+  }
   return ltFetchJson(config.endpoints.search,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(input)});
+}
+// Offer context for a Custom API fare: its checkout link, and no conversion when the connector
+// has its own currency (the fare is shown exactly as its checkout charges it).
+export function ltCustomOfferCtx(config,ctx){
+  const currency=ltFxCode(config?.endpoints?.currency);
+  return {...ctx,checkout_base:String(config?.endpoints?.checkout||''),fixed_currency:!!currency,fx:currency?null:ctx.fx};
+}
+// The link a customer opens to pay for a Custom API fare: the connector's checkout-session API
+// when one is saved ({bookingId, whatsappPhone} → {checkoutUrl}), else the checkout link.
+async function ltCustomCheckoutUrl(config,{fareId,phone='',fallback=''}={}){
+  const endpoint=config?.endpoints?.checkout_session,apiKey=config?.credentials?.api_key;
+  if(endpoint&&apiKey&&fareId){
+    try{
+      const data=await ltFetchJson(endpoint,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':apiKey},body:JSON.stringify({bookingId:String(fareId),whatsappPhone:String(phone||'').replace(/\D/g,'')})},15000);
+      const url=String(data?.checkoutUrl||data?.checkout_url||data?.data?.checkoutUrl||data?.url||'');
+      if(/^https:\/\//i.test(url))return url;
+    }catch(e){if(!fallback)throw e;}
+  }
+  return fallback;
+}
+async function ltCustomSupplierRuntime(env,clientId){
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='custom'`).bind(Number(clientId)).first();
+  return row?ltSupplierRuntime(env,row):null;
 }
 async function ltSupplierAction(config,action,payload){
   const endpoint=config.endpoints?.[action];
@@ -38028,12 +38113,17 @@ async function handleLtSuppliersUpdate(request,env){
   const credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:supplier==='poomas'?[]:['api_key'];
   const credentials=supplier==='poomas'?{}:body.clear_credentials?{}:{...(previous.credentials||{})};
   for(const key of credentialKeys)if(body.credentials?.[key]!==undefined&&String(body.credentials[key]).trim())credentials[key]=ltText(body.credentials[key],1000);
-  const endpointKeys=supplier==='serpapi'?['search']:supplier==='poomas'?[]:['search','revalidate','book','ticket','sync','cancel'],endpoints=supplier==='poomas'?{}:{...(previous.endpoints||{})};
+  const endpointKeys=supplier==='serpapi'?['search']:supplier==='poomas'?[]:supplier==='custom'?LT_CUSTOM_URL_KEYS:['search','revalidate','book','ticket','sync','cancel'],endpoints=supplier==='poomas'?{}:{...(previous.endpoints||{})};
   for(const key of endpointKeys)if(body.endpoints?.[key]!==undefined)endpoints[key]=ltText(body.endpoints[key],1000);
+  if(supplier==='custom'){
+    for(const key of LT_CUSTOM_URL_KEYS)if(endpoints[key]&&!/^https:\/\/[^\s]+$/i.test(endpoints[key]))return json({error:`The ${key.replace('_',' ')} link must be a full https:// URL.`},400);
+    if(body.endpoints?.name!==undefined)endpoints.name=ltText(body.endpoints.name,60);
+    if(body.endpoints?.currency!==undefined)endpoints.currency=ltFxCode(body.endpoints.currency)||'';
+  }
   if(supplier==='serpapi'&&!endpoints.search)endpoints.search='https://serpapi.com/search.json';
   const mode=['sandbox','production'].includes(body.mode)?body.mode:'sandbox', type=body.markup_type==='percent'?'percent':'fixed';
   const runtime={...old,supplier,credentials,endpoints};
-  if(body.enabled&&!ltSupplierConfigured(runtime))return json({error:'Save this client’s required API key and search endpoint before enabling the supplier.'},400);
+  if(body.enabled&&!ltSupplierConfigured(runtime))return json({error:supplier==='custom'?'Save the API key, search endpoint and a checkout link (or checkout session endpoint) before enabling the Custom API.':'Save this client’s required API key and search endpoint before enabling the supplier.'},400);
   await env.DB.prepare(`UPDATE live_travel_suppliers SET enabled=?,mode=?,priority=?,markup_type=?,markup_value=?,credentials_encrypted=?,endpoints_json=?,updated_at=? WHERE client_id=? AND supplier=?`)
     .bind(body.enabled?1:0,mode,ltPositiveInt(body.priority,100,1,999),type,ltMoney(body.markup_value),await ltEncryptCredentials(env,credentials),JSON.stringify(endpoints),ltNow(),auth.cid,supplier).run();
   await ltAudit(env,auth.cid,'supplier',supplier,'settings_updated',auth.email,{enabled:!!body.enabled,mode,markup_type:type,markup_value:ltMoney(body.markup_value),credential_fields:Object.keys(credentials),endpoint_fields:Object.keys(endpoints)});
@@ -38072,8 +38162,9 @@ async function handleLtSearch(request,env){
     if(result.error){errors[supplier]=result.error;continue;}
     const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value,fx:fxInfo.fx};
     if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;ctx.fx=poomasFx;}
+    const offerCtx=supplier==='custom'?ltCustomOfferCtx({endpoints:ltJson(result.setting.endpoints_json,{})},{...ctx,client_id:auth.cid}):ctx;
     for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
-      const normalized=ltNormalizeOffer(supplier,raw,ctx);
+      const normalized=ltNormalizeOffer(supplier,raw,offerCtx);
       if(!normalized.total_amount)continue;
       const offerRef=ltRef('OF');
       const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,checkout_url,created_at,supplier_currency,supplier_total,fx_rate,fx_rate_at,fx_source,fx_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
@@ -38161,8 +38252,8 @@ async function handleLtBookings(request,env){
   }
   const body=await request.json().catch(()=>({})), quote=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(Number(body.quote_id),auth.cid).first();
   if(!quote)return json({error:'Quote not found'},404);
-  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer, or a bookable POOMAS offer, is required.'},409);
-  if(offer.supplier!=='poomas'&&!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
+  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer, or a bookable POOMAS or Custom API offer, is required.'},409);
+  if(offer.supplier!=='poomas'&&offer.supplier!=='custom'&&!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
   // If the market rate has moved past the buffer since the quote, the agency would lose money on
   // the supplier payment — stop and let staff re-quote or knowingly accept it.
   const supplierCurrency=quote.supplier_currency||quote.currency;
@@ -38189,6 +38280,13 @@ async function handleLtBookingAction(request,env,action){
   const allowed={hold:['draft'],book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
   if(!allowed.includes(booking.status))return json({error:`Cannot ${action} a ${booking.status} booking.`},409);
   const now=ltNow();
+  // Custom API bookings are completed on the connector's own checkout.
+  if(booking.supplier==='custom'){
+    if(action!=='book')return json({error:'Hold, ticketing and status sync happen on the Custom API’s own site. Use Complete booking to open its checkout.'},409);
+    const offer=await ltOfferById(env,auth.cid,booking.offer_id),config=await ltCustomSupplierRuntime(env,auth.cid);
+    let checkoutUrl; try{checkoutUrl=await ltCustomCheckoutUrl(config,{fareId:offer?.supplier_offer_id,phone:body.customer_phone||'',fallback:booking.checkout_url||offer?.checkout_url||''});}catch(e){return json({error:e.message},502);}
+    return json({booking:ltRow(booking),checkout_url:checkoutUrl,action:'redirect_to_checkout'});
+  }
   // POOMAS bookings use external checkout flow; hold calls POOMAS API, book returns checkout URL
   if(booking.supplier==='poomas'){
     if(action==='hold'){
