@@ -393,15 +393,27 @@ async function handleConnect(request, env, deps){
     else if(otherCatalog) return deps.json({error:waShopLinkError(link, otherCatalog)}, 502);
     else return deps.json({error:await diagnoseLink(c, cr, cfg.catalog_id, link)}, 502);
   }
-  // 3. Show the catalog and the cart on the number.
-  const show=await graphAny(`${cr.wa_phone_id}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`, waShopTokens(c, cr, 'whatsapp'), {method:'POST'});
-  if(!show.ok) return deps.json({error:`The catalog is connected, but showing it on your WhatsApp number failed: ${show.error}`}, 502);
+  // 3. Show the catalog and the cart on the number. A refusal here no longer throws away the link
+  // that just worked (Couplo, Oct 2026: "An unknown error has occurred") — it's reported as a warning.
+  const show=await showOnNumber(cr, waShopTokens(c, cr, 'whatsapp'));
   // 4. What's in it, as Meta sees it.
   const info=await fetchCatalogInfo(cfg.catalog_id, tokens);
   await saveConfig(env, deps, c, {catalog_id:cfg.catalog_id, linked_at:new Date().toISOString(),
     ...(info.ok?{catalog_name:info.name, catalog_count:info.count, meta_items:info.items.slice(0,100), meta_items_at:new Date().toISOString()}:{})});
   return deps.json({ok:true, already_linked:alreadyLinked, catalog_name:info.ok?info.name:'', product_count:info.ok?info.count:null,
+    shown:show.ok, ...(show.ok?{}:{show_error:show.error}),
     ...(info.ok?{}:{warning:`Linked, but the catalog's products couldn't be read: ${info.error}`})});
+}
+// Catalog icon + cart on the number: skipped when already on (e.g. switched on in WhatsApp Manager),
+// else each token is tried, with one retry for Meta's transient "unknown error" (codes 1 / 2).
+async function showOnNumber(cr, tokens){
+  const cur=await graphAny(`${cr.wa_phone_id}/whatsapp_commerce_settings`, tokens);
+  const s=cur.ok?(cur.data?.data||[])[0]:null;
+  if(s?.is_catalog_visible&&s?.is_cart_enabled) return {ok:true};
+  const path=`${cr.wa_phone_id}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`;
+  let r=await graphAny(path, tokens, {method:'POST'});
+  if(!r.ok&&[1,2].includes(Number(r.code))){ await new Promise(res=>setTimeout(res, 1500)); r=await graphAny(path, tokens, {method:'POST'}); }
+  return r.ok?{ok:true}:{ok:false, error:r.error};
 }
 // Couplo (Oct 2026): Meta answered "invalid product catalogue ID" for a real catalog, even with a
 // System User token saved — that text also covers "this token can't see it" and "the catalog belongs
