@@ -1254,38 +1254,163 @@ async function provisionTeamChatwootAgent(env, c, clientId, {name, email, passwo
   }
   return chatwoot;
 }
-async function handleTeamCreateUser(request, env){
+// ── Create-user helpers. Authentik enforces a unique username instance-wide (one Authentik serves
+// every client), so a common handle like "john" is often already taken by someone on a different
+// account — previously that surfaced as Authentik's raw "This field must be unique." Usernames are
+// now optional (derived from the email when blank) and a taken one comes back as a field-level
+// error with a free alternative suggested.
+export function usernameBaseFrom(email, name){
+  const raw=String(email||'').split('@')[0]||String(name||'');
+  const base=raw.toLowerCase().replace(/[^a-z0-9._-]+/g,'').replace(/^[._-]+|[._-]+$/g,'').slice(0,30);
+  return base||'user';
+}
+async function authentikUsernameTaken(env, username){
+  const r=await authentikApiFetch(env, `/core/users/?username=${encodeURIComponent(username)}`);
+  if(!r.ok) return false; // can't tell — let the create call itself be the judge
+  const d=await r.json().catch(()=>({}));
+  return (d?.results||[]).some(u=>String(u.username||'').toLowerCase()===username.toLowerCase());
+}
+async function authentikFreeUsername(env, base){
+  if(!await authentikUsernameTaken(env, base)) return base;
+  for(let i=2;i<=9;i++){ if(!await authentikUsernameTaken(env, base+i)) return base+i; }
+  return base+'-'+Array.from(crypto.getRandomValues(new Uint8Array(2)), b=>b.toString(16).padStart(2,'0')).join('');
+}
+// Single source of truth for "can this email be added to this client?" — shared by create-user,
+// check-user (live form validation) and add-existing.
+async function teamEmailStatus(env, c, emailNorm){
+  if(emailNorm===String(c.authentik_email||'').trim().toLowerCase()) return 'owner';
+  const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  if(teamEmails.includes(emailNorm)) return 'team';
+  if(await getClientByAuthentikEmail(env, emailNorm)) return 'other_account';
+  if(await authentikFindUserByEmail(env, emailNorm)) return 'has_login';
+  return 'new';
+}
+const TEAM_EMAIL_STATUS_MSG={
+  owner:"That's the account owner's email. The owner already has full access.",
+  team:'This person is already on your team.',
+  other_account:'This email is the owner of a different Leadvyne account and can’t be added as a teammate.',
+};
+async function addEmailToTeam(env, c, clientId, emailNorm, displayName){
+  const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  if(teamEmails.includes(emailNorm)) return;
+  let names={}; try{ names=JSON.parse(c.team_names||'{}'); }catch(e){}
+  if(displayName) names[emailNorm]=displayName;
+  const fields={team_emails:[...teamEmails, emailNorm].join(','), team_names:JSON.stringify(names)};
+  await patchClientFields(env, clientId, fields);
+  Object.assign(c, fields);
+}
+function planSeatError(c){
+  const planLimits=getPlanLimits(c.plan_tier);
+  if(planLimits && countClientTeamUsers(c)>=planLimits.max_users){
+    return `Your ${planLimits.label} plan includes ${planLimits.max_users} user${planLimits.max_users===1?'':'s'}. Upgrade your plan to add more team members.`;
+  }
+  return null;
+}
+const TEAM_EMAIL_RE=/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/;
+
+// POST /team/check-user {email?, username?} — read-only, powers inline validation on the
+// "Create user" form and the "Add existing user" lookup so problems show up before submitting.
+export async function handleTeamCheckUser(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
+  const {email, username}=await request.json().catch(()=>({}));
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const out={};
+  const emailNorm=String(email||'').trim().toLowerCase();
+  if(emailNorm){
+    if(!TEAM_EMAIL_RE.test(emailNorm)) out.email={status:'invalid', message:'Please enter a valid email address.'};
+    else{ const status=await teamEmailStatus(env, c, emailNorm); out.email={status, message:TEAM_EMAIL_STATUS_MSG[status]||null}; }
+  }
+  const uname=String(username||'').trim();
+  if(uname){
+    const taken=await authentikUsernameTaken(env, uname);
+    out.username={taken, suggestion:taken?await authentikFreeUsername(env, usernameBaseFrom(uname)):null};
+  }else if(emailNorm && TEAM_EMAIL_RE.test(emailNorm)){
+    out.username={taken:false, suggestion:await authentikFreeUsername(env, usernameBaseFrom(emailNorm))};
+  }
+  return json(out);
+}
+
+// POST /team/add-existing {email} — gives someone who already has an Authentik login access to
+// this account. Replaces the old client-side-only team_emails patch, which accepted any typed
+// email (even one with no login at all) and skipped the plan seat cap.
+export async function handleTeamAddExisting(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
+  const {email}=await request.json().catch(()=>({}));
+  const emailNorm=String(email||'').trim().toLowerCase();
+  if(!TEAM_EMAIL_RE.test(emailNorm)) return json({error:'Please enter a valid email address.', field:'email'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const status=await teamEmailStatus(env, c, emailNorm);
+  if(TEAM_EMAIL_STATUS_MSG[status]) return json({error:TEAM_EMAIL_STATUS_MSG[status], field:'email', code:status.toUpperCase()}, 409);
+  if(status==='new') return json({error:`No Leadvyne login exists for ${emailNorm} yet. Send them an invite instead.`, field:'email', code:'NO_LOGIN'}, 404);
+  const seatErr=planSeatError(c); if(seatErr) return json({error:seatErr}, 402);
+  const user=await authentikFindUserByEmail(env, emailNorm);
+  await addEmailToTeam(env, c, payload.cid, emailNorm, String(user?.name||'').trim()||emailNorm.split('@')[0]);
+  return json({ok:true, email:emailNorm, name:user?.name||null});
+}
+
+export async function handleTeamCreateUser(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
   const {name, username, email, password:adminPassword}=await request.json().catch(()=>({}));
-  if(!username||!email) return json({error:'username and email are required'}, 400);
-  if(adminPassword && String(adminPassword).length<8) return json({error:'Password must be at least 8 characters.'}, 400);
-  const emailNorm=String(email).trim().toLowerCase();
-  const existing=await getClientByAuthentikEmail(env, emailNorm);
-  if(existing) return json({error:'This email is already linked to an account.'}, 409);
+  const emailNorm=String(email||'').trim().toLowerCase();
+  if(!emailNorm) return json({error:'Email is required.', field:'email'}, 400);
+  if(!TEAM_EMAIL_RE.test(emailNorm)) return json({error:'Please enter a valid email address.', field:'email'}, 400);
+  if(adminPassword && String(adminPassword).length<8) return json({error:'Password must be at least 8 characters.', field:'password'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
+
+  const status=await teamEmailStatus(env, c, emailNorm);
+  if(TEAM_EMAIL_STATUS_MSG[status]) return json({error:TEAM_EMAIL_STATUS_MSG[status], field:'email', code:status.toUpperCase()}, 409);
 
   // Plan-based seat cap. getPlanLimits returns null for a blank/unrecognized plan_tier — i.e.
   // every client that existed before plans shipped, plus anyone whose tier isn't set yet — so
   // this only ever blocks a client an admin has explicitly moved onto a limited tier.
-  const planLimits=getPlanLimits(c.plan_tier);
-  if(planLimits){
-    const currentUsers=countClientTeamUsers(c);
-    if(currentUsers>=planLimits.max_users){
-      return json({error:`Your ${planLimits.label} plan includes ${planLimits.max_users} user${planLimits.max_users===1?'':'s'}. Upgrade your plan to add more team members.`}, 402);
+  const seatErr=planSeatError(c); if(seatErr) return json({error:seatErr}, 402);
+
+  const displayName=String(name||'').trim()||emailNorm.split('@')[0];
+
+  // They already have an Authentik login (e.g. a previous attempt got as far as creating it, or
+  // they use Leadvyne on another account). Just grant access — never overwrite the password of an
+  // existing login from here, since this one Authentik instance is shared by every client.
+  if(status==='has_login'){
+    await addEmailToTeam(env, c, payload.cid, emailNorm, displayName);
+    return json({ok:true, email:emailNorm, alreadyHasLogin:true, passwordIgnored:!!adminPassword});
+  }
+
+  let finalUsername;
+  const requested=String(username||'').trim();
+  if(requested){
+    if(!/^[A-Za-z0-9@._+-]{2,150}$/.test(requested)) return json({error:'Usernames can only use letters, numbers and . _ - + @', field:'username'}, 400);
+    if(await authentikUsernameTaken(env, requested)){
+      const suggestion=await authentikFreeUsername(env, usernameBaseFrom(requested));
+      return json({error:`The username "${requested}" is already taken.`, field:'username', code:'USERNAME_TAKEN', suggestion}, 409);
     }
+    finalUsername=requested;
+  }else{
+    finalUsername=await authentikFreeUsername(env, usernameBaseFrom(emailNorm, name));
   }
 
   const createR=await authentikApiFetch(env, '/core/users/', {
     method:'POST',
-    body:JSON.stringify({username:String(username).trim(), email:emailNorm, name:String(name||username).trim(), is_active:true})
+    body:JSON.stringify({username:finalUsername, email:emailNorm, name:displayName, is_active:true})
   });
   const createData=await createR.json().catch(()=>({}));
   if(!createR.ok){
-    const detail=createData?.username?.[0]||createData?.email?.[0]||createData?.detail||('HTTP '+createR.status);
-    return json({error:'Authentik rejected the new user: '+detail}, 502);
+    if(createData?.username){
+      const suggestion=await authentikFreeUsername(env, usernameBaseFrom(finalUsername)).catch(()=>null);
+      const unique=/unique|exists/i.test(String(createData.username[0]||''));
+      return json({error:unique?`The username "${finalUsername}" is already taken.`:`Username: ${createData.username[0]}`, field:'username', code:unique?'USERNAME_TAKEN':undefined, suggestion}, 409);
+    }
+    if(createData?.email) return json({error:`Email: ${createData.email[0]}`, field:'email'}, 409);
+    if(createData?.name) return json({error:`Name: ${createData.name[0]}`, field:'name'}, 400);
+    return json({error:'Couldn’t create the login right now ('+(createData?.detail||'HTTP '+createR.status)+'). Please try again.'}, 502);
   }
 
   // An admin can now type a password directly here instead of relying on the invite-link/email
@@ -1318,17 +1443,20 @@ async function handleTeamCreateUser(request, env){
         inviteLink=recData?.link||null;
       }
     }catch(e){}
-    if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:name||username, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
+    if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:displayName, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
   }
 
-  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:String(name||username).trim(), email:emailNorm, password});
+  // Server-side, so a dropped connection after this point can't leave a login that exists in
+  // Authentik but never shows up on the team (the old client-side-only patch could).
+  await addEmailToTeam(env, c, payload.cid, emailNorm, displayName);
+  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:displayName, email:emailNorm, password});
   // fallbackPassword is populated whenever there's no invite link to show instead — either because
   // the admin chose an explicit password (explicitPassword:true) or because the invite link
   // couldn't be generated (no Recovery flow bound). chatwootPassword is separate: Chatwoot has no
   // invite-link mechanism of its own, so this is always returned once (already persisted
   // server-side in team_chatwoot_passwords for the User Management profile view to show again
   // later) whenever a Chatwoot agent was actually created.
-  return json({ok:true, email:emailNorm, chatwoot, chatwootPassword:chatwoot?.ok?password:null, inviteLink, inviteEmailSent, fallbackPassword:inviteLink?null:password, explicitPassword});
+  return json({ok:true, email:emailNorm, username:finalUsername, name:displayName, chatwoot, chatwootPassword:chatwoot?.ok?password:null, inviteLink, inviteEmailSent, fallbackPassword:inviteLink?null:password, explicitPassword});
 }
 
 /* ── Team invite (User Management → "Invite teammate", the primary way to add someone). Creates
@@ -39389,6 +39517,8 @@ export default {
       else if(url.pathname==='/voice/summary-callback' && request.method==='POST'){ res=await handleVoiceSummaryCallback(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/invite' && request.method==='POST'){ res=await handleTeamInvite(request, env); }
+      else if(url.pathname==='/team/check-user' && request.method==='POST'){ res=await handleTeamCheckUser(request, env); }
+      else if(url.pathname==='/team/add-existing' && request.method==='POST'){ res=await handleTeamAddExisting(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/team/chatwoot-agent' && request.method==='POST'){ res=await handleTeamChatwootAgent(request, env); }
       else if(url.pathname==='/team/whatsapp' && request.method==='POST'){ res=await handleTeamWhatsappSet(request, env); }

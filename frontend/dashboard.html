@@ -855,6 +855,23 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .save-btn:disabled{opacity:.5;cursor:default}
 .save-msg{font-size:12px;margin-left:10px;color:var(--accent-ink)}
 .save-msg.err{color:var(--red)}
+.tm-form{display:grid;gap:12px 14px;grid-template-columns:1fr 1fr;max-width:620px}
+@media(max-width:640px){.tm-form{grid-template-columns:1fr}}
+.tm-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.tm-label{font-size:12px;font-weight:600;color:var(--ink)}
+.tm-req{color:var(--red)}
+.tm-opt{font-weight:400;color:var(--muted);font-size:11px;margin-left:4px}
+.tm-hint{font-size:11.5px;color:var(--muted);line-height:1.4;min-height:0}
+.tm-hint.err{color:var(--red)}
+.tm-hint.ok{color:var(--accent-ink)}
+.tm-hint .tm-link{background:none;border:0;padding:0;color:var(--accent);font:inherit;font-weight:600;text-decoration:underline;cursor:pointer}
+.form-input.has-error{border-color:var(--red)}
+.form-input.has-error:focus{box-shadow:0 0 0 3px rgba(220,38,38,.12)}
+.tm-pw{display:flex;gap:6px}
+.tm-pw .form-input{flex:1;min-width:0}
+.tm-icon-btn{border:1.5px solid var(--ls);background:var(--card);color:var(--ink);border-radius:var(--r-sm);padding:0 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.tm-icon-btn:hover{border-color:var(--accent);color:var(--accent)}
+.save-btn[disabled]{opacity:.6;cursor:progress}
 .gcol-check{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;background:var(--bg);border:1px solid var(--ls);border-radius:6px;padding:5px 10px;cursor:pointer;color:var(--ink)}
 .gcol-check input{accent-color:var(--accent);cursor:pointer}
 
@@ -4002,32 +4019,57 @@ const ROLES = {
             </div>
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Or Create User With a Password</div>
-              <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them, and a matching Chatwoot agent if Chatwoot is connected. Set a password directly below, or leave it blank to email them an invite link to set their own instead.</div>
-              <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
-                <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
-                <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
-                <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
-                <input class="form-input" id="teamNewWhatsapp" type="tel" placeholder="WhatsApp number, e.g. +91 98765 43210 (for hot-lead alerts)" style="grid-column:1/-1">
-                <div style="display:flex;gap:6px">
-                  <input class="form-input" id="teamNewPassword" type="text" placeholder="Password (optional)" style="flex:1">
-                  <button type="button" class="save-btn sec" onclick="$id('teamNewPassword').value=generateStrongPassword()" title="Generate a strong password">🎲</button>
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">🔑 Or Create a Login With a Password</div>
+              <div class="s-note" style="margin-bottom:10px">Use this when you want to hand over the login yourself. Leave the password blank and we'll email them a link to set their own. A matching Chatwoot agent is created too if Chatwoot is connected.</div>
+              <form id="teamCreateForm" class="tm-form" onsubmit="event.preventDefault();createTeamUser()" novalidate autocomplete="off">
+                <div class="tm-field">
+                  <label class="tm-label" for="teamNewName">Full name</label>
+                  <input class="form-input" id="teamNewName" type="text" placeholder="e.g. Mohammed Nishmal" oninput="tmAutoUsername()">
                 </div>
-              </div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-                <button class="save-btn" onclick="createTeamUser()">Create User</button>
-                <span class="save-msg" id="teamCreateUserMsg"></span>
-              </div>
+                <div class="tm-field">
+                  <label class="tm-label" for="teamNewUserEmail">Work email <span class="tm-req">*</span></label>
+                  <input class="form-input" id="teamNewUserEmail" type="email" placeholder="name@company.com" oninput="tmClearField('teamNewUserEmail');tmAutoUsername()" onblur="tmCheckEmail()">
+                  <div class="tm-hint" id="teamNewUserEmailHint"></div>
+                </div>
+                <div class="tm-field">
+                  <label class="tm-label" for="teamNewUsername">Username <span class="tm-opt">optional</span></label>
+                  <input class="form-input" id="teamNewUsername" type="text" placeholder="Auto-generated from email" oninput="this.dataset.touched=this.value?'1':'';tmClearField('teamNewUsername')" onblur="tmCheckUsername()" autocapitalize="off" spellcheck="false">
+                  <div class="tm-hint" id="teamNewUsernameHint">Usernames are unique across Leadvyne. They can always sign in with their email instead.</div>
+                </div>
+                <div class="tm-field">
+                  <label class="tm-label" for="teamNewWhatsapp">WhatsApp <span class="tm-opt">optional</span></label>
+                  <input class="form-input" id="teamNewWhatsapp" type="tel" placeholder="+91 98765 43210">
+                  <div class="tm-hint">Used for hot-lead alerts.</div>
+                </div>
+                <div class="tm-field" style="grid-column:1/-1">
+                  <label class="tm-label" for="teamNewPassword">Password <span class="tm-opt">optional</span></label>
+                  <div class="tm-pw">
+                    <input class="form-input" id="teamNewPassword" type="password" placeholder="Leave blank to email an invite link" oninput="tmClearField('teamNewPassword');tmPwStrength()" autocomplete="new-password">
+                    <button type="button" class="tm-icon-btn" onclick="tmTogglePw()" id="teamNewPwToggle" title="Show password" aria-label="Show password">Show</button>
+                    <button type="button" class="tm-icon-btn" onclick="tmGeneratePw()" title="Generate a strong password">Generate</button>
+                    <button type="button" class="tm-icon-btn" onclick="tmCopyPw(this)" title="Copy password">Copy</button>
+                  </div>
+                  <div class="tm-hint" id="teamNewPasswordHint">At least 8 characters.</div>
+                </div>
+                <div style="grid-column:1/-1;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                  <button type="submit" class="save-btn" id="teamCreateBtn">Create login</button>
+                  <button type="button" class="save-btn sec" onclick="tmResetCreateForm()">Clear</button>
+                  <span class="save-msg" id="teamCreateUserMsg" role="status"></span>
+                </div>
+              </form>
               <div id="teamCreateUserResult"></div>
             </div>
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Add Existing Authentik User</div>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" style="max-width:260px">
-                <button class="save-btn" onclick="addTeamMember()">Add</button>
-              </div>
-              <span class="save-msg" id="teamMembersMsg"></span>
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">👤 Add Someone Who Already Has a Login</div>
+              <div class="s-note" style="margin-bottom:8px">For people who already sign in to Leadvyne. They keep their existing password and see this account next time they sign in.</div>
+              <form style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start" onsubmit="event.preventDefault();addTeamMember()" novalidate>
+                <div class="tm-field" style="flex:1;min-width:220px;max-width:340px">
+                  <input class="form-input" id="teamNewEmail" type="email" placeholder="teammate@company.com" oninput="tmClearField('teamNewEmail');$id('teamMembersMsg').innerHTML=''">
+                </div>
+                <button type="submit" class="save-btn" id="teamAddExistingBtn">Add to team</button>
+              </form>
+              <div class="save-msg" id="teamMembersMsg" style="margin:6px 0 0;display:block" role="status"></div>
             </div>
           </div>
         </div>
@@ -12684,21 +12726,136 @@ async function saveUserProfilePermissions(email){
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
-async function addTeamMember(){
-  const msg=$id('teamMembersMsg');
-  const email=$id('teamNewEmail').value.trim().toLowerCase();
-  if(!email||!email.includes('@')){ msg.textContent='Enter a valid email.'; return; }
-  if(email===String(clientRecord.authentik_email||'').toLowerCase()){ msg.textContent='That\'s already your primary account email.'; return; }
-  const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
-  if(current.includes(email)){ msg.textContent='Already added.'; return; }
-  current.push(email);
-  msg.textContent='Saving…';
+// ── User Management form helpers (Create login / Add existing). Field-level errors sit under the
+// field they belong to instead of one generic line, and the server's /team/check-user lets the
+// email and username be validated on blur — before the admin ever hits "Create".
+function tmSetHint(id, text, kind){
+  const h=$id(id+'Hint'); if(!h) return;
+  if(!h.dataset.default) h.dataset.default=h.innerHTML;
+  h.innerHTML=text; h.className='tm-hint'+(kind?' '+kind:'');
+}
+function tmFieldError(id, text, suggestion){
+  const el=$id(id); if(el) el.classList.add('has-error');
+  let html=esc(text);
+  if(suggestion) html+=` <button type="button" class="tm-link" data-id="${esc(id)}" data-val="${esc(suggestion)}" onclick="tmUseSuggestion(this)">Use “${esc(suggestion)}”</button>`;
+  if($id(id+'Hint')) tmSetHint(id, html, 'err');
+  else{ const m=$id('teamMembersMsg'); if(m){ m.innerHTML=html; m.className='save-msg err'; } }
+  if(el) el.focus();
+}
+function tmClearField(id){
+  const el=$id(id); if(el) el.classList.remove('has-error');
+  const h=$id(id+'Hint'); if(h && h.dataset.default!==undefined){ h.innerHTML=h.dataset.default; h.className='tm-hint'; }
+  else if(h && h.classList.contains('err')){ h.innerHTML=''; h.className='tm-hint'; }
+}
+function tmUseSuggestion(btn){
+  const el=$id(btn.dataset.id); if(!el) return;
+  el.value=btn.dataset.val; el.dataset.touched='1'; tmClearField(btn.dataset.id);
+  tmSetHint(btn.dataset.id, `“${esc(btn.dataset.val)}” is available.`, 'ok');
+}
+let _tmUsernameAuto='';
+function tmAutoUsername(){
+  const u=$id('teamNewUsername'); if(!u || u.dataset.touched) return;
+  const email=$id('teamNewUserEmail').value.trim().toLowerCase();
+  const base=(email.split('@')[0]||'').replace(/[^a-z0-9._-]+/g,'').replace(/^[._-]+|[._-]+$/g,'').slice(0,30);
+  u.placeholder=base?`${base} (auto)`:'Auto-generated from email';
+  _tmUsernameAuto=base;
+}
+async function tmCheck(body){
   try{
-    await patchClient({team_emails:current.join(',')});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/check-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    return r.ok?await r.json():null;
+  }catch(e){ return null; }
+}
+async function tmCheckEmail(){
+  const el=$id('teamNewUserEmail'); const email=el.value.trim().toLowerCase();
+  if(!email) return;
+  if(!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email)){ tmFieldError('teamNewUserEmail','Please enter a valid email address.'); el.blur(); return; }
+  const d=await tmCheck({email});
+  if(!d?.email || el.value.trim().toLowerCase()!==email) return;
+  const st=d.email.status;
+  if(d.email.message){ el.classList.add('has-error'); tmSetHint('teamNewUserEmail', esc(d.email.message), 'err'); }
+  else if(st==='has_login') tmSetHint('teamNewUserEmail', 'Already has a Leadvyne login. They’ll be added with their existing password.', 'ok');
+  else tmClearField('teamNewUserEmail');
+  const u=$id('teamNewUsername');
+  if(!u.dataset.touched && d.username?.suggestion){ u.placeholder=`${d.username.suggestion} (auto)`; _tmUsernameAuto=d.username.suggestion; }
+}
+async function tmCheckUsername(){
+  const el=$id('teamNewUsername'); const username=el.value.trim();
+  if(!username) return;
+  if(!/^[A-Za-z0-9@._+-]{2,150}$/.test(username)){ el.classList.add('has-error'); tmSetHint('teamNewUsername','Use at least 2 characters: letters, numbers and . _ - + @ only.','err'); return; }
+  const d=await tmCheck({username});
+  if(!d?.username || el.value.trim()!==username) return;
+  if(d.username.taken){
+    el.classList.add('has-error');
+    tmSetHint('teamNewUsername', `“${esc(username)}” is already taken.`+(d.username.suggestion?` <button type="button" class="tm-link" data-id="teamNewUsername" data-val="${esc(d.username.suggestion)}" onclick="tmUseSuggestion(this)">Use “${esc(d.username.suggestion)}”</button>`:''), 'err');
+  }else tmSetHint('teamNewUsername', `“${esc(username)}” is available.`, 'ok');
+}
+function tmTogglePw(){
+  const el=$id('teamNewPassword'), btn=$id('teamNewPwToggle');
+  const show=el.type==='password'; el.type=show?'text':'password';
+  btn.textContent=show?'Hide':'Show'; btn.title=show?'Hide password':'Show password';
+}
+function tmGeneratePw(){
+  const el=$id('teamNewPassword'); el.value=generateStrongPassword(); el.type='text';
+  $id('teamNewPwToggle').textContent='Hide'; tmClearField('teamNewPassword'); tmPwStrength();
+}
+function tmCopyPw(btn){
+  const v=$id('teamNewPassword').value; if(!v) return;
+  navigator.clipboard.writeText(v).then(()=>{ const t=btn.textContent; btn.textContent='Copied'; setTimeout(()=>{ btn.textContent=t; },1500); }).catch(()=>{});
+}
+function tmPwStrength(){
+  const v=$id('teamNewPassword').value;
+  if(!v){ tmClearField('teamNewPassword'); return; }
+  if(v.length<8){ tmSetHint('teamNewPassword', `${8-v.length} more character${8-v.length===1?'':'s'} needed.`, ''); return; }
+  const classes=[/[a-z]/,/[A-Z]/,/[0-9]/,/[^A-Za-z0-9]/].filter(r=>r.test(v)).length;
+  const strong=v.length>=12 && classes>=3;
+  tmSetHint('teamNewPassword', strong?'Strong password.':'OK. Longer with mixed characters is stronger.', strong?'ok':'');
+}
+function tmResetCreateForm(){
+  ['teamNewName','teamNewUsername','teamNewUserEmail','teamNewWhatsapp','teamNewPassword'].forEach(id=>{ const el=$id(id); if(el){ el.value=''; el.dataset.touched=''; tmClearField(id); } });
+  $id('teamNewPassword').type='password'; $id('teamNewPwToggle').textContent='Show';
+  $id('teamNewUsername').placeholder='Auto-generated from email'; _tmUsernameAuto='';
+  $id('teamCreateUserMsg').textContent='';
+}
+function tmMirrorTeamMember(email, name){
+  const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  if(!current.includes(email)) clientRecord.team_emails=[...current, email].join(',');
+  if(name){
+    let names={}; try{ names=JSON.parse(clientRecord.team_names||'{}'); }catch(e){}
+    names[email]=name; clientRecord.team_names=JSON.stringify(names);
+  }
+}
+
+// User Management → Add someone who already has a login (POST /team/add-existing). The Worker
+// verifies they actually have an Authentik login, enforces the seat cap and writes team_emails.
+async function addTeamMember(){
+  const msg=$id('teamMembersMsg'), btn=$id('teamAddExistingBtn');
+  const email=$id('teamNewEmail').value.trim().toLowerCase();
+  msg.innerHTML=''; msg.className='save-msg';
+  if(!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email)){ tmFieldError('teamNewEmail','Please enter a valid email address.'); return; }
+  btn.disabled=true; btn.textContent='Adding…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/add-existing`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({email})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok){
+      $id('teamNewEmail').classList.add('has-error');
+      if(data.code==='NO_LOGIN'){
+        msg.innerHTML=`${esc(data.error)} <button type="button" class="tm-link" style="background:none;border:0;padding:0;color:var(--accent);font:inherit;font-weight:600;text-decoration:underline;cursor:pointer" onclick="tmInviteInstead()">Send invite</button>`;
+      }else msg.textContent=data.error||('HTTP '+r.status);
+      msg.className='save-msg err'; return;
+    }
+    tmMirrorTeamMember(data.email, data.name);
     $id('teamNewEmail').value='';
-    msg.textContent='Added.';
+    msg.textContent=`✓ ${data.email} added. They’ll see this account next time they sign in.`; msg.className='save-msg ok';
     renderTeamMembers();
-  }catch(e){ msg.textContent='Error: '+e.message; }
+  }catch(e){ msg.textContent='Couldn’t add them: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; btn.textContent='Add to team'; }
+}
+function tmInviteInstead(){
+  $id('teamInviteEmail').value=$id('teamNewEmail').value.trim();
+  $id('teamNewEmail').value=''; tmClearField('teamNewEmail'); $id('teamMembersMsg').innerHTML='';
+  $id('teamInviteEmail').scrollIntoView({behavior:'smooth', block:'center'});
+  inviteTeamUser();
 }
 
 // Client-side convenience only — the server never trusts this, it's just what fills the "🎲"
@@ -12754,36 +12911,38 @@ function renderTeamInviteResult(data){
 }
 
 async function createTeamUser(){
-  const msg=$id('teamCreateUserMsg'); msg.textContent=''; msg.className='save-msg';
+  const msg=$id('teamCreateUserMsg'), btn=$id('teamCreateBtn');
+  msg.textContent=''; msg.className='save-msg';
   $id('teamCreateUserResult').innerHTML='';
   const name=$id('teamNewName').value.trim();
   const username=$id('teamNewUsername').value.trim();
   const email=$id('teamNewUserEmail').value.trim().toLowerCase();
   const password=$id('teamNewPassword').value;
-  if(!username||!email){ msg.textContent='Username and email are required.'; msg.className='save-msg err'; return; }
-  if(password && password.length<8){ msg.textContent='Password must be at least 8 characters.'; msg.className='save-msg err'; return; }
-  msg.textContent='Creating…';
+  if(!email){ tmFieldError('teamNewUserEmail','Email is required.'); return; }
+  if(!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email)){ tmFieldError('teamNewUserEmail','Please enter a valid email address.'); return; }
+  if(username && !/^[A-Za-z0-9@._+-]{2,150}$/.test(username)){ tmFieldError('teamNewUsername','Use at least 2 characters: letters, numbers and . _ - + @ only.'); return; }
+  if(password && password.length<8){ tmFieldError('teamNewPassword','Password must be at least 8 characters.'); return; }
+  btn.disabled=true; btn.textContent='Creating…';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username,email,password:password||undefined})});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
-    const fields={};
-    if(!current.includes(data.email)){ current.push(data.email); fields.team_emails=current.join(','); }
-    if(name){
-      let names={}; try{ names=JSON.parse(clientRecord.team_names||'{}'); }catch(e){}
-      names[data.email]=name;
-      fields.team_names=JSON.stringify(names);
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/create-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,username:username||undefined,email,password:password||undefined})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const fieldMap={email:'teamNewUserEmail', username:'teamNewUsername', password:'teamNewPassword', name:'teamNewName'};
+      if(data.field && fieldMap[data.field]){ tmFieldError(fieldMap[data.field], data.error||'Invalid value.', data.suggestion); msg.textContent='Please fix the highlighted field.'; }
+      else msg.textContent=data.error||('Something went wrong (HTTP '+r.status+'). Please try again.');
+      msg.className='save-msg err'; return;
     }
-    if(Object.keys(fields).length) await patchClient(fields);
+    // The Worker already wrote team_emails/team_names — just mirror it locally.
+    tmMirrorTeamMember(data.email, data.alreadyHasLogin?(name||null):(data.name||name||null));
     const wa=$id('teamNewWhatsapp').value.trim();
     let waErr='';
-    if(wa){ try{ await saveTeamWhatsapp(data.email, wa); $id('teamNewWhatsapp').value=''; }catch(e){ waErr=' (WhatsApp number not saved: '+e.message+')'; } }
-    msg.textContent=(data.inviteLink?'✓ User created — invite sent':'✓ User created')+waErr; msg.className='save-msg ok';
+    if(wa){ try{ await saveTeamWhatsapp(data.email, wa); }catch(e){ waErr=' (WhatsApp number not saved: '+e.message+')'; } }
     renderTeamMembers();
-    renderTeamCreateResult(email, data);
-    $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value=''; $id('teamNewPassword').value='';
-  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+    renderTeamCreateResult(data.email, data);
+    tmResetCreateForm();
+    msg.textContent=(data.alreadyHasLogin?'✓ Added to your team':data.inviteLink?'✓ Login created, invite sent':'✓ Login created')+waErr; msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Couldn’t reach the server: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; btn.textContent='Create login'; }
 }
 
 // Shows what to hand the new teammate right after a successful createTeamUser() call. Two
@@ -12802,14 +12961,23 @@ function copyInviteLink(btn){
   navigator.clipboard.writeText(btn.dataset.inviteLink||'').catch(()=>{});
 }
 function renderTeamCreateResult(email, data){
-  const {inviteLink, inviteEmailSent, fallbackPassword, explicitPassword, chatwoot, chatwootPassword}=data;
+  const {inviteLink, inviteEmailSent, fallbackPassword, explicitPassword, chatwoot, chatwootPassword, alreadyHasLogin, passwordIgnored, username}=data;
   const box=$id('teamCreateUserResult');
+  if(alreadyHasLogin){
+    box.innerHTML=`<div class="card" style="margin-top:10px;padding:12px 14px;background:var(--accent-soft)">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px">${esc(email)} added to your team</div>
+      <div class="s-note">They already had a Leadvyne login, so no new account was created${passwordIgnored?' and the password you entered was <b>not</b> applied (their existing password is unchanged)':''}. They'll see this account the next time they sign in. To set a new password for them, open their profile (👤) above.</div>
+    </div>`;
+    return;
+  }
+  const loginUrl=location.origin+location.pathname;
   let html=`<div class="card" style="margin-top:10px;padding:12px 14px;background:var(--accent-soft)">
-    <div style="font-weight:700;font-size:13px;margin-bottom:6px">Dashboard login for ${esc(email)}</div>`;
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">✓ Login ready for ${esc(email)}</div>`;
   if(explicitPassword && fallbackPassword){
-    html+=`<div class="s-note" style="margin-bottom:6px">Password set directly — no invite link or email was sent. Share this with them however you like.</div>
-    <div style="font-size:13px;font-family:var(--mono);margin-bottom:2px">Email: ${esc(email)}</div>
-    <div style="font-size:13px;font-family:var(--mono);margin-bottom:8px">Password: ${esc(fallbackPassword)}</div>`;
+    const creds=`Sign in: ${loginUrl}\nEmail: ${email}${username?`\nUsername: ${username}`:''}\nPassword: ${fallbackPassword}`;
+    html+=`<div class="s-note" style="margin-bottom:6px">Password set directly. No email was sent, so share these details with them securely.</div>
+    <div style="font-size:13px;font-family:var(--mono);background:var(--bg);padding:8px 10px;border-radius:6px;margin-bottom:6px;white-space:pre-wrap;word-break:break-all">${esc(creds)}</div>
+    <button class="save-btn sec" data-invite-link="${esc(creds)}" onclick="copyInviteLink(this);this.textContent='Copied ✓'">Copy login details</button>`;
   }else if(inviteLink){
     html+=`<div class="s-note" style="margin-bottom:6px">${inviteEmailSent?`An invite email was sent to ${esc(email)} with a link to set their own password.`:`Couldn't confirm the invite email sent — share this link with them directly instead.`}</div>
     <div style="font-size:12px;font-family:var(--mono);word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-bottom:4px">${esc(inviteLink)}</div>
