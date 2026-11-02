@@ -12,10 +12,12 @@ test('gsheetParseUrl extracts spreadsheet id and gid', ()=>{
 });
 
 test('gsheetParseCols accepts JSON or arrays, drops unknown columns, falls back to defaults', ()=>{
-  assert.deepEqual(gsheetParseCols('["Phone","Name","Bogus","Phone"]'), ['Phone','Name']);
+  // A stored plain array predates "Assigned To" and gets it appended once.
+  assert.deepEqual(gsheetParseCols('["Phone","Name","Bogus","Phone"]'), ['Phone','Name','AssignedTo']);
+  assert.deepEqual(gsheetParseCols('{"v":2,"cols":["Phone","Name","Bogus","Phone"]}'), ['Phone','Name']);
   assert.deepEqual(gsheetParseCols(['Stage','QualAnswers']), ['Stage','QualAnswers']);
-  assert.deepEqual(gsheetParseCols('not json'), ['Phone','Name','Stage','Score','Date']);
-  assert.deepEqual(gsheetParseCols(null), ['Phone','Name','Stage','Score','Date']);
+  assert.deepEqual(gsheetParseCols('not json'), ['Phone','Name','Stage','Score','Date','AssignedTo']);
+  assert.deepEqual(gsheetParseCols(null), ['Phone','Name','Stage','Score','Date','AssignedTo']);
 });
 
 test('gsheetBuildRows writes a labelled header then one row per lead', ()=>{
