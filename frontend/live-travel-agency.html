@@ -359,11 +359,11 @@ async function clearSupplier(supplier,priority){if(confirm(`Remove this client's
 async function savePoomasSettings(){try{const body={api_base:$('poomasApi').value.trim()||'https://api.flypoomas.com',checkout_base:$('poomasCheckout').value.trim()||'https://flypoomas.com'};await api('/live-travel/poomas/settings',{method:'PATCH',body:JSON.stringify(body)});await refresh();show('suppliers')}catch(e){alert('Failed to save POOMAS settings: '+e.message)}}
 // ⚙️ Travel Settings — every travel setting on one page, as tabs: live fares & booking, currency,
 // the WhatsApp menu and itineraries. Each tab keeps its own renderer and save.
-const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['itinerary','🗺️ Itineraries']];
+const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['chatstyle','🧭 Chat Style'],['itinerary','🗺️ Itineraries']];
 let settingsTab='fares';
 function settingsTabs(){return page==='settings'?`<div class="quick" style="margin:0 0 14px">${SETTINGS_TABS.map(([k,l])=>`<button class="btn ${settingsTab===k?'primary':''}" onclick="settingsGo('${k}')">${l}</button>`).join('')}</div>`:''}
 function settingsGo(k){settingsTab=k;renderTravelSettings()}
-function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,itinerary:renderItinerarySettings}[settingsTab]||renderSettings)()}
+function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,chatstyle:renderChatStyle,itinerary:renderItinerarySettings}[settingsTab]||renderSettings)()}
 // Live fares & booking (worker /live-travel/travel-settings).
 let fareSettings=null;
 const FARE_PREVIEW={
@@ -408,6 +408,71 @@ async function saveFareSettings(){
     fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_show_fares:$('fsShow').value==='1',lt_fare_options:Number($('fsCount').value),lt_fare_style:$('fsStyle').value,lt_online_booking:$('fsBooking').value==='1',
       lt_pay_qr_1_label:$('fsQr1Label').value.trim(),lt_pay_qr_1_url:$('fsQr1Url').value.trim(),lt_pay_qr_2_label:$('fsQr2Label').value.trim(),lt_pay_qr_2_url:$('fsQr2Url').value.trim()})});
     msg.textContent='✓ Saved — the bot uses this from the next search';msg.style.color='var(--green)';
+  }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
+  finally{btn.disabled=false}
+}
+// 🧭 Chat Style (worker: flyindo-flow.js). "Flyindo" turns the WhatsApp bot into a guided,
+// buttons-only booking: welcome → destination → travel date → travellers → handover to the team.
+let fly=null;
+const FLY_DEFAULT_DESTS=[{emoji:'🏔️',name:'Munnar'},{emoji:'🏖️',name:'Goa'},{emoji:'🌴',name:'Wayanad'},{emoji:'🏝️',name:'Maldives'},{emoji:'🏔️',name:'Kashmir'}];
+async function renderChatStyle(){
+  const title=()=>settingsTabs()+head('Chat Style','How the WhatsApp bot talks to customers');
+  $('main').innerHTML=title()+'<div class="card"><span class="spinner"></span> Loading…</div>';
+  try{fareSettings=await api('/live-travel/travel-settings')}catch(e){$('main').innerHTML=title()+`<div class="error">${esc(e.message)}</div>`;return}
+  const f=fareSettings;
+  fly={style:f.lt_chat_style||'',agency:f.lt_flyindo_agency_name||'',ages:f.lt_flyindo_child_ages!==false,dests:(f.lt_flyindo_destinations||FLY_DEFAULT_DESTS).map(d=>({...d}))};
+  $('main').innerHTML=title()+`<div class="wmgrid"><div>
+<div class="card" style="margin-top:0"><h3>🧭 Chat style</h3>
+<label class="wmtoggle" style="margin-bottom:8px"><input type="radio" name="flyStyle" value="" ${!fly.style?'checked':''} onchange="flySet('style','')"> <b>Default</b> <span class="sub">— the bot answers customer questions as it does today</span></label>
+<label class="wmtoggle"><input type="radio" name="flyStyle" value="flyindo" ${fly.style==='flyindo'?'checked':''} onchange="flySet('style','flyindo')"> <b>Flyindo</b> <span class="sub">— guided booking with buttons only</span></label>
+<p class="sub" style="margin-top:10px">With <b>Flyindo</b>, the bot doesn't answer questions. Every customer is walked through one booking request by tapping options: <b>destination → travel date → adults → children (and their ages)</b>. They then get a summary of the request and the chat is handed to your team, marked as a hot lead. If they type something that isn't an answer, the same options are shown again. Typing "talk to agent" goes straight to your team, and "hi" or "menu" starts over.</p></div>
+<div class="card" id="flyOpts" style="${fly.style==='flyindo'?'':'opacity:.55'}"><h3>Destinations <span class="badge ${fly.dests.length>10?'bad':'ok'}" id="flyCount">${fly.dests.length} / 10</span></h3>
+<p class="sub" style="margin-top:-6px">Shown as a WhatsApp list in step 2 (up to 10).</p>
+<div id="flyDests"></div><button class="btn" onclick="flyAddDest()">＋ Add destination</button>
+<div class="formgrid" style="margin-top:14px">
+<div class="field span2"><label>Agency name in messages</label><input id="flyAgency" maxlength="60" placeholder="Leave empty to use your business name" value="${esc(fly.agency)}" oninput="flySet('agency',this.value)"></div>
+<div class="field span2"><label>Ask children's ages</label><select id="flyAges" onchange="flySet('ages',this.value==='1')"><option value="1" ${fly.ages?'selected':''}>Yes — when pricing depends on age</option><option value="0" ${!fly.ages?'selected':''}>No</option></select></div></div></div>
+<div style="display:flex;gap:10px;align-items:center;margin-top:14px"><button class="btn primary" id="flySave" onclick="saveChatStyle()">Save chat style</button><span class="sub" id="flyMsg"></span></div>
+</div><div><div class="wmphone"><div class="wmbar">${esc(fly.agency||'Your agency')}<span>Preview · Flyindo booking flow</span></div><div class="wmchat" id="flyPreview"></div></div></div></div>`;
+  flyRenderDests();flyPreview();
+}
+function flySet(k,v){fly[k]=v;if(k==='style'){const o=$('flyOpts');if(o)o.style.opacity=v==='flyindo'?'1':'.55'}flyPreview()}
+function flyRenderDests(){
+  $('flyDests').innerHTML=fly.dests.map((d,i)=>`<div class="wmhead" style="margin-bottom:8px"><input class="wmemoji" maxlength="8" value="${esc(d.emoji||'')}" placeholder="🌍" oninput="flyDest(${i},'emoji',this.value)"><input class="wmtitle" maxlength="40" value="${esc(d.name||'')}" placeholder="Destination name" oninput="flyDest(${i},'name',this.value)"><button class="btn sm" title="Move up" ${i?'':'disabled'} onclick="flyMove(${i},-1)">↑</button><button class="btn sm danger" title="Remove" onclick="flyDel(${i})">✕</button></div>`).join('')||'<p class="sub">No destinations yet.</p>';
+  const n=fly.dests.length,b=$('flyCount');if(b){b.textContent=`${n} / 10`;b.className=`badge ${n>10?'bad':'ok'}`}
+}
+function flyDest(i,k,v){fly.dests[i][k]=v;flyPreview()}
+function flyAddDest(){if(fly.dests.length>=10)return alert('WhatsApp lists hold up to 10 destinations.');fly.dests.push({emoji:'',name:''});flyRenderDests()}
+function flyDel(i){fly.dests.splice(i,1);flyRenderDests();flyPreview()}
+function flyMove(i,d){const j=i+d;if(j<0||j>=fly.dests.length)return;[fly.dests[i],fly.dests[j]]=[fly.dests[j],fly.dests[i]];flyRenderDests();flyPreview()}
+function flyPreview(){
+  const el=$('flyPreview');if(!el)return;
+  const agency=fly.agency||'Your agency',dests=fly.dests.filter(d=>String(d.name||'').trim()),first=dests[0]?.name||'Munnar';
+  const fmt=t=>esc(t).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
+  const list=(btn)=>`<div class="wmbtn">☰ ${esc(btn)}</div>`;
+  el.innerHTML=`<div class="wmbubble out">Hi</div>
+<div class="wmbubble in">${fmt(`Hello! 👋 Welcome to *${agency}*!\nWe're happy to help you plan your next trip. 🌍\n\nWhere would you like to travel today?\n\nPlease select your preferred destination below 👇`)}${list('Destinations')}</div>
+<div class="wmsheet" style="margin:6px 0 10px;border-radius:12px"><div class="wmsec">Destinations</div>${dests.map(d=>`<div class="wmrow"><div><b>${esc((d.emoji?d.emoji+' ':'')+d.name)}</b></div><i></i></div>`).join('')||'<div class="wmrow"><div><span>Add a destination</span></div></div>'}</div>
+<div class="wmbubble out">${esc((dests[0]?.emoji?dests[0].emoji+' ':'')+first)}</div>
+<div class="wmbubble in">${fmt(`Great choice! 😊\n\nWhen are you planning to visit *${first}*?\n\n📅 Please choose your travel month below.`)}${list('Choose month')}</div>
+<div class="wmbubble out">📅 December 2026</div><div class="wmbubble out">15 – 21 Dec</div><div class="wmbubble out">15 Dec · Tue</div>
+<div class="wmbubble in">${fmt('How many people will be travelling? 🧳\n\n👨 *Adults:* please choose the number of adults (12 years and above).')}${list('Adults')}</div>
+<div class="wmbubble out">2 Adults</div>
+<div class="wmbubble in">${fmt('👧 *Children:* how many children (below 12 years) are travelling?')}${list('Children')}</div>
+<div class="wmbubble out">1 Child</div>
+${fly.ages?`<div class="wmbubble in">${fmt('🎂 Child 1 — how old is your child?\n\n_Prices can depend on age._')}${list('Choose age')}</div><div class="wmbubble out">5 – 7 years</div>`:''}
+<div class="wmbubble in">${fmt(`Thank you for sharing your travel details! 🎉\n\nHere is your booking request:\n\n📍 Destination: ${first}\n📅 Travel Date: Tue, 15 December 2026\n👨 Adults: 2\n👧 Children: 1${fly.ages?"\n🎂 Children's ages: 5 – 7 years":''}\n\nOur travel consultant will contact you shortly to discuss package details, pricing and booking confirmation.\n\nThank you for choosing *${agency}*! ❤️`)}</div>
+<div style="text-align:center;margin:8px 0"><span class="badge ok">👤 Handed to your team · 🔥 Hot lead</span></div>`;
+}
+async function saveChatStyle(){
+  const btn=$('flySave'),msg=$('flyMsg');msg.textContent='';
+  const dests=fly.dests.map(d=>({emoji:String(d.emoji||'').trim(),name:String(d.name||'').trim()})).filter(d=>d.name);
+  if(fly.style==='flyindo'&&!dests.length){msg.textContent='Add at least one destination.';msg.style.color='var(--red)';return}
+  if(dests.length>10){msg.textContent='Up to 10 destinations.';msg.style.color='var(--red)';return}
+  btn.disabled=true;
+  try{
+    fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_chat_style:fly.style,lt_flyindo_agency_name:fly.agency.trim(),lt_flyindo_child_ages:!!fly.ages,...(dests.length?{lt_flyindo_destinations:dests}:{})})});
+    msg.textContent=fly.style==='flyindo'?'✓ Saved — new WhatsApp messages now get the Flyindo booking flow':'✓ Saved — the bot answers as before';msg.style.color='var(--green)';
   }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
 }

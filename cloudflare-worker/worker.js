@@ -11,6 +11,7 @@ import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
+import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
@@ -20491,7 +20492,11 @@ async function handleLtTravelFlow(request,env){
 export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,
   // Payment QR codes sent as images when online booking is off: a Google Drive image link or a
   // direct https image link, each with an optional name ("UPI", "Bank transfer").
-  lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''};
+  lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',
+  // Chat style (Travel Settings → 🧭 Chat Style): '' = the normal bot, 'flyindo' = the guided,
+  // buttons-only booking flow in flyindo-flow.js. Its destinations, the agency name it greets with
+  // (blank = the client name) and whether children's ages are asked.
+  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true};
 const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
 const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
 const ltPayQrLabel=v=>String(v||'').replace(/\s+/g,' ').trim().slice(0,40);
@@ -20509,6 +20514,10 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_fare_style:LT_FARE_STYLES.includes(String(raw?.lt_fare_style||'').toLowerCase())?String(raw.lt_fare_style).toLowerCase():d.lt_fare_style,
     lt_pay_qr_1_url:ltPayQrUrl(raw?.lt_pay_qr_1_url),lt_pay_qr_1_label:ltPayQrLabel(raw?.lt_pay_qr_1_label),
     lt_pay_qr_2_url:ltPayQrUrl(raw?.lt_pay_qr_2_url),lt_pay_qr_2_label:ltPayQrLabel(raw?.lt_pay_qr_2_label),
+    lt_chat_style:flyindoNormalizeStyle(raw?.lt_chat_style),
+    lt_flyindo_destinations:flyindoNormalizeDestinations(raw?.lt_flyindo_destinations),
+    lt_flyindo_agency_name:String(raw?.lt_flyindo_agency_name||'').replace(/\s+/g,' ').trim().slice(0,60),
+    lt_flyindo_child_ages:ltYesNo(raw?.lt_flyindo_child_ages,d.lt_flyindo_child_ages),
   };
 }
 // The saved D1 settings when present, else the CLIENTS fields, else the defaults.
@@ -20526,8 +20535,8 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
     .bind(Number(clientId),'{}',email,ltNow(),JSON.stringify(settings)).run();
   const yn=v=>v?'Yes':'No';
   try{
-    await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS));
-    await patchClientFields(env,clientId,{itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
+    await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS).filter(k=>!k.startsWith('lt_flyindo_')));
+    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
   }catch(e){}
 }
 // GET/PUT /live-travel/travel-settings — Dashboard → Settings → Modules → Travel Agency options.
@@ -20543,6 +20552,14 @@ async function handleLtTravelSettings(request,env){
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
   for(const k of ['lt_pay_qr_1_label','lt_pay_qr_2_label'])if(k in body&&typeof body[k]!=='string')return json({error:`${k} must be text`},400);
+  if('lt_chat_style' in body&&!['',FLYINDO_STYLE].includes(String(body.lt_chat_style||'')))return json({error:`lt_chat_style must be "" or "${FLYINDO_STYLE}"`},400);
+  if('lt_flyindo_child_ages' in body&&typeof body.lt_flyindo_child_ages!=='boolean')return json({error:'lt_flyindo_child_ages must be true or false'},400);
+  if('lt_flyindo_agency_name' in body&&typeof body.lt_flyindo_agency_name!=='string')return json({error:'lt_flyindo_agency_name must be text'},400);
+  if('lt_flyindo_destinations' in body){
+    const list=body.lt_flyindo_destinations;
+    if(!Array.isArray(list)||!list.some(d=>String(d?.name||'').trim()))return json({error:'Add at least one destination'},400);
+    if(list.filter(d=>String(d?.name||'').trim()).length>FLYINDO_MAX_DESTINATIONS)return json({error:`WhatsApp lists hold up to ${FLYINDO_MAX_DESTINATIONS} destinations`},400);
+  }
   const next=ltTravelSettingsNormalize({...current,...body});
   await ltTravelSettingsSave(env,auth.cid,next,auth.email);
   await ltAudit(env,auth.cid,'travel_settings','travel_settings','updated',auth.email,next);
@@ -20892,6 +20909,63 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
       await taDeliverPackageMedia(env,c,clientId,convId,[pkg],{explicit:!!tap,leadId});
       return taDeliverWithButtons(env,c,clientId,convId,details,buttons,'Would you like this itinerary as a PDF, or shall we book it for you?');
     }}};
+}
+
+// ── Flyindo chat style (flyindo-flow.js): per-chat progress in D1, 24 h like a WhatsApp session.
+async function flyindoEnsureSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lt_flyindo_state (client_id INTEGER NOT NULL, phone TEXT NOT NULL, state_json TEXT NOT NULL DEFAULT '{}', expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone))`).run();
+}
+async function flyindoLoad(env,clientId,phone){
+  if(!phone)return null;
+  await flyindoEnsureSchema(env);
+  const row=await env.DB.prepare(`SELECT state_json FROM lt_flyindo_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  return row?ltJson(row.state_json,null):null;
+}
+async function flyindoSave(env,clientId,phone,st){
+  if(!phone)return;
+  await flyindoEnsureSchema(env);
+  const now=new Date();
+  await env.DB.prepare(`INSERT INTO lt_flyindo_state (client_id,phone,state_json,expires_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(client_id,phone) DO UPDATE SET state_json=excluded.state_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(st),new Date(now.getTime()+FLYINDO_STATE_TTL_MS).toISOString(),now.toISOString()).run();
+}
+async function flyindoClear(env,clientId,phone){
+  if(phone)await env.DB.prepare(`DELETE FROM lt_flyindo_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run().catch(()=>{});
+}
+// Travel Settings → Chat Style "Flyindo": every message from a customer goes through the guided
+// booking steps (welcome → destination → date → travellers → handover) instead of being answered.
+// Returns null when the style is off (or for opt-out words, media, or a chat already with the team
+// unless the customer starts again); {turn} for the next step; {introAction} to hand over at once.
+export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,userText,mediaType){
+  if(!flyindoOn(c)||mediaType!=='text')return null;
+  const text=String(userText||'').trim();
+  if(!text||ENGINE_OPT_OUT_WORDS.includes(text.toLowerCase()))return null;
+  const lang=c.language||'en',convId=state.convId;
+  const opts={agency:c.lt_flyindo_agency_name||c.client_name||'',destinations:flyindoNormalizeDestinations(c.lt_flyindo_destinations),askAges:c.lt_flyindo_child_ages!==false,today:new Date()};
+  if(/^(?:👤\s*)?(?:talk|speak|chat)\s+(?:to|with)\s+(?:an?\s+)?(?:agent|human|person|team|consultant)$/i.test(text)&&c.handover_enabled!=='No'){
+    await flyindoClear(env,clientId,phone);
+    return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
+  }
+  const restart=ltMenuIsMenuRequest(text)||ltMenuIsGreeting(text)||/^(?:restart|start over|new booking|book again|plan (?:a|another) trip)$/i.test(text);
+  let fs=await flyindoLoad(env,clientId,phone).catch(()=>null),note='',userShown=text;
+  if(!fs){
+    // The booking request was already handed over: the consultant has the chat now.
+    if((state.stage==='human_handover'||state.lead?.Handover==='Yes')&&!restart)return null;
+    fs=flyindoStart();
+  }else if(restart)fs=flyindoStart();
+  else{
+    const r=flyindoAdvance(fs,text,opts);
+    fs=r.state;note=r.note||'';
+  }
+  const p=flyindoPrompt(fs,{...opts,note});
+  const base={route:'travel_flyindo',next:state.stage||'new',preserveCrmStage:true,lang,serviceCategory:'Package',historyUserText:userShown,
+    qualAnswers:{...(state.qualAnswers||{}),...(fs.destination?flyindoQualAnswers(fs):{})}};
+  if(p.done){
+    await flyindoClear(env,clientId,phone);
+    return {turn:{...base,route:'human',next:'human_handover',preserveCrmStage:false,intent:'BOOKING',qualAnswers:{...(state.qualAnswers||{}),...flyindoQualAnswers(fs)},text:p.text,
+      deliver:async()=>{await engineDeliverReply(env,c,clientId,convId,p.text,{mediaType:'text',langCode:lang});await engineSendHandoverLabel(c,convId);return null;}}};
+  }
+  await flyindoSave(env,clientId,phone,fs);
+  return {turn:{...base,text:p.text,deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
 }
 
 // "hi" / "menu" / a menu tap. Returns null for anything else so the message continues down the
@@ -25709,6 +25783,16 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     // Travel agencies: their own WhatsApp menu (Live Agency → 💬 WhatsApp Menu) answers "hi" /
     // "menu" and every menu tap before any AI path. Agencies without an enabled menu get null.
+    // Travel Settings → Chat Style "Flyindo": the guided, buttons-only booking flow replaces
+    // answering — it runs before the menu and every AI path.
+    if(!introAction){
+      const flyTurn=await engineHandleFlyindo(env,c,clientId,state,phone,parsed.inboxId,userText,mediaType).catch(e=>{reportOpsError(env,'Flyindo booking flow failed',e,{clientId}).catch(()=>{});return null;});
+      if(flyTurn?.turn){
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,flyTurn.turn.historyUserText||userText,messageId,isNewLead,flyTurn.turn,startMs,mediaType,ctx);
+        return json({ok:true,route:flyTurn.turn.route,sent:c.bot_reply_disabled!=='Yes'});
+      }
+      if(flyTurn?.introAction){introAction=flyTurn.introAction;userText=introAction.text;}
+    }
     if(!introAction){
       const travelMenu=await engineHandleTravelMenu(env,c,clientId,state,phone,parsed.inboxId,userText,mediaType,isNewLead);
       if(travelMenu?.turn){
