@@ -3640,6 +3640,7 @@ const ROLES = {
                 <label class="gcol-check"><input type="checkbox" value="Name" checked> Name</label>
                 <label class="gcol-check"><input type="checkbox" value="Stage" checked> Stage</label>
                 <label class="gcol-check"><input type="checkbox" value="Score" checked> Score</label>
+                <label class="gcol-check"><input type="checkbox" value="AssignedTo" checked> Assigned To</label>
                 <label class="gcol-check"><input type="checkbox" value="Language"> Language</label>
                 <label class="gcol-check"><input type="checkbox" value="Date" checked> Date</label>
                 <label class="gcol-check"><input type="checkbox" value="LastMsgAt"> Last Message</label>
@@ -4002,6 +4003,7 @@ const ROLES = {
             <div class="s-head">👥 User Management</div>
             <div class="s-note">Everyone below (including you, the account owner) can sign in with their own Authentik account. Click the 👤 on anyone to view their profile — Chatwoot login, and, for teammates, which modules and (for travel clients) which lead categories they can see.</div>
             <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
+            <div id="departedLeadsCard"></div>
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
               <div style="font-weight:700;font-size:13px;margin-bottom:6px">✉️ Invite Teammate</div>
@@ -11210,6 +11212,10 @@ async function claimLeadIfUnowned(leadId, activity){
 
 async function patchDetailField(field,val){
   if(!currentLead)return;
+  if(field==='Owner' && val && !isPresentStaff(val)){
+    alert('Leads can only be assigned to someone currently on your team.');
+    $id('detailOwner').innerHTML=teamMemberOptions(currentLead.Owner||''); return;
+  }
   if(field==='ReminderDate'&&val) await claimLeadIfUnowned(currentLead.Id,'Reminder set');
   const prevVal=currentLead[field];
   currentLead[field]=val;
@@ -11333,8 +11339,10 @@ async function generateSummary(){
 /* ── EXPORT ── */
 function exportCsv(){
   if(!allLeads.length){alert('No leads.');return;}
-  const cols=['LeadRef','ExternalRef','Id','Name','Phone','Stage','Score','InterestedProduct','Source','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
-  const csv=[cols.join(','),...allLeads.map(l=>cols.map(c=>'"'+(String((c==='LeadRef'?leadRef(l):l[c])||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
+  const cols=['LeadRef','ExternalRef','Id','Name','Phone','Stage','Score','InterestedProduct','Source','AssignedTo','AssignedToEmail','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
+  const labels={AssignedTo:'Assigned To',AssignedToEmail:'Assigned To Email'};
+  const val=(l,c)=>c==='LeadRef'?leadRef(l):c==='AssignedTo'?(l.Owner?teamMemberName(l.Owner):'Unassigned'):c==='AssignedToEmail'?l.Owner:l[c];
+  const csv=[cols.map(c=>labels[c]||c).join(','),...allLeads.map(l=>cols.map(c=>'"'+(String(val(l,c)||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
   dlFile('data:text/csv;charset=utf-8,'+encodeURIComponent(csv),'leads_'+clientId+'_'+TODAY+'.csv');
 }
 
@@ -13004,13 +13012,69 @@ function renderTeamCreateResult(email, data){
 
 async function removeTeamMember(email){
   const msg=$id('teamMembersMsg');
+  const open=allLeads.filter(l=>sameEmail(l.Owner,email)).length;
+  if(!confirm(`Remove ${email} from the team?`+(open?`\n\nTheir ${open} lead${open===1?'':'s'} will be reassigned to your other team members.`:''))) return;
   const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean).filter(e=>e.toLowerCase()!==email.toLowerCase());
-  msg.textContent='Removing…';
+  msg.textContent='Removing…'; msg.className='save-msg';
   try{
     await patchClient({team_emails:current.join(',')});
-    msg.textContent='Removed.';
+    clientRecord.team_emails=current.join(',');
     renderTeamMembers();
-  }catch(e){ msg.textContent='Error: '+e.message; }
+    msg.textContent='Removed. Reassigning their leads…';
+    const moved=await reassignDepartedLeads({from:email});
+    msg.textContent=`✓ ${email} removed`+(moved?`. ${moved} lead${moved===1?'':'s'} reassigned.`:'.'); msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  renderDepartedLeadsCard();
+}
+// POST /team/reassign-leads in batches until done; mirrors the new owners onto allLeads.
+async function reassignDepartedLeads({from='', to=''}={}){
+  let total=0;
+  for(let i=0;i<100;i++){
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/reassign-leads`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({from,to})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    total+=d.moved||0;
+    if(!d.remaining || !d.moved) break;
+  }
+  if(total) try{ await loadAll(true, true); }catch(e){}
+  return total;
+}
+// User Management → "Leads with former staff": anyone who still owns leads but is no longer on
+// the team (removed before auto-reassignment existed, or an old free-text owner name).
+async function renderDepartedLeadsCard(){
+  const box=$id('departedLeadsCard'); if(!box) return;
+  if(!isAccountOwner()){ box.innerHTML=''; return; }
+  let d;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/departed-leads`,{headers:ncAuthHeaders()});
+    d=await r.json(); if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+  }catch(e){ box.innerHTML=''; return; }
+  if(!d.departed?.length){ box.innerHTML=''; return; }
+  const opts=`<option value="">Spread evenly across the team</option>`+getTeamMembers().map(m=>`<option value="${esc(m.email)}">${esc(m.name)}${m.email===myEmail?' (you)':''}</option>`).join('');
+  const total=d.departed.reduce((n,x)=>n+x.count,0);
+  box.innerHTML=`<div style="margin:12px 0;padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--red);border-radius:8px;background:var(--bg)">
+    <div style="font-weight:700;font-size:13px;margin-bottom:4px">⚠️ ${total} lead${total===1?'':'s'} still assigned to former staff</div>
+    <div class="s-note" style="margin-bottom:8px">These people are no longer on your team. Reassign their leads so every lead has someone to follow up.</div>
+    ${d.departed.map(x=>`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+      <span style="font-size:13px;min-width:200px"><b>${esc(x.email)}</b> · ${x.count} lead${x.count===1?'':'s'}</span>
+      <select class="form-input" style="max-width:240px;padding:7px 10px;font-size:12px" data-from="${esc(x.email)}">${opts}</select>
+      <button class="save-btn" style="padding:7px 12px;font-size:12px" data-from="${esc(x.email)}" onclick="reassignDepartedFrom(this)">Reassign</button>
+    </div>`).join('')}
+    ${d.departed.length>1?`<button class="save-btn sec" style="margin-top:4px;font-size:12px" onclick="reassignDepartedFrom(this)" data-from="">Reassign all evenly</button>`:''}
+    <span class="save-msg" id="departedLeadsMsg"></span>
+  </div>`;
+}
+async function reassignDepartedFrom(btn){
+  const from=btn.dataset.from||'';
+  const sel=from?btn.parentElement.querySelector('select'):null;
+  const to=sel?sel.value:'';
+  const msg=$id('departedLeadsMsg');
+  btn.disabled=true; const label=btn.textContent; btn.textContent='Reassigning…';
+  try{
+    const n=await reassignDepartedLeads({from, to});
+    if(msg){ msg.textContent=`✓ ${n} lead${n===1?'':'s'} reassigned`; msg.className='save-msg ok'; }
+    setTimeout(renderDepartedLeadsCard, 1200);
+  }catch(e){ if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; } btn.disabled=false; btn.textContent=label; }
 }
 
 function populateSettings(){
@@ -15053,7 +15117,10 @@ function integrationsInit(){
   if(clientRecord.gsheet_url) $id('cfgGsheetUrl').value=clientRecord.gsheet_url;
   if(clientRecord.gsheet_cols){
     try{
-      const saved=JSON.parse(clientRecord.gsheet_cols);
+      // {v:2,cols} since "Assigned To" shipped; an older plain array gets it added (the Worker
+      // does the same when syncing), so the picker matches what's actually in the sheet.
+      const raw=JSON.parse(clientRecord.gsheet_cols);
+      const saved=Array.isArray(raw)?(raw.length&&!raw.includes('AssignedTo')?[...raw,'AssignedTo']:raw):(raw?.cols||[]);
       document.querySelectorAll('#gsheetColPicker input').forEach(i=>{ i.checked=saved.includes(i.value); });
     }catch(e){}
   }
@@ -17734,10 +17801,17 @@ function getTeamMembers(){
 // Renders <option> tags from getTeamMembers(), keeping `currentValue` visible even if it no
 // longer matches any current team member (a lead's Owner set before this unification shipped, or
 // a teammate who's since been removed) — better to show a stale value than silently blank it out.
+function teamMemberName(email){
+  const m=getTeamMembers().find(m=>sameEmail(m.email,email));
+  return m?m.name:String(email||'');
+}
+function isPresentStaff(email){ return getTeamMembers().some(m=>sameEmail(m.email,email)); }
 function teamMemberOptions(currentValue){
   const members=getTeamMembers();
   const opts=members.map(m=>`<option value="${esc(m.email)}"${sameEmail(m.email,currentValue)?' selected':''}>${esc(m.name)}${m.email===myEmail?' (you)':''}</option>`);
-  if(currentValue && !members.some(m=>sameEmail(m.email,currentValue))) opts.push(`<option value="${esc(currentValue)}" selected>${esc(currentValue)}</option>`);
+  // Still shown so the field isn't silently blanked, but marked — and patchDetailField refuses to
+  // assign anyone new to a person who has left.
+  if(currentValue && !members.some(m=>sameEmail(m.email,currentValue))) opts.push(`<option value="${esc(currentValue)}" selected>${esc(currentValue)} (left the team)</option>`);
   return '<option value="">Unassigned</option>'+opts.join('');
 }
 
@@ -21694,6 +21768,7 @@ function populateModulesPage(){
 function populateUserManagementPage(){
   if(!clientRecord)return;
   renderTeamMembers();
+  renderDepartedLeadsCard();
   renderHotAlertsCard();
   renderLeadRoutingSettings();
 }

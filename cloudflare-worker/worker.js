@@ -3813,9 +3813,9 @@ async function runDailyHealthCheckForAllClients(env){
    leads arrive and anything the client types in columns further right stays aligned. A hash
    of the last written rows (gsheet_sync_hash) skips the write entirely when nothing changed. ── */
 const GSHEET_CLIENT_COLUMNS=['gsheet_url','gsheet_cols','gsheet_last_sync_at','gsheet_last_sync_status','gsheet_sync_hash'];
-const GSHEET_DEFAULT_COLS=['Phone','Name','Stage','Score','Date'];
-const GSHEET_ALLOWED_COLS=['Phone','Name','Stage','Score','Language','Date','LastMsgAt','Handover','HotMoment','QualScore','BookingTime','QualAnswers'];
-const GSHEET_COL_LABELS={LastMsgAt:'Last Message',HotMoment:'Hot Moment',QualScore:'Qual Score',BookingTime:'Booking Time',QualAnswers:'Qual Answers'};
+const GSHEET_DEFAULT_COLS=['Phone','Name','Stage','Score','Date','AssignedTo'];
+const GSHEET_ALLOWED_COLS=['Phone','Name','Stage','Score','AssignedTo','Language','Date','LastMsgAt','Handover','HotMoment','QualScore','BookingTime','QualAnswers'];
+const GSHEET_COL_LABELS={AssignedTo:'Assigned To',LastMsgAt:'Last Message',HotMoment:'Hot Moment',QualScore:'Qual Score',BookingTime:'Booking Time',QualAnswers:'Qual Answers'};
 const GSHEET_MAX_LEADS=20000;
 
 export function gsheetParseUrl(sheetUrl){
@@ -3825,10 +3825,18 @@ export function gsheetParseUrl(sheetUrl){
   const g=s.match(/[#&?]gid=(\d+)/);
   return {spreadsheetId:m[1], gid:g?Number(g[1]):null};
 }
+// Stored as {v:2, cols:[…]}. A plain array is a selection saved before the "Assigned To" column
+// existed — it gets that column appended once, so every existing sheet picks it up; from the next
+// save on, the client's own choice (including unticking it) is kept as-is.
 export function gsheetParseCols(raw){
   let cols=raw;
   if(typeof raw==='string'){ try{ cols=JSON.parse(raw||'[]'); }catch(e){ cols=[]; } }
-  cols=(Array.isArray(cols)?cols:[]).map(String).filter(c=>GSHEET_ALLOWED_COLS.includes(c));
+  // Only a stored (string) array is a legacy save; an array straight from the picker is the
+  // client's current choice and must be kept exactly.
+  const legacy=typeof raw==='string' && Array.isArray(cols);
+  if(!Array.isArray(cols)) cols=Array.isArray(cols?.cols)?cols.cols:[];
+  cols=cols.map(String).filter(c=>GSHEET_ALLOWED_COLS.includes(c));
+  if(legacy && cols.length && !cols.includes('AssignedTo')) cols.push('AssignedTo');
   return cols.length?[...new Set(cols)]:GSHEET_DEFAULT_COLS;
 }
 function gsheetColLetter(n){ let s=''; while(n>0){ const r=(n-1)%26; s=String.fromCharCode(65+r)+s; n=Math.floor((n-1)/26); } return s; }
@@ -3914,7 +3922,7 @@ async function syncClientGsheet(env, c, {force=false}={}){
   const parsed=gsheetParseUrl(c.gsheet_url);
   if(!parsed) throw new Error('Not a valid Google Sheets link.');
   const cols=gsheetParseCols(c.gsheet_cols);
-  const leads=await gsheetFetchLeads(env, c.Id);
+  const leads=(await gsheetFetchLeads(env, c.Id)).map(l=>({...l, AssignedTo:staffDisplayName(c, l.Owner)||'Unassigned'}));
   const rows=gsheetBuildRows(leads, cols);
   const hash=await gsheetHash({url:c.gsheet_url, rows});
   if(!force && hash===c.gsheet_sync_hash) return {ok:true, skipped:true, rows:leads.length};
@@ -3956,7 +3964,7 @@ async function handleGsheetConfig(request, env){
   if(url && !gsheetParseUrl(url)) return json({error:'That is not a Google Sheets link (expected docs.google.com/spreadsheets/d/…).'}, 400);
   const cols=gsheetParseCols(body.gsheet_cols);
   await ensureClientColumns(env, GSHEET_CLIENT_COLUMNS);
-  const fields={gsheet_url:url, gsheet_cols:JSON.stringify(cols), gsheet_sync_hash:''};
+  const fields={gsheet_url:url, gsheet_cols:JSON.stringify({v:2, cols}), gsheet_sync_hash:''};
   try{ await patchClientFields(env, payload.cid, fields); }
   catch(e){ return json({error:e.message}, 502); }
   const c=await getClientById(env, payload.cid);
@@ -17038,6 +17046,23 @@ function engineRoutableStaffEmails(c){
   const owner=String(c?.authentik_email||'').trim().toLowerCase();
   return new Set(String(c?.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(e=>e&&e!==owner));
 }
+// Everyone currently allowed to own a lead: the account owner plus every listed teammate. A lead
+// whose Owner is anyone else belongs to staff who have left (removed from User Management).
+export function presentStaffEmails(c){
+  const set=new Set(engineRoutableStaffEmails(c));
+  const owner=String(c?.authentik_email||'').trim().toLowerCase();
+  if(owner) set.add(owner);
+  return set;
+}
+// Human name for a lead's Owner email — used by the Google Sheet "Assigned To" column.
+export function staffDisplayName(c, email){
+  const e=String(email||'').trim().toLowerCase();
+  if(!e) return '';
+  if(e===String(c?.authentik_email||'').trim().toLowerCase()) return String(c?.client_name||'').trim()||e;
+  let names={}; try{ names=JSON.parse(c?.team_names||'{}'); }catch(err){}
+  const hit=Object.entries(names||{}).find(([k])=>String(k).trim().toLowerCase()===e);
+  return String(hit?.[1]||'').trim()||e;
+}
 
 // Location keys the bot may store city/area answers under in QualAnswers — same list as the
 // frontend Splits view so routing and display always agree.
@@ -17106,13 +17131,21 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
   // Baby Care: a teammate marked On leave gets no new leads (unattendedReallocProcessClient moves
   // the ones they already have).
   const away=staffOnLeave(c, routing);
-  const channelOwner=await engineChannelOwner(env, clientId, state?.inboxId);
+  const present=presentStaffEmails(c);
+  const rawChannelOwner=await engineChannelOwner(env, clientId, state?.inboxId);
+  // A channel still assigned to someone who has left the team must not keep feeding them leads.
+  const channelOwner=present.has(rawChannelOwner)?rawChannelOwner:'';
   if(channelOwner && !away.has(channelOwner)){
     const current=String(leadBody.Owner||state?.lead?.Owner||'').trim().toLowerCase();
     if(current!==channelOwner) leadBody.Owner=channelOwner;
     return;
   }
-  if(!isNewLead || leadBody.Owner) return; // already assigned or not new
+  // An existing lead still owned by someone no longer on the team is re-routed like a new one
+  // (and left unassigned for the sweep if nothing matches) — leads only ever sit with present staff.
+  const currentOwner=String(leadBody.Owner||state?.lead?.Owner||'').trim().toLowerCase();
+  const departed=!!currentOwner && currentOwner.includes('@') && present.size>0 && !present.has(currentOwner);
+  if(departed) leadBody.Owner='';
+  else if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
   const staff=new Set([...engineRoutableStaffEmails(c)].filter(e=>!away.has(e)));
   const isStaff=e=>staff.has(String(e||'').trim().toLowerCase());
@@ -18286,6 +18319,159 @@ export async function assignUnassignedProcessClient(env, c, now=new Date()){
       `<p>These leads had no owner, so they've been assigned to you. Please call them — open Leads to see the chat.</p><ul>${names.map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>`);
   }
   return {assigned};
+}
+/* ── Departed-staff lead reassignment (Settings → 👥 User Management) ───────────────────────────
+   Leads must only ever be owned by present staff (the account owner + current team_emails). When a
+   teammate is removed, their leads — open and closed, so reports and the Google Sheet never show
+   someone who has left — move to present staff: either one chosen person, or spread evenly across
+   the round-robin pool (least-loaded first). Channels still assigned to them are released too.
+   Triggered from the dashboard right after removing someone, from the "Leads with former staff"
+   card, and by the daily cron as a safety net (email-shaped owners only — free-text names from
+   very old setups are left for the owner to decide on from the card). ── */
+export const DEPARTED_REASSIGN_MAX_PER_RUN=150;
+export function departedOwnerOf(c, lead, present=presentStaffEmails(c)){
+  const o=String(lead?.Owner||'').trim().toLowerCase();
+  return o && !present.has(o) ? o : '';
+}
+// Pool + starting load for the even split: round-robin pool (minus anyone on leave), else every
+// teammate, else the account owner alone.
+export function departedReassignPool(c){
+  const pool=assignUnassignedPool(c);
+  if(pool.length) return pool;
+  const owner=String(c?.authentik_email||'').trim().toLowerCase();
+  return owner?[owner]:[];
+}
+export function departedPickLeastLoaded(pool, load){
+  let best=null;
+  for(const e of pool){ if(best===null || (load.get(e)||0)<(load.get(best)||0)) best=e; }
+  return best;
+}
+async function departedFetchOwnedLeads(env, clientId){
+  const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(Owner,notblank)`);
+  let out=[];
+  for(let offset=0; offset<GSHEET_MAX_LEADS; offset+=1000){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&limit=1000&offset=${offset}&sort=Id&fields=Id,Name,Phone,Owner,Stage,ConversationID,NotesList`);
+    if(!r.ok) throw new Error('Could not read leads: HTTP '+r.status);
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    out=out.concat(rows);
+    if(rows.length<1000 || data?.pageInfo?.isLastPage) break;
+  }
+  return out;
+}
+// Summary for the dashboard card: who has left but still owns leads, and how many.
+export async function departedLeadsSummary(env, c){
+  const present=presentStaffEmails(c);
+  const counts=new Map();
+  for(const l of await departedFetchOwnedLeads(env, c.Id)){
+    const o=departedOwnerOf(c, l, present);
+    if(o) counts.set(o, (counts.get(o)||0)+1);
+  }
+  return [...counts].map(([email, count])=>({email, count})).sort((a,b)=>b.count-a.count);
+}
+// from: only this former owner's leads ('' = every departed owner). to: one present staff member
+// ('' = spread evenly). emailOnly: skip free-text (non-email) owners — the cron's setting.
+export async function departedReassignProcessClient(env, c, {from='', to='', emailOnly=false, by='', now=new Date()}={}){
+  const present=presentStaffEmails(c);
+  if(!present.size) return {moved:0, remaining:0};
+  const fromN=String(from||'').trim().toLowerCase(), toN=String(to||'').trim().toLowerCase();
+  if(fromN && present.has(fromN)) throw new Error(`${fromN} is still on your team.`);
+  if(toN && !present.has(toN)) throw new Error('Leads can only be assigned to someone currently on your team.');
+  const clientId=Number(c.Id);
+  const all=await departedFetchOwnedLeads(env, clientId);
+  const pool=toN?[toN]:departedReassignPool(c);
+  if(!pool.length) return {moved:0, remaining:0};
+  const load=new Map(pool.map(e=>[e,0]));
+  for(const l of all){ const o=String(l.Owner||'').trim().toLowerCase(); if(load.has(o) && !PIPELINE_TERMINAL_STAGES.has(l.Stage||'')) load.set(o, load.get(o)+1); }
+  const targets=all.filter(l=>{
+    const o=departedOwnerOf(c, l, present);
+    if(!o || (fromN && o!==fromN)) return false;
+    return !emailOnly || o.includes('@');
+  });
+  // Open leads first so the ones that need a call get a present owner on the first pass.
+  targets.sort((a,b)=>PIPELINE_TERMINAL_STAGES.has(a.Stage||'')-PIPELINE_TERMINAL_STAGES.has(b.Stage||''));
+  const batch=targets.slice(0, DEPARTED_REASSIGN_MAX_PER_RUN);
+  const nowIso=now.toISOString();
+  const updates=[], digest=new Map();
+  for(const lead of batch){
+    const prevOwner=String(lead.Owner||'').trim().toLowerCase();
+    const open=!PIPELINE_TERMINAL_STAGES.has(lead.Stage||'');
+    const next=toN||departedPickLeastLoaded(pool, load);
+    if(open) load.set(next, (load.get(next)||0)+1);
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    notes.unshift({text:`🔁 Reassigned from ${prevOwner} to ${next}: ${prevOwner} is no longer on the team.`, date:now.toLocaleString(), ts:nowIso, author:by||COLD_REALLOC_NOTE_AUTHOR});
+    updates.push({lead, prevOwner, next, open, patch:{Id:Number(lead.Id), Owner:next, NotesList:JSON.stringify(notes)}});
+  }
+  let moved=0;
+  for(let i=0;i<updates.length;i+=50){
+    const chunk=updates.slice(i, i+50);
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:chunk.map(u=>u.patch)});
+    if(!pr.ok){ console.error('[departed-reassign] lead patch failed', clientId, pr.status); continue; }
+    for(const u of chunk){
+      moved++;
+      await chatsV2ApplyLeadPatch(env, u.patch.Id, {Owner:u.next}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+      if(u.open){
+        if(u.lead.ConversationID) await engineSyncChatwootAssignee(c, u.lead.ConversationID, u.next).catch(()=>{});
+        if(ecomIsBabyCare(c)) await ecomMoveOpenOrdersAssignment(env, c, clientId, u.lead.Phone, u.prevOwner, u.next).catch(()=>{});
+        if(!digest.has(u.next)) digest.set(u.next, []);
+        digest.get(u.next).push(u.lead.Name||u.lead.Phone||`Lead #${u.patch.Id}`);
+      }
+    }
+  }
+  // Channels still pointed at someone who left would keep handing them new leads.
+  if(env.DB){
+    try{
+      const {results}=await env.DB.prepare(`SELECT inbox_id, assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`).bind(clientId).all();
+      for(const row of results||[]){
+        const e=String(row.assigned_email||'').trim().toLowerCase();
+        if(!present.has(e) && (!fromN || e===fromN)) await env.DB.prepare(`UPDATE channel_inbox_assignments SET assigned_email='' WHERE client_id=? AND inbox_id=?`).bind(clientId, row.inbox_id).run();
+      }
+    }catch(e){}
+  }
+  if(moved) await engineBroadcastUpdate(env, clientId, {type:'leads_reassigned', reason:'departed', count:moved, at:nowIso}).catch(()=>{});
+  for(const [email, names] of digest){
+    await coldReallocEmail(env, email, names.length===1?`Lead reassigned to you: ${names[0]}`:`${names.length} leads reassigned to you`,
+      `<p>A teammate has left, so these open leads are now yours. Open Leads to see each chat.</p><ul>${names.slice(0,50).map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>${names.length>50?`<p>…and ${names.length-50} more.</p>`:''}`).catch(()=>{});
+  }
+  return {moved, remaining:Math.max(0, targets.length-moved)};
+}
+async function departedRequireOwner(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return {err:json({error:'Invalid or expired session'}, 401)};
+  const c=await getClientById(env, payload.cid);
+  if(!c) return {err:json({error:'Client not found'}, 404)};
+  if(String(payload.email||'').trim().toLowerCase()!==String(c.authentik_email||'').trim().toLowerCase()) return {err:json({error:'Only the account owner can reassign leads.'}, 403)};
+  return {payload, c};
+}
+// GET /team/departed-leads
+export async function handleTeamDepartedLeads(request, env){
+  const {err, c}=await departedRequireOwner(request, env); if(err) return err;
+  try{ return json({departed:await departedLeadsSummary(env, c), pool:departedReassignPool(c)}); }
+  catch(e){ return json({error:e.message}, 502); }
+}
+// POST /team/reassign-leads {from?, to?} — moves up to DEPARTED_REASSIGN_MAX_PER_RUN leads per
+// call; `remaining` > 0 tells the dashboard to call again.
+export async function handleTeamReassignLeads(request, env){
+  const {err, c, payload}=await departedRequireOwner(request, env); if(err) return err;
+  const body=await request.json().catch(()=>({}));
+  // The dashboard removes the teammate just before calling this; re-read so the roster is current.
+  try{ return json({ok:true, ...await departedReassignProcessClient(env, c, {from:body.from, to:body.to, by:payload.email})}); }
+  catch(e){ return json({error:e.message}, 400); }
+}
+export async function runDepartedReassignForAllClients(env, now=new Date()){
+  for(let page=1;;page++){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!String(c.authentik_email||'').trim()) continue;
+      try{ await departedReassignProcessClient(env, c, {emailOnly:true, now}); }
+      catch(e){ console.error('[departed-reassign] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+  }
 }
 export async function runAssignUnassignedForAllClients(env, now=new Date()){
   let page=1;
@@ -36521,8 +36707,13 @@ function computeLeadScore({budget, urgency, hasSiteVisit, hasProjectInterest}){
 // {agent, zones:[], projects:[], languages:[]}; re_rr_state_json remembers the last-picked index
 // per matching rule set (keyed on the sorted list of eligible agent names) so repeat calls cycle
 // through the same pool evenly instead of always starting at index 0.
-function pickRoundRobinAgent(routingRules, rrState, {zone, project, language}){
-  const rules=Array.isArray(routingRules)?routingRules:[];
+function pickRoundRobinAgent(routingRules, rrState, {zone, project, language}, present=null){
+  // Agents are normally login emails; one that's no longer on the team is skipped. Free-text names
+  // (older setups) can't be checked against the roster, so they're left as they are.
+  const rules=(Array.isArray(routingRules)?routingRules:[]).filter(r=>{
+    const a=String(r?.agent||'').trim().toLowerCase();
+    return !present || !present.size || !a.includes('@') || present.has(a);
+  });
   const eligible=rules.filter(r=>{
     const zoneOk=!r.zones?.length || (zone && r.zones.some(z=>z.toLowerCase()===String(zone).toLowerCase()));
     const projOk=!r.projects?.length || (project && r.projects.some(p=>p.toLowerCase()===String(project).toLowerCase()));
@@ -36574,7 +36765,7 @@ async function reProcessNewLead(env, clientId, fields){
   // real-estate.html's afterSiteVisitSave().
   const score=computeLeadScore({budget:fields.re_budget, urgency:fields.re_urgency, hasSiteVisit, hasProjectInterest:!!fields.re_project});
 
-  const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:fields.re_zone, project:fields.re_project, language:fields.re_language});
+  const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:fields.re_zone, project:fields.re_project, language:fields.re_language}, presentStaffEmails(clientRes));
 
   const leadPatch={
     re_source:mergedSources, re_project:fields.re_project||existing?.re_project||'',
@@ -36668,7 +36859,7 @@ async function handleReAssignLead(request, env){
   const client=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${payload.cid}`).then(r=>r.json()).catch(()=>({}));
   let routingRules=[]; try{ routingRules=JSON.parse(client.re_agent_routing_json||'[]'); }catch(e){}
   let rrState={}; try{ rrState=JSON.parse(client.re_rr_state_json||'{}'); }catch(e){}
-  const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:body.zone, project:body.project, language:body.language});
+  const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:body.zone, project:body.project, language:body.language}, presentStaffEmails(client));
   if(!agent) return json({error:'No routing rule matches — configure Agent Routing first.'}, 400);
   const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(body.lead_id), Owner:agent}});
   if(pr.ok) await chatsV2ApplyLeadPatch(env, Number(body.lead_id), {Owner:agent}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
@@ -39519,6 +39710,8 @@ export default {
       else if(url.pathname==='/team/invite' && request.method==='POST'){ res=await handleTeamInvite(request, env); }
       else if(url.pathname==='/team/check-user' && request.method==='POST'){ res=await handleTeamCheckUser(request, env); }
       else if(url.pathname==='/team/add-existing' && request.method==='POST'){ res=await handleTeamAddExisting(request, env); }
+      else if(url.pathname==='/team/departed-leads' && request.method==='GET'){ res=await handleTeamDepartedLeads(request, env); }
+      else if(url.pathname==='/team/reassign-leads' && request.method==='POST'){ res=await handleTeamReassignLeads(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/team/chatwoot-agent' && request.method==='POST'){ res=await handleTeamChatwootAgent(request, env); }
       else if(url.pathname==='/team/whatsapp' && request.method==='POST'){ res=await handleTeamWhatsappSet(request, env); }
@@ -40236,6 +40429,8 @@ export default {
       ctx.waitUntil(runScheduledReportsForAllClients(env));
       // Cold-lead auto-reallocation (Settings → 🔀 Lead Routing) — see runColdLeadReallocationForAllClients.
       ctx.waitUntil(runColdLeadReallocationForAllClients(env));
+      // Leads still owned by staff who have left the team → present staff (User Management).
+      ctx.waitUntil(runDepartedReassignForAllClients(env));
       // Leadvyne v2 — staff phrasing from Won chats; see runStaffWinExamplesForAllClients.
       ctx.waitUntil(runStaffWinExamplesForAllClients(env));
     }
