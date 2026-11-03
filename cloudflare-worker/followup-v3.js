@@ -45,6 +45,7 @@ export const FV3_DEFAULTS={
   daily_cap:300,              // max V3 sends per account per 24h
   warmup_cap:50, warmup_days:7, // lower cap for the first week after switching on
   lead_cap_30d:8,             // max follow-ups one lead can receive in 30 days
+  max_unanswered:10,          // stop outreach to a lead after this many follow-ups with no reply ever (unless they write back)
   smart_send_time:true,       // template steps go out at the hour this lead usually writes
   objection_branching:true,   // nudges 1-2 answer the lead's last objection from the Playbook
   exit_stages:[],             // extra Stages that end the sequence (on top of won/booked/lost)
@@ -81,6 +82,7 @@ export function fv3Config(raw){
     daily_cap:clampInt(o.daily_cap, 1, 5000, d.daily_cap),
     warmup_cap:clampInt(o.warmup_cap, 1, 5000, d.warmup_cap), warmup_days:clampInt(o.warmup_days, 0, 30, d.warmup_days),
     lead_cap_30d:clampInt(o.lead_cap_30d, 1, 30, d.lead_cap_30d),
+    max_unanswered:clampInt(o.max_unanswered, 3, 50, d.max_unanswered),
     smart_send_time:b('smart_send_time'), objection_branching:b('objection_branching'),
     exit_stages:Array.isArray(o.exit_stages)?o.exit_stages.map(s=>String(s).trim()).filter(Boolean).slice(0, 20):[],
     exit_on_order:b('exit_on_order'),
@@ -229,6 +231,12 @@ export function fv3Decide(input){
   if(sent30>=cfg.lead_cap_30d) return out('capped', 'lead_cap', `This lead already got ${sent30} follow-ups in 30 days — taking a break.`);
 
   const lastSent=sorted.length?ms(sorted[sorted.length-1].sent_at):null;
+  // Stop nagging a lead who never engages: once they've had max_unanswered follow-ups and have never
+  // once replied to any of them, stop — unless they've since written back on their own (lastCust past
+  // the last send), which is a fresh signal and resets the ladder above.
+  if(cfg.max_unanswered && sorted.length>=cfg.max_unanswered && !sorted.some(s=>s.replied_at) && !(lastSent && lastCust>lastSent))
+    return out('stopped', 'no_engagement', `No reply to ${sorted.length} follow-ups — pausing outreach to this lead until they write back.`);
+
   const gapFloor=(t)=>lastSent?Math.max(t, lastSent+cfg.min_gap_hours*H):t;
   const deferUntil=ms(state?.defer_until);
   const prefHour=cfg.smart_send_time?fv3PreferredHour(state?.hours_json):null;
@@ -295,6 +303,7 @@ export const FV3_REASON_INFO={
   ordered:{label:'Customer placed an order', ok:true},
   won:{label:'Lead is won', ok:true}, booked:{label:'Lead booked', ok:true}, exit_stage:{label:'Reached an exit stage', ok:true},
   closed:{label:'Lead is closed / lost', ok:true}, opted_out:{label:'Opted out', ok:true},
+  no_engagement:{label:'Never replied to any follow-up', fix:'Outreach is paused for this lead until they message you. Raise "Stop after N unanswered follow-ups" in Settings to allow more.', setting:'max_unanswered'},
   lead_cap:{label:'Already got the maximum follow-ups for 30 days', fix:'Raise "Max follow-ups per lead in 30 days" in Settings if you want more.'},
   no_message:{label:'Never messaged you', fix:'Follow-ups start after the customer\'s first message.'},
   account_paused:{label:'Follow-ups are paused', fix:'Press ▶ Resume.'},

@@ -106,6 +106,31 @@ describe('fv3Decide', ()=>{
     const sends=Array.from({length:8}, (_, i)=>({step:6, kind:'reengage', sent_at:iso(T('2026-10-01T00:00:00Z')+i*D)}));
     assert.equal(decide({now:T('2026-10-10T12:00:00Z'), sends}).status, 'capped');
   });
+
+  test('stop nagging a lead who never replies, but keep going the moment they write back', ()=>{
+    const now=T('2027-01-10T12:00:00Z');
+    // 10 follow-ups spread over months, none ever replied to → suppressed as no_engagement.
+    const cust='2026-10-10T10:00:00Z';
+    const many=Array.from({length:10}, (_, i)=>({step:6, kind:'reengage', variant:'A', sent_at:iso(T('2026-10-12T10:00:00Z')+i*7*D), replied_at:null}));
+    const d=decide({lead:{LastCustomerMsgAt:cust}, now, sends:many, cfg:fv3Config({include_existing_leads:true, reengage_max:20})});
+    assert.equal(d.status, 'stopped'); assert.equal(d.reason, 'no_engagement');
+    // One reply anywhere in the history keeps outreach alive (falls through to the normal 30-day cap here).
+    const withReply=many.map((s, i)=>i===0?{...s, replied_at:iso(T('2026-10-12T11:00:00Z'))}:s);
+    assert.notEqual(decide({lead:{LastCustomerMsgAt:cust}, now, sends:withReply, cfg:fv3Config({include_existing_leads:true, reengage_max:20})}).reason, 'no_engagement');
+    // If the customer writes back after the last send, it's a fresh signal — ladder resumes, not suppressed.
+    const resumed=decide({lead:{LastCustomerMsgAt:'2027-01-09T10:00:00Z', CreatedAt:cust}, now, sends:many, cfg:fv3Config({include_existing_leads:true, reengage_max:20})});
+    assert.notEqual(resumed.reason, 'no_engagement');
+  });
+
+  test('max_unanswered is configurable and off below its floor of history', ()=>{
+    const now=T('2026-10-20T12:00:00Z');
+    const cust='2026-10-10T10:00:00Z';
+    const five=Array.from({length:5}, (_, i)=>({step:6, kind:'reengage', sent_at:iso(T('2026-10-11T10:00:00Z')+i*D), replied_at:null}));
+    // Default 10 → five unanswered sends is not yet suppressed.
+    assert.notEqual(decide({lead:{LastCustomerMsgAt:cust}, now, sends:five, cfg:fv3Config({include_existing_leads:true, lead_cap_30d:30})}).reason, 'no_engagement');
+    // Tighten to 5 → suppressed.
+    assert.equal(decide({lead:{LastCustomerMsgAt:cust}, now, sends:five, cfg:fv3Config({include_existing_leads:true, lead_cap_30d:30, max_unanswered:5})}).reason, 'no_engagement');
+  });
 });
 
 test('quiet hours push to the morning; preferred hour needs real signal', ()=>{
