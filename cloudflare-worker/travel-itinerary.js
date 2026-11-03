@@ -145,6 +145,33 @@ export function taPackagesForLocation(packages,text){
     .map(norm).some(part=>part.length>=3&&!GENERIC.has(part)&&hay.includes(` ${part} `)));
 }
 
+// Package keywords (dashboard → Packages → Keywords): phrases the agency types for a package,
+// e.g. "ladies only, women only, girls trip". A message containing every word of one of them gets
+// that package — before name, region or destination matching, so "Ladies only Georgia trip" finds
+// the ladies-only trip, not the general Georgia one. Phrases made only of generic words
+// ("trip", "package") are ignored; they would match every message.
+export function taPackageKeywords(p){
+  return String(p?.keywords||'').split(/[,\n;|]+/).map(k=>words(k)).filter(w=>w.length&&w.some(x=>!GENERIC.has(x)));
+}
+// The packages whose keyword matches best (most words), [] when none does. Ties are all returned.
+export function taPackagesByKeyword(packages,text){
+  const have=new Set(words(text));
+  if(!have.size)return [];
+  let best=[],bestScore=0;
+  for(const p of packages||[]){
+    const score=Math.max(0,...taPackageKeywords(p).filter(kw=>kw.every(w=>have.has(w))).map(kw=>kw.length));
+    if(!score)continue;
+    if(score>bestScore){best=[p];bestScore=score;}
+    else if(score===bestScore)best.push(p);
+  }
+  // Several packages share the keyword: the one whose name also matches the message wins.
+  if(best.length>1){
+    const named=best.filter(p=>words(p?.name).filter(w=>!GENERIC.has(w)).some(w=>have.has(w)));
+    if(named.length===1)return named;
+  }
+  return best;
+}
+
 // International / Domestic (dashboard → Packages → Region). The Region field wins; older packages
 // without one count by the word "international" / "domestic" in their name or type — agencies
 // that had no Region field often named packages "INTERNATIONAL TOUR" / "DOMESTIC TOUR".

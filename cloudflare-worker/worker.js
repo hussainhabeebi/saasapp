@@ -14,7 +14,7 @@ import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
-import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows} from './travel-itinerary.js';
+import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -19521,6 +19521,8 @@ async function engineBuildTravelContext(env, c, clientId){
         const price=Number(p.sell_price)>0?Number(p.sell_price):Number(p.base_price)>0?Number(p.base_price):0;
         const region=taPackageRegion(p);
         let line=`- ${p.name} (${[region&&TA_PKG_REGIONS[region].label,p.type||'package'].filter(Boolean).join(', ')}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${price?`${p.currency||''} ${price} per person`:'price on request'}`;
+        const kws=taPackageKeywords(p).map(k=>k.join(' '));
+        if(kws.length) line+=' — customers may call it: '+kws.join(', ').slice(0,120);
         if(incText) line+=' — includes: '+incText.slice(0,150);
         if(excText) line+=' — excludes: '+excText.slice(0,100);
         const itin=taMatchItinerary(p, itins);
@@ -20852,10 +20854,15 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
   // International / Domestic: a tap on the Holiday Packages question, a typed "international
   // tour" / "any domestic packages?", or a name several packages share ("INTERNATIONAL TOUR").
   const regionTap=new RegExp(`^${TA_PKG_REGION_PREFIX}(international|domestic|all)$`,'i').exec(text);
-  if(regionTap||(!tap&&!follow)){
-    const region=regionTap?regionTap[1].toLowerCase():taRegionInText(text);
-    let pool=null;
-    if(region)pool=region==='all'?packages:packages.filter(p=>taPackageRegion(p)===region);
+  // A package keyword ("ladies only") is the most specific thing a message can say, so it wins —
+  // also over a "details" / "pdf" follow-up ("Ladies only Georgia trip details pls").
+  const byKeyword=tap||regionTap?[]:taPackagesByKeyword(packages,text);
+  if(byKeyword.length===1)return engineHandleTravelPackage(env,c,clientId,state,(follow==='pdf'?TA_PKG_PDF_PREFIX:TA_PKG_PREFIX)+taPkgId(byKeyword[0]),mediaType,phone);
+  if(regionTap||byKeyword.length||(!tap&&!follow)){
+    const region=regionTap?regionTap[1].toLowerCase():(byKeyword.length?null:taRegionInText(text));
+    let pool=byKeyword.length?byKeyword:null;
+    if(pool){}
+    else if(region)pool=region==='all'?packages:packages.filter(p=>taPackageRegion(p)===region);
     else{const named=taPackagesNamedInText(packages,text);if(named.length>1)pool=named;}
     if(pool){
       const human=c.handover_enabled!=='No'?[{title:'👤 Talk to Agent',value:'INTRO_HUMAN'}]:[];
@@ -20885,7 +20892,7 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
     mode={TPKG:'details',TPKGPDF:'pdf',TPKGENQ:'enquire'}[tap[1].toUpperCase()];
   }else{
     pkg=taFindPackageInText(packages,text);
-    if(!pkg&&follow)pkg=taFindPackageInText(packages,lastBotText);
+    if(!pkg&&follow){const kw=taPackagesByKeyword(packages,lastBotText);pkg=kw.length===1?kw[0]:taFindPackageInText(packages,lastBotText);}
     if(pkg)mode=follow==='pdf'?'pdf':'details';
   }
   const lang=c.language||'en',convId=state.convId,leadId=state.leadId||'';
