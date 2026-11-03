@@ -1,6 +1,7 @@
 // WhatsApp menu → guided flight search on the live API → flight details → Proceed → booking form →
 // booking-site link, end to end on an in-memory D1 with POOMAS, Meta and Chatwoot stubbed.
 import { test } from 'node:test';
+import { FLYINDO_DEFAULT_DESTINATIONS as FLY_DEFAULTS } from './flyindo-flow.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -322,13 +323,13 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
   globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
   try{
     let r=await call(env,session,'/live-travel/travel-settings');
-    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''});
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
     assert.equal(r.status,200,JSON.stringify(r.data));
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'highlighted'});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''},'only the style changes');
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true},'only the style changes');
     assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);

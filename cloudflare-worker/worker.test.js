@@ -7,6 +7,7 @@
 // Before editing any function tested here, read its entry in ../FIXES.md — these tests encode
 // real, previously-observed production failures, not hypothetical edge cases.
 import { test, describe } from 'node:test';
+import { FLYINDO_DEFAULT_DESTINATIONS as FLY_DEFAULTS } from './flyindo-flow.js';
 import assert from 'node:assert/strict';
 import {
   engineIsPersonalContact,
@@ -499,7 +500,7 @@ describe('Live Travel ticketing in chat',()=>{
   });
 
   test('Travel settings: fare option count is 1–5 (default 3) and prices can be hidden',()=>{
-    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:''});
+    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true});
     assert.deepEqual(ltChatFarePrefs({lt_fare_options:'9',lt_show_fares:'No'}),{limit:5,showFares:false,style:'classic',onlineBooking:true});
     assert.equal(ltChatFarePrefs({lt_fare_options:'0'}).limit,1);
     const fares=[1,2,3,4,5,6].map(n=>({airline_name:'Air '+n,total_amount:100*n,currency:'AED',bookable:true,supplier_offer_id:'f'+n,itinerary:[{origin:'DXB',destination:'COK',stops:0}]}));
