@@ -115,6 +115,12 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
     turn=await engineHandleTravelMenu(env,c,7,state,phone,'','🏝️ Holiday Packages','text',false);
     assert.deepEqual(await turn.turn.deliver(),[{title:'Baku 4N/5D',value:'TPORTAL:packages:1'}]);
     assert.match(meta.pop().interactive.action.sections[0].rows[0].description,/Baku · 4N · from AED 1,999/);
+    // Both International and Domestic packages listed → the customer is asked which kind first.
+    portal.tpk.push({Id:2,client_id:'7',name:'DOMESTIC TOUR',destination:'Munnar',nights:2,currency:'AED',sell_price:500},{Id:3,client_id:'7',name:'Bali Escape',region:'international',destination:'Bali',nights:5,currency:'AED',sell_price:2500});
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','🏝️ Holiday Packages','text',false);
+    assert.match(turn.turn.text,/Which kind of trip are you planning\?\n\n🌍 \*International\* — 1 package\n🏠 \*Domestic\* — 1 package/);
+    assert.deepEqual((await turn.turn.deliver()).map(o=>o.value),['TPKGREG:international','TPKGREG:domestic','TPKGREG:all']);
+    portal.tpk.splice(1);
     // Umrah has nothing listed → not offered; typed anyway → no fake list
     turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:umrah','text',false);
     assert.match(turn.turn.text,/no umrah groups listed right now/i);

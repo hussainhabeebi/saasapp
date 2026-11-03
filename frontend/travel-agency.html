@@ -326,7 +326,9 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package Name *</label><input class="form-input" id="pkgName" placeholder="e.g. Dubai 5 Nights City Tour"></div>
         <div class="form-group"><label class="form-label">Type</label><select class="form-input" id="pkgType"><option value="tour">Tour</option><option value="umrah">Umrah</option><option value="hajj">Hajj</option><option value="hotel">Hotel Only</option><option value="visa">Visa Package</option><option value="custom">Custom</option></select></div>
+        <div class="form-group"><label class="form-label">Region</label><select class="form-input" id="pkgRegion"><option value="">— Not set —</option><option value="international">🌍 International</option><option value="domestic">🏠 Domestic</option></select></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="pkgDest" placeholder="Dubai, UAE"></div>
+        <div class="form-group" style="grid-column:1/-1;margin-top:-6px"><div style="font-size:11.5px;color:var(--muted)">On WhatsApp, a customer who opens Holiday Packages is asked <b>International or Domestic?</b> first, then sees only those packages. They can also just type "international packages" or "domestic tour".</div></div>
         <div class="form-group"><label class="form-label">Nights</label><input class="form-input" type="number" id="pkgNights" placeholder="5" min="0"></div>
         <div class="form-group"><label class="form-label">Min Pax</label><input class="form-input" type="number" id="pkgPaxMin" value="1" min="1"></div>
         <div class="form-group"><label class="form-label">Max Pax</label><input class="form-input" type="number" id="pkgPaxMax" value="99"></div>
@@ -1125,6 +1127,8 @@ const TA_ADDED_COLUMNS={
     {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},{title:'infant_price',uidt:'Decimal'},
     {title:'image_url',uidt:'LongText'},{title:'image_url_2',uidt:'LongText'},{title:'image_url_3',uidt:'LongText'},
     {title:'pdf_url',uidt:'LongText'},
+    // 'international' | 'domestic' | '' — the WhatsApp bot asks which kind first and lists only those.
+    {title:'region',uidt:'SingleLineText'},
   ],
   visas:[
     {title:'services_included',uidt:'LongText'},{title:'not_included',uidt:'LongText'},{title:'notes',uidt:'LongText'},
@@ -1170,12 +1174,12 @@ const TA_IMPORT_SCHEMAS={
   packages:{
     label:'Packages', taKey:'packages', matchKey:'name', col1:'Name', col2:'Price',
     fields:[
-      {key:'name',label:'Name',required:true},{key:'type',label:'Type'},{key:'destination',label:'Destination'},
+      {key:'name',label:'Name',required:true},{key:'type',label:'Type'},{key:'region',label:'Region',aliases:['international/domestic','scope','category']},{key:'destination',label:'Destination'},
       {key:'nights',label:'Nights',type:'int'},{key:'pax_min',label:'Min Pax',type:'int'},{key:'pax_max',label:'Max Pax',type:'int'},
       {key:'currency',label:'Currency'},{key:'base_price',label:'Base Price',type:'float'},{key:'sell_price',label:'Sell Price',type:'float'},
       {key:'inclusions',label:'Inclusions',type:'list'},{key:'exclusions',label:'Exclusions',type:'list'},{key:'notes',label:'Notes'},
     ],
-    sample:['Dubai 5N City Tour','tour','Dubai, UAE','5','1','20','AED','800','1200','Visa;Return flights;4-star hotel','Travel insurance','Popular package'],
+    sample:['Dubai 5N City Tour','tour','international','Dubai, UAE','5','1','20','AED','800','1200','Visa;Return flights;4-star hotel','Travel insurance','Popular package'],
     list:()=>_taPackages, renderRow:r=>({c1:r.name||'—',c2:(r.currency||'AED')+' '+(r.sell_price||r.base_price||0)}),
     afterImport:()=>renderAgencySubPage('packages'),
   },
@@ -1742,6 +1746,13 @@ function taOpenLeadCategory(cat){
 // Purely a visual grouping (accent bar + badge color per package type) — no effect on data.
 const PKG_TYPE_COLORS={tour:'#0D9C93',umrah:'#7C3AED',hajj:'#B45309',hotel:'#0369A1',visa:'#EA580C',custom:'#64748B'};
 function pkgTypeColor(type){ return PKG_TYPE_COLORS[type]||PKG_TYPE_COLORS.tour; }
+const PKG_REGIONS={international:{label:'International',emoji:'🌍'},domestic:{label:'Domestic',emoji:'🏠'}};
+// Same rule as the bot (travel-itinerary.js taPackageRegion): the Region field, else the words
+// "international" / "domestic" in the package name or type.
+function pkgRegion(p){
+  const hay=`${p?.region||''} | ${p?.name||''} ${p?.type||''}`.toLowerCase();
+  return /\binternational\b/.test(hay)?'international':/\bdomestic\b/.test(hay)?'domestic':'';
+}
 
 function renderTaPackages() {
   return `
@@ -1755,6 +1766,8 @@ function renderTaPackages() {
   </div>
   <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">
     ${['','tour','umrah','hajj','hotel','visa','custom'].map((t,i)=>`<button class="pkg-filter-pill${i===0?' active':''}" onclick="filterPkgs('${t}')" id="pkgF_${t||'all'}">${t?cap(t):'All'}</button>`).join('')}
+    <span style="width:1px;background:var(--line);margin:0 4px"></span>
+    ${Object.entries(PKG_REGIONS).map(([k,r])=>`<button class="pkg-filter-pill" onclick="filterPkgs('region:${k}')" id="pkgF_region_${k}">${r.emoji} ${r.label} (${_taPackages.filter(p=>pkgRegion(p)===k).length})</button>`).join('')}
   </div>
   <div id="pkgGrid" style="display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(250px,300px))">
     ${_taPackages.length ? _taPackages.map((p,i) => renderPkgCard(p,i)).join('') : '<div style="grid-column:1/-1;text-align:center;padding:60px 24px;color:var(--muted);font-size:13px"><div style="font-size:38px;margin-bottom:12px">📦</div>No packages yet.<br>Create your first package to get started.</div>'}
@@ -1769,7 +1782,7 @@ function renderPkgCard(p) {
   return `
   <div class="pkg-card" style="--pkg-accent:${color};--pkg-accent-soft:${color}1a" onclick="openPkgModal('${p.Id}')">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
-      <span class="pkg-type-badge">${esc(p.type||'tour')}</span>
+      <span style="display:flex;gap:4px;flex-wrap:wrap"><span class="pkg-type-badge">${esc(p.type||'tour')}</span>${pkgRegion(p)?`<span class="pkg-type-badge" style="background:#EEF3F5;color:#334155;text-transform:none">${PKG_REGIONS[pkgRegion(p)].emoji} ${PKG_REGIONS[pkgRegion(p)].label}</span>`:''}</span>
       <div style="display:flex;gap:2px">
         <button onclick="event.stopPropagation();pkgCreateItin('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Create Itinerary">🗺️</button>
         <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
@@ -1788,10 +1801,11 @@ function renderPkgCard(p) {
 
 function filterPkgs(type) {
   document.querySelectorAll('[id^="pkgF_"]').forEach(b=>b.classList.remove('active'));
-  const active=$id('pkgF_'+(type||'all'));
+  const active=$id('pkgF_'+(type||'all').replace(':','_'));
   if(active) active.classList.add('active');
   const grid=$id('pkgGrid');if(!grid)return;
-  const filtered=type?_taPackages.filter(p=>p.type===type):_taPackages;
+  const region=String(type||'').startsWith('region:')?type.slice(7):'';
+  const filtered=region?_taPackages.filter(p=>pkgRegion(p)===region):type?_taPackages.filter(p=>p.type===type):_taPackages;
   grid.innerHTML=filtered.length?filtered.map(p=>renderPkgCard(p)).join(''):'<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);font-size:13px">No packages in this category</div>';
 }
 
@@ -1813,6 +1827,7 @@ function openPkgModal(id){
   $id('pkgModalTitle').textContent=id?'Edit Package':'New Package';
   $id('pkgName').value=p.name||''; $id('pkgType').value=p.type||'tour';
   $id('pkgDest').value=p.destination||''; $id('pkgNights').value=p.nights||'';
+  $id('pkgRegion').value=id?pkgRegion(p):'';
   $id('pkgPaxMin').value=p.pax_min||1; $id('pkgPaxMax').value=p.pax_max||99;
   $id('pkgCurrency').value=p.currency||'AED'; $id('pkgBasePrice').value=p.base_price||'';
   $id('pkgSellPrice').value=p.sell_price||'';
@@ -1829,7 +1844,7 @@ async function savePkg(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const inc=$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const exc=$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
+  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,region:$id('pkgRegion').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
   if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
   for(const [f,elId,label] of PKG_MEDIA_INPUTS){
     p[f]=$id(elId).value.trim();

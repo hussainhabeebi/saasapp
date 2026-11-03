@@ -145,6 +145,71 @@ export function taPackagesForLocation(packages,text){
     .map(norm).some(part=>part.length>=3&&!GENERIC.has(part)&&hay.includes(` ${part} `)));
 }
 
+// International / Domestic (dashboard → Packages → Region). The Region field wins; older packages
+// without one count by the word "international" / "domestic" in their name or type — agencies
+// that had no Region field often named packages "INTERNATIONAL TOUR" / "DOMESTIC TOUR".
+export const TA_PKG_REGIONS={international:{label:'International',emoji:'🌍'},domestic:{label:'Domestic',emoji:'🏠'}};
+export const TA_PKG_REGION_PREFIX='TPKGREG:';
+export function taPackageRegion(p){
+  for(const v of [p?.region,`${p?.name||''} ${p?.type||''}`]){
+    const t=norm(v);
+    if(/\binternational\b/.test(t))return 'international';
+    if(/\bdomestic\b/.test(t))return 'domestic';
+  }
+  return '';
+}
+export function taPackageRegionCounts(packages){
+  const out={international:0,domestic:0};
+  for(const p of packages||[]){const r=taPackageRegion(p);if(r)out[r]++;}
+  return out;
+}
+// A message asking for one kind of package: "international tour", "any domestic packages?",
+// "abroad trip", or just "international". Flight / visa questions are left to their own paths.
+const REGION_ASK={
+  international:/\b(?:international|abroad|overseas|foreign|outside india|outside the country)\b/,
+  domestic:/\b(?:domestic|within india|inside india|within the country)\b/,
+};
+export function taRegionInText(text){
+  const t=norm(text);
+  if(!t||FLIGHTISH.test(t))return null;
+  const short=t.split(' ').length<=3;
+  for(const [k,re] of Object.entries(REGION_ASK))if(re.test(t)&&(short||PACKAGEISH.test(t)))return k;
+  return null;
+}
+// Every package a message names equally well — several packages sharing a name ("INTERNATIONAL
+// TOUR") are all returned so they can be listed, where taFindPackageInText gives up on the tie.
+export function taPackagesNamedInText(packages,text){
+  const have=new Set(words(text));
+  if(!have.size)return [];
+  let best=[],bestScore=0;
+  for(const p of packages||[]){
+    const all=words(p?.name);
+    if(!all.length)continue;
+    const key=all.filter(w=>!GENERIC.has(w)),need=key.length?key:all;
+    if(!need.every(w=>have.has(w)))continue;
+    if(need.length>bestScore){best=[p];bestScore=need.length;}
+    else if(need.length===bestScore)best.push(p);
+  }
+  return best;
+}
+// WhatsApp list rows for packages. Row titles must tell packages apart, so a name several
+// packages share is replaced by the destination (and nights) — "Bali · 5N" rather than three
+// identical "INTERNATIONAL TOUR" rows.
+export function taPackageListRows(packages,prefix=TA_PKG_PREFIX){
+  const nameCount=new Map();
+  for(const p of packages||[]){const k=norm(p?.name);nameCount.set(k,(nameCount.get(k)||0)+1);}
+  const seen=new Map();
+  return (packages||[]).map(p=>{
+    const name=String(p?.name||'').trim(),dest=String(p?.destination||'').split(/[,/&;|]/)[0].trim(),n=Number(p?.nights)||0;
+    let title=nameCount.get(norm(name))>1&&dest?`${dest}${n?` · ${n}N`:''}`:name;
+    const k=norm(title),dup=(seen.get(k)||0)+1;seen.set(k,dup);
+    if(dup>1)title=`${title} (${dup})`;
+    const region=taPackageRegion(p),price=taMoney(taPackagePrice(p),p?.currency);
+    const description=[region?TA_PKG_REGIONS[region].label:'',title===name?dest:name,n?`${n}N/${n+1}D`:'',price&&`from ${price}`].filter(Boolean).join(' · ');
+    return {id:String(p?.Id??p?.id??''),title,description,value:`${prefix}${p?.Id??p?.id??''}`};
+  });
+}
+
 // Photos and the agency's own PDF brochure set on a package (dashboard → Packages → Photos & PDF
 // for WhatsApp), in send order. `full` false keeps only the cover photo — used when several
 // packages for one destination go out together, so the chat isn't flooded.

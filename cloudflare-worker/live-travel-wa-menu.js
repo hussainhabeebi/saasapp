@@ -22,6 +22,8 @@
    WhatsApp sends live in worker.js.
    ═══════════════════════════════════════════════════════════════════════════ */
 
+import {taPackageRegion,taPackageListRows,TA_PKG_REGIONS} from './travel-itinerary.js';
+
 export const LT_MENU_ACTIONS=['flight_search','portal','ask','link','handover','my_bookings'];
 // Travel Portal sections a menu row can list (Travel Agency module tables; attestation is D1).
 export const LT_PORTAL_SOURCES={
@@ -337,8 +339,9 @@ export function ltPortalRows(source,records,{today=new Date().toISOString().slic
     if(source==='packages'&&r.name){
       const price=money(Number(r.sell_price)>0?r.sell_price:r.base_price,r.currency);
       const inc=list(r.inclusions).slice(0,8),exc=list(r.exclusions).slice(0,5);
-      row={title:r.name,description:join(r.destination,r.nights?`${r.nights}N`:'',price&&`from ${price}`),
-        detail:[`🏝️ *${r.name}*`,join(r.type,r.destination),r.nights?`🌙 ${r.nights} nights`:'',(r.pax_min||r.pax_max)?`👥 ${r.pax_min||1}–${r.pax_max||r.pax_min} travellers`:'',price?`💰 *${price}* per person`:'',
+      const region=taPackageRegion(r);
+      row={title:r.name,region,description:join(region&&TA_PKG_REGIONS[region].label,r.destination,r.nights?`${r.nights}N`:'',price&&`from ${price}`),
+        detail:[`🏝️ *${r.name}*`,join(region&&`${TA_PKG_REGIONS[region].emoji} ${TA_PKG_REGIONS[region].label}`,r.type,r.destination),r.nights?`🌙 ${r.nights} nights`:'',(r.pax_min||r.pax_max)?`👥 ${r.pax_min||1}–${r.pax_max||r.pax_min} travellers`:'',price?`💰 *${price}* per person`:'',
           inc.length?`\n✅ *Includes*\n${inc.map(x=>'• '+x).join('\n')}`:'',exc.length?`\n❌ *Excludes*\n${exc.map(x=>'• '+x).join('\n')}`:'',r.notes?`\n${String(r.notes).slice(0,300)}`:''].filter(Boolean).join('\n')};
     }
     if(source==='umrah'&&r.name){
@@ -390,7 +393,12 @@ export function ltPortalRows(source,records,{today=new Date().toISOString().slic
           join(r.cabin_class,r.fare_type),r.baggage_allowance?`🧳 ${r.baggage_allowance}`:'',r.available_seats?`💺 ${r.available_seats} seats left`:'',
           price?`💰 *${price}* per person`:'',r.booking_deadline?`⏳ Book by ${shortDate(r.booking_deadline)}`:'',r.remarks?`\n${String(r.remarks).slice(0,300)}`:''].filter(Boolean).join('\n')};
     }
-    if(row)rows.push({id,title:clip(row.title,60),description:clip(row.description,72),detail:row.detail});
+    if(row)rows.push({id,title:clip(row.title,60),description:clip(row.description,72),detail:row.detail,...(row.region!==undefined?{region:row.region}:{})});
+  }
+  // Packages sharing a name ("INTERNATIONAL TOUR") get told apart by destination and nights.
+  if(source==='packages'){
+    const titles=new Map(taPackageListRows((records||[]).filter(r=>rows.some(x=>x.id===String(r?.Id??r?.id??'')))).map(x=>[x.id,x.title]));
+    for(const row of rows)if(titles.has(row.id))row.title=clip(titles.get(row.id),60);
   }
   return rows;
 }
