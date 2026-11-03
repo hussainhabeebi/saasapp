@@ -14,7 +14,7 @@ import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
-import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName} from './travel-itinerary.js';
+import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows} from './travel-itinerary.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -19505,7 +19505,9 @@ async function engineBuildTravelContext(env, c, clientId){
   const today=new Date().toISOString().slice(0,10);
   const packagesTable=taResolveTable(c, 'packages');
   if(packagesTable){
-    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,base_price,inclusions,exclusions`);
+    // No fields= list: the Region column only exists once an agency has saved one, and naming a
+    // missing column fails the whole read.
+    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25`);
     const pd=await pr.json().catch(()=>({}));
     const pkgs=pd?.list||[];
     const itins=pkgs.length?await taReadRecords(env,c,clientId,'itineraries'):[];
@@ -19517,7 +19519,8 @@ async function engineBuildTravelContext(env, c, clientId){
         // Same price the dashboard's package card shows: sell_price, else base_price when no sell
         // price was entered (the form saves a blank Sell Price as 0, which read as "no price").
         const price=Number(p.sell_price)>0?Number(p.sell_price):Number(p.base_price)>0?Number(p.base_price):0;
-        let line=`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${price?`${p.currency||''} ${price} per person`:'price on request'}`;
+        const region=taPackageRegion(p);
+        let line=`- ${p.name} (${[region&&TA_PKG_REGIONS[region].label,p.type||'package'].filter(Boolean).join(', ')}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${price?`${p.currency||''} ${price} per person`:'price on request'}`;
         if(incText) line+=' — includes: '+incText.slice(0,150);
         if(excText) line+=' — excludes: '+excText.slice(0,100);
         const itin=taMatchItinerary(p, itins);
@@ -20846,6 +20849,36 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
   if(!tap&&lastBotText.includes('• your travel date'))return null;
   const packages=(await taReadRecords(env,c,clientId,'packages')).filter(p=>p?.name&&taPkgId(p));
   if(!packages.length)return null;
+  // International / Domestic: a tap on the Holiday Packages question, a typed "international
+  // tour" / "any domestic packages?", or a name several packages share ("INTERNATIONAL TOUR").
+  const regionTap=new RegExp(`^${TA_PKG_REGION_PREFIX}(international|domestic|all)$`,'i').exec(text);
+  if(regionTap||(!tap&&!follow)){
+    const region=regionTap?regionTap[1].toLowerCase():taRegionInText(text);
+    let pool=null;
+    if(region)pool=region==='all'?packages:packages.filter(p=>taPackageRegion(p)===region);
+    else{const named=taPackagesNamedInText(packages,text);if(named.length>1)pool=named;}
+    if(pool){
+      const human=c.handover_enabled!=='No'?[{title:'👤 Talk to Agent',value:'INTRO_HUMAN'}]:[];
+      const base={route:'travel_package',next:state.stage||'new',preserveCrmStage:true,lang:c.language||'en',serviceCategory:'Package',historyUserText:regionTap?(region==='all'?'All packages':TA_PKG_REGIONS[region].label):text};
+      const label=region&&region!=='all'?TA_PKG_REGIONS[region]:null;
+      if(!pool.length){
+        const other=region==='international'?'domestic':'international',has=packages.some(p=>taPackageRegion(p)===other);
+        const reply=`${label.emoji} We don't have any *${label.label.toLowerCase()}* packages listed right now.\n\nTell us where you'd like to go and our team will plan a trip for you. 😊`;
+        return {turn:{...base,text:reply,buttons:[...(has?[{title:`${TA_PKG_REGIONS[other].emoji} ${TA_PKG_REGIONS[other].label}`,value:`${TA_PKG_REGION_PREFIX}${other}`}]:[]),...human]}};
+      }
+      if(pool.length>1){
+        const shown=pool.slice(0,10),rows=taPackageListRows(shown);
+        const lines=shown.map((p,i)=>{const pr=taMoney(taPackagePrice(p),p.currency),n=Number(p.nights)||0;return `${i+1}. *${rows[i].title}*${n?` — ${n}N/${n+1}D`:''}${pr?` — from ${pr}`:''}`;});
+        const head=label?`${label.emoji} *${label.label} packages*`:'🏝️ *Our packages*';
+        const reply=`${head} — we have ${pool.length}:\n\n${lines.join('\n')}${pool.length>10?`\n\n_Showing 10 of ${pool.length} — type a destination to see others._`:''}\n\nTap *View packages* and pick one for the full itinerary, price and inclusions.`;
+        return {turn:{...base,text:reply,deliver:()=>ltSendPicker(env,c,clientId,state.convId,phone,state.inboxId,reply,rows.map(r=>({title:r.title,value:r.value,description:r.description})),{button:'View packages',section:label?label.label:'Packages'})}};
+      }
+    }
+    if(pool?.length===1&&!tap){
+      const only=pool[0];
+      return engineHandleTravelPackage(env,c,clientId,state,TA_PKG_PREFIX+taPkgId(only),mediaType,phone);
+    }
+  }
   let pkg=null,mode=null;
   if(tap){
     pkg=packages.find(p=>taPkgId(p)===tap[2].trim());
@@ -21024,6 +21057,17 @@ export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,
   }
   const historyUserText=ltMenuRowTitle(item),serviceCategory=item.category||'';
   if(item.action==='portal'){
+    // Holiday Packages with both kinds listed: ask International or Domestic first, so the list
+    // that follows is short and every row is the kind the customer wants.
+    if(item.source==='packages'){
+      const all=await ltPortalListings(env,c,clientId,'packages',cache);
+      const n={international:all.filter(r=>r.region==='international').length,domestic:all.filter(r=>r.region==='domestic').length};
+      if(n.international&&n.domestic){
+        const reply=`${item.emoji||'🏝️'} *${item.title}*\n\nWhich kind of trip are you planning?\n\n🌍 *International* — ${n.international} package${n.international===1?'':'s'}\n🏠 *Domestic* — ${n.domestic} package${n.domestic===1?'':'s'}`;
+        const buttons=[{title:`🌍 International`,value:`${TA_PKG_REGION_PREFIX}international`},{title:`🏠 Domestic`,value:`${TA_PKG_REGION_PREFIX}domestic`},{title:'📋 All packages',value:`${TA_PKG_REGION_PREFIX}all`}];
+        return {turn:{...base,text:reply,serviceCategory:item.category||'Package',historyUserText:ltMenuRowTitle(item),deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,reply,buttons)}};
+      }
+    }
     const meta=LT_PORTAL_SOURCES[item.source],rows=(await ltPortalListings(env,c,clientId,item.source,cache)).slice(0,10);
     if(!rows.length)return {turn:{...base,serviceCategory,historyUserText,text:`We have no ${item.title.toLowerCase()} listed right now. Tell us what you are looking for and our team will help.`,buttons:help}};
     const reply=`${item.emoji||meta.emoji} *${item.title}*\n\n${rows.length===1?`We have 1 ${meta.noun} available.`:`We have ${rows.length} ${meta.noun}s available.`} Tap *View list* and choose one to see the details.`;
@@ -28003,7 +28047,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
-      else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+      else if(routing.route==='travel_faq' || (routing.route==='faq' && ltLiveAgencyEnabled(c))) contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
