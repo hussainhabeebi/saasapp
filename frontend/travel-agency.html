@@ -328,6 +328,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Type</label><select class="form-input" id="pkgType"><option value="tour">Tour</option><option value="umrah">Umrah</option><option value="hajj">Hajj</option><option value="hotel">Hotel Only</option><option value="visa">Visa Package</option><option value="custom">Custom</option></select></div>
         <div class="form-group"><label class="form-label">Region</label><select class="form-input" id="pkgRegion"><option value="">— Not set —</option><option value="international">🌍 International</option><option value="domestic">🏠 Domestic</option></select></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="pkgDest" placeholder="Dubai, UAE"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">🔑 WhatsApp keywords</label><input class="form-input" id="pkgKeywords" placeholder="e.g. ladies only, women only, girls trip"><div style="font-size:11.5px;color:var(--muted);margin-top:4px">Separate with commas. When a customer's message contains all the words of one keyword, the bot sends <b>this</b> package — e.g. "Ladies only Georgia trip details pls" gets your ladies-only Georgia trip, not the regular one. Words like "trip" or "package" alone are ignored.</div></div>
         <div class="form-group" style="grid-column:1/-1;margin-top:-6px"><div style="font-size:11.5px;color:var(--muted)">On WhatsApp, a customer who opens Holiday Packages is asked <b>International or Domestic?</b> first, then sees only those packages. They can also just type "international packages" or "domestic tour".</div></div>
         <div class="form-group"><label class="form-label">Nights</label><input class="form-input" type="number" id="pkgNights" placeholder="5" min="0"></div>
         <div class="form-group"><label class="form-label">Min Pax</label><input class="form-input" type="number" id="pkgPaxMin" value="1" min="1"></div>
@@ -1129,6 +1130,9 @@ const TA_ADDED_COLUMNS={
     {title:'pdf_url',uidt:'LongText'},
     // 'international' | 'domestic' | '' — the WhatsApp bot asks which kind first and lists only those.
     {title:'region',uidt:'SingleLineText'},
+    // Comma-separated phrases ("ladies only, women only") — a WhatsApp message containing one gets
+    // this exact package (worker: travel-itinerary.js taPackagesByKeyword).
+    {title:'keywords',uidt:'LongText'},
   ],
   visas:[
     {title:'services_included',uidt:'LongText'},{title:'not_included',uidt:'LongText'},{title:'notes',uidt:'LongText'},
@@ -1174,12 +1178,12 @@ const TA_IMPORT_SCHEMAS={
   packages:{
     label:'Packages', taKey:'packages', matchKey:'name', col1:'Name', col2:'Price',
     fields:[
-      {key:'name',label:'Name',required:true},{key:'type',label:'Type'},{key:'region',label:'Region',aliases:['international/domestic','scope','category']},{key:'destination',label:'Destination'},
+      {key:'name',label:'Name',required:true},{key:'type',label:'Type'},{key:'region',label:'Region',aliases:['international/domestic','scope','category']},{key:'keywords',label:'Keywords',aliases:['keyword','tags','search words']},{key:'destination',label:'Destination'},
       {key:'nights',label:'Nights',type:'int'},{key:'pax_min',label:'Min Pax',type:'int'},{key:'pax_max',label:'Max Pax',type:'int'},
       {key:'currency',label:'Currency'},{key:'base_price',label:'Base Price',type:'float'},{key:'sell_price',label:'Sell Price',type:'float'},
       {key:'inclusions',label:'Inclusions',type:'list'},{key:'exclusions',label:'Exclusions',type:'list'},{key:'notes',label:'Notes'},
     ],
-    sample:['Dubai 5N City Tour','tour','international','Dubai, UAE','5','1','20','AED','800','1200','Visa;Return flights;4-star hotel','Travel insurance','Popular package'],
+    sample:['Dubai 5N City Tour','tour','international','dubai city tour, family dubai','Dubai, UAE','5','1','20','AED','800','1200','Visa;Return flights;4-star hotel','Travel insurance','Popular package'],
     list:()=>_taPackages, renderRow:r=>({c1:r.name||'—',c2:(r.currency||'AED')+' '+(r.sell_price||r.base_price||0)}),
     afterImport:()=>renderAgencySubPage('packages'),
   },
@@ -1790,6 +1794,7 @@ function renderPkgCard(p) {
     </div>
     <div class="pkg-name">${esc(p.name||'—')}</div>
     <div class="pkg-meta">${esc(p.destination||'—')} · ${p.nights||0} nights · ${p.pax_min||1}–${p.pax_max||99} pax${p.image_url||p.image_url_2||p.image_url_3?' · 📷':''}${p.pdf_url?' · 📄':''}</div>
+    ${String(p.keywords||'').trim()?`<div style="font-size:11px;color:var(--muted);margin:-4px 0 8px" title="WhatsApp keywords">🔑 ${esc(String(p.keywords).slice(0,60))}${String(p.keywords).length>60?'…':''}</div>`:''}
     ${inc.length ? `<div style="margin-bottom:12px">${inc.map(x=>`<div style="font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-bottom:3px">✓ ${esc(x)}</div>`).join('')}${incArr.length>3?`<div style="font-size:11px;color:var(--accent-ink)">+${incArr.length-3} more</div>`:''}</div>` : ''}
     <div style="display:flex;align-items:baseline;gap:4px;margin-top:auto">
       <span class="pkg-price">${esc(p.currency||'AED')} ${(parseFloat(p.sell_price||p.base_price)||0).toLocaleString()}</span>
@@ -1828,6 +1833,7 @@ function openPkgModal(id){
   $id('pkgName').value=p.name||''; $id('pkgType').value=p.type||'tour';
   $id('pkgDest').value=p.destination||''; $id('pkgNights').value=p.nights||'';
   $id('pkgRegion').value=id?pkgRegion(p):'';
+  $id('pkgKeywords').value=p.keywords||'';
   $id('pkgPaxMin').value=p.pax_min||1; $id('pkgPaxMax').value=p.pax_max||99;
   $id('pkgCurrency').value=p.currency||'AED'; $id('pkgBasePrice').value=p.base_price||'';
   $id('pkgSellPrice').value=p.sell_price||'';
@@ -1844,7 +1850,7 @@ async function savePkg(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const inc=$id('pkgInclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const exc=$id('pkgExclusions').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,region:$id('pkgRegion').value,destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
+  const p={name:$id('pkgName').value.trim(),type:$id('pkgType').value,region:$id('pkgRegion').value,keywords:$id('pkgKeywords').value.split(',').map(k=>k.trim()).filter(Boolean).join(', '),destination:$id('pkgDest').value.trim(),nights:parseInt($id('pkgNights').value)||0,pax_min:parseInt($id('pkgPaxMin').value)||1,pax_max:parseInt($id('pkgPaxMax').value)||99,currency:$id('pkgCurrency').value,base_price:parseFloat($id('pkgBasePrice').value)||0,sell_price:parseFloat($id('pkgSellPrice').value)||0,child_price:parseFloat($id('pkgChildPrice').value)||0,child_nobed_price:parseFloat($id('pkgChildNoBedPrice').value)||0,infant_price:parseFloat($id('pkgInfantPrice').value)||0,inclusions:JSON.stringify(inc),exclusions:JSON.stringify(exc),notes:$id('pkgNotes').value.trim()};
   if(!p.name){msg.textContent='Name required';msg.className='save-msg err';btn.disabled=false;return;}
   for(const [f,elId,label] of PKG_MEDIA_INPUTS){
     p[f]=$id(elId).value.trim();
