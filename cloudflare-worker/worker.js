@@ -24626,6 +24626,25 @@ async function engineJournalStageChange(env, clientId, leadId, fromStage, toStag
 // message must still land like any other — a lead is created (or updated) and the message is written
 // to lead_messages, which is what puts the chat in the Chats inbox (chatsV2AfterInsert). The message
 // is written before the lead PATCH so that PATCH fills the new inbox row's name/phone.
+// After a handover with "keep the bot silent" on (handover_silence_enabled, or healthcare's 5-hour
+// pause) the bot doesn't reply — but the customer's message must still land like any other:
+// saved to the Chats thread, LastMsgAt bumped, a resolved chat reopened. Before, the turn was just
+// dropped, so a handed-over lead's new messages never showed in Chats / "Needs human" — exactly
+// the chats the team most needs to see. Returns the webhook response, or null when not silent.
+export async function engineHandoverSilenceTurn(env, c, clientId, body, state, parsed, text, startMs=Date.now(), ctx=null){
+  const healthcare=engineHealthcareHandoverSilenceActive(c,state,startMs);
+  const configured=c.industry!=='healthcare' && state.lead &&
+    (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
+    c.handover_silence_enabled==='Yes';
+  if(!healthcare && !configured) return null;
+  await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
+  // A Baby Care customer changing their order still updates it.
+  if(configured) await engineSilentBabyCareOrderUpdate(env, c, clientId, parsed.phone, text, state.lead, ctx);
+  const reason=healthcare?'healthcare-handover-5h':'handed-over';
+  await logEngineSkip(env,clientId,parsed.phone,parsed.convId,reason,`stage ${state.stage||''} — message saved to Chats, no bot reply`);
+  return json({ok:true,skipped:reason,lead_collected:true});
+}
+
 async function engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text){
   const {phone, name, convId, mediaType, mediaUrl}=parsed;
   const msgId=String(body.id||body.message?.id||'');
@@ -24639,8 +24658,10 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
     await d1InsertLeadMessage(env, state.leadId, clientId, {role:'user', content:text||'', ts:now,
       ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
   }
+  // A new customer message reopens a resolved chat, same as a normal bot turn
+  // (engineBuildLeadUpsertBody) — otherwise the Chats sync would resolve it again from the lead.
   const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
-    LastMsgAt:now,Channel:parsed.channel||'whatsapp',
+    LastMsgAt:now,Channel:parsed.channel||'whatsapp',ConvResolved:'No',
     ...(parsed.igId?{IgId:parsed.igId}:{}),
     ...(isFirstMsg?{Date:now}:{}),
     ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
@@ -25703,16 +25724,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Healthcare always pauses the bot for five hours after human handover. Repeat button taps
     // and new patient messages stay silent in that window so the AI never talks over clinic staff.
     // Other industries retain the existing per-client indefinite-silence setting.
-    const healthcareHandoverSilence=engineHealthcareHandoverSilenceActive(c,state,startMs);
-    const configuredHandoverSilence=c.industry!=='healthcare' && state.lead &&
-      (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
-      c.handover_silence_enabled==='Yes';
-    if(healthcareHandoverSilence||configuredHandoverSilence){
-      // Bot stays silent, but a Baby Care customer changing their order still updates it.
-      if(configuredHandoverSilence) await engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, state.lead, ctx);
-      await logEngineSkip(env,clientId,phone,convId,healthcareHandoverSilence?'healthcare-handover-5h':'handed-over',`stage ${state.stage||''}`);
-      return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
-    }
+    const handoverSilent=await engineHandoverSilenceTurn(env, c, clientId, body, state, parsed, text, startMs, ctx);
+    if(handoverSilent) return handoverSilent;
     if(state.personalContact){ await logEngineSkip(env, clientId, phone, convId, 'personal-contact'); return json({ok:true, skipped:'personal-contact'}); }
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
 
