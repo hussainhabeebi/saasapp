@@ -177,10 +177,12 @@ describe('Leads list: who sees assigned channels', ()=>{
 
 describe('Chats v2: owner and admins see every channel', ()=>{
   beforeEach(fresh);
-  test('hidden channels only apply to staff', ()=>{
+  test('the owner never has hidden channels; an admin only the 🔒 Strict ones', async()=>{
     const c={...CLIENT, team_permissions:JSON.stringify({[SAM]:{role:'admin'}})};
     assert.deepEqual(chatsV2Access(c, OWNER, ['11']).hidden, []);
-    assert.deepEqual(chatsV2Access(c, SAM, ['11']).hidden, []);
     assert.deepEqual(chatsV2Access(c, RITA, ['22']).hidden, ['22']);
+    // No channel is strict here, so an admin gets nothing to hide.
+    assert.deepEqual(await chatsV2HiddenInboxes(env, CID, SAM, {fullAccess:true}), []);
+    assert.deepEqual(chatsV2Access(c, SAM, await chatsV2HiddenInboxes(env, CID, SAM, {fullAccess:true})).hidden, []);
   });
 });
