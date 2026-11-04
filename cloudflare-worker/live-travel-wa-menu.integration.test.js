@@ -329,13 +329,13 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
   globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
   try{
     let r=await call(env,session,'/live-travel/travel-settings');
-    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true});
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_contextual_answers:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
     assert.equal(r.status,200,JSON.stringify(r.data));
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_contextual_answers:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'highlighted'});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true},'only the style changes');
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_contextual_answers:true},'only the style changes');
     assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);
@@ -482,5 +482,35 @@ test('Online booking off: payment QR codes go out as images after the booking re
     assert.equal(chatwoot[2].file||null,null);
     assert.match(chatwoot[2].content,/\*Payment QR 2\*[\s\S]*https:\/\/pay\.example\.com\/bank-qr\.png/);
     assert.equal(fetched.length,2);
+  }finally{globalThis.fetch=realFetch;}
+});
+
+test('Contextual answers: a flight question after a package is answered from that package, then asks only the departure city',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key',NOCODB_BASE:'https://nc.test',NOCODB_TOKEN:'nc'},session=await token(env.SESSION_SIGNING_KEY);
+  const realFetch=globalThis.fetch,searches=[];
+  const kashmir={Id:11,client_id:7,name:'KASHMIR TRIP',destination:'Kashmir, India',nights:5,inclusions:JSON.stringify(['Hotel stay','Breakfast & dinner','Airport transfers','Shikara ride']),exclusions:JSON.stringify(['Air tickets','Personal expenses'])};
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u.includes('/api/v2/tables/tpk/records'))return new Response(JSON.stringify({list:[kashmir]}));
+    if(u==='https://api.flypoomas.com/api/search'){searches.push(JSON.parse(opts.body));return new Response(JSON.stringify({fares:[]}));}
+    return new Response('{}',{status:404});
+  };
+  try{
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    const c={Id:7,industry:'travel',travel_flow_enabled:'Yes',language:'en',ta_table_ids:JSON.stringify({packages:'tpk'})};
+    const phone='+971500000009';
+    const history=[{role:'user',content:'PDF itinerary: KASHMIR TRIP'},{role:'assistant',content:'📄 Itinerary PDF — KASHMIR TRIP\n\nWould you like to book *KASHMIR TRIP*?'}];
+    let step=await engineHandleLiveTicketingChat(env,c,7,'Is it including flight ticket ?',history,phone);
+    assert.match(step.reply,/No — flight tickets are not included in \*KASHMIR TRIP\* \(Air tickets\)/);
+    assert.match(step.reply,/Where will you be flying from\?/);
+    assert.doesNotMatch(step.reply,/flying from and to/);
+    assert.equal(searches.length,0);
+    // "Dubai" is now the departure city; Kashmir (SXR) stays the destination → the date is asked.
+    step=await engineHandleLiveTicketingChat(env,c,7,'Dubai',[...history,{role:'user',content:'Is it including flight ticket ?'},{role:'assistant',content:step.reply}],phone);
+    assert.match(step.reply,/When are you flying \*DXB → SXR\*/);
+    // Switched off in Travel Settings → the normal route question comes back.
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_contextual_answers:false})).status,200);
+    step=await engineHandleLiveTicketingChat(env,c,7,'Is it including flight ticket ?',history,'+971500000010');
+    assert.match(step.reply,/Where are you flying from and to/);
   }finally{globalThis.fetch=realFetch;}
 });

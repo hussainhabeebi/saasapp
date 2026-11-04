@@ -478,18 +478,19 @@ async function saveChatStyle(){
 }
 // Itineraries (travel-agency.html): PDF sharing and automatic photos — same settings endpoint.
 async function renderItinerarySettings(){
-  const title=()=>settingsTabs()+head('Travel Settings','How itineraries are shared with customers');
+  const title=()=>settingsTabs()+head('Travel Settings','How itineraries are shared and how package follow-ups are answered');
   $('main').innerHTML=title()+'<div class="card"><span class="spinner"></span> Loading…</div>';
   try{fareSettings=await api('/live-travel/travel-settings')}catch(e){$('main').innerHTML=title()+`<div class="error">${esc(e.message)}</div>`;return}
   const f=fareSettings;
   $('main').innerHTML=title()+`<div class="card" style="margin-top:0"><h3>🗺️ Itineraries</h3><div class="formgrid">
 <div class="field span2"><label>🗺️ Share itineraries as PDF</label><select id="itPdf"><option value="0" ${!f.itin_share_pdf?'selected':''}>No — send as WhatsApp text</option><option value="1" ${f.itin_share_pdf?'selected':''}>Yes — always send the itinerary PDF</option></select><div class="sub" style="margin-top:4px">Every itinerary send uses your existing itinerary PDF layout.</div></div>
 <div class="field span2"><label>🖼️ Auto-add images to itinerary PDF</label><select id="itImg"><option value="1" ${f.itin_auto_images!==false?'selected':''}>Yes</option><option value="0" ${f.itin_auto_images===false?'selected':''}>No</option></select><div class="sub" style="margin-top:4px">Items without a photo use a matching hotel or package photo. Photos you upload always win.</div></div>
+<div class="field span4"><label>🧠 Contextual answers</label><select id="itCtx"><option value="1" ${f.lt_contextual_answers!==false?'selected':''}>On — answer follow-ups about the package being discussed</option><option value="0" ${f.lt_contextual_answers===false?'selected':''}>Off — treat every question on its own</option></select><div class="sub" style="margin-top:4px">Example: after the <b>Kashmir Trip</b> itinerary, "Is it including flight ticket?" is answered from that package's inclusions, and the bot then asks only <i>where the customer is flying from</i> — Kashmir is already the destination.</div></div>
 <div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="itSave" onclick="saveItinerarySettings()">Save settings</button><span class="sub" id="itMsg"></span></div></div></div>`;
 }
 async function saveItinerarySettings(){
   const btn=$('itSave'),msg=$('itMsg');btn.disabled=true;msg.textContent='';
-  try{fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({itin_share_pdf:$('itPdf').value==='1',itin_auto_images:$('itImg').value==='1'})});msg.textContent='✓ Saved';msg.style.color='var(--green)'}
+  try{fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({itin_share_pdf:$('itPdf').value==='1',itin_auto_images:$('itImg').value==='1',lt_contextual_answers:$('itCtx').value==='1'})});msg.textContent='✓ Saved';msg.style.color='var(--green)'}
   catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
 }
