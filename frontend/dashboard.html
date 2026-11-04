@@ -15016,8 +15016,10 @@ async function chSaveInboxAssignmentInline(inboxId, email, sel){
       await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,clear:true});
       chRowMsg(inboxId,'✓ Saved','ok');
     }
-    await loadChannelsStatus(); // re-render: Strict is only available on an assigned channel
-  }catch(e){ chRowMsg(inboxId,'Not saved: '+e.message,'err'); await loadChannelsStatus(); }
+  }catch(e){ chRowMsg(inboxId,'Not saved: '+e.message,'err'); }
+  // Re-render either way (Strict is only available on an assigned channel); a failed refresh is not
+  // a failed save, so it never turns "✓ Saved" into an error.
+  loadChannelsStatus().catch(()=>{});
 }
 
 // Moves leads already in from an assigned channel to its user (Worker: /channels/inbox-assignment/sync)
