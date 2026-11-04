@@ -20027,7 +20027,7 @@ const ltFareOptionLimit=n=>Math.min(LT_FARE_OPTIONS_MAX,Math.max(1,parseInt(n,10
 // The agency's live-fare chat options, loaded onto c by the webhook (ltTravelSettingsStored).
 export function ltChatFarePrefs(c={}){
   const s=ltTravelSettingsNormalize(c);
-  return {limit:s.lt_fare_options,showFares:s.lt_show_fares,style:s.lt_fare_style,onlineBooking:s.lt_online_booking};
+  return {limit:s.lt_fare_options,showFares:s.lt_show_fares,style:s.lt_fare_style,onlineBooking:s.lt_online_booking,contextual:s.lt_contextual_answers};
 }
 async function ltSaveChatOffers(env,clientId,phone,offers,sort='',limit){
   if(!phone)return;
@@ -20501,7 +20501,11 @@ export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:
   // Chat style (Travel Settings → 🧭 Chat Style): '' = the normal bot, 'flyindo' = the guided,
   // buttons-only booking flow in flyindo-flow.js. Its destinations, the agency name it greets with
   // (blank = the client name) and whether children's ages are asked.
-  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true};
+  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,
+  // Contextual answers (Travel Settings → Itineraries): a follow-up such as "is it including flight
+  // ticket?" right after a package is answered from THAT package's inclusions, and the flight
+  // question that follows asks only where the customer flies from (the package is the destination).
+  lt_contextual_answers:true};
 const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
 const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
 const ltPayQrLabel=v=>String(v||'').replace(/\s+/g,' ').trim().slice(0,40);
@@ -20523,6 +20527,7 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_flyindo_destinations:flyindoNormalizeDestinations(raw?.lt_flyindo_destinations),
     lt_flyindo_agency_name:String(raw?.lt_flyindo_agency_name||'').replace(/\s+/g,' ').trim().slice(0,60),
     lt_flyindo_child_ages:ltYesNo(raw?.lt_flyindo_child_ages,d.lt_flyindo_child_ages),
+    lt_contextual_answers:ltYesNo(raw?.lt_contextual_answers,d.lt_contextual_answers),
   };
 }
 // The saved D1 settings when present, else the CLIENTS fields, else the defaults.
@@ -20541,7 +20546,7 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
   const yn=v=>v?'Yes':'No';
   try{
     await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS).filter(k=>!k.startsWith('lt_flyindo_')));
-    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
+    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),lt_contextual_answers:yn(settings.lt_contextual_answers),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
   }catch(e){}
 }
 // GET/PUT /live-travel/travel-settings — Dashboard → Settings → Modules → Travel Agency options.
@@ -20552,7 +20557,7 @@ async function handleLtTravelSettings(request,env){
   const current=await ltTravelSettingsStored(env,auth.cid,client||{});
   if(request.method==='GET')return json(current);
   const body=await request.json().catch(()=>({}));
-  for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
+  for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking','lt_contextual_answers'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_fare_style' in body&&!LT_FARE_STYLES.includes(body.lt_fare_style))return json({error:`lt_fare_style must be one of: ${LT_FARE_STYLES.join(', ')}`},400);
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
@@ -21197,7 +21202,14 @@ export function ltManualBookingStaffNote(selected,passenger,phone,pax={}){
 function ltMergeChatFlightDraft(draft,input,userText,fxPrefs={}){
   const old=draft||{},next={...old},text=String(userText||'');
   const route=ltParseFlightRoute(text);
-  if(route){next.origin=route.origin;next.destination=route.destination}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
+  if(route){next.origin=route.origin;next.destination=route.destination}
+  else if(old.destination&&!old.origin){
+    // Destination already known (a package's destination): a lone city ("Dubai") is the origin,
+    // even when the extractor read it as the destination.
+    const one=ltAirportCodeFromText(ltLocalTravelText(text)),guess=[one,input.origin,input.destination].find(x=>x&&x!==old.destination)||'';
+    next.origin=guess;next.destination=old.destination;
+  }
+  else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
   const date=ltParseConversationalFlightDate(text);next.departure_date=date||old.departure_date||input.departure_date;
   const adult=text.match(/\b(\d+)\s*adults?\b/i),child=text.match(/\b(\d+)\s*(?:children|child)\b/i),infant=text.match(/\b(\d+)\s*infants?\b/i);
   next.adults=adult?Number(adult[1]):(old.adults??input.adults??1);
@@ -21236,12 +21248,100 @@ async function ltLiveTicketsConnected(env,clientId){
 // Travel-agency prompt rules for every AI-written reply. With the live ticketing API connected the
 // bot must never say tickets aren't offered; either way it asks for the destination (plus date)
 // rather than answering a travel enquiry without knowing where the customer is going.
-export function ltTravelAgencyPromptBlock(liveTicketsConnected,onlineBooking=true){
+export function ltTravelAgencyPromptBlock(liveTicketsConnected,onlineBooking=true,contextual=false){
   let block='\n\n## Travel Agency Rules\nWhen a customer asks about travel, a trip, a visa, a package or tickets and has not said where they are going, ask which destination they are travelling to and their travel date. Ask only for what is still missing.';
+  // Travel Settings → Contextual answers.
+  if(contextual) block+='\nCONTEXTUAL ANSWERS: Read every question in the context of the conversation so far. When the customer has been discussing a package or destination (for example the KASHMIR TRIP itinerary) and then asks a short follow-up ("is it including flight ticket?", "hotel included?", "price?"), the question is about THAT package: answer it first from that package\'s own data (inclusions, exclusions, price, itinerary) and never ask which destination they mean. For a flight question, say whether flights are included in that package, then ask only where they will be flying from — the package destination is already the destination.';
   if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.\nLive fares are sent automatically as soon as the customer gives the departure city, destination and date. You cannot search fares yourself: never ask which airline they prefer, never ask "shall I check?", and never say you will check and get back. Ask only for whichever of departure city, destination or date is still missing. To book a fare already shown, the customer taps its Book Option button (or replies "book option 1") and the secure booking link is sent automatically: tell them exactly that. Never ask "would you like to proceed?", and never offer to connect them to the team to book or pay for a listed fare.';
   // Online booking off: no booking link is ever sent — the team confirms and sends payment details.
   if(liveTicketsConnected&&!onlineBooking) block=block.replace('and the secure booking link is sent automatically: tell them exactly that. Never ask "would you like to proceed?", and never offer to connect them to the team to book or pay for a listed fare.','then sends the lead passenger\'s name and email; our team confirms the booking and sends payment details in this chat. There is no online booking link: never promise or send one.');
   return block;
+}
+
+// ── Contextual answers: a flight question about the package being discussed ──────────────────
+// "Is it including flight ticket?" right after the KASHMIR TRIP itinerary is about THAT package:
+// answer from its inclusions / exclusions, then ask only where the customer flies from.
+const LT_FLIGHT_ITEM=/\b(?:flights?|air\s*tickets?|air\s*fares?|airfares?|airlines?|air\s*travel|plane\s*tickets?|return\s+air|by\s+air)\b/i;
+// Package destinations that are regions rather than airport cities.
+const LT_REGION_AIRPORTS=[['SXR',/\bkashmir\b/i],['IXL',/\b(?:ladakh|leh)\b/i],['COK',/\b(?:kerala|munnar|alleppey|alappuzha)\b/i],['IXB',/\b(?:darjeeling|gangtok|sikkim)\b/i],
+  ['IXZ',/\b(?:andaman|port\s*blair|havelock)\b/i],['KUU',/\b(?:manali|kullu)\b/i],['DED',/\b(?:rishikesh|dehradun|mussoorie)\b/i],['BKK',/\bthailand\b/i],['KUL',/\bmalaysia\b/i],
+  ['TBS',/\bgeorgia\b/i],['GYD',/\bazerbaijan\b/i],['EVN',/\barmenia\b/i],['TAS',/\buzbekistan\b/i],['ALA',/\bkazakhstan\b/i],['IST',/\b(?:turkey|t[uü]rkiye)\b/i],
+  ['CAI',/\begypt\b/i],['CMB',/\bsri\s*lanka\b/i],['KTM',/\bnepal\b/i],['SGN',/\bvietnam\b/i],['NRT',/\bjapan\b/i],['ZRH',/\bswitzerland\b/i],['MRU',/\bmauritius\b/i],['SEZ',/\bseychelles\b/i]];
+export function ltPackageDestinationAirport(pkg){
+  for(const v of [pkg?.destination,pkg?.name]){
+    const t=String(v||'');if(!t.trim())continue;
+    for(const [code,re] of LT_AIRPORT_ALIASES)if(re.test(t))return code;
+    for(const [code,re] of LT_REGION_AIRPORTS)if(re.test(t))return code;
+  }
+  return '';
+}
+const ltListItems=raw=>{const v=engineParseJsonField(raw,null);return (Array.isArray(v)?v:String(raw||'').split(/\n|,|;|•/)).map(x=>String(x||'').trim()).filter(Boolean);};
+// {status:'included'|'excluded'|'unknown', item} — from the package's own inclusion lists.
+export function ltPackageFlightInclusion(pkg){
+  const inc=ltListItems(pkg?.inclusions),exc=ltListItems(pkg?.exclusions);
+  const hit=list=>list.find(x=>LT_FLIGHT_ITEM.test(x)&&!/\b(?:not|no|excluding|without)\b/i.test(x));
+  const ex=hit(exc)||inc.find(x=>LT_FLIGHT_ITEM.test(x)&&/\b(?:not|no|excluding|without)\b/i.test(x));
+  if(ex)return {status:'excluded',item:ex,inclusions:inc};
+  const i=hit(inc);
+  if(i)return {status:'included',item:i,inclusions:inc};
+  return {status:'unknown',item:'',inclusions:inc};
+}
+// A flight question that does not name a full route ("is it including flight ticket?", "flights?",
+// "what about air ticket"). A message with a route is a normal flight search.
+export function ltContextualFlightQuestion(text){
+  const t=ltLocalTravelText(text);
+  if(!t.trim()||t.split(/\s+/).length>14)return false;
+  if(/\b(?:pnr|booking reference|flight status|my\s+(?:flight|ticket|booking))\b/i.test(t))return false;
+  if(!/\b(?:flights?|air\s*tickets?|tickets?|air\s*fares?|airfares?|fly|flying|airlines?)\b/i.test(t))return false;
+  return !ltParseFlightRoute(t);
+}
+// The package the chat is about: the newest of the last few turns that names one.
+export function ltPackageInContext(packages,history=[]){
+  const recent=(history||[]).filter(h=>h&&(h.content||h.text)).slice(-6).reverse();
+  for(const h of recent){
+    const p=taFindPackageInText(packages,String(h.content||h.text||'').replace(/[*_]/g,''));
+    if(p)return p;
+  }
+  return null;
+}
+export function ltContextualPackageFlightReply(pkg,dest=''){
+  const name=String(pkg?.name||'').trim(),{status,item,inclusions}=ltPackageFlightInclusion(pkg);
+  const where=String(pkg?.destination||'').split(/[,/&;|]/)[0].trim()||name;
+  const covers=inclusions.length?`\n\nThe package includes: ${inclusions.slice(0,6).join(', ')}.`:'';
+  const head=status==='included'?`✈️ Yes — *${name}* includes flights (${item}).`
+    :status==='excluded'?`✈️ No — flight tickets are not included in *${name}* (${item}).${covers}`
+    :`✈️ Flight tickets are not part of the *${name}* package.${covers}`;
+  const ask=status==='included'?`\n\nWhere will you be flying from? Tell us your departure city so we can plan the flight to *${where}*${dest?` (${dest})`:''}.`
+    :`\n\nWe can book your flight to *${where}*${dest?` (${dest})`:''} too. Where will you be flying from? — e.g. *Dubai*`;
+  return head+ask;
+}
+async function engineContextualPackageFlightTurn(env,c,clientId,userText,history,phone,flowOn){
+  if(!taResolveTable(c,'packages')||!ltContextualFlightQuestion(userText))return null;
+  const settings=await ltTravelSettingsStored(env,clientId,c).catch(()=>null);
+  if(settings&&settings.lt_contextual_answers===false)return null;
+  const packages=(await taReadRecords(env,c,clientId,'packages')).filter(p=>p?.name);
+  if(!packages.length)return null;
+  const pkg=ltPackageInContext(packages,history);
+  if(!pkg)return null;
+  const dest=ltPackageDestinationAirport(pkg);
+  const named=ltAirportCodeFromText(ltLocalTravelText(userText)),origin=named&&named!==dest?named:'';
+  const reply=ltContextualPackageFlightReply(pkg,dest);
+  if(!dest||origin)return {handled:true,reply:origin?reply.replace(/\n\n(?:Where will you|We can book)[\s\S]*$/,`\n\nWhen would you like to fly *${origin} → ${dest||'?'}*?`):reply};
+  // Remember the destination so the next message ("Dubai") is read as the departure city.
+  let buttons=[];
+  try{
+    const connected=await ltLiveTicketsConnected(env,clientId);
+    if(connected&&phone){
+      const fx=await ltFxSettings(env,clientId).catch(()=>({}));
+      await ltSaveChatSearchDraft(env,clientId,phone,{...ltNormalizeChatFlightRequest({destination:dest},fx?.default_currency||'AED'),guided:!!flowOn,context_package:String(pkg.name).trim()});
+      if(flowOn){
+        const routes=await ltMenuRoutesFor(env,clientId,phone,await ltMenuLoad(env,clientId).catch(()=>null)).catch(()=>[]);
+        const origins=[...new Set(routes.map(r=>String(r.value||'').split(/\s+to\s+/i)[0]).filter(o=>o&&o!==dest))];
+        buttons=ltMenuRouteRows(origins.map(o=>[o,dest]),4);
+      }
+    }
+  }catch(e){}
+  return {handled:true,reply,...(buttons.length?{buttons,picker:{button:'Choose route',section:'Routes'}}:{})};
 }
 
 export async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],phone=''){
@@ -21256,6 +21356,11 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   const goAhead=!draft&&!lastSearch&&!ltChatFlightIntent(userText)&&ltChatFlightGoAhead(userText)
     &&(history||[]).filter(x=>x?.role!=='assistant'&&x?.content).slice(-4).some(x=>ltChatFlightIntent(x.content));
   const flowOn=ltTravelFlowOn(c);
+  // Contextual answers: a flight question about the package just discussed.
+  if(!draft&&!lastSearch){
+    const ctx=await engineContextualPackageFlightTurn(env,c,clientId,userText,history,phone,flowOn).catch(()=>null);
+    if(ctx)return ctx;
+  }
   if(!ltChatFlightIntent(userText)&&!(flowOn&&ltChatFlightAsk(userText))&&!continuing&&!lastSearch&&!goAhead)return null;
   if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
     await ltClearChatSearchDraft(env,clientId,phone);
@@ -28084,7 +28189,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead, routing.intent);
       sysPrompt+=await mtgBotPromptBlock(env, c, clientId, state.leadId);
-      if(ltLiveAgencyEnabled(c)) sysPrompt+=ltTravelAgencyPromptBlock(await ltLiveTicketsConnected(env, clientId), ltChatFarePrefs(c).onlineBooking);
+      if(ltLiveAgencyEnabled(c)) sysPrompt+=ltTravelAgencyPromptBlock(await ltLiveTicketsConnected(env, clientId), ltChatFarePrefs(c).onlineBooking, ltChatFarePrefs(c).contextual);
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
       // own catalogOrderLink exactly (same pure function, same args), the one real link this

@@ -76,8 +76,10 @@ test('currency, WhatsApp menu and itineraries are tabs of the same page; the old
   await expect(page.locator('#itPdf')).toHaveValue('0');
   await page.selectOption('#itPdf', '1');
   await page.selectOption('#itImg', '0');
+  await expect(page.locator('#itCtx')).toHaveValue('1');
+  await page.selectOption('#itCtx', '0');
   await page.screenshot({ path: test.info().outputPath('itinerary.png') });
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.locator('#itMsg')).toContainText('Saved');
-  expect(itin).toEqual({ itin_share_pdf: true, itin_auto_images: false });
+  expect(itin).toEqual({ itin_share_pdf: true, itin_auto_images: false, lt_contextual_answers: false });
 });
