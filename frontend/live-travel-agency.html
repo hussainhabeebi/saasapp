@@ -359,11 +359,11 @@ async function clearSupplier(supplier,priority){if(confirm(`Remove this client's
 async function savePoomasSettings(){try{const body={api_base:$('poomasApi').value.trim()||'https://api.flypoomas.com',checkout_base:$('poomasCheckout').value.trim()||'https://flypoomas.com'};await api('/live-travel/poomas/settings',{method:'PATCH',body:JSON.stringify(body)});await refresh();show('suppliers')}catch(e){alert('Failed to save POOMAS settings: '+e.message)}}
 // ⚙️ Travel Settings — every travel setting on one page, as tabs: live fares & booking, currency,
 // the WhatsApp menu and itineraries. Each tab keeps its own renderer and save.
-const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['chatstyle','🧭 Chat Style'],['itinerary','🗺️ Itineraries']];
+const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['chatstyle','🧭 Chat Style'],['flows','🧩 Flows'],['itinerary','🗺️ Itineraries']];
 let settingsTab='fares';
 function settingsTabs(){return page==='settings'?`<div class="quick" style="margin:0 0 14px">${SETTINGS_TABS.map(([k,l])=>`<button class="btn ${settingsTab===k?'primary':''}" onclick="settingsGo('${k}')">${l}</button>`).join('')}</div>`:''}
-function settingsGo(k){settingsTab=k;renderTravelSettings()}
-function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,chatstyle:renderChatStyle,itinerary:renderItinerarySettings}[settingsTab]||renderSettings)()}
+function settingsGo(k){if(k!=='flows'&&tfEdit?._dirty&&!confirm('Leave without saving your flow?'))return;if(k!=='flows')tfEdit=null;settingsTab=k;renderTravelSettings()}
+function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,chatstyle:renderChatStyle,flows:renderFlows,itinerary:renderItinerarySettings}[settingsTab]||renderSettings)()}
 // Live fares & booking (worker /live-travel/travel-settings).
 let fareSettings=null;
 const FARE_PREVIEW={
@@ -475,6 +475,161 @@ async function saveChatStyle(){
     msg.textContent=fly.style==='flyindo'?'✓ Saved — new WhatsApp messages now get the Flyindo booking flow':'✓ Saved — the bot answers as before';msg.style.color='var(--green)';
   }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
+}
+// 🧩 Flows (worker: travel-flows.js, /live-travel/flows). AI-first booking flows: each starts from a
+// keyword or a package, and only runs once it is published. The AI still answers every message;
+// the flow tells it which booking details are still missing.
+let tf=null,tfEdit=null,tfTest={state:null,msgs:[],history:[],busy:false},tfPkgFilter='';
+const TF_STEP_TYPES=[['ask_date','📅','Ask: travel date'],['ask_travellers','👨‍👩‍👧','Ask: travellers'],['ask_city','🛫','Ask: departure city'],['ask_custom','❓','Ask: your own question'],
+  ['send_package','📦','Send package details'],['quote','💰','Price estimate'],['payment','💳','Payment'],['handover','👤','Hand over to consultant']];
+const TF_DEFAULT_Q={ask_date:'📅 When would you like to travel? Please share your travel date (or the month, if it is not fixed yet).',ask_travellers:'🧳 How many people are travelling? Please tell us the number of adults and children.',ask_city:'🛫 Which city will you be travelling from?'};
+const tfType=t=>TF_STEP_TYPES.find(x=>x[0]===t)||['ask_custom','❓','Question'];
+const tfIsAsk=t=>t.startsWith('ask_');
+const tfFmt=t=>esc(t).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/_([^_\n]+)_/g,'<i>$1</i>').replace(/\n/g,'<br>');
+const tfNewId=p=>p+Math.random().toString(36).slice(2,8);
+function tfTriggerText(f){
+  if(f.trigger.type==='package'){const names=f.trigger.package_ids.map(id=>tf.packages.find(p=>p.id===id)?.name||'(removed package)');return `📦 Package: ${names.join(', ')||'none chosen'}`}
+  return `🔑 Keyword: ${f.trigger.keywords.map(k=>`“${k}”`).join(', ')||'none'}${f.trigger.when==='start'?' · start of a chat only':''}`;
+}
+async function renderFlows(){
+  const title=()=>settingsTabs()+head('Flows','AI-first booking flows that start from a keyword or a package');
+  if(tfEdit)return renderFlowEditor();
+  $('main').innerHTML=title()+'<div class="card"><span class="spinner"></span> Loading…</div>';
+  try{tf=await api('/live-travel/flows')}catch(e){$('main').innerHTML=title()+`<div class="error">${esc(e.message)}</div>`;return}
+  const cards=tf.flows.map(f=>{
+    const s=tf.stats[f.id]||{},badge=f.status==='active'?'<span class="badge ok">● Active</span>':f.status==='paused'?'<span class="badge warn">Paused</span>':'<span class="badge">Draft</span>';
+    return `<div class="wmitem ${f.status==='active'?'':'off'}" style="opacity:1"><div class="wmhead" style="flex-wrap:wrap"><b style="flex:1;min-width:160px">${esc(f.name)}</b>${badge}</div>
+<div class="sub" style="margin:6px 0">${esc(tfTriggerText(f))} · ${f.steps.filter(x=>x.enabled!==false).length} steps</div>
+<div class="sub">▶️ Started <b>${s.started||0}</b> · ✅ Completed <b>${s.completed||0}</b> · 👤 Handed over <b>${s.handed_over||0}</b> · ⏸️ Paused <b>${s.paused||0}</b> · 💬 Side questions answered <b>${s.side_answers||0}</b></div>
+<div class="quick" style="margin-top:9px"><button class="btn sm primary" onclick="tfOpen('${f.id}')">Edit</button>${f.status==='active'?`<button class="btn sm" onclick="tfSetStatus('${f.id}','paused')">⏸️ Pause</button>`:`<button class="btn sm" onclick="tfSetStatus('${f.id}','active')">▶️ Publish</button>`}<button class="btn sm danger" onclick="tfDelete('${f.id}')">Delete</button></div></div>`}).join('');
+  $('main').innerHTML=title()+`<div class="card" style="margin-top:0"><label class="wmtoggle"><input type="checkbox" id="tfOn" ${tf.enabled?'checked':''} onchange="tfToggleAll(this.checked)"> <b>Use flows for this account</b></label>
+<p class="sub" style="margin:8px 0 0">A flow runs only when it is <b>published</b> and its keyword or package matches. The AI keeps answering every question during a flow, then asks for the next missing detail. Everything else works exactly as today.</p>${tf.enabled?'':'<div class="notice">Flows are switched off: no flow runs, even published ones.</div>'}</div>
+<div class="card"><div class="wmhead" style="flex-wrap:wrap"><h3 style="margin:0;flex:1">Your flows <span class="badge">${tf.flows.length} / 20</span></h3><button class="btn primary" onclick="tfChooseTemplate()">＋ Create flow</button></div>
+<div style="margin-top:12px">${cards||`<div class="empty" style="padding:24px"><p><b>No flows yet. Your AI bot works as usual.</b></p><p class="sub">Start from a template, for example a package booking or a visa enquiry.</p><button class="btn primary" onclick="tfChooseTemplate()">Start from a template</button></div>`}</div></div>`;
+}
+async function tfToggleAll(on){try{await api('/live-travel/flows',{method:'PUT',body:JSON.stringify({enabled:on})});renderFlows()}catch(e){alert('Could not save: '+e.message)}}
+function tfChooseTemplate(){
+  const items=tf.templates.map(t=>`<button class="wmitem" style="display:block;width:100%;text-align:left;cursor:pointer" onclick="tfFromTemplate('${t.key}')"><b>${esc(t.name)}</b><div class="sub">${esc(t.description)}</div></button>`).join('');
+  openModal('Create a flow',`${items}<button class="wmitem" style="display:block;width:100%;text-align:left;cursor:pointer" onclick="tfFromTemplate('')"><b>Blank flow</b><div class="sub">Start with a keyword and a handover step, then add your own steps.</div></button>`,'<button class="btn" onclick="closeModal()">Cancel</button>');
+}
+function tfFromTemplate(key){
+  closeModal();
+  const t=tf.templates.find(x=>x.key===key);
+  tfEdit=t?JSON.parse(JSON.stringify(t.flow)):{name:'',status:'draft',trigger:{type:'keyword',keywords:[],package_ids:[],when:'any'},note:'',steps:[{id:tfNewId('s'),type:'ask_date',enabled:true,required:true},{id:tfNewId('s'),type:'handover',enabled:true}]};
+  tfEdit.id=tfNewId('f');tfEdit.status='draft';tfEdit._new=true;
+  tfResetTest();renderFlowEditor();
+}
+function tfOpen(id){tfEdit=JSON.parse(JSON.stringify(tf.flows.find(f=>f.id===id)));tfResetTest();renderFlowEditor()}
+function tfBack(){if(tfEdit?._dirty&&!confirm('Leave without saving your changes?'))return;tfEdit=null;renderFlows()}
+async function tfSetStatus(id,status){
+  const f=JSON.parse(JSON.stringify(tf.flows.find(x=>x.id===id)));f.status=status;
+  try{const r=await api('/live-travel/flows/save',{method:'POST',body:JSON.stringify({flow:f})});if(r.warnings?.length&&status==='active')alert('Published. Worth a look:\n\n• '+r.warnings.join('\n• '));renderFlows()}
+  catch(e){alert((status==='active'?'Cannot publish yet:\n\n• ':'Error: ')+((e.data?.errors||[e.message]).join('\n• ')))}
+}
+async function tfDelete(id){const f=tf.flows.find(x=>x.id===id);if(!confirm(`Delete the flow "${f.name}"? Chats already in it finish normally.`))return;try{await api('/live-travel/flows/delete',{method:'POST',body:JSON.stringify({id})});renderFlows()}catch(e){alert('Error: '+e.message)}}
+function tfDirty(){if(tfEdit)tfEdit._dirty=true}
+function tfSet(path,v){const ks=path.split('.');let o=tfEdit;while(ks.length>1)o=o[ks.shift()];o[ks[0]]=v;tfDirty()}
+function tfStepSet(i,k,v){tfEdit.steps[i][k]=v;tfDirty()}
+function tfList(v){return String(v||'').split(/\n|,/).map(x=>x.trim()).filter(Boolean)}
+function tfStepFields(s,i){
+  const q=tfIsAsk(s.type)?`<div class="field span4"><label>Question (the AI may reword it)</label><input maxlength="300" value="${esc(s.question||'')}" placeholder="${esc(TF_DEFAULT_Q[s.type]||'e.g. Which hotel category would you like?')}" oninput="tfStepSet(${i},'question',this.value)"></div>`:'';
+  const req=tfIsAsk(s.type)?`<label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" ${s.required!==false?'checked':''} onchange="tfStepSet(${i},'required',this.checked)"> Required</label>`:'';
+  const note=`<div class="field span4"><label>Note for the AI (optional)</label><input maxlength="300" value="${esc(s.note||'')}" placeholder="e.g. mention the early-bird discount here" oninput="tfStepSet(${i},'note',this.value)"></div>`;
+  let extra='';
+  if(s.type==='ask_custom')extra=`<div class="field span2"><label>Label (shown in the summary)</label><input maxlength="40" value="${esc(s.label||'')}" placeholder="e.g. Hotel category" oninput="tfStepSet(${i},'label',this.value)"></div><div class="field span2"><label>Options (optional, comma separated, up to 10)</label><input value="${esc((s.options||[]).join(', '))}" placeholder="3 Star, 4 Star, 5 Star" oninput="tfStepSet(${i},'options',tfList(this.value))"></div>`;
+  if(s.type==='ask_city')extra=`<div class="field span4"><label>Common cities as buttons (optional, comma separated)</label><input value="${esc((s.options||[]).join(', '))}" placeholder="Kochi, Kozhikode, Bengaluru" oninput="tfStepSet(${i},'options',tfList(this.value))"></div>`;
+  if(s.type==='ask_travellers')extra=`<label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" ${s.ask_ages!==false?'checked':''} onchange="tfStepSet(${i},'ask_ages',this.checked)"> Ask children's ages</label>`;
+  if(s.type==='send_package')return `<div class="formgrid"><div class="field span4"><label>Package</label><select onchange="tfStepSet(${i},'package_id',this.value)"><option value="">The package the customer asked about</option>${tf.packages.map(p=>`<option value="${esc(p.id)}" ${s.package_id===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+<div class="span4 quick">${[['photos','📷 Photos'],['details','📝 Day-wise details'],['pdf','📄 PDF itinerary']].map(([k,l])=>`<label class="chip"><input type="checkbox" ${(k==='pdf'?s[k]===true:s[k]!==false)?'checked':''} onchange="tfStepSet(${i},'${k}',this.checked)"> ${l}</label>`).join('')}</div></div>`;
+  if(s.type==='quote')return `<p class="sub" style="margin:8px 0 0">Package price × travellers (child and infant rates from the package). Marked as an estimate. Skipped when the package has no price, so prices are never made up.</p>`;
+  if(s.type==='payment')return `<div class="formgrid"><div class="field span4"><label>Payment message</label><textarea maxlength="500" placeholder="💳 To confirm your booking, an advance payment is needed. Our team will confirm the exact amount with you here." oninput="tfStepSet(${i},'text',this.value)">${esc(s.text||'')}</textarea></div>
+<label class="sub span4" style="display:flex;gap:6px;align-items:center"><input type="checkbox" ${s.send_qr!==false?'checked':''} onchange="tfStepSet(${i},'send_qr',this.checked)"> Send my payment QR codes ${tf.payment_qrs?`(${tf.payment_qrs} saved)`:'<span class="badge warn">none saved: add them in ✈️ Live fares &amp; booking</span>'}</label></div>`;
+  if(s.type==='handover')return `<div class="formgrid"><div class="field span4"><label>Closing message (after the booking summary)</label><textarea maxlength="500" placeholder="Thank you! 🙏 Our travel consultant will contact you shortly to confirm availability and the final price." oninput="tfStepSet(${i},'message',this.value)">${esc(s.message||'')}</textarea></div></div>${tf.handover_enabled?'':'<div class="notice">Handover is off in Bot Behavior, so the chat is marked for your team without the bot going quiet.</div>'}`;
+  return `<div class="formgrid">${extra}${q}${note}</div><div class="quick">${req}</div>`;
+}
+function tfRenderSteps(){
+  const n=tfEdit.steps.length;
+  $('tfSteps').innerHTML=tfEdit.steps.map((s,i)=>{const [,icon,label]=tfType(s.type);return `<div class="wmitem ${s.enabled===false?'off':''}"><div class="wmhead"><span style="font-size:18px">${icon}</span><b class="wmtitle">${i+1}. ${esc(label)}${s.type==='ask_custom'&&s.label?`: ${esc(s.label)}`:''}</b>
+<label class="sub" title="On / off"><input type="checkbox" ${s.enabled!==false?'checked':''} onchange="tfStepSet(${i},'enabled',this.checked);tfRenderSteps()"></label><button class="btn sm" ${i?'':'disabled'} onclick="tfMove(${i},-1)">↑</button><button class="btn sm" ${i<n-1?'':'disabled'} onclick="tfMove(${i},1)">↓</button><button class="btn sm danger" onclick="tfDelStep(${i})">✕</button></div>
+<div class="wmfields">${tfStepFields(s,i)}</div></div>`}).join('')||'<p class="sub">No steps yet.</p>';
+}
+function tfMove(i,d){const j=i+d;[tfEdit.steps[i],tfEdit.steps[j]]=[tfEdit.steps[j],tfEdit.steps[i]];tfDirty();tfRenderSteps()}
+function tfDelStep(i){tfEdit.steps.splice(i,1);tfDirty();tfRenderSteps()}
+function tfAddStep(type){if(!type)return;if(tfEdit.steps.length>=12)return alert('A flow can have up to 12 steps.');const s={id:tfNewId('s'),type,enabled:true};if(tfIsAsk(type))s.required=true;
+  const hi=tfEdit.steps.findIndex(x=>x.type==='handover');if(hi>=0&&type!=='handover')tfEdit.steps.splice(hi,0,s);else tfEdit.steps.push(s);tfDirty();tfRenderSteps();$('tfAdd').value=''}
+function tfRenderTrigger(){
+  const t=tfEdit.trigger,f=tfPkgFilter.toLowerCase();
+  const pk=tf.packages.filter(p=>!f||p.name.toLowerCase().includes(f)||p.destination.toLowerCase().includes(f));
+  $('tfTrig').innerHTML=t.type==='keyword'?`<div class="formgrid"><div class="field span4"><label>Keywords (comma separated, up to 10)</label><input value="${esc(t.keywords.join(', '))}" placeholder="umrah, ladies trip, honeymoon offer" oninput="tfSet('trigger.keywords',tfList(this.value))"><div class="sub" style="margin-top:4px">Matched like package keywords: word order does not matter, and general words such as "trip" or "package" alone are ignored.</div></div>
+<div class="field span4"><label>When</label><select onchange="tfSet('trigger.when',this.value)"><option value="any" ${t.when!=='start'?'selected':''}>Any time in the chat</option><option value="start" ${t.when==='start'?'selected':''}>Only at the start of a chat</option></select></div></div>`
+  :`<div class="field"><label>Packages that start this flow</label><input placeholder="Search packages…" value="${esc(tfPkgFilter)}" oninput="tfPkgFilter=this.value;tfRenderTrigger();const el=document.querySelector('#tfTrig input');el.focus();el.setSelectionRange(el.value.length,el.value.length)"></div>
+<div style="max-height:240px;overflow:auto;margin-top:8px">${pk.map(p=>`<label class="wmtoggle" style="font-size:13px;margin-bottom:6px"><input type="checkbox" ${t.package_ids.includes(p.id)?'checked':''} onchange="tfPkgPick('${esc(p.id)}',this.checked)"> <b>${esc(p.name)}</b> <span class="sub">${esc(p.destination)}${p.price?` · ${esc(p.currency)} ${p.price}`:''}</span></label>`).join('')||`<p class="sub">${tf.packages.length?'No package matches.':'No packages yet. Add them in Packages first.'}</p>`}</div>
+<p class="sub">The flow starts when the bot identifies one of these packages: its name, its package keywords, or a tap on it. A package can belong to one active flow.</p>`;
+}
+function tfPkgPick(id,on){const a=tfEdit.trigger.package_ids;const i=a.indexOf(id);if(on&&i<0)a.push(id);if(!on&&i>=0)a.splice(i,1);tfDirty()}
+function renderFlowEditor(){
+  const f=tfEdit;
+  $('main').innerHTML=settingsTabs()+head(esc(f.name||'New flow'),'Build the steps, test it on the right, then publish',`<button class="btn" onclick="tfBack()">← All flows</button>`)+`<div class="wmgrid"><div>
+<div class="card" style="margin-top:0"><h3>Flow ${f.status==='active'?'<span class="badge ok">● Active</span>':f.status==='paused'?'<span class="badge warn">Paused</span>':'<span class="badge">Draft</span>'}</h3><div class="formgrid">
+<div class="field span4"><label>Name</label><input maxlength="60" value="${esc(f.name||'')}" placeholder="e.g. Georgia package booking" oninput="tfSet('name',this.value)"></div>
+<div class="field span4"><label>Note for the AI in this flow (optional)</label><input maxlength="500" value="${esc(f.note||'')}" placeholder="e.g. Be brief and mention EMI is available" oninput="tfSet('note',this.value)"><div class="sub" style="margin-top:4px">Added on top of your main prompt and reply style for this flow only.</div></div></div></div>
+<div class="card"><h3>Starts when</h3><div class="quick" style="margin:0 0 12px">${[['keyword','🔑 A keyword'],['package','📦 A package']].map(([k,l])=>`<button class="btn ${f.trigger.type===k?'primary':''}" onclick="tfSet('trigger.type','${k}');renderFlowEditor()">${l}</button>`).join('')}</div><div id="tfTrig"></div></div>
+<div class="card"><h3>Steps</h3><p class="sub" style="margin-top:-6px">Questions the AI asks (in this order, skipping what the customer already said), plus what is sent along the way. End with a handover or payment.</p><div id="tfSteps"></div>
+<select id="tfAdd" onchange="tfAddStep(this.value)" style="border:1px solid var(--line);border-radius:8px;padding:9px;background:#fff"><option value="">＋ Add step…</option>${TF_STEP_TYPES.map(([k,i,l])=>`<option value="${k}">${i} ${l}</option>`).join('')}</select></div>
+<div id="tfMsg"></div>
+<div class="quick" style="margin-top:14px"><button class="btn" id="tfSaveBtn" onclick="tfSave('draft')">💾 Save draft</button><button class="btn primary" onclick="tfSave('active')">▶️ Publish</button>${f.status==='active'?`<button class="btn" onclick="tfSave('paused')">⏸️ Pause</button>`:''}</div>
+</div><div><div class="wmphone"><div class="wmbar">Test chat<span>Real AI · nothing is sent to WhatsApp</span></div><div class="wmchat" id="tfChat"></div>
+<div style="display:flex;gap:6px;padding:8px;background:#F0F0F0"><input id="tfIn" style="flex:1;min-width:0;border:0;border-radius:18px;padding:9px 12px" placeholder="${f.trigger.type==='keyword'?esc(`Try: ${f.trigger.keywords[0]||'a keyword'}…`):'Type as a customer…'}" onkeydown="if(event.key==='Enter')tfSend()"><button class="btn sm primary" onclick="tfSend()">➤</button></div></div>
+<div class="quick" style="justify-content:center"><button class="btn sm" onclick="tfResetTest();tfRenderTest()">↺ Restart test</button></div><div id="tfCollected" class="sub" style="margin-top:8px"></div></div></div>`;
+  tfRenderTrigger();tfRenderSteps();tfRenderTest();
+}
+function tfShowMsg(errors=[],warnings=[],ok=''){
+  $('tfMsg').innerHTML=(errors.length?`<div class="error" style="margin-top:14px"><b>Fix before publishing:</b><br>• ${errors.map(esc).join('<br>• ')}</div>`:'')+(warnings.length?`<div class="notice">• ${warnings.map(esc).join('<br>• ')}</div>`:'')+(ok?`<div class="sub" style="color:var(--green);margin-top:10px">${esc(ok)}</div>`:'');
+}
+async function tfSave(status){
+  const flow={...tfEdit,status};delete flow._new;delete flow._dirty;
+  try{
+    const r=await api('/live-travel/flows/save',{method:'POST',body:JSON.stringify({flow})});
+    tfEdit={...r.flow};tf.flows=tf.flows.filter(x=>x.id!==r.flow.id).concat([r.flow]);
+    renderFlowEditor();
+    tfShowMsg(status==='active'?[]:r.errors,r.warnings,status==='active'?'✓ Published: it runs on the next matching message.':status==='paused'?'✓ Paused: it no longer starts new chats.':'✓ Draft saved. Drafts never run.');
+  }catch(e){tfShowMsg(e.data?.errors||[e.message],e.data?.warnings||[])}
+}
+function tfResetTest(){tfTest={state:null,msgs:[],history:[],busy:false}}
+function tfRenderTest(){
+  const el=$('tfChat');if(!el)return;
+  el.innerHTML=(tfTest.msgs.map(m=>m.kind==='out'?`<div class="wmbubble out">${esc(m.text)}</div>`:m.kind==='note'?`<div style="text-align:center;margin:8px 0"><span class="badge ${m.cls||''}">${esc(m.text)}</span></div>`
+    :`<div class="wmbubble in">${tfFmt(m.text)}${(m.options||[]).length?`<div class="quick" style="margin-top:6px">${m.options.map(o=>`<button class="chip" onclick="tfSend(${esc(JSON.stringify(o))})">${esc(o)}</button>`).join('')}</div>`:''}</div>`).join(''))
+    ||`<div style="text-align:center;margin-top:40%"><span class="badge">Type a message that ${tfEdit.trigger.type==='keyword'?'contains a keyword':'names a chosen package'} to start</span></div>`;
+  if(tfTest.busy)el.innerHTML+='<div class="wmbubble in"><span class="spinner"></span></div>';
+  el.scrollTop=el.scrollHeight;
+  const c=tfTest.collected;$('tfCollected').innerHTML=c&&Object.keys(c).length>1?'<b>Collected:</b> '+Object.entries(c).filter(([k])=>k!=='travel_flow').map(([k,v])=>`${esc(k.replace(/_/g,' '))}: ${esc(v)}`).join(' · '):'';
+}
+async function tfSend(text){
+  const inp=$('tfIn'),msg=String(text??inp.value).trim();if(!msg||tfTest.busy)return;
+  if(text==null)inp.value='';
+  tfTest.msgs.push({kind:'out',text:msg});tfTest.busy=true;tfRenderTest();
+  try{
+    const flow={...tfEdit};delete flow._new;delete flow._dirty;
+    const r=await api('/live-travel/flows/preview',{method:'POST',body:JSON.stringify({flow,state:tfTest.state,message:msg,history:tfTest.history})});
+    tfTest.history.push({role:'user',content:msg});
+    const add=t=>{if(t){tfTest.msgs.push({kind:'in',text:t});tfTest.history.push({role:'assistant',content:t})}};
+    if(r.action==='pause'){tfTest.msgs.push({kind:'note',cls:'warn',text:'⏸️ Topic changed: flow paused, your normal bot answers. Type "continue booking" to resume.'})}
+    else if(r.action==='handover'){tfTest.msgs.push({kind:'note',cls:'ok',text:'👤 Customer asked for a person: handed to your team'})}
+    else{
+      add(r.lead);
+      for(const o of r.outputs){
+        if(o.kind==='package')add(`${o.photos?'📷 _Package photos_\n':''}${o.text.length>500?o.text.slice(0,500)+'…':o.text}${o.pdf?'\n📄 _PDF itinerary_':''}`);
+        else if(o.kind==='handover'||o.kind==='complete'){add(o.text);tfTest.msgs.push({kind:'note',cls:'ok',text:o.kind==='handover'?'👤 Handed to your team · 🔥 Hot lead':'✅ Flow complete'})}
+        else add(o.text+(o.kind==='payment'&&o.send_qr&&tf.payment_qrs?'\n\n🖼️ _Payment QR code_':''));
+      }
+      if(r.question){tfTest.msgs.push({kind:'in',text:r.question,options:r.options});tfTest.history.push({role:'assistant',content:r.question})}
+      if(r.action==='cancel')tfTest.msgs.push({kind:'note',text:'Customer cancelled the booking request'});
+    }
+    tfTest.state=r.state;tfTest.collected=r.collected;
+    if(!r.state&&r.action!=='pause')tfTest.msgs.push({kind:'note',text:'Test finished. ↺ Restart to try again.'});
+  }catch(e){tfTest.msgs.push({kind:'note',cls:'bad',text:'Error: '+e.message})}
+  finally{tfTest.busy=false;tfRenderTest()}
 }
 // Itineraries (travel-agency.html): PDF sharing and automatic photos — same settings endpoint.
 async function renderItinerarySettings(){
