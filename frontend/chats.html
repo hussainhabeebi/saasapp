@@ -180,6 +180,12 @@ html.skin-m body{background:#fff}
 .skin-m .day span{background:#fff;color:#6B7280;border-radius:10px}
 .skin-m .bulk-bar{background:#E7F4EE;border-bottom-color:#CDE8DA}
 .skin-m .toast{background:#0B2545;border-radius:14px}
+/* Snappy taps, like the WhatsApp app: no double-tap-zoom delay, no grey flash, a quick press state. */
+button,.contact,.hdr-pill,.hdr-btn,[onclick]{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button{transition:transform .08s ease,filter .08s ease,background-color .12s}
+button:active:not(:disabled){transform:scale(.96);filter:brightness(.94)}
+.contact:active{filter:brightness(.97)}
+@media (prefers-reduced-motion:reduce){button{transition:none}button:active:not(:disabled){transform:none}}
 </style>
 </head>
 <body>
@@ -371,13 +377,47 @@ function connectWs(){
  ws.onclose=()=>{ws=null;const wait=[1000,2000,5000,10000][Math.min(wsTries++,3)];setTimeout(connectWs,wait)};
  ws.onerror=()=>{try{ws.close()}catch{}};
 }
+// Optimistic, like WhatsApp: the change shows the moment a button is tapped (predicted with the
+// same rules as the Worker's chatsV2Act), the request runs behind it, and the server's rows replace
+// the prediction when they arrive. A failed request puts every touched chat back as it was.
+function predictRow(r,op,a={}){
+ const s={...r},now=new Date().toISOString();
+ const labelList=v=>[...new Set(String(v||'').split(',').map(x=>x.trim()).filter(Boolean))];
+ switch(op){
+  case'mark_read':s.unread_count=0;s.last_read_at=now;break;
+  case'mark_unread':s.unread_count=Math.max(1,Number(r.unread_count)||0);break;
+  case'resolve':s.status='resolved';s.snoozed_until=null;break;
+  case'reopen':s.status='open';s.snoozed_until=null;break;
+  case'pending':s.status='pending';s.snoozed_until=null;break;
+  case'snooze':s.status='snoozed';s.snoozed_until=a.until||null;break;
+  case'assign':s.assignee_email=lc(a.email);break;
+  case'pin':s.pinned=a.pinned?1:0;break;
+  case'priority':s.priority=Math.max(0,Math.min(4,Number(a.value)||0));break;
+  case'labels':case'label_add':case'label_remove':{
+   const cur=labelList(r.labels),given=(Array.isArray(a.labels)?a.labels:[a.label]).map(x=>String(x||'').trim().slice(0,40)).filter(Boolean);
+   const next=op==='labels'?given:op==='label_add'?[...cur,...given.filter(g=>!cur.some(x=>lc(x)===lc(g)))]:cur.filter(x=>!given.some(g=>lc(g)===lc(x)));
+   s.labels=next.join(', ');const keys=[...new Set(next.map(lc))];s.labels_key=','+keys.join(',')+(keys.length?',':'');break}
+  case'handler':s.handover=a.mode==='human'?'Yes':'No';s.handover_by=a.mode==='human'?meEmail:'';break;
+ }
+ return s;
+}
+function repaintAfterAct(ids){
+ renderContacts();
+ if(current&&ids.some(i=>String(i)===String(current.Id))){renderHeaderCtl();if(typeof updateHandoverBar==='function')updateHandoverBar();if(typeof applyLock==='function')applyLock()}
+}
 async function act(op,args={},ids){
  ids=ids||[current?.Id];
- const d=await apiJson(WORKER+'/chats/v2/act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,ids,args})});
- mergeRows(d.rows);renderContacts();loadCounts();
- if(current&&ids.some(i=>String(i)===String(current.Id))){renderHeaderCtl();if(d.events&&Object.keys(d.events).length)refreshMessages(current)}
+ const before=ids.map(id=>leads.find(x=>String(x.Id)===String(id))?._v2).filter(Boolean).map(r=>({...r}));
+ if(before.length){mergeRows(before.map(r=>predictRow(r,op,args)));repaintAfterAct(ids)}
+ let d;
+ try{d=await apiJson(WORKER+'/chats/v2/act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,ids,args})})}
+ catch(e){if(before.length){mergeRows(before);repaintAfterAct(ids)}throw e}
+ mergeRows(d.rows);repaintAfterAct(ids);loadCounts();
+ if(current&&ids.some(i=>String(i)===String(current.Id))&&d.events&&Object.keys(d.events).length)refreshMessages(current);
  return d;
 }
+// Fire-and-confirm for buttons: closes menus, confirms at once, and only speaks again on failure.
+function quickAct(op,args,ids,ok,fail){closeDd();try{if(current&&typeof toggleMenu==='function')toggleMenu(false)}catch{}if(ok)toast(ok);return act(op,args,ids).catch(e=>{toast((fail||'Could not update')+(e?.message?': '+e.message:''));throw e})}
 function agentsList(){
  if(boot2?.agents)return boot2.agents;
  let names={};try{names=JSON.parse(clientRecord.team_names||'{}')||{}}catch{}
@@ -530,6 +570,7 @@ function renderContacts(){
  }
  listItems=list;updateTitle();paintList();if(current)renderHeaderCtl();
  if(list.length&&!listPainted){listPainted=true;rumMark('list-visible')}
+ if(list.length&&matchMedia('(hover:none)').matches)warmTopThreads();
 }
 function updateTitle(){const n=V2?(counts2?.unread_by_channel?((counts2.unread_by_channel.whatsapp||0)+(counts2.unread_by_channel.instagram||0)):0):leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]'&&visibleToMe(l)&&unread(l)).length;document.title=(n?`(${n}) `:'')+'Leadvyne · Chats'}
 let searchQ='',searchTimer=null;
@@ -578,6 +619,14 @@ function rowHtml(l,i){
 }
 // Resting on a row for ~150ms fetches its thread, so the click opens from memory.
 let hoverT=null;
+// Touch screens have no hover: once the list is up, the top chats' threads are fetched in the
+// background (a few, one after another) so tapping one opens instantly from memory.
+let warmDone=false;
+function warmTopThreads(){
+ if(warmDone||!V2||!listItems.length)return;warmDone=true;
+ const go=async()=>{for(const l of listItems.slice(0,6)){if(histCache[String(l.Id)])continue;try{await fetchThread(l)}catch{break}}};
+ (window.requestIdleCallback||(f=>setTimeout(f,800)))(()=>go());
+}
 function hoverPrefetch(id){clearTimeout(hoverT);if(!V2||!id||histCache[String(id)])return;hoverT=setTimeout(()=>{const l=leads.find(x=>String(x.Id)===String(id));if(l&&!histCache[String(id)])fetchThread(l).catch(()=>{})},150)}
 
 // ── Conversation shell ───────────────────────────────────────────────────────────────────────
@@ -828,7 +877,7 @@ async function sendMessage(){
  if(!current)return;const box=$('msg');let text=(box.value||'').trim();if(!text)return;const lead=current;
  const unfilled=composeMode==='reply'&&text.match(/\{\{\s*\w+\s*\}\}/);if(unfilled){const at=box.value.indexOf(unfilled[0]);box.focus();box.setSelectionRange(at,at+unfilled[0].length);toast('Fill in '+unfilled[0]+' before sending');return}
  if(composeMode==='reply'&&!isIg(lead)&&!windowOpen(lead)){toast('The 24-hour window has closed — send a template');return}
- if(composeMode==='note'){let n=[];try{n=JSON.parse(lead.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(lead,{NotesList:JSON.stringify(n)});sendMentions(lead,text);box.value='';grow(box);saveDraft(lead.Id,'');drawMessages(true);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}return}
+ if(composeMode==='note'){const prevNotes=lead.NotesList;let n=[];try{n=JSON.parse(prevNotes||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});lead.NotesList=JSON.stringify(n);box.value='';grow(box);saveDraft(lead.Id,'');drawMessages(true);try{await patchLead(lead,{NotesList:lead.NotesList});sendMentions(lead,text)}catch(e){lead.NotesList=prevNotes;if(current===lead){box.value=text;grow(box);drawMessages(false)}toast('Could not save note: '+e.message)}return}
  if(!convId(lead)){toast(isIg(lead)?'No linked Instagram conversation':'No linked WhatsApp conversation');return}
  const quote=replyTarget?{who:replyTarget.who,snippet:replyTarget.snippet}:null;
  if(V2&&sigOn()){const me=agentsList().find(a=>a.email===meEmail);if(me?.name)text=text+`\n\n— ${me.name}`}
@@ -1080,16 +1129,16 @@ async function toMp3(blob){
 }
 
 // ── Header menu actions ──────────────────────────────────────────────────────────────────────
-async function togglePin(){const next=current.Pinned!=='Yes';if(V2){try{await act('pin',{pinned:next});toggleMenu(false);toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}return}try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
+async function togglePin(){const next=current.Pinned!=='Yes';if(V2){quickAct('pin',{pinned:next},undefined,next?'Conversation pinned':'Conversation unpinned','Could not update pin').catch(()=>{});return}toggleMenu(false);try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
 // Manual takeover: the worker marks the lead handed over to this person (HandoverBy) so the bot
 // stays silent on it until someone hands it back — see handleChatHandover in worker.js.
 // A bot-triggered handover sets Handover='Yes' with no HandoverBy and the bot keeps replying
 // (unless the client turned on handover silence), so only a person's takeover counts here —
 // otherwise the bar claimed "the bot won't reply" and the menu offered only "Hand back".
 function takenOver(l){return !!l&&l.Handover==='Yes'&&!!String(l.HandoverBy||'').trim()}
-async function toggleHandover(){const lead=current,next=!takenOver(lead);if(V2){try{await act('handler',{mode:next?'human':'bot'});toggleMenu(false);updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}return}try{const d=await apiJson(WORKER+'/chat/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,takeover:next})});Object.assign(lead,d.lead||{Handover:next?'Yes':'No'});toggleMenu(false);renderContacts();updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}}
-async function toggleResolve(){const next=current.ConvResolved!=='Yes'&&current._v2?.status!=='snoozed';closeDd();if(V2){try{await act(next?'resolve':'reopen');toggleMenu(false);toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}return}try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
-async function markUnread(){toggleMenu(false);try{await act('mark_unread');toast('Marked as unread');closeConversation()}catch(e){toast('Could not mark as unread')}}
+async function toggleHandover(){const lead=current,next=!takenOver(lead);if(V2){quickAct('handler',{mode:next?'human':'bot'},undefined,next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot','Could not update handover').catch(()=>{});return}try{const d=await apiJson(WORKER+'/chat/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,takeover:next})});Object.assign(lead,d.lead||{Handover:next?'Yes':'No'});toggleMenu(false);renderContacts();updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}}
+async function toggleResolve(){const next=current.ConvResolved!=='Yes'&&current._v2?.status!=='snoozed';closeDd();if(V2){quickAct(next?'resolve':'reopen',{},undefined,next?'Conversation resolved':'Conversation reopened','Could not update conversation').catch(()=>{});return}toggleMenu(false);try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
+async function markUnread(){const id=current?.Id;toggleMenu(false);closeConversation();quickAct('mark_unread',{},[id],'Marked as unread','Could not mark as unread').catch(()=>{})}
 // ── Header controls: bot/human pill, assignee, Resolve ▾ (snooze) ─────────────────────────────
 function renderHeaderCtl(){
  const el=$('hdrCtl');if(!el||!current)return;const l=current,human=takenOver(l),needs=l.Handover==='Yes'&&!human;
@@ -1113,7 +1162,8 @@ function openCategoryPicker(btn){
 }
 async function setLeadCategory(cat){
  closeDd();const l=current;if(!l)return;cat=String(cat||'').trim();if(catOf(l)===cat)return;
- try{await patchLead(l,{ServiceCategory:cat});if(l._v2)l._v2.service_category=cat;if(l._rec)l._rec.ServiceCategory=cat;renderHeaderCtl();renderInfo();renderContacts();loadCounts();toast(cat?`Category: ${cat}`:'Category cleared')}catch(e){toast('Could not set category: '+e.message)}
+ const prev=catOf(l),paint=v=>{if(l._v2)l._v2.service_category=v;l.ServiceCategory=v;if(l._rec)l._rec.ServiceCategory=v;renderHeaderCtl();renderInfo();renderContacts()};paint(cat);toast(cat?`Category: ${cat}`:'Category cleared');
+ try{await patchLead(l,{ServiceCategory:cat});loadCounts()}catch(e){paint(prev);toast('Could not set category: '+e.message)}
 }
 let ddJustOpened=false,keyNav=false;
 function openDd(anchor,html){closeDd();ddJustOpened=true;setTimeout(()=>ddJustOpened=false);const d=document.createElement('div');d.id='ddMenu';d.className='dd';d.innerHTML=html;document.body.appendChild(d);const r=anchor.getBoundingClientRect(),w=d.offsetWidth;d.style.top=Math.min(r.bottom+6,innerHeight-d.offsetHeight-8)+'px';d.style.left=Math.max(8,Math.min(r.right-w,innerWidth-w-8))+'px';d.addEventListener('click',e=>e.stopPropagation());syncBackdrop();return d}
@@ -1125,14 +1175,15 @@ function openAssign(btn){
 }
 async function assignTo(email){
  closeDd();const lead=current;if(!lead)return;
- try{if(V2)await act('assign',{email});else{await patchLead(lead,{Owner:email});renderContacts();renderHeaderCtl()}toast(email?`Assigned to ${agentName(email)}`:'Unassigned')}catch(e){toast('Could not assign: '+e.message)}
+ if(V2){quickAct('assign',{email},[lead.Id],email?`Assigned to ${agentName(email)}`:'Unassigned','Could not assign').catch(()=>{});return}
+ try{await patchLead(lead,{Owner:email});renderContacts();renderHeaderCtl();toast(email?`Assigned to ${agentName(email)}`:'Unassigned')}catch(e){toast('Could not assign: '+e.message)}
 }
 function snoozeTimes(){const n=new Date(),t=new Date(n);t.setDate(t.getDate()+1);t.setHours(9,0,0,0);const m=new Date(n);m.setDate(m.getDate()+((8-m.getDay())%7||7));m.setHours(9,0,0,0);return {hour:new Date(Date.now()+3600e3),tomorrow:t,monday:m}}
 function openResolveMenu(btn){
  const t=snoozeTimes(),f=d=>d.toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'});
  const d=openDd(btn,`<div class="hint">Snooze until…</div><button onclick="snoozeUntil('${t.hour.toISOString()}')">⏰ 1 hour <small style="margin-left:auto;color:var(--muted)">${esc(f(t.hour))}</small></button><button onclick="snoozeUntil('${t.tomorrow.toISOString()}')">🌅 Tomorrow 9am</button><button onclick="snoozeUntil('${t.monday.toISOString()}')">📅 Next Monday 9am</button><div style="display:flex;gap:6px;align-items:center;padding:4px 10px"><input type="datetime-local" id="snzCustom" style="margin:0;flex:1"><button style="width:auto;padding:6px 10px" onclick="snoozeCustom()">Set</button></div><hr><button onclick="setPending()">⏳ Mark as pending</button>`);
 }
-async function snoozeUntil(iso){closeDd();try{await act('snooze',{until:iso});toast('Snoozed until '+new Date(iso).toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}catch(e){toast('Could not snooze: '+e.message)}}
+async function snoozeUntil(iso){quickAct('snooze',{until:iso},undefined,'Snoozed until '+new Date(iso).toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}),'Could not snooze').catch(()=>{})}
 function snoozeCustom(){const v=$('snzCustom')?.value;if(!v)return toast('Pick a date and time');snoozeUntil(new Date(v).toISOString())}
 const PRIO=['No priority','Low','Medium','High','Urgent'];
 function labelsOf(l){return String(l?.Tags||'').split(',').map(x=>x.trim()).filter(Boolean)}
@@ -1154,11 +1205,12 @@ function openLabelPicker(btn){
  const q=d.querySelector('#lblQ');q.oninput=()=>{d.querySelector('#lblList').innerHTML=draw(q.value.trim().toLowerCase())};q.onkeydown=e=>{if(e.key==='Enter'&&q.value.trim()){e.preventDefault();toggleLabel(q.value.trim(),labelsOf(l).some(y=>lc(y)===lc(q.value.trim())))}};q.focus();
 }
 async function toggleLabel(name,on,ids){
- name=String(name||'').trim().slice(0,40);if(!name)return;closeDd();
- try{await act(on?'label_remove':'label_add',{label:name},ids);if(!on&&boot2&&!boot2.labels.some(x=>lc(x)===lc(name)))boot2.labels.push(name);toast(on?`Label ${name} removed`:`Label ${name} added`)}catch(e){toast('Could not update labels: '+e.message)}
+ name=String(name||'').trim().slice(0,40);if(!name)return;
+ if(!on&&boot2&&!boot2.labels.some(x=>lc(x)===lc(name)))boot2.labels.push(name);
+ quickAct(on?'label_remove':'label_add',{label:name},ids,on?`Label ${name} removed`:`Label ${name} added`,'Could not update labels').catch(()=>{});
 }
 function openPriority(btn,ids){openDd(btn,PRIO.map((n,i)=>`<button onclick="setPriority(${i}${ids?',picked':''})"><i class="prio-dot p${i}"></i>${n}</button>`).join(''))}
-async function setPriority(v,set){closeDd();try{await act('priority',{value:v},set?[...set]:undefined);if(set)clearPicked();toast('Priority: '+PRIO[v])}catch(e){toast('Could not set priority: '+e.message)}}
+async function setPriority(v,set){const ids=set?[...set]:undefined;if(set)clearPicked();quickAct('priority',{value:v},ids,'Priority: '+PRIO[v],'Could not set priority').catch(()=>{})}
 function openLabelFilter(btn){
  const all=[...new Set([...(boot2?.labels||[]),...labelFilter])];
  openDd(btn,(all.map(x=>{const on=labelFilter.includes(x);return `<button class="${on?'on':''}" onclick="flipLabelFilter('${esc(x).replace(/'/g,'&#39;')}')"><span class="ckbox">${on?'✓':''}</span>${esc(x)}</button>`}).join('')||'<div class="hint">No labels yet</div>')+(labelFilter.length?'<hr><button onclick="labelFilter=[];closeDd();onViewChange()">Clear label filter</button>':''));
@@ -1177,7 +1229,8 @@ function renderBulk(){
 function pickAll(){listItems.forEach(l=>picked.add(String(l.Id)));renderBulk();paintList()}
 async function bulk(op,args={}){
  const ids=[...picked];closeDd();if(!ids.length)return;
- try{for(let i=0;i<ids.length;i+=100)await act(op,args,ids.slice(i,i+100));toast(`Done for ${ids.length} chat${ids.length>1?'s':''}`);clearPicked()}catch(e){toast('Could not update: '+e.message)}
+ clearPicked();toast(`Done for ${ids.length} chat${ids.length>1?'s':''}`);
+ try{await Promise.all(Array.from({length:Math.ceil(ids.length/100)},(_,i)=>act(op,args,ids.slice(i*100,i*100+100))))}catch(e){toast('Could not update some chats: '+e.message)}
 }
 function bulkAssign(btn){openDd(btn,agentsList().map(a=>`<button ${isStaff()&&a.email!==meEmail?'disabled':''} onclick="bulk('assign',{email:'${esc(a.email)}'})"><span class="asg">${esc(agentInitials(a.email))}</span>${esc(a.name)}</button>`).join('')+`<hr><button onclick="bulk('assign',{email:''})">✕ Unassign</button>`)}
 function bulkLabel(btn){const d=openDd(btn,`<input id="bulkLbl" placeholder="Label to add" maxlength="40" list="lblOpts"><datalist id="lblOpts">${(boot2?.labels||[]).map(x=>`<option value="${esc(x)}">`).join('')}</datalist><button onclick="const v=document.getElementById('bulkLbl').value.trim();if(v)bulk('label_add',{label:v})">＋ Add label</button>`);d.querySelector('input').focus()}
@@ -1188,7 +1241,7 @@ function rowMenu(id,x,y){
  const l=leads.find(z=>String(z.Id)===String(id));if(!l||!V2)return;const r=l._v2||{},t=snoozeTimes(),done=['resolved','snoozed'].includes(r.status);
  openDdAt(x,y,`<button onclick="rowAct('${esc(id)}','${r.unread_count>0?'mark_read':'mark_unread'}')">${r.unread_count>0?'✓ Mark as read':'● Mark as unread'}</button><button onclick="rowAct('${esc(id)}','pin',{pinned:${!r.pinned}})">📌 ${r.pinned?'Unpin':'Pin'}</button><button onclick="rowAct('${esc(id)}','assign',{email:'${esc(meEmail)}'})">👤 Assign to me</button><button onclick="rowAct('${esc(id)}','${done?'reopen':'resolve'}')">${done?'↺ Reopen':'✓ Resolve'}</button><button onclick="rowAct('${esc(id)}','snooze',{until:'${t.tomorrow.toISOString()}'})">🌅 Snooze until tomorrow</button><button onclick="closeDd();togglePick('${esc(id)}')">☐ Select</button><button class="mob-only" onclick="closeDd()">Cancel</button>`);
 }
-async function rowAct(id,op,args={}){closeDd();try{await act(op,args,[id]);toast('Done')}catch(e){toast('Could not update: '+e.message)}}
+async function rowAct(id,op,args={}){quickAct(op,args,[id],'Done','Could not update').catch(()=>{})}
 // ── Send & resolve ──
 function openSendMore(btn){openDd(btn,`<button onclick="closeDd();sendMessage()">Send</button><button onclick="closeDd();sendAndResolve()">Send &amp; resolve <small style="margin-left:auto;color:var(--muted)">Ctrl+Enter</small></button><hr><div class="hint">Schedule for later</div><div class="fb-row"><input type="datetime-local" id="schedAt"><button onclick="scheduleDraft()">Schedule</button></div><div class="hint">Sent within 15 minutes of the time you pick.</div>`);const t=new Date(Date.now()+86400e3);t.setHours(9,0,0,0);const v=new Date(t-t.getTimezoneOffset()*60000).toISOString().slice(0,16);$('schedAt').value=v}
 async function sendAndResolve(){const lead=current;if(!lead||!($('msg').value||'').trim())return;const before=hist(lead).length;await sendMessage();const m=hist(lead)[hist(lead).length-1];if(hist(lead).length>before&&m&&!m._status){try{await act('resolve',{},[lead.Id]);toast('Sent and resolved')}catch(e){toast('Sent, but could not resolve')}}}

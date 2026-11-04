@@ -870,8 +870,11 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   }
   const stmts=d1.map(([id, set])=>{ const {sql, vals}=setClause(set); return env.DB.prepare(`UPDATE conversations SET ${sql} WHERE lead_id=?`).bind(...vals, id); });
   for(let i=0;i<stmts.length;i+=50) await env.DB.batch(stmts.slice(i, i+50));
+  // One event per chat, independent of each other — written together so a bulk action on 100
+  // chats doesn't wait on 100 round trips in a row.
   const evOut={};
-  for(const [id, [text, meta]] of events) evOut[id]=await insertEvent(env, id, cid, text, {...meta, by:actor.email}, actor);
+  const written=await Promise.all(events.map(([id, [text, meta]])=>insertEvent(env, id, cid, text, {...meta, by:actor.email}, actor)));
+  events.forEach(([id], i)=>{ evOut[id]=written[i]; });
   const fresh=await rowsByIds(env, rows.map(r=>Number(r.lead_id)));
   if(deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:fresh.map(r=>Number(r.lead_id)), by:acc.me});
   return {rows:fresh, events:evOut};

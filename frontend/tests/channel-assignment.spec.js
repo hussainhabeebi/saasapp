@@ -39,7 +39,8 @@ test('assigning a channel keeps AI Reply off, preselects the user and reports mo
   await expect(sel).toHaveValue('Rita@Acme.com');
   await sel.selectOption('sam@acme.com');
   await expect.poll(() => puts.length).toBe(1);
-  expect(puts[0]).toEqual({ inbox_id: 5, assigned_email: 'sam@acme.com', chatwoot_user_id: 0, bot_reply_disabled: true });
+  // Only the assignee is sent: the Worker keeps the channel's AI Reply / Strict settings itself.
+  expect(puts[0]).toEqual({ inbox_id: 5, assigned_email: 'sam@acme.com', chatwoot_user_id: 0 });
   await expect(page.locator('#_toast')).toContainText('3 existing leads moved to sam@acme.com');
 });
 
