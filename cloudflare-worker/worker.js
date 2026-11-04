@@ -1821,16 +1821,17 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
     // lead (same full-access roles as Chats v2 and dashboard.html's seesAllLeads).
     // Rule: show a lead if InboxId is blank/null (old/unassigned leads) OR
     //       InboxId is NOT assigned to someone other than the current user.
-    if(isLeadsList && requesterEmail && env.DB && !seesAllChannelLeads(c, requesterEmail)){
+    // 🔒 Strict channels are hidden from admins / general managers too (channelHiddenAssignments).
+    if(isLeadsList && requesterEmail && env.DB && !isOwner){
       try{
         await ensureInboxAssignmentsTable(env);
         // Ensure InboxId column exists — a one-time migration for clients who had assignments
         // created before this column was added to the leads table.
         await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
         const asgns=await env.DB.prepare(
-          `SELECT inbox_id,assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
+          `SELECT inbox_id,assigned_email,strict FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
         ).bind(payload.cid).all();
-        const clause=channelVisibilityClause(asgns.results||[], requesterEmail);
+        const clause=channelVisibilityClause(channelHiddenAssignments(c, asgns.results||[], requesterEmail), requesterEmail);
         if(clause) qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
       }catch(e){}
     }
@@ -2084,16 +2085,16 @@ async function handleGetChatMessages(request, env){
 export function chatSendRefusal(acc, lead){
   if(!lead) return '';
   if(acc?.categories&&!acc.categories.includes(String(lead.ServiceCategory||'').trim())) return 'This chat is in a category you don\'t have access to.';
+  if(acc?.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
   if(!acc?.staff) return '';
-  if(acc.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
   const owner=String(lead.Owner||'').trim().toLowerCase();
   if(owner) return owner===acc.me?'':'This chat is assigned to someone else.';
   return acc.locked?'This chat is not assigned to you.':'';
 }
 async function chatSendCheckAndClaim(env, c, payload, {leadId, convId}){
   if(!payload?.email) return {ok:true};
-  const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, payload.cid, payload.email));
-  if(!acc.staff&&!acc.categories) return {ok:true};
+  const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, payload.cid, payload.email, {fullAccess:seesAllChannelLeads(c, payload.email)}));
+  if(!acc.staff&&!acc.categories&&!acc.hidden.length) return {ok:true};
   let id=Number(leadId)||0;
   if(!id && convId && env.DB){
     const row=await env.DB.prepare('SELECT lead_id FROM conversations WHERE client_id=? AND conv_id=?').bind(Number(payload.cid), String(convId)).first().catch(()=>null);
@@ -6653,6 +6654,15 @@ async function handleChannelsChatwootSso(request, env){
 async function ensureInboxAssignmentsTable(env){
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS channel_inbox_assignments (client_id INTEGER NOT NULL,inbox_id INTEGER NOT NULL,assigned_email TEXT NOT NULL DEFAULT '',chatwoot_user_id INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY (client_id,inbox_id))`).run().catch(()=>{});
   await env.DB.prepare(`ALTER TABLE channel_inbox_assignments ADD COLUMN bot_reply_disabled INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+  await env.DB.prepare(`ALTER TABLE channel_inbox_assignments ADD COLUMN strict INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+}
+// Channels hidden from `email`: assigned to someone else, and — for the owner's full-access roles
+// (admin / general manager) — only the ones marked 🔒 Strict. The account owner sees everything.
+export function channelHiddenAssignments(c, assignments, email){
+  const me=String(email||'').trim().toLowerCase();
+  if(!me||me===String(c?.authentik_email||'').trim().toLowerCase()) return [];
+  const full=seesAllChannelLeads(c, me);
+  return (assignments||[]).filter(a=>a?.assigned_email && String(a.assigned_email).trim().toLowerCase()!==me && (!full || Number(a.strict)===1));
 }
 
 // GET /channels/agents — list Chatwoot agents for this account (for the assignment picker)
@@ -6673,7 +6683,7 @@ async function handleChannelsInboxAssignmentsGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   await ensureInboxAssignmentsTable(env);
-  const rows=await env.DB.prepare(`SELECT inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled FROM channel_inbox_assignments WHERE client_id=?`).bind(payload.cid).all();
+  const rows=await env.DB.prepare(`SELECT inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,strict FROM channel_inbox_assignments WHERE client_id=?`).bind(payload.cid).all();
   return json({ok:true, assignments:rows.results||[]});
 }
 
@@ -6683,6 +6693,8 @@ async function handleChannelsInboxAssignmentPut(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'No Chatwoot account connected.'}, 400);
+  // Who owns which channel decides who sees whose leads — the owner / admins only.
+  if(!seesAllChannelLeads(c, payload.email)) return json({error:'Only the account owner or an admin can change channel settings.'}, 403);
   const body=await request.json().catch(()=>({}));
   const inboxId=Number(body.inbox_id||0);
   if(!inboxId) return json({error:'inbox_id is required'}, 400);
@@ -6693,22 +6705,27 @@ async function handleChannelsInboxAssignmentPut(request, env){
     await env.DB.prepare(`DELETE FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=?`).bind(payload.cid, inboxId).run();
     return json({ok:true, inbox_id:inboxId, cleared:true});
   }
-  // Pure bot-reply toggle (no agent change): just upsert the bot_reply_disabled flag
-  if('bot_reply_disabled' in body && !('assigned_email' in body)){
-    const disabled=body.bot_reply_disabled?1:0;
-    await env.DB.prepare(
-      `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,created_at,updated_at) VALUES (?,?,?,0,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET bot_reply_disabled=excluded.bot_reply_disabled,updated_at=excluded.updated_at`
-    ).bind(payload.cid,inboxId,'',disabled,now,now).run();
-    return json({ok:true, inbox_id:inboxId, bot_reply_disabled:!!disabled});
-  }
-  // Agent assignment (may also include bot_reply_disabled)
-  const agentId=Number(body.chatwoot_user_id||0);
-  const email=String(body.assigned_email||'').trim().toLowerCase();
-  if(!email) return json({error:'assigned_email is required'}, 400);
-  const disabled='bot_reply_disabled' in body ? (body.bot_reply_disabled?1:0) : 0;
+  // Only the fields sent change: toggling AI Reply or Strict never resets the assigned user (or
+  // the other toggle), and re-assigning never resets either toggle.
+  const prev=await env.DB.prepare(`SELECT assigned_email,chatwoot_user_id,bot_reply_disabled,strict FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=?`).bind(payload.cid, inboxId).first().catch(()=>null);
+  const hasEmail='assigned_email' in body;
+  const email=hasEmail?String(body.assigned_email||'').trim().toLowerCase():String(prev?.assigned_email||'');
+  if(hasEmail && !email) return json({error:'assigned_email is required'}, 400);
+  if(hasEmail && !presentStaffEmails(c).has(email)) return json({error:'Channels can only be assigned to someone on your team.'}, 400);
+  const agentId=hasEmail?Number(body.chatwoot_user_id||0):Number(prev?.chatwoot_user_id||0);
+  const disabled='bot_reply_disabled' in body?(body.bot_reply_disabled?1:0):Number(prev?.bot_reply_disabled||0);
+  const strict='strict' in body?(body.strict?1:0):Number(prev?.strict||0);
+  if(strict && !email) return json({error:'Assign the channel to someone before making it strict.'}, 400);
   await env.DB.prepare(
-    `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,bot_reply_disabled=excluded.bot_reply_disabled,updated_at=excluded.updated_at`
-  ).bind(payload.cid,inboxId,email,agentId,disabled,now,now).run();
+    `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,strict,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,bot_reply_disabled=excluded.bot_reply_disabled,strict=excluded.strict,updated_at=excluded.updated_at`
+  ).bind(payload.cid,inboxId,email,agentId,disabled,strict,now,now).run();
+  const saved={inbox_id:inboxId, assigned_email:email, bot_reply_disabled:!!disabled, strict:!!strict};
+  // A toggle only: nothing about lead ownership changed — unless Strict was just switched on, when
+  // older leads from this channel with no channel recorded get it filled in (so they are hidden too).
+  if(!hasEmail){
+    const reassigned=strict&&!Number(prev?.strict)&&email?await backfillChannelLeadOwner(env, payload.cid, inboxId, email, c).catch(()=>0):0;
+    return json({ok:true, ...saved, reassigned});
+  }
   // Ensure InboxId column exists on the leads table so channel-visibility filters work
   await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
   // Leads already in from this channel move to the assigned user too (new ones are routed to them
@@ -6717,7 +6734,7 @@ async function handleChannelsInboxAssignmentPut(request, env){
   // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
   if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
     .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
-  return json({ok:true, inbox_id:inboxId, cleared:false, reassigned});
+  return json({ok:true, ...saved, cleared:false, reassigned});
 }
 
 // Sets Owner on every lead from one channel (Chatwoot inbox) to the user it's assigned to, in

@@ -564,19 +564,26 @@ export function chatsV2Access(c, email, hiddenInboxes=[]){
   const role=perms[Object.keys(perms).find(k=>lc(k)===me)]?.role;
   const staff=!!me&&me!==owner&&!FULL_ACCESS_ROLES.includes(role);
   const locked=staff&&!!parse(c?.lead_routing, {})?.enabled;
-  const hidden=staff?[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))]:[];
+  // Staff get every channel assigned to someone else hidden; admins / GMs only 🔒 Strict ones (the
+  // caller passes just those — chatsV2HiddenInboxes fullAccess); the owner never has any hidden.
+  const hidden=me&&me!==owner?[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))]:[];
   const mine=perms[Object.keys(perms).find(k=>lc(k)===me)];
   const categories=(me&&me!==owner&&c?.industry==='travel'&&Array.isArray(mine?.leadCategories))
     ?[...new Set(mine.leadCategories.map(x=>String(x||'').trim()).filter(Boolean))]:null;
   return {me, staff, locked, hidden, ...(categories?{categories}:{})};
 }
-export async function chatsV2HiddenInboxes(env, cid, email){
+// fullAccess (admin / general manager): only 🔒 Strict channels are hidden from them.
+export async function chatsV2HiddenInboxes(env, cid, email, {fullAccess=false}={}){
   const me=lc(email);
   if(!me) return [];
-  try{
-    const {results}=await env.DB.prepare(`SELECT inbox_id, assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email<>''`).bind(Number(cid)).all();
-    return (results||[]).filter(r=>lc(r.assigned_email)!==me).map(r=>String(r.inbox_id));
-  }catch(e){ return []; } // table not created yet = no channel assignments
+  let results=null;
+  try{ ({results}=await env.DB.prepare(`SELECT inbox_id, assigned_email, strict FROM channel_inbox_assignments WHERE client_id=? AND assigned_email<>''`).bind(Number(cid)).all()); }
+  catch(e){
+    // No strict column yet (migration not applied): nothing is strict.
+    try{ ({results}=await env.DB.prepare(`SELECT inbox_id, assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email<>''`).bind(Number(cid)).all()); }
+    catch(e2){ return []; } // table not created yet = no channel assignments
+  }
+  return (results||[]).filter(r=>lc(r.assigned_email)!==me&&(!fullAccess||Number(r.strict)===1)).map(r=>String(r.inbox_id));
 }
 function scopeSql(acc){
   let sql='', vals=[];
@@ -1036,7 +1043,7 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
   const c=await deps.getClientById(env, cid);
   if(!c) return json({error:'Client not found'}, 404);
   let acc=chatsV2Access(c, payload.email);
-  if(acc.staff) acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, cid, payload.email));
+  if(acc.me&&acc.me!==lc(c.authentik_email)) acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, cid, payload.email, {fullAccess:!acc.staff}));
   const qp=Object.fromEntries(url.searchParams);
   const t0=Date.now();
   try{
