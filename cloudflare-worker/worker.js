@@ -1683,7 +1683,8 @@ export function channelVisibilityClause(assignments, email){
   if(!others.length) return '';
   // ~and for "not in list"; wrap in parens only when several conditions need grouping.
   const neqParts=others.map(id=>`(InboxId,neq,${id})`).join('~and');
-  return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}`;
+  // A lead assigned to this user always stays visible, even from someone else's channel.
+  return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}${me?`~or(Owner,like,${encodeURIComponent(me)})`:''}`;
 }
 
 let _leadsServiceCategoryReady=false;
@@ -1810,9 +1811,10 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
       // so it has to produce a clause that matches nothing rather than being skipped.
       if(Array.isArray(mine?.leadCategories)){
         const categories=mine.leadCategories.filter(Boolean);
-        const clause=categories.length
+        // …plus any lead assigned to them, whatever its category.
+        const clause='('+(categories.length
           ? '('+categories.map(cat=>`(ServiceCategory,eq,${encodeURIComponent(cat)})`).join('~or')+')'
-          : '(Id,eq,-1)';
+          : '(Id,eq,-1)')+`~or(Owner,like,${encodeURIComponent(requesterEmail)}))`;
         qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
       }
     }
@@ -1847,6 +1849,24 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
     try{ await ensureLeadsColumns(env, ['ServiceCategory']); _leadsServiceCategoryReady=true; }catch(e){}
   }
 
+  // A lead given to a teammate by hand (Leads tab, Edit Lead, bulk assign): note who owned it
+  // before, so the new owner can be told once the write lands (notifyLeadsAssigned).
+  let ownerChanges=null;
+  if(method==='PATCH' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"Owner"')){
+    try{
+      const parsed=JSON.parse(body);
+      const rows=(Array.isArray(parsed)?parsed:[parsed]).filter(x=>x&&Number(x.Id)&&String(x.Owner||'').trim()).slice(0,50);
+      if(rows.length){
+        ownerChanges=(await Promise.all(rows.map(async x=>{
+          const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(x.Id)}?fields=Id,ClientId,Owner,Name`).catch(()=>null);
+          const prev=pr?.ok?await pr.json().catch(()=>null):null;
+          if(!prev||String(prev.ClientId)!==String(payload.cid)) return null;
+          return {lead_id:Number(x.Id), lead_name:String(prev.Name||''), to:String(x.Owner).trim(), from:String(prev.Owner||'').trim()};
+        }))).filter(Boolean);
+      }
+    }catch(e){ ownerChanges=null; }
+  }
+
   let r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
     method,
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
@@ -1859,6 +1879,10 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
     r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {method, headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'}, body});
   }
   let data=await r.text();
+  if(r.ok && ownerChanges?.length){
+    const p=getClientById(env, payload.cid).then(cl=>notifyLeadsAssigned(env, cl, payload.cid, ownerChanges, payload.email)).catch(()=>{});
+    if(ctx?.waitUntil) ctx.waitUntil(p); else await p;
+  }
 
   // A lead's Service Category (set by anyone — owner, admin or staff — from Add Lead, Edit Lead, the
   // Leads table or Chats) must really be stored on the lead before the browser is told it saved.
@@ -2085,6 +2109,9 @@ async function handleGetChatMessages(request, env){
 // message to refuse with, or ''.
 export function chatSendRefusal(acc, lead){
   if(!lead) return '';
+  // A lead assigned to you is yours to work, whichever channel it came in on and whatever its
+  // category: the channel / category limits never lock its owner out.
+  if(acc?.me&&String(lead.Owner||'').trim().toLowerCase()===acc.me) return '';
   if(acc?.categories&&!acc.categories.includes(String(lead.ServiceCategory||'').trim())) return 'This chat is in a category you don\'t have access to.';
   if(acc?.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
   if(!acc?.staff) return '';
@@ -17916,6 +17943,32 @@ export function coldReallocDecide({lead, track, cfg, nowMs}){
   const warned=Date.parse(track.warned_at||'')||0;
   if(cfg.days>2 && idle>=warnAt && warned<clockMs) return {action:'warn', clockMs};
   return {action:'none', clockMs};
+}
+
+// A teammate was just given leads by hand (Leads tab, Edit Lead, Chats → Assign): a live alert on
+// their open dashboards (lead_reassigned, reason 'manual' — dashboard.html onLiveReassignEvent)
+// and one email per person. Never sent to whoever made the change, or when the owner didn't change.
+// items: [{lead_id, lead_name, to, from}]
+export async function notifyLeadsAssigned(env, c, cid, items, byEmail){
+  const lower=v=>String(v||'').trim().toLowerCase();
+  const by=lower(byEmail), at=new Date().toISOString();
+  let names={}; try{ names=JSON.parse(c?.team_names||'{}')||{}; }catch(e){}
+  const nameOf=e=>names[e]||Object.entries(names).find(([k])=>lower(k)===e)?.[1]||String(e||'').split('@')[0];
+  const groups={};
+  for(const it of items||[]){
+    const to=lower(it?.to);
+    if(!to||to===by||to===lower(it.from)||!Number(it.lead_id)) continue;
+    (groups[to]=groups[to]||[]).push(it);
+  }
+  for(const [to, list] of Object.entries(groups)){
+    for(const it of list.slice(0,20)){
+      try{ await engineBroadcastUpdate(env, cid, {type:'lead_reassigned', reason:'manual', lead_id:Number(it.lead_id), lead_name:String(it.lead_name||''), to, from:lower(it.from), by, by_name:by?nameOf(by):'', at}); }catch(e){}
+    }
+    const leadNames=list.map(x=>String(x.lead_name||'').trim()||`Lead #${x.lead_id}`);
+    const who=by?esc(nameOf(by)):'Your team';
+    await coldReallocEmail(env, to, leadNames.length===1?`👤 Lead assigned to you: ${leadNames[0]}`:`👤 ${leadNames.length} leads assigned to you`,
+      `<p>${who} assigned ${leadNames.length===1?'a lead':'these leads'} to you. You can now see ${leadNames.length===1?'it':'them'} in Leads and reply in Chats, whichever channel ${leadNames.length===1?'it':'they'} came in on.</p><ul>${leadNames.slice(0,50).map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>`);
+  }
 }
 
 async function coldReallocEmail(env, to, subject, html){
@@ -36322,6 +36375,7 @@ const CHATS_V2_DEPS={
   // Delivery ticks: recent Chatwoot messages (with status) for the open chat, and a check that the
   // engine webhook is subscribed to message_updated.
   cwMessages:(env, c, convId)=>chatwootRecentMessages(c, convId),
+  onAssigned:(env, c, cid, items, by)=>notifyLeadsAssigned(env, c, cid, items, by),
   // Inbox tabs in Chats: connected inboxes with their name and WhatsApp number.
   inboxes:(env, c)=>chatsInboxDirectory(c),
   syncWebhook:(env, c)=>engineSyncChatwootWebhook(env, c),

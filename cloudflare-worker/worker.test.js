@@ -975,7 +975,14 @@ describe('Chats: staff send only into their own chats', () => {
   test('a category-restricted travel teammate only sends in their categories', () => {
     const visa={...staff, categories:['Visa']};
     assert.equal(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Visa'}), '');
-    assert.match(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Air Ticket'}), /category/);
+    assert.match(chatSendRefusal(visa, {Owner:'', ServiceCategory:'Air Ticket'}), /category/);
+    // …but a lead assigned to them is theirs, whatever its category.
+    assert.equal(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Air Ticket'}), '');
+  });
+  test("a lead assigned to you can be answered even from someone else's (Strict) channel", () => {
+    assert.equal(chatSendRefusal(staff, {Owner:'Rahul@x.test', InboxId:'22'}), '');
+    assert.equal(chatSendRefusal({me:'admin@x.test', staff:false, hidden:['22']}, {Owner:'admin@x.test', InboxId:'22'}), '');
+    assert.match(chatSendRefusal({me:'admin@x.test', staff:false, hidden:['22']}, {Owner:'', InboxId:'22'}), /channel assigned to someone else/);
   });
   test('the owner and admins are never refused', () => {
     assert.equal(chatSendRefusal({me:'boss@x.test', staff:false, hidden:[]}, {Owner:'shafna@x.test'}), '');

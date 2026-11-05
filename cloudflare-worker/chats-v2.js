@@ -587,17 +587,19 @@ export async function chatsV2HiddenInboxes(env, cid, email, {fullAccess=false}={
 }
 function scopeSql(acc){
   let sql='', vals=[];
+  // Category and channel limits never hide a chat assigned to this user.
   if(acc.categories){
-    if(!acc.categories.length) sql+=' AND 0';
-    else { sql+=` AND service_category IN (${acc.categories.map(()=>'?').join(',')})`; vals.push(...acc.categories); }
+    if(!acc.categories.length){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
+    else { sql+=` AND (service_category IN (${acc.categories.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.categories, acc.me); }
   }
-  if(acc.hidden?.length){ sql+=` AND inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')})`; vals.push(...acc.hidden); }
+  if(acc.hidden?.length){ sql+=` AND (inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.hidden, acc.me); }
   if(!acc.staff) return {sql, vals};
   if(acc.locked){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
   else { sql+=` AND assignee_email IN (?, '')`; vals.push(acc.me); }
   return {sql, vals};
 }
 function canSee(acc, row){
+  if(acc.me&&lc(row.assignee_email)===acc.me) return true;
   if(acc.categories&&!acc.categories.includes(String(row.service_category||''))) return false;
   if(acc.hidden?.includes(String(row.inbox_id||''))) return false;
   if(!acc.staff) return true;
@@ -899,6 +901,12 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   events.forEach(([id], i)=>{ evOut[id]=written[i]; });
   const fresh=await rowsByIds(env, rows.map(r=>Number(r.lead_id)));
   if(deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:fresh.map(r=>Number(r.lead_id)), by:acc.me});
+  // The teammate a chat was just given to hears about it (live alert + email).
+  if(op==='assign'&&lc(a.email)&&deps.onAssigned){
+    const to=lc(a.email);
+    const given=rows.filter(r=>lc(r.assignee_email)!==to).map(r=>({lead_id:Number(r.lead_id), lead_name:r.name||'', to, from:lc(r.assignee_email)}));
+    if(given.length) try{ await deps.onAssigned(env, c, cid, given, acc.me); }catch(e){}
+  }
   return {rows:fresh, events:evOut};
 }
 
