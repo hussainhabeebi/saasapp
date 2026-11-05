@@ -11,6 +11,7 @@ import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
+import {TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -960,6 +961,10 @@ async function handleSessionExchange(request, env){
   let rec=await getClientByAuthentikEmail(env, email);
   let isNewSignup=false;
   if(!rec||!rec.Id){
+    // Added through User Management but no longer on that team (removed, deactivated, or a create
+    // that never finished): not a new signup, so never hand them an empty account of their own.
+    const former=await tmFormerTeam(env, email);
+    if(former) return json({error:`Your access to ${former.client_name||'your team'}'s Leadvyne account ${former.status==='pending'?'is not ready yet':'was removed'}. Ask your admin to add you again.`, code:'TEAM_ACCESS_REMOVED'}, 403);
     // A verified Authentik identity with no matching CLIENTS row isn't an error — it's what a
     // brand-new signup looks like on first login. Provisioning inline here (instead of returning
     // a "no_account" error and making the browser call /session/auto-provision as a second
@@ -976,6 +981,7 @@ async function handleSessionExchange(request, env){
     await patchClientFields(env, rec.Id, {signup_status:'active'}).catch(()=>{});
   }
   const session_token=await signSession(env, rec.Id, email);
+  await tmRecordLogin(env, rec.Id, email);
   // Cross-Sell module (dashboard.html Settings → "🔄 Cross-Sell & Upsell", the lead panel's
   // suggestions card, and accounting.html's line-item suggestions) stores its rule list as a
   // single JSON CLIENTS field, same convention as `services`. Ensured here — login, not every
@@ -1055,6 +1061,8 @@ async function handleAutoProvision(request, env){
   let rec=await getClientByAuthentikEmail(env, email);
   let isNewSignup=false;
   if(!rec){
+    const former=await tmFormerTeam(env, email);
+    if(former) return json({error:`Your access to ${former.client_name||'your team'}'s Leadvyne account was removed. Ask your admin to add you again.`, code:'TEAM_ACCESS_REMOVED'}, 403);
     const created=await provisionNewClientRecord(env, email);
     if(created.error) return json({error:created.error}, created.status||502);
     rec=created.rec;
@@ -1279,19 +1287,337 @@ async function authentikFreeUsername(env, base){
 }
 // Single source of truth for "can this email be added to this client?" — shared by create-user,
 // check-user (live form validation) and add-existing.
-async function teamEmailStatus(env, c, emailNorm){
-  if(emailNorm===String(c.authentik_email||'').trim().toLowerCase()) return 'owner';
+// Statuses: owner | team | other_account (owns a real account) | other_team (teammate elsewhere) |
+// orphan_account (owns an empty account created by mistake: fixable with POST /team/repair) |
+// has_login | new. Returns {status, message, other}.
+async function teamEmailCheck(env, c, emailNorm){
+  if(emailNorm===String(c.authentik_email||'').trim().toLowerCase()) return {status:'owner', message:tmEmailMessage('owner'), other:null};
   const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
-  if(teamEmails.includes(emailNorm)) return 'team';
-  if(await getClientByAuthentikEmail(env, emailNorm)) return 'other_account';
-  if(await authentikFindUserByEmail(env, emailNorm)) return 'has_login';
-  return 'new';
+  if(teamEmails.includes(emailNorm)) return {status:'team', message:tmEmailMessage('team'), other:null};
+  const other=await tmOtherAccount(env, c, emailNorm);
+  if(other){
+    const status=other.kind==='team'?'other_team':other.orphan?'orphan_account':'other_account';
+    return {status, message:tmEmailMessage(status,{otherName:other.row.client_name||''}), other};
+  }
+  if(await authentikFindUserByEmail(env, emailNorm)) return {status:'has_login', message:null, other:null};
+  return {status:'new', message:null, other:null};
 }
-const TEAM_EMAIL_STATUS_MSG={
-  owner:"That's the account owner's email. The owner already has full access.",
-  team:'This person is already on your team.',
-  other_account:'This email is the owner of a different Leadvyne account and can’t be added as a teammate.',
-};
+async function teamEmailStatus(env, c, emailNorm){ return (await teamEmailCheck(env, c, emailNorm)).status; }
+/* ── Team admin storage (team-admin.js). D1, so nothing new is added to the CLIENTS row:
+   team_member_meta — everyone added through User Management, with their status and dates;
+   team_audit       — the User Management activity log.
+   Every write is best-effort when D1 is missing (older test environments), so team changes never
+   depend on it. ── */
+const _tmSchemaReady=new WeakSet();
+async function tmEnsureSchema(env){
+  if(!env.DB) return false;
+  if(_tmSchemaReady.has(env.DB)) return true;
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS team_member_meta (client_id INTEGER NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', invite_kind TEXT, invite_id TEXT, created_login INTEGER NOT NULL DEFAULT 0, authentik_pk TEXT, name TEXT, invited_by TEXT, invited_at TEXT, expires_at TEXT, activated_at TEXT, last_login_at TEXT, deactivated_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,email))`).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_team_member_meta_email ON team_member_meta (email)`).run();
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS team_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details_json TEXT, created_at TEXT NOT NULL)`).run();
+    _tmSchemaReady.add(env.DB);
+    return true;
+  }catch(e){ return false; }
+}
+const TM_META_COLS=['status','invite_kind','invite_id','created_login','authentik_pk','name','invited_by','invited_at','expires_at','activated_at','last_login_at','deactivated_at'];
+async function tmMetaGet(env,cid,email){
+  if(!await tmEnsureSchema(env)) return null;
+  return await env.DB.prepare(`SELECT * FROM team_member_meta WHERE client_id=? AND email=?`).bind(Number(cid),tmEmail(email)).first().catch(()=>null);
+}
+async function tmMetaAll(env,cid){
+  if(!await tmEnsureSchema(env)) return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM team_member_meta WHERE client_id=?`).bind(Number(cid)).all().catch(()=>({results:[]}));
+  return results||[];
+}
+async function tmMetaUpsert(env,cid,email,fields={}){
+  if(!await tmEnsureSchema(env)) return;
+  const f=Object.fromEntries(Object.entries(fields).filter(([k])=>TM_META_COLS.includes(k)));
+  const cols=Object.keys(f);
+  const now=new Date().toISOString();
+  const insertCols=['client_id','email',...cols,'updated_at'];
+  const sets=[...cols.map(k=>`${k}=excluded.${k}`),'updated_at=excluded.updated_at'].join(',');
+  await env.DB.prepare(`INSERT INTO team_member_meta (${insertCols.join(',')}) VALUES (${insertCols.map(()=>'?').join(',')}) ON CONFLICT(client_id,email) DO UPDATE SET ${sets}`)
+    .bind(Number(cid),tmEmail(email),...cols.map(k=>f[k]??null),now).run().catch(()=>{});
+}
+async function tmMetaDelete(env,cid,email){
+  if(!await tmEnsureSchema(env)) return;
+  await env.DB.prepare(`DELETE FROM team_member_meta WHERE client_id=? AND email=?`).bind(Number(cid),tmEmail(email)).run().catch(()=>{});
+}
+async function tmAudit(env,cid,actor,action,target,details={}){
+  if(!await tmEnsureSchema(env)) return;
+  await env.DB.prepare(`INSERT INTO team_audit (client_id,actor,action,target,details_json,created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(cid),tmEmail(actor),String(action),tmEmail(target)||String(target||''),JSON.stringify(details||{}),new Date().toISOString()).run().catch(()=>{});
+}
+// A sign-in by someone User Management knows about: first sign-in turns "pending" into "active".
+async function tmRecordLogin(env,cid,email){
+  if(!env.DB) return;
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE team_member_meta SET last_login_at=?, activated_at=COALESCE(activated_at,?), status=CASE WHEN status='pending' THEN 'active' ELSE status END, updated_at=? WHERE client_id=? AND email=?`)
+    .bind(now,now,now,Number(cid),tmEmail(email)).run().catch(()=>{});
+}
+// The account a teammate was added to through User Management but is no longer on (removed,
+// deactivated, or a create that never finished). Signing in with such an email must not create a
+// brand-new empty account for them. Returns {client_id, client_name, status} or null.
+async function tmFormerTeam(env,email){
+  if(!await tmEnsureSchema(env)) return null;
+  const row=await env.DB.prepare(`SELECT client_id,status FROM team_member_meta WHERE email=? ORDER BY updated_at DESC LIMIT 1`).bind(tmEmail(email)).first().catch(()=>null);
+  if(!row) return null;
+  let name='';try{name=(await getClientById(env,row.client_id))?.client_name||'';}catch(e){}
+  return {client_id:row.client_id,client_name:name,status:row.status};
+}
+async function removeEmailFromTeam(env,c,clientId,emailNorm){
+  const teamEmails=tmTeamEmails(c);
+  if(!teamEmails.includes(emailNorm)) return false;
+  const fields={team_emails:teamEmails.filter(e=>e!==emailNorm).join(',')};
+  await patchClientFields(env,clientId,fields);
+  Object.assign(c,fields);
+  return true;
+}
+// Who else has this email: {row, kind:'owner'|'team', orphan} or null.
+async function tmOtherAccount(env,c,emailNorm){
+  const row=await getClientByAuthentikEmail(env,emailNorm);
+  if(!row||String(row.Id)===String(c?.Id)) return null;
+  const kind=tmEmail(row.authentik_email)===emailNorm?'owner':'team';
+  let orphan=false;
+  if(kind==='owner'&&tmIsOrphanAccount(row,emailNorm,{leadCount:0})){
+    const r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${row.Id})&limit=1&fields=Id`).catch(()=>null);
+    const list=r?.ok?((await r.json().catch(()=>({})))?.list||[]):[{}];
+    orphan=list.length===0;
+  }
+  return {row,kind,orphan};
+}
+// The managing user for team-admin routes: the account owner, or a teammate with the Admin role.
+async function tmManagerAuth(request,env,{ownerOnly=false}={}){
+  const payload=await requireSession(request,env);
+  if(!payload) return {error:json({error:'Invalid or expired session'},401)};
+  const c=await getClientById(env,payload.cid);
+  if(!c) return {error:json({error:'Client not found'},404)};
+  const me=tmEmail(payload.email);
+  const allowed=ownerOnly?tmIsOwner(c,me):tmCanManage(c,me);
+  if(!allowed) return {error:json({error:ownerOnly?'Only the account owner can do this.':'Only the account owner or an Admin can manage the team.'},403)};
+  return {payload,c,me,cid:Number(payload.cid)};
+}
+
+// GET /team/members — everyone on the team with their status, role, access and last sign-in.
+// Readable by any signed-in teammate (it is the same list the old page shows); can_manage says
+// whether this user may change anything.
+export async function handleTeamMembers(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,payload.cid);
+  if(!c) return json({error:'Client not found'},404);
+  const me=tmEmail(payload.email);
+  const meta=await tmMetaAll(env,payload.cid);
+  const ownerEmail=tmEmail(c.authentik_email);
+  const ownerMeta=meta.find(r=>r.email===ownerEmail)||{};
+  const limits=getPlanLimits(c.plan_tier);
+  return json({
+    me:{email:me,is_owner:tmIsOwner(c,me),can_manage:tmCanManage(c,me),role:tmRoleOf(c,me)},
+    account:{id:String(c.Id),name:c.client_name||'',industry:c.industry||''},
+    owner:{email:ownerEmail,name:c.client_name||ownerEmail,whatsapp:String(tmJson(c.team_whatsapp,{})[ownerEmail]||''),last_login_at:ownerMeta.last_login_at||null},
+    members:tmMembers(c,meta),
+    seats:{used:countClientTeamUsers(c),max:limits?.max_users||null,plan:limits?.label||null},
+    roles:TM_ROLE_KEYS,modules:TM_MODULE_KEYS,invite_ttl_days:TEAM_INVITE_TTL_DAYS,
+  });
+}
+// GET /team/audit — the last 200 User Management changes.
+export async function handleTeamAudit(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  if(!await tmEnsureSchema(env)) return json({entries:[]});
+  const {results}=await env.DB.prepare(`SELECT actor,action,target,details_json,created_at FROM team_audit WHERE client_id=? ORDER BY id DESC LIMIT 200`).bind(a.cid).all();
+  return json({entries:(results||[]).map(r=>({...r,text:tmAuditText(r)}))});
+}
+// POST /team/check-email {email} — "Fix this user": everything about one email in one place.
+export async function handleTeamDiagnose(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  const {email}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  if(!TM_EMAIL_RE.test(e)) return json({error:'Please enter a valid email address.'},400);
+  const check=await teamEmailCheck(env,a.c,e);
+  const login=env.AUTHENTIK_API_TOKEN?await authentikFindUserByEmail(env,e).catch(()=>null):null;
+  const meta=await tmMetaGet(env,a.cid,e);
+  const fix={owner:null,team:null,other_account:null,other_team:null,orphan_account:'repair',has_login:'add',new:'invite'}[check.status];
+  return json({email:e,status:check.status,message:check.message||null,fix,
+    login:login?{exists:true,username:login.username||'',active:login.is_active!==false,last_login:login.last_login||null}:{exists:false},
+    member:meta?tmMemberView(a.c,e,meta):null,
+    other_account:check.other?{id:String(check.other.row.Id),name:check.other.row.client_name||'',kind:check.other.kind,empty:!!check.other.orphan}:null});
+}
+// POST /team/member/update {email, name?, role?, modules?} — owner only (same rule as before:
+// only the account owner may change anyone's permissions).
+export async function handleTeamMemberUpdate(request,env){
+  const body=await request.json().catch(()=>({}));
+  const e=tmEmail(body.email);
+  const ownerOnly='role' in body||'modules' in body;
+  const a=await tmManagerAuth(new Request(request.url,{headers:request.headers}),env,{ownerOnly}); if(a.error) return a.error;
+  if(!tmTeamEmails(a.c).includes(e)) return json({error:'This person is not on your team.'},404);
+  const {next,error}=tmApplyMemberUpdate(a.c,e,body);
+  if(error) return json({error},400);
+  if(next.team_permissions) await ensureClientColumns(env,['team_permissions']).catch(()=>{});
+  await patchClientFields(env,a.cid,next);
+  await tmAudit(env,a.cid,a.me,'updated',e,{...('role' in body?{role:body.role||null}:{}),...('modules' in body?{modules:true}:{}),...(body.name?{name:body.name}:{})});
+  return json({ok:true,member:tmMemberView({...a.c,...next},e,await tmMetaGet(env,a.cid,e)||{})});
+}
+// POST /team/member/deactivate {email} — takes them off the team but keeps their name, role and
+// access settings so they can be brought back in one click. Their leads are reassigned by the
+// caller (POST /team/reassign-leads), the same as removing someone.
+export async function handleTeamMemberDeactivate(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  const {email,remove}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  if(e===a.me) return json({error:'You cannot deactivate yourself.'},400);
+  if(tmIsOwner(a.c,e)) return json({error:'The account owner cannot be deactivated.'},400);
+  if(!tmIsOwner(a.c,a.me)&&tmRoleOf(a.c,e)==='admin') return json({error:'Only the account owner can deactivate an Admin.'},403);
+  const was=await removeEmailFromTeam(env,a.c,a.cid,e);
+  const meta=await tmMetaGet(env,a.cid,e);
+  if(!was&&!meta) return json({error:'This person is not on your team.'},404);
+  const status=remove?'removed':'deactivated';
+  await tmMetaUpsert(env,a.cid,e,{status,deactivated_at:new Date().toISOString(),name:tmJson(a.c.team_names,{})[e]||meta?.name||null});
+  await tmAudit(env,a.cid,a.me,status,e);
+  return json({ok:true,status});
+}
+// POST /team/member/reactivate {email}
+export async function handleTeamMemberReactivate(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  const {email}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  const meta=await tmMetaGet(env,a.cid,e);
+  if(!meta||meta.status!=='deactivated') return json({error:'Only a deactivated teammate can be reactivated.'},400);
+  const check=await teamEmailCheck(env,a.c,e);
+  if(['other_account','other_team','orphan_account'].includes(check.status)) return json({error:check.message,code:check.status.toUpperCase()},409);
+  const seatErr=planSeatError(a.c); if(seatErr) return json({error:seatErr},402);
+  await addEmailToTeam(env,a.c,a.cid,e,meta.name||'');
+  await tmMetaUpsert(env,a.cid,e,{status:meta.activated_at?'active':'pending',deactivated_at:null});
+  await tmAudit(env,a.cid,a.me,'reactivated',e);
+  return json({ok:true});
+}
+// POST /team/member/resend {email} — a fresh invite (or set-password link) for someone who hasn't
+// signed in yet.
+export async function handleTeamMemberResend(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'},500);
+  const {email}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  if(!tmTeamEmails(a.c).includes(e)) return json({error:'This person is not on your team.'},404);
+  const meta=await tmMetaGet(env,a.cid,e);
+  const name=tmJson(a.c.team_names,{})[e]||meta?.name||e.split('@')[0];
+  const login=await authentikFindUserByEmail(env,e);
+  if(login){
+    if(login.last_login||meta?.status==='active') return json({error:'They have already signed in. Use "Set password" if they forgot it.'},409);
+    const recR=await authentikApiFetch(env,`/core/users/${login.pk}/recovery/`,{method:'POST'});
+    const link=recR.ok?(await recR.json().catch(()=>({})))?.link||null:null;
+    if(!link) return json({error:'Could not create a new link (the Recovery flow is not set up on Authentik). Use "Set password" instead.'},503);
+    const sent=await sendTeamInviteEmail(env,{to:e,name,inviteUrl:link,clientName:a.c.client_name||'your team'});
+    await tmAudit(env,a.cid,a.me,'resent',e,{kind:'login'});
+    return json({ok:true,inviteLink:link,inviteEmailSent:sent});
+  }
+  // No login yet: a fresh invitation (the old one is deleted so only the newest link works).
+  if(meta?.invite_id) await authentikApiFetch(env,`/stages/invitation/invitations/${encodeURIComponent(meta.invite_id)}/`,{method:'DELETE'}).catch(()=>{});
+  const inv=await tmCreateInvitation(env,a.cid,e,name);
+  if(inv.error) return json({error:inv.error,code:inv.code},inv.status||502);
+  await tmMetaUpsert(env,a.cid,e,{status:'pending',invite_kind:'invite',invite_id:inv.id,expires_at:inv.expiresAt});
+  const link=teamInviteLink(env,inv.id);
+  const sent=await sendTeamInviteEmail(env,{to:e,name,inviteUrl:link,clientName:a.c.client_name||'your team',
+    intro:`Click below to accept and create your login — you'll choose your own password. The link expires in ${TEAM_INVITE_TTL_DAYS} days.`,ctaLabel:'Accept invite'});
+  await tmAudit(env,a.cid,a.me,'resent',e,{kind:'invite'});
+  return json({ok:true,inviteLink:link,inviteEmailSent:sent,expiresAt:inv.expiresAt});
+}
+// POST /team/member/revoke {email} — cancels an invite nobody has accepted: off the team, the
+// invitation deleted, and a login this account created for them (never used) deleted too.
+export async function handleTeamMemberRevoke(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  const {email}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  const meta=await tmMetaGet(env,a.cid,e);
+  if(!meta||meta.status!=='pending') return json({error:'Only an invite that has not been accepted can be revoked.'},400);
+  if(meta.invite_id&&env.AUTHENTIK_API_TOKEN) await authentikApiFetch(env,`/stages/invitation/invitations/${encodeURIComponent(meta.invite_id)}/`,{method:'DELETE'}).catch(()=>{});
+  if(meta.created_login&&meta.authentik_pk&&env.AUTHENTIK_API_TOKEN){
+    const login=await authentikFindUserByEmail(env,e).catch(()=>null);
+    if(login&&String(login.pk)===String(meta.authentik_pk)&&!login.last_login) await authentikApiFetch(env,`/core/users/${login.pk}/`,{method:'DELETE'}).catch(()=>{});
+  }
+  await removeEmailFromTeam(env,a.c,a.cid,e);
+  await tmMetaDelete(env,a.cid,e);
+  await tmAudit(env,a.cid,a.me,'revoked',e);
+  return json({ok:true});
+}
+// POST /team/repair {email} — "Move to my team" for someone whose earlier sign-in created an
+// empty account by mistake: that account is archived (kept, renamed, sign-in detached), then
+// they join this team with the login they already have.
+export async function handleTeamRepair(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  const {email}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  const other=await tmOtherAccount(env,a.c,e);
+  if(!other||other.kind!=='owner'||!other.orphan) return json({error:'Nothing to repair: this email does not have an empty, unused account.'},409);
+  const seatErr=planSeatError(a.c); if(seatErr) return json({error:seatErr},402);
+  const archivedEmail=`archived+${other.row.Id}+${Date.now()}@${e.split('@')[1]||'leadvyne.invalid'}`;
+  await patchClientFields(env,other.row.Id,{authentik_email:archivedEmail,signup_status:'archived',client_name:`${other.row.client_name||'Account'} (archived)`,engine_disabled:'Yes'});
+  await addEmailToTeam(env,a.c,a.cid,e,tmJson(a.c.team_names,{})[e]||'');
+  await tmMetaUpsert(env,a.cid,e,{status:'active',invite_kind:'existing',invited_by:a.me,invited_at:new Date().toISOString(),activated_at:new Date().toISOString(),deactivated_at:null});
+  await tmAudit(env,a.cid,a.me,'repaired',e,{archived_client_id:String(other.row.Id)});
+  return json({ok:true,archived_client_id:String(other.row.Id)});
+}
+// POST /team/bulk-invite {text} or {rows:[{name,email,role}]} — invites each person in turn with
+// the same rules as one invite. Returns a result per row.
+export async function handleTeamBulkInvite(request,env){
+  const body=await request.json().catch(()=>({}));
+  const a=await tmManagerAuth(new Request(request.url,{headers:request.headers}),env); if(a.error) return a.error;
+  const parsed=Array.isArray(body.rows)?{rows:body.rows.slice(0,TM_BULK_MAX).map((r,i)=>({line:i+1,name:String(r.name||''),email:tmEmail(r.email),role:r.role||null})),errors:[]}:tmParseBulk(body.text);
+  const results=[];
+  for(const row of parsed.rows){
+    const req=new Request(request.url,{method:'POST',headers:request.headers,body:JSON.stringify({name:row.name,email:row.email})});
+    const r=await handleTeamInvite(req,env);
+    const d=await r.json().catch(()=>({}));
+    if(r.ok&&row.role&&tmIsOwner(await getClientById(env,a.cid)||{},a.me)){
+      const c=await getClientById(env,a.cid);
+      const {next}=tmApplyMemberUpdate(c,row.email,{role:row.role});
+      if(next?.team_permissions){await ensureClientColumns(env,['team_permissions']).catch(()=>{});await patchClientFields(env,a.cid,next).catch(()=>{});}
+    }
+    results.push({line:row.line,email:row.email,ok:r.ok,error:r.ok?null:(d.error||`HTTP ${r.status}`),alreadyHasLogin:!!d.alreadyHasLogin,inviteEmailSent:!!d.inviteEmailSent});
+  }
+  return json({results,errors:parsed.errors});
+}
+// POST /team/transfer-ownership {email, confirm} — owner only. The teammate becomes the owner
+// (sign-in email of the account); the old owner stays on the team as an Admin.
+export async function handleTeamTransferOwnership(request,env){
+  const a=await tmManagerAuth(request,env,{ownerOnly:true}); if(a.error) return a.error;
+  const {email,confirm}=await request.json().catch(()=>({}));
+  const e=tmEmail(email);
+  if(!tmTeamEmails(a.c).includes(e)) return json({error:'The new owner must be on your team.'},400);
+  if(String(confirm||'').trim().toLowerCase()!==e) return json({error:'Type their email to confirm.'},400);
+  const meta=await tmMetaGet(env,a.cid,e);
+  if(meta?.status==='pending') return json({error:'They must sign in at least once before they can own the account.'},400);
+  const oldOwner=tmEmail(a.c.authentik_email);
+  const perms=tmJson(a.c.team_permissions,{});
+  delete perms[e];perms[oldOwner]={...(perms[oldOwner]||{}),role:'admin',modules:null};
+  const team=tmTeamEmails(a.c).filter(x=>x!==e);team.push(oldOwner);
+  await ensureClientColumns(env,['team_permissions']).catch(()=>{});
+  await patchClientFields(env,a.cid,{authentik_email:e,team_emails:[...new Set(team)].join(','),team_permissions:JSON.stringify(perms)});
+  await tmMetaDelete(env,a.cid,e);
+  await tmMetaUpsert(env,a.cid,oldOwner,{status:'active',invite_kind:'existing',activated_at:new Date().toISOString()});
+  await tmAudit(env,a.cid,a.me,'ownership_transferred',e,{from:oldOwner});
+  return json({ok:true,owner:e});
+}
+// An Authentik invitation for one email (shared by /team/invite and resend).
+async function tmCreateInvitation(env,cid,emailNorm,displayName){
+  const slug=String(env.AUTHENTIK_INVITE_FLOW_SLUG||'leadvyne-team-invite').trim();
+  const flowR=await authentikApiFetch(env,`/flows/instances/${encodeURIComponent(slug)}/`);
+  if(!flowR.ok) return {error:`Invite links aren't set up on Authentik yet (flow "${slug}" not found). Use "Create user with a password" below for now.`,code:'INVITE_FLOW_MISSING',status:503};
+  const flow=await flowR.json().catch(()=>({}));
+  const expiresAt=new Date(Date.now()+TEAM_INVITE_TTL_DAYS*86400000).toISOString();
+  const suffix=Array.from(crypto.getRandomValues(new Uint8Array(5)),b=>b.toString(16).padStart(2,'0')).join('');
+  const invR=await authentikApiFetch(env,'/stages/invitation/invitations/',{method:'POST',body:JSON.stringify({
+    name:`leadvyne-${cid}-${suffix}`,expires:expiresAt,single_use:true,flow:flow.pk,
+    fixed_data:{email:emailNorm,username:emailNorm,name:displayName}
+  })});
+  const inv=await invR.json().catch(()=>({}));
+  if(!invR.ok||!inv.pk){
+    const detail=inv?.name?.[0]||inv?.non_field_errors?.[0]||inv?.detail||('HTTP '+invR.status);
+    return {error:'Authentik rejected the invitation: '+detail,status:502};
+  }
+  return {id:inv.pk,expiresAt};
+}
+
 async function addEmailToTeam(env, c, clientId, emailNorm, displayName){
   const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
   if(teamEmails.includes(emailNorm)) return;
@@ -1300,6 +1626,7 @@ async function addEmailToTeam(env, c, clientId, emailNorm, displayName){
   const fields={team_emails:[...teamEmails, emailNorm].join(','), team_names:JSON.stringify(names)};
   await patchClientFields(env, clientId, fields);
   Object.assign(c, fields);
+  return true;
 }
 function planSeatError(c){
   const planLimits=getPlanLimits(c.plan_tier);
@@ -1323,7 +1650,7 @@ export async function handleTeamCheckUser(request, env){
   const emailNorm=String(email||'').trim().toLowerCase();
   if(emailNorm){
     if(!TEAM_EMAIL_RE.test(emailNorm)) out.email={status:'invalid', message:'Please enter a valid email address.'};
-    else{ const status=await teamEmailStatus(env, c, emailNorm); out.email={status, message:TEAM_EMAIL_STATUS_MSG[status]||null}; }
+    else{ const chk=await teamEmailCheck(env, c, emailNorm); out.email={status:chk.status, message:chk.message||null, ...(chk.status==='orphan_account'?{repairable:true}:{})}; }
   }
   const uname=String(username||'').trim();
   if(uname){
@@ -1347,12 +1674,15 @@ export async function handleTeamAddExisting(request, env){
   if(!TEAM_EMAIL_RE.test(emailNorm)) return json({error:'Please enter a valid email address.', field:'email'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
-  const status=await teamEmailStatus(env, c, emailNorm);
-  if(TEAM_EMAIL_STATUS_MSG[status]) return json({error:TEAM_EMAIL_STATUS_MSG[status], field:'email', code:status.toUpperCase()}, 409);
+  const chk=await teamEmailCheck(env, c, emailNorm);
+  const status=chk.status;
+  if(chk.message) return json({error:chk.message, field:'email', code:status.toUpperCase(), ...(status==='orphan_account'?{repairable:true}:{})}, 409);
   if(status==='new') return json({error:`No Leadvyne login exists for ${emailNorm} yet. Send them an invite instead.`, field:'email', code:'NO_LOGIN'}, 404);
   const seatErr=planSeatError(c); if(seatErr) return json({error:seatErr}, 402);
   const user=await authentikFindUserByEmail(env, emailNorm);
   await addEmailToTeam(env, c, payload.cid, emailNorm, String(user?.name||'').trim()||emailNorm.split('@')[0]);
+  await tmMetaUpsert(env, payload.cid, emailNorm, {status:'active', invite_kind:'existing', invited_by:tmEmail(payload.email), invited_at:new Date().toISOString(), deactivated_at:null});
+  await tmAudit(env, payload.cid, payload.email, 'added_existing', emailNorm);
   return json({ok:true, email:emailNorm, name:user?.name||null});
 }
 
@@ -1368,8 +1698,9 @@ export async function handleTeamCreateUser(request, env){
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
 
-  const status=await teamEmailStatus(env, c, emailNorm);
-  if(TEAM_EMAIL_STATUS_MSG[status]) return json({error:TEAM_EMAIL_STATUS_MSG[status], field:'email', code:status.toUpperCase()}, 409);
+  const chk=await teamEmailCheck(env, c, emailNorm);
+  const status=chk.status;
+  if(chk.message) return json({error:chk.message, field:'email', code:status.toUpperCase(), ...(status==='orphan_account'?{repairable:true}:{})}, 409);
 
   // Plan-based seat cap. getPlanLimits returns null for a blank/unrecognized plan_tier — i.e.
   // every client that existed before plans shipped, plus anyone whose tier isn't set yet — so
@@ -1383,6 +1714,8 @@ export async function handleTeamCreateUser(request, env){
   // existing login from here, since this one Authentik instance is shared by every client.
   if(status==='has_login'){
     await addEmailToTeam(env, c, payload.cid, emailNorm, displayName);
+    await tmMetaUpsert(env, payload.cid, emailNorm, {status:'active', invite_kind:'existing', name:displayName, invited_by:tmEmail(payload.email), invited_at:new Date().toISOString(), deactivated_at:null});
+    await tmAudit(env, payload.cid, payload.email, 'added_existing', emailNorm);
     return json({ok:true, email:emailNorm, alreadyHasLogin:true, passwordIgnored:!!adminPassword});
   }
 
@@ -1399,12 +1732,33 @@ export async function handleTeamCreateUser(request, env){
     finalUsername=await authentikFreeUsername(env, usernameBaseFrom(emailNorm, name));
   }
 
-  const createR=await authentikApiFetch(env, '/core/users/', {
-    method:'POST',
-    body:JSON.stringify({username:finalUsername, email:emailNorm, name:displayName, is_active:true})
-  });
-  const createData=await createR.json().catch(()=>({}));
+  // On the team FIRST, then the login. Before, the login (and its set-password email) came first and
+  // the team last: a failure in between left a login that belonged to no team, and signing in with
+  // it created an empty account of its own ("owner of a different Leadvyne account" next time).
+  // Now every failure below undoes the team entry, and a login is never left behind on its own.
+  const addedNow=await addEmailToTeam(env, c, payload.cid, emailNorm, displayName);
+  await tmMetaUpsert(env, payload.cid, emailNorm, {status:'pending', invite_kind:'login', name:displayName, invited_by:tmEmail(payload.email), invited_at:new Date().toISOString(), deactivated_at:null});
+  const rollback=async(reason)=>{
+    if(addedNow) await removeEmailFromTeam(env, c, payload.cid, emailNorm).catch(()=>{});
+    await tmMetaDelete(env, payload.cid, emailNorm);
+    await tmAudit(env, payload.cid, payload.email, 'create_failed', emailNorm, {reason:String(reason||'').slice(0,200)});
+  };
+  let createR, createData={};
+  try{
+    createR=await authentikApiFetch(env, '/core/users/', {
+      method:'POST',
+      body:JSON.stringify({username:finalUsername, email:emailNorm, name:displayName, is_active:true})
+    });
+    createData=await createR.json().catch(()=>({}));
+  }catch(e){ await rollback(e?.message); return json({error:'Couldn’t reach the login server. Nothing was created; please try again.'}, 502); }
   if(!createR.ok){
+    // The email got a login in the meantime (a double click, an earlier attempt): keep them on the
+    // team with that login instead of failing.
+    if(createData?.email && await authentikFindUserByEmail(env, emailNorm).catch(()=>null)){
+      await tmMetaUpsert(env, payload.cid, emailNorm, {status:'active', invite_kind:'existing'});
+      return json({ok:true, email:emailNorm, alreadyHasLogin:true, passwordIgnored:!!adminPassword});
+    }
+    await rollback(createData?.detail||('HTTP '+createR.status));
     if(createData?.username){
       const suggestion=await authentikFreeUsername(env, usernameBaseFrom(finalUsername)).catch(()=>null);
       const unique=/unique|exists/i.test(String(createData.username[0]||''));
@@ -1426,6 +1780,7 @@ export async function handleTeamCreateUser(request, env){
   if(!pwR.ok){
     // Don't leave a passwordless, unreachable account behind — best-effort cleanup.
     await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
+    await rollback('set_password failed');
     const pwData=await pwR.json().catch(()=>({}));
     return json({error:'Failed to set password: '+(pwData?.password?.[0]||pwData?.detail||'HTTP '+pwR.status)}, 502);
   }
@@ -1448,10 +1803,10 @@ export async function handleTeamCreateUser(request, env){
     if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:displayName, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
   }
 
-  // Server-side, so a dropped connection after this point can't leave a login that exists in
-  // Authentik but never shows up on the team (the old client-side-only patch could).
-  await addEmailToTeam(env, c, payload.cid, emailNorm, displayName);
-  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:displayName, email:emailNorm, password});
+  // Already on the team (above). The login is complete; Chatwoot is a bonus and never undoes it.
+  await tmMetaUpsert(env, payload.cid, emailNorm, {created_login:1, authentik_pk:String(userId)});
+  await tmAudit(env, payload.cid, payload.email, 'created_login', emailNorm);
+  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:displayName, email:emailNorm, password}).catch(e=>({ok:false, error:String(e?.message||e)}));
   // fallbackPassword is populated whenever there's no invite link to show instead — either because
   // the admin chose an explicit password (explicitPassword:true) or because the invite link
   // couldn't be generated (no Recovery flow bound). chatwootPassword is separate: Chatwoot has no
@@ -1492,7 +1847,8 @@ export async function handleTeamInvite(request, env){
   const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
   const alreadyMember=teamEmails.includes(emailNorm);
   if(!alreadyMember){
-    if(await getClientByAuthentikEmail(env, emailNorm)) return json({error:'This email is already linked to another account.'}, 409);
+    const chk=await teamEmailCheck(env, c, emailNorm);
+    if(['other_account','other_team','orphan_account'].includes(chk.status)) return json({error:chk.message, code:chk.status.toUpperCase(), ...(chk.status==='orphan_account'?{repairable:true}:{})}, 409);
     const planLimits=getPlanLimits(c.plan_tier);
     if(planLimits && countClientTeamUsers(c)>=planLimits.max_users){
       return json({error:`Your ${planLimits.label} plan includes ${planLimits.max_users} user${planLimits.max_users===1?'':'s'}. Upgrade your plan to add more team members.`}, 402);
@@ -1509,29 +1865,20 @@ export async function handleTeamInvite(request, env){
   // just give them access; their existing login lands them on this account from now on.
   if(await authentikFindUserByEmail(env, emailNorm)){
     await addToTeam();
+    await tmMetaUpsert(env, payload.cid, emailNorm, {status:'active', invite_kind:'existing', name:displayName, invited_by:tmEmail(payload.email), invited_at:new Date().toISOString(), deactivated_at:null});
+    await tmAudit(env, payload.cid, payload.email, 'added_existing', emailNorm);
     return json({ok:true, email:emailNorm, alreadyHasLogin:true});
   }
 
-  const slug=String(env.AUTHENTIK_INVITE_FLOW_SLUG||'leadvyne-team-invite').trim();
-  const flowR=await authentikApiFetch(env, `/flows/instances/${encodeURIComponent(slug)}/`);
-  if(!flowR.ok) return json({error:`Invite links aren't set up on Authentik yet (flow "${slug}" not found). Use "Create user with a password" below for now.`, code:'INVITE_FLOW_MISSING'}, 503);
-  const flow=await flowR.json().catch(()=>({}));
-
-  const expiresAt=new Date(Date.now()+TEAM_INVITE_TTL_DAYS*86400000).toISOString();
-  const suffix=Array.from(crypto.getRandomValues(new Uint8Array(5)), b=>b.toString(16).padStart(2,'0')).join('');
-  const invR=await authentikApiFetch(env, '/stages/invitation/invitations/', {method:'POST', body:JSON.stringify({
-    name:`leadvyne-${payload.cid}-${suffix}`, expires:expiresAt, single_use:true, flow:flow.pk,
-    fixed_data:{email:emailNorm, username:emailNorm, name:displayName}
-  })});
-  const inv=await invR.json().catch(()=>({}));
-  if(!invR.ok||!inv.pk){
-    const detail=inv?.name?.[0]||inv?.non_field_errors?.[0]||inv?.detail||('HTTP '+invR.status);
-    return json({error:'Authentik rejected the invitation: '+detail}, 502);
-  }
+  const inv=await tmCreateInvitation(env, payload.cid, emailNorm, displayName);
+  if(inv.error) return json({error:inv.error, ...(inv.code?{code:inv.code}:{})}, inv.status||502);
+  const expiresAt=inv.expiresAt;
   await addToTeam();
+  await tmMetaUpsert(env, payload.cid, emailNorm, {status:'pending', invite_kind:'invite', invite_id:String(inv.id), name:displayName, invited_by:tmEmail(payload.email), invited_at:new Date().toISOString(), expires_at:expiresAt, deactivated_at:null});
+  await tmAudit(env, payload.cid, payload.email, 'invited', emailNorm);
 
-  const inviteLink=teamInviteLink(env, inv.pk);
-  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:displayName, email:emailNorm, password:generateRandomPassword()});
+  const inviteLink=teamInviteLink(env, inv.id);
+  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:displayName, email:emailNorm, password:generateRandomPassword()}).catch(e=>({ok:false, error:String(e?.message||e)}));
   const inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:displayName, inviteUrl:inviteLink, clientName:c.client_name||'your team',
     intro:`Click below to accept and create your login — you'll choose your own password. The link expires in ${TEAM_INVITE_TTL_DAYS} days.`, ctaLabel:'Accept invite'});
   return json({ok:true, email:emailNorm, inviteLink, inviteEmailSent, expiresAt, chatwoot});
@@ -40337,6 +40684,17 @@ export default {
       else if(url.pathname==='/team/invite' && request.method==='POST'){ res=await handleTeamInvite(request, env); }
       else if(url.pathname==='/team/check-user' && request.method==='POST'){ res=await handleTeamCheckUser(request, env); }
       else if(url.pathname==='/team/add-existing' && request.method==='POST'){ res=await handleTeamAddExisting(request, env); }
+      else if(url.pathname==='/team/members' && request.method==='GET'){ res=await handleTeamMembers(request, env); }
+      else if(url.pathname==='/team/audit' && request.method==='GET'){ res=await handleTeamAudit(request, env); }
+      else if(url.pathname==='/team/diagnose' && request.method==='POST'){ res=await handleTeamDiagnose(request, env); }
+      else if(url.pathname==='/team/repair' && request.method==='POST'){ res=await handleTeamRepair(request, env); }
+      else if(url.pathname==='/team/bulk-invite' && request.method==='POST'){ res=await handleTeamBulkInvite(request, env); }
+      else if(url.pathname==='/team/transfer-ownership' && request.method==='POST'){ res=await handleTeamTransferOwnership(request, env); }
+      else if(url.pathname==='/team/member/update' && request.method==='POST'){ res=await handleTeamMemberUpdate(request, env); }
+      else if(url.pathname==='/team/member/deactivate' && request.method==='POST'){ res=await handleTeamMemberDeactivate(request, env); }
+      else if(url.pathname==='/team/member/reactivate' && request.method==='POST'){ res=await handleTeamMemberReactivate(request, env); }
+      else if(url.pathname==='/team/member/resend' && request.method==='POST'){ res=await handleTeamMemberResend(request, env); }
+      else if(url.pathname==='/team/member/revoke' && request.method==='POST'){ res=await handleTeamMemberRevoke(request, env); }
       else if(url.pathname==='/team/departed-leads' && request.method==='GET'){ res=await handleTeamDepartedLeads(request, env); }
       else if(url.pathname==='/team/reassign-leads' && request.method==='POST'){ res=await handleTeamReassignLeads(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }

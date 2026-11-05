@@ -4033,7 +4033,7 @@ const ROLES = {
              here instead. -->
         <div class="card" style="margin-bottom:14px" id="userMgmtCard2">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">👥 User Management</div>
+            <div class="s-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">👥 User Management <a class="save-btn" href="users.html" target="_blank" rel="noopener" style="text-decoration:none;font-size:12px;padding:6px 12px;margin-left:auto">✨ Open the new User Management</a></div>
             <div class="s-note">Everyone below (including you, the account owner) can sign in with their own Authentik account. Click the 👤 on anyone to view their profile — Chatwoot login, and, for teammates, which modules and (for travel clients) which lead categories they can see.</div>
             <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
             <div id="departedLeadsCard"></div>
@@ -12807,6 +12807,24 @@ function tmAutoUsername(){
   u.placeholder=base?`${base} (auto)`:'Auto-generated from email';
   _tmUsernameAuto=base;
 }
+// An email whose earlier sign-in created an empty account by mistake (POST /team/repair archives
+// that empty account and adds them here with the login they already have).
+function tmRepairButton(email){
+  return ` <button type="button" class="tm-link" data-email="${esc(email)}" onclick="tmRepair(this)">Move to my team</button>`;
+}
+async function tmRepair(btn){
+  const email=btn.dataset.email;
+  if(!confirm(`Move ${email} to your team?\n\nTheir empty Leadvyne account (created by mistake, no leads or settings) is archived, and they sign in to this account from now on.`)) return;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/repair`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({email})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    tmMirrorTeamMember(email,'');
+    renderTeamMembers();
+    btn.replaceWith(Object.assign(document.createElement('b'),{textContent:' ✓ Moved to your team',style:'color:var(--green)'}));
+  }catch(e){ btn.disabled=false; btn.textContent='Move to my team'; alert('Could not move them: '+e.message); }
+}
 async function tmCheck(body){
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/team/check-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
@@ -12820,7 +12838,7 @@ async function tmCheckEmail(){
   const d=await tmCheck({email});
   if(!d?.email || el.value.trim().toLowerCase()!==email) return;
   const st=d.email.status;
-  if(d.email.message){ el.classList.add('has-error'); tmSetHint('teamNewUserEmail', esc(d.email.message), 'err'); }
+  if(d.email.message){ el.classList.add('has-error'); tmSetHint('teamNewUserEmail', esc(d.email.message)+(d.email.repairable?tmRepairButton(email):''), 'err'); }
   else if(st==='has_login') tmSetHint('teamNewUserEmail', 'Already has a Leadvyne login. They’ll be added with their existing password.', 'ok');
   else tmClearField('teamNewUserEmail');
   const u=$id('teamNewUsername');
@@ -12926,6 +12944,7 @@ async function inviteTeamUser(){
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/team/invite`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,email})});
     const data=await r.json().catch(()=>({}));
+    if(!r.ok&&data.repairable){ msg.innerHTML='Error: '+esc(data.error)+tmRepairButton(email); msg.className='save-msg err'; return; }
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
     if(!current.includes(data.email)){

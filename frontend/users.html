@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Leadvyne · User Management</title>
+<meta name="theme-color" content="#0F172A">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F6F7FB;--card:#FFFFFF;--ink:#0F172A;--ink2:#334155;--muted:#64748B;--line:#E5E7EB;--soft:#F1F5F9;--accent:#4F46E5;--accent2:#6366F1;--accent-soft:#EEF2FF;
+  --green:#059669;--green-soft:#ECFDF5;--amber:#B45309;--amber-soft:#FFFBEB;--red:#DC2626;--red-soft:#FEF2F2;--slate-soft:#F1F5F9;--shadow:0 1px 2px rgba(15,23,42,.05),0 8px 24px rgba(15,23,42,.06);--radius:14px}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0B1120;--card:#111827;--ink:#F1F5F9;--ink2:#CBD5E1;--muted:#94A3B8;--line:#1F2937;--soft:#1E293B;--accent:#818CF8;--accent2:#6366F1;--accent-soft:#1E1B4B;
+  --green:#34D399;--green-soft:#052E2B;--amber:#FBBF24;--amber-soft:#2D2208;--red:#F87171;--red-soft:#2A1215;--slate-soft:#1E293B;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35)}}
+:root[data-theme="dark"]{--bg:#0B1120;--card:#111827;--ink:#F1F5F9;--ink2:#CBD5E1;--muted:#94A3B8;--line:#1F2937;--soft:#1E293B;--accent:#818CF8;--accent2:#6366F1;--accent-soft:#1E1B4B;
+  --green:#34D399;--green-soft:#052E2B;--amber:#FBBF24;--amber-soft:#2D2208;--red:#F87171;--red-soft:#2A1215;--slate-soft:#1E293B;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35)}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer}a{color:var(--accent)}
+.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--card) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.topin{max-width:1140px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:12px}
+.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--accent2),#8B5CF6);display:grid;place-items:center;color:#fff;font-weight:800}
+.ttl b{display:block;font-size:15px}.ttl span{font-size:12px;color:var(--muted)}
+.sp{flex:1}
+.wrap{max-width:1140px;margin:0 auto;padding:20px 16px 60px}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 14px;font-weight:600;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.btn.primary{background:var(--accent2);border-color:var(--accent2);color:#fff}.btn.primary:hover{filter:brightness(1.06)}
+.btn.danger{color:var(--red)}.btn.sm{padding:6px 10px;font-size:12.5px;border-radius:8px}.btn.ghost{background:transparent;border-color:transparent}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow)}
+.stat b{font-size:24px;font-weight:800;display:block}.stat span{color:var(--muted);font-size:12.5px}
+.bar{height:6px;background:var(--soft);border-radius:99px;margin-top:8px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent2);border-radius:99px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.tabs{display:flex;gap:4px;padding:6px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tab{border:0;background:transparent;padding:9px 13px;border-radius:9px;font-weight:600;color:var(--muted);white-space:nowrap}
+.tab.on{background:var(--accent-soft);color:var(--accent)}
+.tab .n{background:var(--soft);color:var(--ink2);border-radius:99px;padding:1px 7px;font-size:11px;margin-left:4px}
+.tools{display:flex;gap:8px;align-items:center;padding:12px 14px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.search{flex:1;min-width:180px;position:relative}.search input{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 12px 9px 34px}
+.search:before{content:"⌕";position:absolute;left:12px;top:7px;color:var(--muted);font-size:17px}
+select.in,input.in,textarea.in{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 11px;width:100%}
+textarea.in{min-height:110px;resize:vertical}
+.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid var(--line);background:var(--card);border-radius:99px;padding:5px 11px;font-size:12.5px;font-weight:600;color:var(--ink2)}
+.chip.on{background:var(--ink);color:var(--card);border-color:var(--ink)}
+table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;padding:10px 14px;border-bottom:1px solid var(--line)}
+td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}tr.row{cursor:pointer}tr.row:hover td{background:color-mix(in srgb,var(--accent-soft) 45%,transparent)}
+tr:last-child td{border-bottom:0}
+.who{display:flex;align-items:center;gap:11px;min-width:0}.who .nm{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.who .em{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.av{width:36px;height:36px;border-radius:50%;display:inline-grid;place-items:center;font-weight:700;font-size:13px;flex:none;color:#fff;font-style:normal;line-height:1}
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:3px 9px;font-size:12px;font-weight:600;white-space:nowrap}
+.pill:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.p-active{background:var(--green-soft);color:var(--green)}.p-pending{background:var(--amber-soft);color:var(--amber)}.p-expired{background:var(--red-soft);color:var(--red)}.p-deactivated,.p-removed{background:var(--slate-soft);color:var(--muted)}.p-owner{background:var(--accent-soft);color:var(--accent)}
+.role{font-size:12.5px;color:var(--ink2);font-weight:500}.dim{color:var(--muted);font-size:12.5px}
+.empty{padding:44px 20px;text-align:center;color:var(--muted)}.empty b{display:block;color:var(--ink);font-size:15px;margin-bottom:4px}
+.banner{border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:13px;border:1px solid}
+.banner.info{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 30%,transparent);color:var(--ink2)}
+.banner.warn{background:var(--amber-soft);border-color:color-mix(in srgb,var(--amber) 35%,transparent);color:var(--ink2)}
+.banner.err{background:var(--red-soft);border-color:color-mix(in srgb,var(--red) 35%,transparent);color:var(--red)}
+.banner.ok{background:var(--green-soft);border-color:color-mix(in srgb,var(--green) 35%,transparent);color:var(--green)}
+/* Drawer */
+.scrim{position:fixed;inset:0;background:rgba(2,6,23,.45);opacity:0;pointer-events:none;transition:.2s;z-index:40}.scrim.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(460px,100%);background:var(--card);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .25s ease;z-index:41;display:flex;flex-direction:column}
+.drawer.on{transform:none}.dh{padding:18px 20px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center}.db{padding:18px 20px;overflow:auto;flex:1}
+.sec{margin-bottom:22px}.sec h4{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:8px 12px;font-size:13px}.kv span{color:var(--muted)}
+.mods{display:grid;grid-template-columns:1fr 1fr;gap:6px}.mods label{display:flex;gap:7px;align-items:center;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:9px}
+.row2{display:flex;gap:8px;flex-wrap:wrap}.lbl{display:block;font-size:12px;font-weight:600;color:var(--ink2);margin:0 0 5px}
+.field{margin-bottom:12px}
+/* Modal */
+.modal{position:fixed;inset:0;display:none;place-items:center;z-index:50;padding:16px}.modal.on{display:grid}
+.mbox{position:relative;z-index:51;background:var(--card);border:1px solid var(--line);border-radius:18px;width:min(560px,100%);max-height:90vh;overflow:auto;box-shadow:0 30px 80px rgba(2,6,23,.35)}
+.mh{padding:18px 20px 0}.mh h3{margin:0;font-size:17px}.mh p{margin:4px 0 0;color:var(--muted);font-size:13px}.mb{padding:16px 20px}.mf{padding:14px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.act{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}.act:last-child{border:0}.act .ic{width:30px;height:30px;border-radius:9px;background:var(--soft);display:grid;place-items:center;flex:none}
+.act b{font-weight:600}.act span{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+.diag{padding:18px}.diagcard{border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--card);padding:10px 16px;border-radius:12px;font-weight:600;opacity:0;transition:.25s;z-index:60;max-width:calc(100% - 32px)}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:s 1s linear infinite;display:inline-block;vertical-align:middle}@keyframes s{to{transform:rotate(360deg)}}
+.hide-sm{}.show-sm{display:none}
+@media(max-width:760px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.hide-sm{display:none}.show-sm{display:inline}.topin{gap:8px}.ttl b{font-size:14px}.grid2{grid-template-columns:1fr}.mods{grid-template-columns:1fr}.ttl span{display:none}
+  td{padding:11px 12px}th{padding:9px 12px}}
+</style>
+</head>
+<body>
+<header class="top"><div class="topin">
+  <div class="logo">L</div><div class="ttl"><b>User Management</b><span id="accName">Loading…</span></div><div class="sp"></div>
+  <a class="btn sm ghost" href="dashboard.html" aria-label="Back to dashboard">←<span class="hide-sm">&nbsp;Dashboard</span></a>
+  <button class="btn primary" id="inviteBtn" onclick="openInvite()" style="display:none">＋<span class="hide-sm">&nbsp;Invite people</span><span class="show-sm">&nbsp;Invite</span></button>
+</div></header>
+<main class="wrap" id="app"><div class="empty"><span class="spin"></span><p>Loading your team…</p></div></main>
+
+<div class="scrim" id="scrim" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer" aria-label="Member details"></aside>
+<div class="modal" id="modal"><div class="scrim on" style="position:absolute" onclick="closeModal()"></div><div class="mbox" id="mbox"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const qs=new URLSearchParams(location.search);
+let token=qs.get('token')||'';
+try{ if(!token) token=localStorage.getItem('lv_session')||''; }catch(e){}
+const ROLES={admin:'👑 Admin',general_manager:'📈 General Manager',sales_manager:'💼 Sales Manager',marketing_manager:'📢 Marketing Manager',telecaller:'📞 Tele Caller'};
+// Starting module sets for each role (same as dashboard.html ROLES; null = everything).
+const ROLE_MODULES={admin:null,general_manager:null,sales_manager:['home','humandeals','chats','leads','tasks','team','reports','agency','b2b','recruit','appointments','realestate','hospitality','healthcare','broadcast'],
+  marketing_manager:['home','humandeals','chats','leads','tasks','reports','knowledgebase','broadcast'],telecaller:['home','humandeals','chats','leads','tasks']};
+const MODULES={home:'🏠 Home',humandeals:'🤝 Human Deals',chats:'💬 Chats',leads:'👥 Leads',tasks:'✅ Tasks',team:'📊 Team',reports:'📈 Reports',knowledgebase:'📚 Knowledge Base',accounting:'💰 Accounting',billing:'💳 Billing',
+  ecommerce:'🛒 Ecommerce',businessservices:'🏢 Business Services',saasops:'🚀 SaaS Ops',b2b:'🤝 B2B',agency:'🏢 Agency / Travel',recruit:'💼 Recruit',appointments:'📅 Appointments',hospitality:'🏨 Hospitality',
+  realestate:'🏘️ Real Estate',healthcare:'🏥 Healthcare',matrimonial:'💍 Matrimonial',evcharging:'⚡ EV Charging',broadcast:'📢 Campaigns',settings:'⚙️ Settings'};
+const ALWAYS_ON=['leads','humandeals'];
+const STATUS={active:'Active',pending:'Invite sent',expired:'Invite expired',deactivated:'Deactivated',removed:'Removed',owner:'Owner'};
+let D=null,tab='members',filter='all',query='',audit=null,current=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(path,opts={}){
+  const r=await fetch(WORKER_BASE+path,{...opts,headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json',...(opts.headers||{})}});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw Object.assign(new Error(d.error||`Something went wrong (HTTP ${r.status})`),{status:r.status,data:d});
+  return d;
+}
+const post=(p,b)=>api(p,{method:'POST',body:JSON.stringify(b||{})});
+function toast(t){const el=$('toast');el.textContent=t;el.classList.add('on');clearTimeout(toast._t);toast._t=setTimeout(()=>el.classList.remove('on'),2600)}
+function ago(iso){if(!iso)return '';const s=(Date.now()-new Date(iso).getTime())/1000;if(isNaN(s))return '';if(s<60)return 'just now';if(s<3600)return `${Math.round(s/60)} min ago`;if(s<86400)return `${Math.round(s/3600)} h ago`;if(s<86400*30){const d=Math.round(s/86400);return `${d} day${d===1?'':'s'} ago`}return new Date(iso).toLocaleDateString()}
+function inDays(iso){if(!iso)return '';const d=Math.ceil((new Date(iso).getTime()-Date.now())/86400000);return d<=0?'expired':d===1?'expires tomorrow':`expires in ${d} days`}
+const HUES=['#6366F1','#0EA5E9','#10B981','#F59E0B','#EF4444','#8B5CF6','#EC4899','#14B8A6'];
+function avatar(name,email){const n=String(name||email||'?').trim();const ini=(n.split(/[\s.@_-]+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('')||'?').toUpperCase();
+  let h=0;for(const ch of String(email))h=(h*31+ch.charCodeAt(0))>>>0;return `<i class="av" style="background:${HUES[h%HUES.length]}">${esc(ini)}</i>`}
+const pill=s=>`<span class="pill p-${esc(s)}">${esc(STATUS[s]||s)}</span>`;
+const roleText=m=>m.role?ROLES[m.role]||m.role:(m.modules?'Custom access':'Full access');
+const canManage=()=>!!D?.me?.can_manage, isOwner=()=>!!D?.me?.is_owner;
+
+async function load(){
+  if(!token){$('app').innerHTML=`<div class="card empty"><b>Please sign in first</b>Open User Management from your dashboard. <p><a class="btn primary" href="dashboard.html">Go to dashboard</a></p></div>`;return}
+  try{D=await api('/team/members')}catch(e){$('app').innerHTML=`<div class="banner err">${esc(e.status===401?'Your session has expired. Sign in to the dashboard again.':e.message)}</div><a class="btn" href="dashboard.html">← Dashboard</a>`;return}
+  $('accName').textContent=D.account.name||'Your account';
+  $('inviteBtn').style.display=canManage()?'':'none';
+  render();
+}
+function counts(){const m=D.members;return {all:m.length+1,active:m.filter(x=>x.status==='active').length+1,pending:m.filter(x=>['pending','expired'].includes(x.status)).length,deactivated:m.filter(x=>x.status==='deactivated').length}}
+function render(){
+  const c=counts(),s=D.seats;
+  const seatPct=s.max?Math.min(100,Math.round(s.used/s.max*100)):0;
+  $('app').innerHTML=`${canManage()?'':`<div class="banner info">You can see your team here. Only the account owner or an Admin can make changes.</div>`}
+<div class="stats">
+  <div class="stat"><b>${c.active}</b><span>Active users</span></div>
+  <div class="stat"><b>${c.pending}</b><span>Invites waiting</span></div>
+  <div class="stat"><b>${c.deactivated}</b><span>Deactivated</span></div>
+  <div class="stat"><b>${s.used}${s.max?` <span style="font-size:14px;color:var(--muted);font-weight:600">/ ${s.max}</span>`:''}</b><span>${s.max?`Seats on ${esc(s.plan||'your plan')}`:'Seats used'}</span>${s.max?`<div class="bar"><i style="width:${seatPct}%"></i></div>`:''}</div>
+</div>
+<div class="card">
+  <div class="tabs" role="tablist">${[['members','Members',c.all],['invites','Invites',c.pending],['activity','Activity',null],['fix','Fix a user',null]].filter(t=>canManage()||t[0]==='members')
+    .map(([k,l,n])=>`<button class="tab ${tab===k?'on':''}" role="tab" onclick="go('${k}')">${l}${n!=null?`<span class="n">${n}</span>`:''}</button>`).join('')}</div>
+  <div id="pane"></div>
+</div>`;
+  ({members:renderMembers,invites:renderInvites,activity:renderActivity,fix:renderFix}[tab]||renderMembers)();
+}
+function go(k){tab=k;render()}
+
+// ── Members ──
+function ownerRow(){return {email:D.owner.email,name:D.owner.name,status:'owner',role:null,modules:null,last_login_at:D.owner.last_login_at,whatsapp:D.owner.whatsapp,_owner:true}}
+function visibleMembers(){
+  let list=[ownerRow(),...D.members];
+  if(filter==='active')list=list.filter(m=>m.status==='active'||m._owner);
+  if(filter==='pending')list=list.filter(m=>['pending','expired'].includes(m.status));
+  if(filter==='deactivated')list=list.filter(m=>m.status==='deactivated');
+  const q=query.trim().toLowerCase();
+  if(q)list=list.filter(m=>`${m.name} ${m.email} ${roleText(m)}`.toLowerCase().includes(q));
+  return list;
+}
+function renderMembers(){
+  const list=visibleMembers();
+  $('pane').innerHTML=`<div class="tools"><div class="search"><input id="q" placeholder="Search by name, email or role" value="${esc(query)}" oninput="query=this.value;drawRows()"></div>
+<div class="chips">${[['all','All'],['active','Active'],['pending','Invites'],['deactivated','Deactivated']].map(([k,l])=>`<button class="chip ${filter===k?'on':''}" onclick="filter='${k}';renderMembers()">${l}</button>`).join('')}</div></div>
+<div id="rows"></div>`;
+  drawRows();
+}
+function drawRows(){
+  const list=visibleMembers();
+  $('rows').innerHTML=list.length?`<table><thead><tr><th>User</th><th class="hide-sm">Role</th><th>Status</th><th class="hide-sm">Last sign-in</th></tr></thead><tbody>${list.map(m=>`<tr class="row" onclick="openMember('${esc(m.email)}')">
+<td><div class="who">${avatar(m.name,m.email)}<div style="min-width:0"><b class="nm">${esc(m.name)}${m.email===D.me.email?' <span class="dim" style="font-weight:500">(you)</span>':''}</b><span class="em">${esc(m.email)}</span></div></div></td>
+<td class="hide-sm"><span class="role">${m._owner?'👑 Account owner':esc(roleText(m))}</span></td>
+<td>${pill(m.status)}</td>
+<td class="hide-sm dim">${m.status==='pending'||m.status==='expired'?esc(inDays(m.expires_at)||('invited '+ago(m.invited_at))):esc(ago(m.last_login_at)||'—')}</td></tr>`).join('')}</tbody></table>`
+  :`<div class="empty"><b>No one matches</b>Try another search or filter.</div>`;
+}
+
+// ── Invites ──
+function renderInvites(){
+  const list=D.members.filter(m=>['pending','expired'].includes(m.status));
+  $('pane').innerHTML=list.length?`<table><thead><tr><th>Invited</th><th class="hide-sm">Sent</th><th>Status</th><th></th></tr></thead><tbody>${list.map(m=>`<tr>
+<td><div class="who">${avatar(m.name,m.email)}<div style="min-width:0"><b class="nm">${esc(m.name)}</b><span class="em">${esc(m.email)}</span></div></div></td>
+<td class="hide-sm dim">${esc(ago(m.invited_at)||'—')}${m.invited_by?`<br>by ${esc(m.invited_by)}`:''}</td>
+<td>${pill(m.status)}<div class="dim" style="margin-top:3px">${esc(m.status==='pending'?inDays(m.expires_at):'')}</div></td>
+<td style="text-align:right"><div class="row2" style="justify-content:flex-end"><button class="btn sm" onclick="resend('${esc(m.email)}',this)">↻ Resend</button><button class="btn sm danger" onclick="revoke('${esc(m.email)}',this)">Revoke</button></div></td></tr>`).join('')}</tbody></table>`
+  :`<div class="empty"><b>No invites waiting</b>Everyone you invited has joined.</div>`;
+}
+async function resend(email,btn){btn.disabled=true;try{const r=await post('/team/member/resend',{email});toast(r.inviteEmailSent?'✓ New invite emailed':'✓ New invite link ready');if(!r.inviteEmailSent&&r.inviteLink)showLink(email,r.inviteLink);await refresh()}catch(e){alert(e.message)}finally{btn.disabled=false}}
+async function revoke(email,btn){if(!confirm(`Revoke the invite for ${email}?\n\nThey are taken off the team and their invite link stops working.`))return;btn.disabled=true;try{await post('/team/member/revoke',{email});toast('Invite revoked');closeDrawer();await refresh()}catch(e){alert(e.message);btn.disabled=false}}
+function showLink(email,link){openModal(`<div class="mh"><h3>Invite link for ${esc(email)}</h3><p>The email could not be sent, so share this link with them yourself. It works once.</p></div>
+<div class="mb"><input class="in" readonly value="${esc(link)}" onclick="this.select()"></div><div class="mf"><button class="btn" onclick="navigator.clipboard.writeText('${esc(link)}');toast('Copied')">Copy link</button><button class="btn primary" onclick="closeModal()">Done</button></div>`)}
+
+// ── Activity ──
+async function renderActivity(){
+  $('pane').innerHTML='<div class="empty"><span class="spin"></span></div>';
+  try{audit=(await api('/team/audit')).entries}catch(e){$('pane').innerHTML=`<div class="banner err" style="margin:14px">${esc(e.message)}</div>`;return}
+  const icon={invited:'✉️',created_login:'🔑',added_existing:'➕',resent:'↻',revoked:'✕',deactivated:'⏸️',reactivated:'▶️',removed:'🗑️',updated:'✏️',repaired:'🧩',ownership_transferred:'👑',create_failed:'⚠️'};
+  $('pane').innerHTML=audit.length?audit.map(a=>`<div class="act"><div class="ic">${icon[a.action]||'•'}</div><div><b>${esc(a.text)}</b><span>${esc(a.actor||'system')} · ${esc(ago(a.created_at))}</span></div></div>`).join('')
+    :`<div class="empty"><b>No activity yet</b>Changes made here (invites, role changes, deactivations) show up in this list.</div>`;
+}
+
+// ── Fix a user ──
+function renderFix(){
+  $('pane').innerHTML=`<div class="diag"><p style="margin:0 0 10px;color:var(--ink2)">Someone can't be added or can't sign in? Enter their email to see exactly what is going on, and fix it in one click.</p>
+<div class="row2"><input class="in" id="fixEmail" type="email" placeholder="name@example.com" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')diagnose()"><button class="btn primary" onclick="diagnose()">Check</button></div><div id="fixOut"></div></div>`;
+}
+async function diagnose(){
+  const email=$('fixEmail').value.trim();if(!email)return;
+  $('fixOut').innerHTML='<div class="diagcard"><span class="spin"></span> Checking…</div>';
+  let d;try{d=await post('/team/diagnose',{email})}catch(e){$('fixOut').innerHTML=`<div class="banner err" style="margin-top:14px">${esc(e.message)}</div>`;return}
+  const login=d.login.exists?`✅ Has a login${d.login.username?` (${esc(d.login.username)})`:''}${d.login.last_login?`, last signed in ${esc(ago(d.login.last_login))}`:', never signed in'}`:'— No login yet';
+  const head={owner:'👑 This is the account owner',team:'✅ Already on your team',other_account:'⛔ Owns another Leadvyne account',other_team:'⛔ On another account’s team',orphan_account:'🧩 Has an empty account created by mistake',has_login:'➕ Has a login, not on your team yet',new:'✉️ New to Leadvyne'}[d.status]||d.status;
+  const action={repair:`<button class="btn primary" onclick="repair('${esc(d.email)}',this)">Move to my team</button>`,add:`<button class="btn primary" onclick="addExisting('${esc(d.email)}',this)">Add to my team</button>`,invite:`<button class="btn primary" onclick="openInvite('${esc(d.email)}')">Send an invite</button>`}[d.fix]||'';
+  $('fixOut').innerHTML=`<div class="diagcard"><b style="font-size:15px">${head}</b>${d.message?`<p style="margin:8px 0 0;color:var(--ink2)">${esc(d.message)}</p>`:''}
+<div class="kv" style="margin-top:12px"><span>Login</span><div>${login}</div>${d.member?`<span>On this team</span><div>${pill(d.member.status)}</div>`:''}${d.other_account?`<span>Other account</span><div>“${esc(d.other_account.name)}” (#${esc(d.other_account.id)}) · ${d.other_account.kind==='owner'?'they own it':'teammate there'}${d.other_account.empty?' · empty, no leads':''}</div>`:''}</div>
+${action?`<div style="margin-top:14px">${action}</div>`:''}</div>`;
+}
+async function repair(email,btn){
+  if(!confirm(`Move ${email} to your team?\n\nTheir empty Leadvyne account (no leads or settings) is archived, and they sign in to this account from now on.`))return;
+  btn.disabled=true;try{await post('/team/repair',{email});toast('✓ Moved to your team');await refresh();diagnose()}catch(e){alert(e.message);btn.disabled=false}
+}
+async function addExisting(email,btn){btn.disabled=true;try{await post('/team/add-existing',{email});toast('✓ Added to your team');await refresh();diagnose()}catch(e){alert(e.message);btn.disabled=false}}
+
+// ── Member drawer ──
+function openMember(email){
+  const m=email===D.owner.email?ownerRow():D.members.find(x=>x.email===email);if(!m)return;
+  current=JSON.parse(JSON.stringify(m));
+  const own=isOwner(),manage=canManage(),me=email===D.me.email;
+  const mods=current.modules;
+  const actions=[];
+  if(!m._owner&&manage){
+    if(['pending','expired'].includes(m.status)){actions.push(`<button class="btn" onclick="resend('${esc(email)}',this)">↻ Resend invite</button>`,`<button class="btn danger" onclick="revoke('${esc(email)}',this)">Revoke invite</button>`)}
+    if(m.status==='active'&&!me)actions.push(`<button class="btn" onclick="deactivate('${esc(email)}',false)">⏸️ Deactivate</button>`);
+    if(m.status==='deactivated')actions.push(`<button class="btn primary" onclick="reactivate('${esc(email)}',this)">▶️ Reactivate</button>`);
+    if(['active','deactivated'].includes(m.status)&&!me)actions.push(`<button class="btn danger" onclick="deactivate('${esc(email)}',true)">Remove from team</button>`);
+  }
+  $('drawer').innerHTML=`<div class="dh">${avatar(m.name,m.email)}<div style="flex:1;min-width:0"><b style="font-size:16px">${esc(m.name)}</b><div class="dim" style="overflow:hidden;text-overflow:ellipsis">${esc(m.email)}</div></div>${pill(m.status)}<button class="btn sm ghost" onclick="closeDrawer()" aria-label="Close">✕</button></div>
+<div class="db">
+  <div class="sec"><h4>Details</h4><div class="kv">
+    <span>Role</span><div>${m._owner?'👑 Account owner':esc(roleText(m))}</div>
+    <span>Last sign-in</span><div>${esc(ago(m.last_login_at)||'Never')}</div>
+    ${m.invited_at?`<span>Added</span><div>${esc(ago(m.invited_at))}${m.invited_by?` by ${esc(m.invited_by)}`:''}</div>`:''}
+    ${m.status==='pending'?`<span>Invite</span><div>${esc(inDays(m.expires_at)||'waiting for them to sign in')}</div>`:''}
+    <span>Chatwoot</span><div>${m.chatwoot?'✅ Agent linked':'—'}</div>
+  </div></div>
+  ${!m._owner&&manage&&m.status!=='deactivated'?`<div class="sec"><h4>Name</h4><div class="row2"><input class="in" id="dName" value="${esc(m.name)}" style="flex:1"><button class="btn" onclick="saveName(this)">Save</button></div></div>`:''}
+  ${!m._owner&&m.status!=='deactivated'?`<div class="sec"><h4>Role &amp; access</h4>${own?'':'<p class="dim" style="margin-top:-4px">Only the account owner can change roles and access.</p>'}
+    <div class="field"><label class="lbl" for="dRole">Role</label><select class="in" id="dRole" ${own?'':'disabled'} onchange="pickRole(this.value)"><option value="">Custom (choose modules below)</option>${Object.entries(ROLES).map(([k,l])=>`<option value="${k}" ${current.role===k?'selected':''}>${l}</option>`).join('')}</select></div>
+    <label class="lbl">Modules they can open</label><div class="mods" id="dMods">${Object.entries(MODULES).map(([k,l])=>`<label><input type="checkbox" value="${k}" ${!mods||mods.includes(k)||ALWAYS_ON.includes(k)?'checked':''} ${own&&!ALWAYS_ON.includes(k)?'':'disabled'}> ${l}</label>`).join('')}</div>
+    ${own?`<div style="margin-top:10px"><button class="btn primary" onclick="saveAccess(this)">Save role &amp; access</button></div>`:''}</div>`:''}
+  ${m.status!=='deactivated'&&(own||me)?`<div class="sec"><h4>WhatsApp for hot-lead alerts</h4><div class="row2"><input class="in" id="dWa" value="${esc(m.whatsapp)}" placeholder="+91 98765 43210" style="flex:1"><button class="btn" onclick="saveWa(this)">Save</button></div></div>`:''}
+  ${m.status!=='deactivated'&&(own||me)&&m.status!=='pending'?`<div class="sec"><h4>Password</h4><div class="row2"><input class="in" id="dPw" type="password" placeholder="New password (8+ characters)" style="flex:1" autocomplete="new-password"><button class="btn" onclick="setPw(this)">Set</button></div></div>`:''}
+  ${actions.length?`<div class="sec"><h4>Actions</h4><div class="row2">${actions.join('')}</div>${m.status==='active'?'<p class="dim">Deactivating keeps their name, role and access so you can bring them back in one click. Their leads move to your other teammates.</p>':''}</div>`:''}
+  ${own&&!m._owner&&m.status==='active'?`<div class="sec"><h4>Ownership</h4><button class="btn" onclick="transfer('${esc(email)}')">👑 Make them the account owner</button></div>`:''}
+</div>`;
+  $('drawer').classList.add('on');$('scrim').classList.add('on');
+}
+function closeDrawer(){$('drawer').classList.remove('on');$('scrim').classList.remove('on');current=null}
+function pickRole(r){const mods=r?ROLE_MODULES[r]:null;document.querySelectorAll('#dMods input').forEach(el=>{if(!ALWAYS_ON.includes(el.value))el.checked=!mods||mods.includes(el.value)})}
+async function saveName(btn){btn.disabled=true;try{await post('/team/member/update',{email:current.email,name:$('dName').value});toast('✓ Name saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}}
+async function saveAccess(btn){
+  const checked=[...document.querySelectorAll('#dMods input:checked')].map(el=>el.value);
+  const all=Object.keys(MODULES).length;
+  btn.disabled=true;try{await post('/team/member/update',{email:current.email,role:$('dRole').value||null,modules:checked.length>=all?null:checked});toast('✓ Role & access saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}
+}
+async function saveWa(btn){btn.disabled=true;try{await post('/team/whatsapp',{email:current.email,phone:$('dWa').value});toast('✓ WhatsApp saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}}
+async function setPw(btn){const pw=$('dPw').value;if(pw.length<8)return alert('Use at least 8 characters.');btn.disabled=true;try{await post('/team/set-password',{email:current.email,password:pw});$('dPw').value='';toast('✓ Password set')}catch(e){alert(e.message)}finally{btn.disabled=false}}
+async function deactivate(email,remove){
+  if(!confirm(remove?`Remove ${email} from the team?\n\nThey can no longer sign in to this account. Their leads move to your other teammates.`:`Deactivate ${email}?\n\nThey can no longer sign in. Their name, role and access are kept so you can reactivate them later. Their leads move to your other teammates.`))return;
+  try{
+    await post('/team/member/deactivate',{email,remove});
+    let moved=0;try{for(let i=0;i<100;i++){const r=await post('/team/reassign-leads',{from:email});moved+=r.moved||0;if(!r.remaining||!r.moved)break}}catch(e){}
+    toast(`${remove?'Removed':'Deactivated'}${moved?` · ${moved} lead${moved===1?'':'s'} reassigned`:''}`);closeDrawer();await refresh();
+  }catch(e){alert(e.message)}
+}
+async function reactivate(email,btn){btn.disabled=true;try{await post('/team/member/reactivate',{email});toast('✓ Reactivated');await refresh(email)}catch(e){alert(e.message);btn.disabled=false}}
+function transfer(email){
+  openModal(`<div class="mh"><h3>Make ${esc(email)} the account owner?</h3><p>They get full control of this account, billing included. You stay on the team as an Admin. Type their email to confirm.</p></div>
+<div class="mb"><input class="in" id="tConfirm" placeholder="${esc(email)}"></div><div class="mf"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn danger" onclick="doTransfer('${esc(email)}',this)">Transfer ownership</button></div>`);
+}
+async function doTransfer(email,btn){btn.disabled=true;try{await post('/team/transfer-ownership',{email,confirm:$('tConfirm').value});closeModal();closeDrawer();toast('✓ Ownership transferred');await refresh()}catch(e){alert(e.message);btn.disabled=false}}
+async function refresh(reopen){try{D=await api('/team/members')}catch(e){}render();if(reopen&&$('drawer').classList.contains('on'))openMember(reopen)}
+
+// ── Invite modal ──
+let inviteMode='one';
+function openModal(html){$('mbox').innerHTML=html;$('modal').classList.add('on')}
+function closeModal(){$('modal').classList.remove('on')}
+function openInvite(email=''){inviteMode='one';drawInvite(email)}
+function drawInvite(email=''){
+  openModal(`<div class="mh"><h3>Invite people</h3><p>They get an email, choose their own password and land straight in this account. Links expire in ${D.invite_ttl_days} days.</p></div>
+<div class="mb"><div class="chips" style="margin-bottom:14px"><button class="chip ${inviteMode==='one'?'on':''}" onclick="inviteMode='one';drawInvite()">One person</button><button class="chip ${inviteMode==='bulk'?'on':''}" onclick="inviteMode='bulk';drawInvite()">Several at once</button></div>
+${inviteMode==='one'?`<div class="grid2"><div class="field"><label class="lbl" for="iName">Full name</label><input class="in" id="iName" placeholder="Anurag M"></div>
+<div class="field"><label class="lbl" for="iEmail">Work email</label><input class="in" id="iEmail" type="email" placeholder="name@example.com" value="${esc(email)}" onblur="checkInvite()"></div></div>
+<div id="iHint"></div>
+<div class="grid2"><div class="field"><label class="lbl" for="iRole">Role</label><select class="in" id="iRole" ${isOwner()?'':'disabled'}><option value="">Full access</option>${Object.entries(ROLES).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select></div>
+<div class="field"><label class="lbl" for="iWa">WhatsApp (optional)</label><input class="in" id="iWa" placeholder="+91 98765 43210"></div></div>`
+:`<div class="field"><label class="lbl" for="iBulk">One person per line: name, email, role (optional)</label><textarea class="in" id="iBulk" placeholder="Anurag M, anurag@example.com, telecaller&#10;Sara K, sara@example.com&#10;vinod@example.com"></textarea><div class="dim" style="margin-top:6px">Roles: ${Object.keys(ROLES).join(', ')}. Up to 25 people at a time.</div></div>`}
+<div id="iOut"></div></div>
+<div class="mf"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" id="iSend" onclick="${inviteMode==='one'?'sendInvite()':'sendBulk()'}">${inviteMode==='one'?'Send invite':'Send invites'}</button></div>`);
+  setTimeout(()=>$(inviteMode==='one'?(email?'iName':'iEmail'):'iBulk')?.focus(),50);
+}
+async function checkInvite(){
+  const email=$('iEmail')?.value.trim();if(!email)return;
+  try{const d=await post('/team/check-user',{email});const st=d.email?.status;
+    $('iHint').innerHTML=d.email?.message?`<div class="banner ${d.email.repairable?'warn':'err'}">${esc(d.email.message)}${d.email.repairable?` <button class="btn sm" style="margin-left:6px" onclick="repairFromInvite('${esc(email)}',this)">Move to my team</button>`:''}</div>`
+      :st==='has_login'?`<div class="banner info">They already have a Leadvyne login, so they're added straight away with their existing password.</div>`:'';
+  }catch(e){}
+}
+async function repairFromInvite(email,btn){btn.disabled=true;try{await post('/team/repair',{email});closeModal();toast('✓ Moved to your team');await refresh()}catch(e){alert(e.message);btn.disabled=false}}
+async function sendInvite(){
+  const name=$('iName').value.trim(),email=$('iEmail').value.trim().toLowerCase(),role=$('iRole').value,wa=$('iWa').value.trim();
+  if(!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email)){$('iHint').innerHTML='<div class="banner err">Enter a valid email address.</div>';return}
+  const btn=$('iSend');btn.disabled=true;btn.innerHTML='<span class="spin"></span> Sending…';
+  try{
+    const r=await post('/team/invite',{name,email});
+    const notes=[];
+    if(role&&isOwner()){try{await post('/team/member/update',{email,role,modules:ROLE_MODULES[role]})}catch(e){notes.push('Role not saved: '+e.message)}}
+    if(wa){try{await post('/team/whatsapp',{email,phone:wa})}catch(e){notes.push('WhatsApp not saved: '+e.message)}}
+    await refresh();
+    if(!r.alreadyHasLogin&&!r.inviteEmailSent&&r.inviteLink){showLink(email,r.inviteLink);return}
+    closeModal();toast(r.alreadyHasLogin?`✓ ${email} added`:`✓ Invite sent to ${email}`);
+    if(notes.length)alert(notes.join('\n'));
+  }catch(e){
+    $('iHint').innerHTML=`<div class="banner ${e.data?.repairable?'warn':'err'}">${esc(e.message)}${e.data?.repairable?` <button class="btn sm" style="margin-left:6px" onclick="repairFromInvite('${esc(email)}',this)">Move to my team</button>`:''}</div>`;
+  }finally{const b=$('iSend');if(b){b.disabled=false;b.textContent='Send invite'}}
+}
+async function sendBulk(){
+  const text=$('iBulk').value;if(!text.trim())return;
+  const btn=$('iSend');btn.disabled=true;btn.innerHTML='<span class="spin"></span> Sending…';
+  try{
+    const r=await post('/team/bulk-invite',{text});
+    const ok=r.results.filter(x=>x.ok).length;
+    $('iOut').innerHTML=`<div class="banner ${ok===r.results.length&&!r.errors.length?'ok':'warn'}" style="margin-top:12px"><b>${ok} of ${r.results.length} invited.</b>${[...r.results.filter(x=>!x.ok).map(x=>`<br>• ${esc(x.email)}: ${esc(x.error)}`),...r.errors.map(x=>`<br>• ${x.line?`Line ${x.line}: `:''}${esc(x.error)}`)].join('')}</div>`;
+    await refresh();
+  }catch(e){$('iOut').innerHTML=`<div class="banner err" style="margin-top:12px">${esc(e.message)}</div>`}
+  finally{const b=$('iSend');if(b){b.disabled=false;b.textContent='Send invites'}}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeModal();closeDrawer()}});
+load();
+</script>
+</body>
+</html>
