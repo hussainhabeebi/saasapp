@@ -11,7 +11,7 @@ import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
-import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
+import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmAccountUsage,tmSameName,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -1297,7 +1297,7 @@ async function teamEmailCheck(env, c, emailNorm){
   const other=await tmOtherAccount(env, c, emailNorm);
   if(other){
     const status=other.kind==='team'?'other_team':other.orphan?'orphan_account':'other_account';
-    return {status, message:tmEmailMessage(status,{otherName:other.row.client_name||''}), other};
+    return {status, message:tmEmailMessage(status,{otherName:other.row.client_name||'',usage:other.usage,duplicate:other.duplicate}), other};
   }
   if(await authentikFindUserByEmail(env, emailNorm)) return {status:'has_login', message:null, other:null};
   return {status:'new', message:null, other:null};
@@ -1379,13 +1379,14 @@ async function tmOtherAccount(env,c,emailNorm){
   const row=await getClientByAuthentikEmail(env,emailNorm);
   if(!row||String(row.Id)===String(c?.Id)) return null;
   const kind=tmEmail(row.authentik_email)===emailNorm?'owner':'team';
-  let orphan=false;
-  if(kind==='owner'&&tmIsOrphanAccount(row,emailNorm,{leadCount:0})){
+  let leadCount=0;
+  if(kind==='owner'){
     const r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${row.Id})&limit=1&fields=Id`).catch(()=>null);
-    const list=r?.ok?((await r.json().catch(()=>({})))?.list||[]):[{}];
-    orphan=list.length===0;
+    // Can't tell (NocoDB error) → treat as in use, so nothing is archived on a guess.
+    leadCount=r?.ok?((await r.json().catch(()=>({})))?.list||[]).length:1;
   }
-  return {row,kind,orphan};
+  const usage=kind==='owner'?tmAccountUsage(row,{leadCount}):[];
+  return {row,kind,orphan:kind==='owner'&&!usage.length,usage,duplicate:tmSameName(row.client_name,c?.client_name)};
 }
 // The managing user for team-admin routes: the account owner, or a teammate with the Admin role.
 async function tmManagerAuth(request,env,{ownerOnly=false}={}){
@@ -1453,7 +1454,7 @@ export async function handleTeamDiagnose(request,env){
   return json({email:e,status:check.status,message:check.message||null,fix,
     login:login?{exists:true,username:login.username||'',active:login.is_active!==false,last_login:login.last_login||null}:{exists:false},
     member:meta?tmMemberView(a.c,e,meta):null,
-    other_account:check.other?{id:String(check.other.row.Id),name:check.other.row.client_name||'',kind:check.other.kind,empty:!!check.other.orphan}:null});
+    other_account:check.other?{id:String(check.other.row.Id),name:check.other.row.client_name||'',kind:check.other.kind,empty:!!check.other.orphan,in_use:check.other.usage||[],duplicate:!!check.other.duplicate}:null});
 }
 // POST /team/member/update {email, name?, role?, modules?} — owner only (same rule as before:
 // only the account owner may change anyone's permissions).

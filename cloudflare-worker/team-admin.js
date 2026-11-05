@@ -34,30 +34,43 @@ export function tmDerivedName(email){
   const local=(String(email||'').split('@')[0]||'').replace(/[._-]+/g,' ').trim();
   return local.replace(/\b\w/g,ch=>ch.toUpperCase())||'New Business';
 }
-// An account that was only ever auto-created at someone's first sign-in and never used: owned by
-// this email, nobody else on it, still its generated name, no industry chosen, no Chatwoot, no
-// WhatsApp, no plan, not archived, and no leads. Only such an account can be folded into a team;
-// anything that looks used is left alone.
+// Why an account counts as "in use" (empty list = unused). Only real use counts: leads, a team,
+// a connected Chatwoot / WhatsApp / Shopify, or a plan. Its name and industry do not: an account
+// created by mistake is often renamed to the business (for example a duplicate of the real one).
+export function tmAccountUsage(row,{leadCount=0}={}){
+  const r=[];
+  if(!row) return ['not found'];
+  if(String(row.signup_status||'')==='archived') r.push('already archived');
+  const team=tmTeamEmails(row).length;
+  if(team) r.push(`${team} teammate${team===1?'':'s'}`);
+  if(Number(leadCount)>0) r.push('has leads');
+  if(String(row.chatwoot_account_id||'').trim()) r.push('Chatwoot connected');
+  const meta=tmJson(row.meta_channel_credentials,[]);
+  if(String(row.wa_phone_id||'').trim()||(Array.isArray(meta)&&meta.length)) r.push('WhatsApp connected');
+  if(String(row.plan_tier||'').trim()||String(row.razorpay_subscription_id||'').trim()||String(row.stripe_subscription_id||'').trim()) r.push('on a plan');
+  if(String(row.shopify_domain||'').trim()) r.push('Shopify connected');
+  return r;
+}
+// An account owned by this email that was never used (tmAccountUsage is empty). Only such an
+// account can be folded into a team; anything in use is left alone.
 export function tmIsOrphanAccount(row,email,{leadCount=0}={}){
   if(!row||tmEmail(row.authentik_email)!==tmEmail(email))return false;
-  if(tmTeamEmails(row).length)return false;
-  if(String(row.signup_status||'')==='archived')return false;
-  if(String(row.client_name||'').trim()!==tmDerivedName(email))return false;
-  if(!['','general'].includes(String(row.industry||'').trim().toLowerCase()))return false;
-  for(const k of ['chatwoot_account_id','wa_phone_id','plan_tier','razorpay_subscription_id','shopify_domain'])if(String(row[k]||'').trim())return false;
-  return Number(leadCount)===0;
+  return !tmAccountUsage(row,{leadCount}).length;
 }
+export const tmSameName=(a,b)=>{const x=String(a||'').trim().toLowerCase().replace(/\s+/g,' ');return !!x&&x===String(b||'').trim().toLowerCase().replace(/\s+/g,' ');};
 
 // "Can this email join this account?" with a message that says what to do about it.
 //   owner | team | other_account | other_team | orphan_account | has_login | new
-export function tmEmailMessage(status,{otherName=''}={}){
+export function tmEmailMessage(status,{otherName='',usage=[],duplicate=false}={}){
   const acc=otherName?` (“${otherName}”)`:'';
+  const inUse=usage.length?`, which is in use (${usage.join(', ')})`:'';
   return {
     owner:"That's the account owner's email. The owner already has full access.",
     team:'This person is already on your team.',
-    other_account:`This email owns another Leadvyne account${acc}. One login belongs to one account: ask them to use a different email, or contact support to merge the accounts.`,
+    other_account:`This email owns ${duplicate?'a second Leadvyne account with your business name':'another Leadvyne account'}${acc}${inUse}. One login belongs to one account: ask them to use a different email, or contact support to merge the accounts.`,
     other_team:`This person is already a teammate on another Leadvyne account${acc}. Ask that account's admin to remove them first, or use a different email.`,
-    orphan_account:'This email has an empty Leadvyne account that was created by mistake (for example after an earlier attempt failed). You can move them to your team.',
+    orphan_account:duplicate?`This email owns a second, empty Leadvyne account with your business name${acc}: a duplicate with no leads, channels or plan. You can move them to your team; the duplicate is archived.`
+      :`This email has an empty Leadvyne account${acc} that was created by mistake (for example after an earlier attempt failed). You can move them to your team.`,
   }[status]||null;
 }
 
