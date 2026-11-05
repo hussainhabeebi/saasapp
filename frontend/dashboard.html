@@ -872,6 +872,39 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .tm-icon-btn{border:1.5px solid var(--ls);background:var(--card);color:var(--ink);border-radius:var(--r-sm);padding:0 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
 .tm-icon-btn:hover{border-color:var(--accent);color:var(--accent)}
 .save-btn[disabled]{opacity:.6;cursor:progress}
+/* Connected Channels rows — one aligned layout for desktop and mobile */
+.ch-note{margin:0 0 4px;font-size:12px;line-height:1.5}
+.ch-row{padding:14px 0;border-bottom:1px solid var(--ls,#e5e7eb)}
+.ch-row:last-child{border-bottom:none}
+.ch-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px}
+.ch-ico{flex-shrink:0;width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;background:var(--bg,#f3f4f6);border:1px solid var(--ls,#e5e7eb)}
+.ch-meta{flex:1;min-width:0}
+.ch-name{font-weight:600;font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ch-sub{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:2px;font-size:12px;color:var(--muted)}
+.ch-phone{font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--bg,#f3f4f6);border:1px solid var(--ls,#e5e7eb);border-radius:6px;padding:1px 7px;cursor:pointer;white-space:nowrap}
+.ch-phone:hover{border-color:var(--accent);color:var(--accent)}
+.ch-phone.none{font-family:inherit;cursor:default;color:var(--muted);font-style:italic}
+.ch-phone.none:hover{border-color:var(--ls,#e5e7eb);color:var(--muted)}
+.ch-side{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0;text-align:right}
+.ch-badge{font-size:11px;font-weight:600;border-radius:999px;padding:2px 9px;white-space:nowrap}
+.ch-badge.ok{color:#16a34a;background:rgba(22,163,74,.1)}
+.ch-badge.warn{color:#b45309;background:rgba(217,119,6,.12)}
+.ch-side .save-msg{font-size:11px}
+.ch-ctrl{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
+.ch-assign{flex:0 1 260px;min-width:0;height:34px;font-size:13px;padding:0 10px;border:1px solid var(--ls,#d1d5db);border-radius:var(--r-sm,8px);background:var(--card,#fff);color:var(--ink,#111)}
+.ch-actions{display:flex;gap:8px}
+.ch-actions .save-btn{height:34px;font-size:12px;padding:0 12px;white-space:nowrap}
+.ch-toggles{display:flex;align-items:center;gap:16px;margin-left:auto}
+.ch-tgl{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink);cursor:pointer;white-space:nowrap}
+.ch-tgl input{width:16px;height:16px;margin:0;accent-color:var(--accent);cursor:pointer}
+.ch-tgl.off{opacity:.45;cursor:default}
+@media (max-width:640px){
+  .ch-assign{flex:1 1 100%;height:40px}
+  .ch-actions{flex:1 1 100%}
+  .ch-actions .save-btn{flex:1;height:38px;padding:0 8px}
+  .ch-toggles{flex:1 1 100%;margin-left:0;justify-content:flex-start;gap:20px;padding-top:2px}
+  .ch-tgl{font-size:13px}
+}
 .gcol-check{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;background:var(--bg);border:1px solid var(--ls);border-radius:6px;padding:5px 10px;cursor:pointer;color:var(--ink)}
 .gcol-check input{accent-color:var(--accent);cursor:pointer}
 
@@ -14960,8 +14993,7 @@ async function chLoadAndRenderInboxList(list){
   const shown=canEdit?list:list.filter(ib=>sameEmail(assignments[ib.id]?.assigned_email,myEmail));
   if(!shown.length){ $id('chConnectedList').innerHTML='<div style="color:var(--muted);font-size:13px">No channels are assigned to you.</div>'; return; }
   const members=getTeamMembers();
-  const tgl='display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;flex-shrink:0;color:var(--muted,#6b7280);white-space:nowrap';
-  $id('chConnectedList').innerHTML=(canEdit?`<div class="s-note" style="margin:0 0 6px">Each setting saves as soon as you change it. <b>🔒 Strict</b>: only the assigned user (and you, the account owner) can see this channel's leads and chats — admins and managers included.</div>`:'')+shown.map(ib=>{
+  $id('chConnectedList').innerHTML=(canEdit?`<div class="s-note ch-note">Each setting saves as soon as you change it. <b>🔒 Strict</b>: only the assigned user (and you, the account owner) can see this channel's leads and chats — admins and managers included.</div>`:'')+shown.map(ib=>{
     const a=assignments[ib.id]||{};
     const cur=a.assigned_email||'';
     // The Worker stores assigned_email lowercased; team emails may not be.
@@ -14969,29 +15001,49 @@ async function chLoadAndRenderInboxList(list){
     const isWA=ib.channel_type==='Channel::Whatsapp';
     const detected=isWA&&ib.meta_credentials?.configured;
     const dis=canEdit?'':' disabled';
-    return `<div style="padding:12px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
-      `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">`+
-        `<span style="font-size:16px">${CHANNEL_ICONS[ib.channel_type]||'📥'}</span>`+
-        `<div style="flex:1;min-width:0">`+
-          `<div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ib.name)}${Number(a.strict)?' <span title="Only the assigned user and the owner see this channel" style="font-size:11px">🔒</span>':''}</div>`+
-          `<div style="color:var(--muted);font-size:11px">${esc((ib.channel_type||'').replace('Channel::',''))}</div>`+
+    const phone=isWA?chFormatPhone(ib.phone_number||ib.meta_credentials?.display_phone||''):'';
+    const typeLabel=(ib.channel_type||'').replace('Channel::','').replace(/^Whatsapp$/,'WhatsApp');
+    const actions=(isWA&&canEdit?`<button class="save-btn" onclick="autoDetectMetaCreds(${ib.id},this)">${detected?'Re-detect credentials':'Detect credentials'}</button>`:'')+
+      (cur&&canEdit?`<button class="save-btn" title="Give every lead already in from this channel to its assigned user" onclick="chSyncInboxLeads(${ib.id},this)">↻ Move existing leads</button>`:'');
+    return `<div class="ch-row">`+
+      `<div class="ch-head">`+
+        `<span class="ch-ico">${CHANNEL_ICONS[ib.channel_type]||'📥'}</span>`+
+        `<div class="ch-meta">`+
+          `<div class="ch-name" title="${esc(ib.name)}">${esc(ib.name)}${Number(a.strict)?' <span title="Only the assigned user and the owner see this channel" style="font-size:12px">🔒</span>':''}</div>`+
+          `<div class="ch-sub"><span>${esc(typeLabel)}</span>`+
+            (isWA?(phone?`<span class="ch-phone" title="Tap to copy" onclick="chCopyPhone(this)">${esc(phone)}</span>`:`<span class="ch-phone none">No number</span>`):'')+
+          `</div>`+
         `</div>`+
-        `<span class="save-msg" id="chRowMsg${ib.id}" style="font-size:11px"></span>`+
-        (detected?`<span style="color:#16a34a;font-size:12px;font-weight:600;white-space:nowrap">✓ Detected</span>`:'')+
-        (isWA?`<span class="save-msg" id="chDetectMsg${ib.id}"></span>`:'')+
+        `<div class="ch-side">`+
+          (isWA?(detected?`<span class="ch-badge ok">✓ Detected</span>`:`<span class="ch-badge warn">Not detected</span>`):'')+
+          `<span class="save-msg" id="chRowMsg${ib.id}"></span>`+
+          (isWA?`<span class="save-msg" id="chDetectMsg${ib.id}"></span>`:'')+
+        `</div>`+
       `</div>`+
-      `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">`+
-        (isWA&&canEdit?`<button class="save-btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="autoDetectMetaCreds(${ib.id},this)">${detected?'Re-detect credentials':'Detect credentials'}</button>`:'')+
-        `<select${dis} style="flex:1;min-width:120px;font-size:12px;padding:6px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;background:var(--card,#fff);color:var(--text,#111)" onchange="chSaveInboxAssignmentInline(${ib.id},this.value,this)">`+
+      `<div class="ch-ctrl">`+
+        `<select class="ch-assign"${dis} aria-label="Assigned user" onchange="chSaveInboxAssignmentInline(${ib.id},this.value,this)">`+
         `<option value="">— Unassigned —</option>${opts}</select>`+
-        (cur&&canEdit?`<button class="save-btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" title="Give every lead already in from this channel to its assigned user" onclick="chSyncInboxLeads(${ib.id},this)">↻ Move existing leads</button>`:'')+
-        `<label title="Only the assigned user (and the account owner) see this channel's leads and chats" style="${tgl}${cur?'':';opacity:.5'}">`+
-        `<input type="checkbox"${dis}${cur?'':' disabled'} ${Number(a.strict)?'checked':''} onchange="chToggleStrict(${ib.id},this)"> 🔒 Strict</label>`+
-        `<label title="Toggle AI auto-reply for this channel" style="${tgl}">`+
-        `<input type="checkbox"${dis} ${!a.bot_reply_disabled?'checked':''} onchange="chToggleBotReply(${ib.id},this)"> AI Reply</label>`+
+        (actions?`<div class="ch-actions">${actions}</div>`:'')+
+        `<div class="ch-toggles">`+
+          `<label class="ch-tgl${cur?'':' off'}" title="Only the assigned user (and the account owner) see this channel's leads and chats">`+
+          `<input type="checkbox"${dis}${cur?'':' disabled'} ${Number(a.strict)?'checked':''} onchange="chToggleStrict(${ib.id},this)"> 🔒 Strict</label>`+
+          `<label class="ch-tgl" title="Toggle AI auto-reply for this channel">`+
+          `<input type="checkbox"${dis} ${!a.bot_reply_disabled?'checked':''} onchange="chToggleBotReply(${ib.id},this)"> AI Reply</label>`+
+        `</div>`+
       `</div>`+
     `</div>`;
   }).join('');
+}
+function chFormatPhone(raw){
+  const v=String(raw||'').trim();
+  if(!v) return '';
+  const d=v.replace(/[^\d]/g,'');
+  if(d.length<7) return v;
+  return v.startsWith('+')?v:'+'+d;
+}
+function chCopyPhone(el){
+  const t=el.textContent;
+  navigator.clipboard?.writeText(t).then(()=>{ el.textContent='✓ Copied'; setTimeout(()=>{ el.textContent=t; },1200); }).catch(()=>{});
 }
 function chRowMsg(inboxId, text, kind){
   const el=$id('chRowMsg'+inboxId); if(!el) return;
