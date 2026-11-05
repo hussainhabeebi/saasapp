@@ -87,7 +87,7 @@ export default {async fetch(req,env){
       const s=await enabledSetting(env,a.clientId);
       if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS integration key is not configured on Leadvyne'},503,origin);
       const b=await req.json().catch(()=>({}));
-      const currency=['AED','INR','USD','SAR','EUR','GBP'].includes(String(b.currency||'').toUpperCase())?String(b.currency).toUpperCase():'AED';
+      const currency=['AED','INR','USD','SAR','QAR','EUR','GBP'].includes(String(b.currency||'').toUpperCase())?String(b.currency).toUpperCase():'AED';
       const payload={origin:String(b.origin||'').toUpperCase(),destination:String(b.destination||'').toUpperCase(),departureDate:b.departure_date||b.departureDate,adults:Number(b.adults||1),children:Number(b.children||0),infants:Number(b.infants||0),cabinClass:String(b.cabin||b.cabinClass||'economy').toUpperCase(),tripType:(b.trip_type||b.tripType)==='round_trip'?'ROUNDTRIP':'ONEWAY',currency};
       if(payload.tripType==='ROUNDTRIP')payload.returnDate=b.return_date||b.returnDate;
       const r=await fetch(`${s.api_base||POOMAS_API}/api/integrations/v1/flights/search`,{method:'POST',headers:integrationHeaders(env),body:JSON.stringify(payload)});
