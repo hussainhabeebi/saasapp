@@ -674,6 +674,17 @@ function warmTopThreads(){
 function hoverPrefetch(id){clearTimeout(hoverT);if(!V2||!id||histCache[String(id)])return;hoverT=setTimeout(()=>{const l=leads.find(x=>String(x.Id)===String(id));if(l&&!histCache[String(id)])fetchThread(l).catch(()=>{})},150)}
 
 // ── Conversation shell ───────────────────────────────────────────────────────────────────────
+// User Management → channel access "Read only": the chat is visible but replies are blocked (the
+// Worker refuses them too), so the composer is swapped for a short note instead of failing on send.
+function applyReadOnlyChannel(lead){
+ const ro=(boot2?.me?.read_inboxes||[]).map(String),ib=String(lead?._v2?.inbox_id||lead?.InboxId||'');
+ const on=!!ib&&ro.includes(ib),c=$('composer'),m=$('modeRow');if(!c)return;
+ let n=$('roNotice');
+ if(on){c.style.display='none';if(m)m.style.display='none';
+  if(!n){n=document.createElement('div');n.id='roNotice';n.style.cssText='margin:8px 12px;padding:10px 12px;border-radius:10px;background:rgba(127,127,127,.12);font-size:13px;text-align:center';
+   n.textContent='👁️ Read only: you can view chats on this channel but not reply. Ask your admin for reply access.';c.parentNode.insertBefore(n,c)}}
+ else{c.style.display='';if(m)m.style.display='';n?.remove()}
+}
 async function openConversation(id){
  const lead=leads.find(l=>String(l.Id)===String(id));if(!lead)return;
  if(rec)cancelRecording();
@@ -689,7 +700,7 @@ async function openConversation(id){
  if(V2&&lead.NotesList===undefined)fetchNotes(lead);
  startViewing();
  $('main').classList.add('open');$('sidebar').classList.add('thread-open');
- buildShell();renderContacts();paintFollowup(lead);loadFollowup(lead);loadMeetingChip(lead);
+ buildShell();applyReadOnlyChannel(lead);renderContacts();paintFollowup(lead);loadFollowup(lead);loadMeetingChip(lead);
  const cached=!!histCache[String(id)];
  if(cached){drawMessages(true);rumMark('thread-visible',t0)}else $('thread').innerHTML='<div style="height:100%;display:grid;place-items:center"><div class="spinner"></div></div>';
  await refreshMessages(lead,!cached);

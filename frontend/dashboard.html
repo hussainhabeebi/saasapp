@@ -4033,7 +4033,7 @@ const ROLES = {
              here instead. -->
         <div class="card" style="margin-bottom:14px" id="userMgmtCard2">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">👥 User Management</div>
+            <div class="s-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">👥 User Management <a class="save-btn" href="users.html" target="_blank" rel="noopener" style="text-decoration:none;font-size:12px;padding:6px 12px;margin-left:auto">✨ Open the new User Management</a></div>
             <div class="s-note">Everyone below (including you, the account owner) can sign in with their own Authentik account. Click the 👤 on anyone to view their profile — Chatwoot login, and, for teammates, which modules and (for travel clients) which lead categories they can see.</div>
             <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
             <div id="departedLeadsCard"></div>
@@ -8227,6 +8227,7 @@ async function bulkSetBrand(){
   clearBulkSelection();
 }
 async function bulkDeleteLeads(){
+  if(leadAccessBlocked('delete')) return;
   const n=_bulkSelectedLeadIds.size;
   if(!confirm(`Permanently delete ${n} lead(s)? This cannot be undone.`)) return;
   const ids=[..._bulkSelectedLeadIds];
@@ -9762,6 +9763,7 @@ async function deleteAiCustom(id){
 
 /* ── ADD / EDIT LEAD ── */
 function openAddLead(){
+  if(leadAccessBlocked('add')) return;
   $id('modalLeadTitle').textContent=clientRecord?.industry==='travel'?'Add Inquiry':'Add Lead';
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
@@ -9856,6 +9858,7 @@ function companyFromEmail(email){
 // second copy of the same lead.
 let _leadSaving=false;
 async function saveLead(){
+  if(leadAccessBlocked('edit')) return;
   if(_leadSaving) return;
   _leadSaving=true;
   const btn=document.querySelector('#modalLead button[onclick="saveLead()"]');
@@ -12255,10 +12258,31 @@ function seesAllLeads(){ return isAccountOwner()||LEADS_FULL_ACCESS_ROLES.includ
 // team can pick them up — the first action claims it (claimLeadIfUnowned) and it leaves everyone
 // else's list. (Previously staff saw "mine + unassigned", so every unassigned lead showed to all.)
 // Build the predicate once per render — the role/routing JSON is parsed here, not once per lead.
+// User Management → lead / channel access (team_permissions[email].leads / .channels; the Worker
+// enforces both, this only keeps the page in line). leads: read | write | full (default full).
+// channels: {inboxId: none|read|write|full}; Full shows every lead on that channel.
+function myLeadAccess(){
+  if(!myEmail||isAccountOwner()) return 'full';
+  const v=getTeamPermissions()[myEmail]?.leads;
+  return ['read','write','full'].includes(v)?v:'full';
+}
+function myChannelAccess(){
+  if(!myEmail||isAccountOwner()) return {};
+  const v=getTeamPermissions()[myEmail]?.channels;
+  return v&&typeof v==='object'?v:{};
+}
+function leadAccessBlocked(action){
+  const lvl=myLeadAccess();
+  const msg=lvl==='read'&&action!=='view'?'You have read-only access to leads. Ask your admin for edit access.'
+    :lvl==='write'&&action==='delete'?'Your access lets you add and edit leads, but not delete them.':'';
+  if(msg) showToast(msg,'err');
+  return !!msg;
+}
 function leadVisibilityFilter(){
   if(seesAllLeads()) return ()=>true;
   const routed=!!getLeadRouting().enabled;
-  return l=>l?.Owner ? sameEmail(l.Owner,myEmail) : !routed;
+  const full=new Set(Object.entries(myChannelAccess()).filter(([,v])=>v==='full').map(([k])=>String(k)));
+  return l=>(full.size&&full.has(String(l?.InboxId||'')))||(l?.Owner ? sameEmail(l.Owner,myEmail) : !routed);
 }
 function leadVisibleToMe(l){ return leadVisibilityFilter()(l); }
 // The Leads list for the current My leads / All toggle. "mine" = assigned to me only. "all" = every
@@ -12807,6 +12831,24 @@ function tmAutoUsername(){
   u.placeholder=base?`${base} (auto)`:'Auto-generated from email';
   _tmUsernameAuto=base;
 }
+// An email whose earlier sign-in created an empty account by mistake (POST /team/repair archives
+// that empty account and adds them here with the login they already have).
+function tmRepairButton(email){
+  return ` <button type="button" class="tm-link" data-email="${esc(email)}" onclick="tmRepair(this)">Move to my team</button>`;
+}
+async function tmRepair(btn){
+  const email=btn.dataset.email;
+  if(!confirm(`Move ${email} to your team?\n\nTheir empty Leadvyne account (created by mistake, no leads or settings) is archived, and they sign in to this account from now on.`)) return;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/repair`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({email})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    tmMirrorTeamMember(email,'');
+    renderTeamMembers();
+    btn.replaceWith(Object.assign(document.createElement('b'),{textContent:' ✓ Moved to your team',style:'color:var(--green)'}));
+  }catch(e){ btn.disabled=false; btn.textContent='Move to my team'; alert('Could not move them: '+e.message); }
+}
 async function tmCheck(body){
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/team/check-user`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
@@ -12820,7 +12862,7 @@ async function tmCheckEmail(){
   const d=await tmCheck({email});
   if(!d?.email || el.value.trim().toLowerCase()!==email) return;
   const st=d.email.status;
-  if(d.email.message){ el.classList.add('has-error'); tmSetHint('teamNewUserEmail', esc(d.email.message), 'err'); }
+  if(d.email.message){ el.classList.add('has-error'); tmSetHint('teamNewUserEmail', esc(d.email.message)+(d.email.repairable?tmRepairButton(email):''), 'err'); }
   else if(st==='has_login') tmSetHint('teamNewUserEmail', 'Already has a Leadvyne login. They’ll be added with their existing password.', 'ok');
   else tmClearField('teamNewUserEmail');
   const u=$id('teamNewUsername');
@@ -12926,6 +12968,7 @@ async function inviteTeamUser(){
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/team/invite`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,email})});
     const data=await r.json().catch(()=>({}));
+    if(!r.ok&&data.repairable){ msg.innerHTML='Error: '+esc(data.error)+tmRepairButton(email); msg.className='save-msg err'; return; }
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
     if(!current.includes(data.email)){
