@@ -587,17 +587,19 @@ export async function chatsV2HiddenInboxes(env, cid, email, {fullAccess=false}={
 }
 function scopeSql(acc){
   let sql='', vals=[];
+  // Category and channel limits never hide a chat assigned to this user.
   if(acc.categories){
-    if(!acc.categories.length) sql+=' AND 0';
-    else { sql+=` AND service_category IN (${acc.categories.map(()=>'?').join(',')})`; vals.push(...acc.categories); }
+    if(!acc.categories.length){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
+    else { sql+=` AND (service_category IN (${acc.categories.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.categories, acc.me); }
   }
-  if(acc.hidden?.length){ sql+=` AND inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')})`; vals.push(...acc.hidden); }
+  if(acc.hidden?.length){ sql+=` AND (inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.hidden, acc.me); }
   if(!acc.staff) return {sql, vals};
   if(acc.locked){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
   else { sql+=` AND assignee_email IN (?, '')`; vals.push(acc.me); }
   return {sql, vals};
 }
 function canSee(acc, row){
+  if(acc.me&&lc(row.assignee_email)===acc.me) return true;
   if(acc.categories&&!acc.categories.includes(String(row.service_category||''))) return false;
   if(acc.hidden?.includes(String(row.inbox_id||''))) return false;
   if(!acc.staff) return true;
@@ -632,6 +634,10 @@ function filterSql(q, acc){
   // Travel inbox category chips: one ServiceCategory, or "__none" for chats with none set.
   if(q.category){ sql+=' AND service_category=?'; vals.push(q.category==='__none'?'':String(q.category).slice(0,80)); }
   if(q.source){ sql+=' AND created_via=?'; vals.push(String(q.source).toLowerCase().slice(0,20)); }
+  // Inbox tabs: one connected channel (WhatsApp number) by its Chatwoot inbox id.
+  if(q.inbox){ sql+=' AND inbox_id=?'; vals.push(String(q.inbox).slice(0,40)); }
+  // Assigned-user tabs: one teammate's chats, or "__none" for unassigned.
+  if(q.assignee){ sql+=' AND assignee_email=?'; vals.push(q.assignee==='__none'?'':lc(q.assignee).slice(0,200)); }
   if(q.handler==='human'){ sql+=` AND handover='Yes'`; }
   else if(q.handler==='bot'){ sql+=` AND handover<>'Yes'`; }
   const labels=String(q.labels||'').split(',').map(lc).filter(Boolean).slice(0,10);
@@ -743,9 +749,27 @@ export async function chatsV2Counts(env, cid, acc){
     by_source[k]=by_source[k]||{whatsapp:0, instagram:0};
     by_source[k][r.channel==='instagram'?'instagram':'whatsapp']+=Number(r.n)||0;
   }
+  // Open chats per connected inbox (WhatsApp number) and per assignee, for the inbox and
+  // assigned-user tabs. assignee '' = unassigned.
+  const {results:ibs}=await env.DB.prepare(`SELECT inbox_id AS ib, channel, COUNT(*) AS n FROM conversations
+    WHERE client_id=? AND status NOT IN ('resolved','snoozed')${s.sql} GROUP BY inbox_id, channel`).bind(Number(cid), ...s.vals).all();
+  const by_inbox={};
+  for(const r of ibs||[]){
+    const k=String(r.ib||'');
+    by_inbox[k]=by_inbox[k]||{whatsapp:0, instagram:0};
+    by_inbox[k][r.channel==='instagram'?'instagram':'whatsapp']+=Number(r.n)||0;
+  }
+  const {results:asg}=await env.DB.prepare(`SELECT assignee_email AS a, channel, COUNT(*) AS n FROM conversations
+    WHERE client_id=? AND status NOT IN ('resolved','snoozed')${s.sql} GROUP BY assignee_email, channel`).bind(Number(cid), ...s.vals).all();
+  const by_assignee={};
+  for(const r of asg||[]){
+    const k=lc(r.a);
+    by_assignee[k]=by_assignee[k]||{whatsapp:0, instagram:0};
+    by_assignee[k][r.channel==='instagram'?'instagram':'whatsapp']+=Number(r.n)||0;
+  }
   return {all:n('all_n'), unread:n('unread'), needs:n('needs'), mine:n('mine'), unassigned:n('unassigned'),
     pending:n('pending'), snoozed:n('snoozed'), resolved:n('resolved'),
-    unread_by_channel:{whatsapp:n('unread_whatsapp'), instagram:n('unread_instagram')}, by_category, by_source};
+    unread_by_channel:{whatsapp:n('unread_whatsapp'), instagram:n('unread_instagram')}, by_category, by_source, by_inbox, by_assignee};
 }
 
 export function chatsV2MessageOut(r){
@@ -877,6 +901,12 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   events.forEach(([id], i)=>{ evOut[id]=written[i]; });
   const fresh=await rowsByIds(env, rows.map(r=>Number(r.lead_id)));
   if(deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:fresh.map(r=>Number(r.lead_id)), by:acc.me});
+  // The teammate a chat was just given to hears about it (live alert + email).
+  if(op==='assign'&&lc(a.email)&&deps.onAssigned){
+    const to=lc(a.email);
+    const given=rows.filter(r=>lc(r.assignee_email)!==to).map(r=>({lead_id:Number(r.lead_id), lead_name:r.name||'', to, from:lc(r.assignee_email)}));
+    if(given.length) try{ await deps.onAssigned(env, c, cid, given, acc.me); }catch(e){}
+  }
   return {rows:fresh, events:evOut};
 }
 
@@ -1066,7 +1096,11 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
       const {results:macros}=await env.DB.prepare(`SELECT id, name, ops FROM chat_macros WHERE client_id=? ORDER BY name LIMIT 50`).bind(cid).all();
       // travel: the inbox header shows a Service Category picker; me.categories limits it to the
       // categories a restricted teammate can see (null = all).
-      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null}, travel:c.industry==='travel', categories_custom:c.industry==='travel'?customCategories(c):[], agents:chatsV2Agents(c), labels, canned:canned||[], settings,
+      // Connected inboxes (name + WhatsApp number) for the inbox tabs; channels hidden from this
+      // user (Strict) are left out. Best-effort: a Chatwoot hiccup just hides the tabs.
+      let inboxes=[];
+      try{ inboxes=deps.inboxes?(await deps.inboxes(env, c)||[]).filter(ib=>!acc.hidden?.includes(String(ib.id))):[]; }catch(e){ inboxes=[]; }
+      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null}, travel:c.industry==='travel', categories_custom:c.industry==='travel'?customCategories(c):[], agents:chatsV2Agents(c), labels, inboxes, canned:canned||[], settings,
         views:(views||[]).map(v=>({...v, filter:parse(v.filter, {all:[]})})), macros:(macros||[]).map(m=>({...m, ops:parse(m.ops, [])}))};
       const version=await hashOf(data);
       if(qp.v&&qp.v===version) return json({version, unchanged:true});

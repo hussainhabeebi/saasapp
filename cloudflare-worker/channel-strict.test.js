@@ -38,9 +38,9 @@ describe('who sees a strict channel', ()=>{
   beforeEach(fresh);
   test('Leads list: an admin loses only the strict channel; staff lose every other channel; the owner nothing', ()=>{
     const asg=raw.prepare('SELECT inbox_id,assigned_email,strict FROM channel_inbox_assignments').all();
-    assert.equal(channelVisibilityClause(channelHiddenAssignments(CLIENT, asg, ADMIN), ADMIN), '(InboxId,blank)~or(InboxId,neq,11)');
-    assert.equal(channelVisibilityClause(channelHiddenAssignments(CLIENT, asg, SAM), SAM), '(InboxId,blank)~or(InboxId,neq,11)');
-    assert.equal(channelVisibilityClause(channelHiddenAssignments(CLIENT, asg, RITA), RITA), '(InboxId,blank)~or(InboxId,neq,22)');
+    assert.equal(channelVisibilityClause(channelHiddenAssignments(CLIENT, asg, ADMIN), ADMIN), '(InboxId,blank)~or(InboxId,neq,11)~or(Owner,like,admin%40acme.com)');
+    assert.equal(channelVisibilityClause(channelHiddenAssignments(CLIENT, asg, SAM), SAM), '(InboxId,blank)~or(InboxId,neq,11)~or(Owner,like,sam%40acme.com)');
+    assert.equal(channelVisibilityClause(channelHiddenAssignments(CLIENT, asg, RITA), RITA), '(InboxId,blank)~or(InboxId,neq,22)~or(Owner,like,rita%40acme.com)');
     assert.deepEqual(channelHiddenAssignments(CLIENT, asg, OWNER), []);
   });
   test('Chats: same rule', async()=>{

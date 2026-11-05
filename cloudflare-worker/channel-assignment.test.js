@@ -169,8 +169,8 @@ describe('Leads list: who sees assigned channels', ()=>{
   });
   test('staff are filtered to their own and unassigned channels', ()=>{
     const asg=[{inbox_id:11, assigned_email:RITA}, {inbox_id:22, assigned_email:SAM}, {inbox_id:44, assigned_email:'Pat@acme.com'}];
-    assert.equal(channelVisibilityClause(asg, 'Rita@Acme.com'), '(InboxId,blank)~or((InboxId,neq,22)~and(InboxId,neq,44))');
-    assert.equal(channelVisibilityClause([{inbox_id:11, assigned_email:RITA}], SAM), '(InboxId,blank)~or(InboxId,neq,11)');
+    assert.equal(channelVisibilityClause(asg, 'Rita@Acme.com'), '(InboxId,blank)~or((InboxId,neq,22)~and(InboxId,neq,44))~or(Owner,like,rita%40acme.com)');
+    assert.equal(channelVisibilityClause([{inbox_id:11, assigned_email:RITA}], SAM), '(InboxId,blank)~or(InboxId,neq,11)~or(Owner,like,sam%40acme.com)');
     assert.equal(channelVisibilityClause([{inbox_id:11, assigned_email:RITA}], RITA), '');
   });
 });

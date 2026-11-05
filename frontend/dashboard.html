@@ -6731,7 +6731,13 @@ async function onLiveReassignEvent(msg){
   await liveRefresh();
   if(!myEmail || !sameEmail(msg.to,myEmail)) return;
   notifyNewLead({...msg, reassigned:true});
-  window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, msg.reason==='unassigned'?'assigned':msg.reason?'reassigned-idle':'reassigned');
+  // Given by hand (Leads / Edit Lead / Chats → Assign): also kept in the 🔔 bell.
+  if(msg.reason==='manual'){
+    _liveAssignNotifs=[{id:'asg_'+msg.lead_id+'_'+(msg.at||''),icon:'👤',text:`Assigned to you${msg.by_name?' by '+msg.by_name:''}: ${msg.lead_name||'Lead #'+msg.lead_id}`,time:String(msg.at||'').slice(0,19).replace('T',' '),lead_id:msg.lead_id},..._liveAssignNotifs].slice(0,20);
+    pollNotifications();
+    if(typeof showToast==='function') showToast(`👤 ${msg.lead_name||'A lead'} was assigned to you${msg.by_name?' by '+msg.by_name:''}`);
+  }
+  window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, msg.reason==='unassigned'||msg.reason==='manual'?'assigned':msg.reason?'reassigned-idle':'reassigned');
 }
 function notifyNewLead(msg){
   // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
@@ -6741,8 +6747,8 @@ function notifyNewLead(msg){
   // as requestChatNotifyPermission; never auto-prompted on load).
   if('Notification' in window && Notification.permission==='granted'){
     try{
-      const n=new Notification(msg.reassigned?`${msg.reason==='unassigned'?'🎯 Lead':msg.reason?'📞 Lead':'🔥 Hot lead'} for you: ${msg.lead_name||'New Lead'}`:`🔔 New lead: ${msg.lead_name||'New Lead'}`, {
-        body:msg.reassigned?'Reassigned to you — call them now':'Call within 5 minutes for 2× points — tap to open',
+      const n=new Notification(msg.reassigned?`${msg.reason==='manual'?'👤 Lead':msg.reason==='unassigned'?'🎯 Lead':msg.reason?'📞 Lead':'🔥 Hot lead'} for you: ${msg.lead_name||'New Lead'}`:`🔔 New lead: ${msg.lead_name||'New Lead'}`, {
+        body:msg.reason==='manual'?`Assigned to you${msg.by_name?' by '+msg.by_name:''} — you can view and reply in Chats`:msg.reassigned?'Reassigned to you — call them now':'Call within 5 minutes for 2× points — tap to open',
         tag:'lv-new-lead-'+msg.lead_id
       });
       n.onclick=()=>{ window.focus(); navigate('leads'); if(msg.lead_id) openDetail(msg.lead_id); };
@@ -21865,9 +21871,10 @@ function populateUserManagementPage(){
 }
 
 /* ── NOTIFICATIONS ── */
+let _liveAssignNotifs=[]; // leads given to me by hand this session (onLiveReassignEvent)
 async function pollNotifications(){
   if(!clientId)return;
-  const items=[];
+  const items=[..._liveAssignNotifs];
   const now=new Date();
   const cutoff=new Date(now-24*3600*1000).toISOString().slice(0,19).replace('T',' ');
   try{
@@ -21894,7 +21901,7 @@ function toggleNotifDropdown(){
   if(!dd)return;
   if(dd.style.display==='none'){
     dd.style.display='block';
-    dd.innerHTML=_notifItems.length?_notifItems.map(i=>`<div style="padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:10px"><span>${i.icon}</span><div><div>${esc(i.text)}</div><div style="font-size:11px;color:var(--muted)">${i.time||''}</div></div></div>`).join(''):'<div style="padding:16px;color:var(--muted);font-size:13px">No recent notifications</div>';
+    dd.innerHTML=_notifItems.length?_notifItems.map(i=>`<div style="padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:10px${i.lead_id?';cursor:pointer':''}"${i.lead_id?` onclick="navigate('leads');openDetail(${Number(i.lead_id)})"`:''}><span>${i.icon}</span><div><div>${esc(i.text)}</div><div style="font-size:11px;color:var(--muted)">${i.time||''}</div></div></div>`).join(''):'<div style="padding:16px;color:var(--muted);font-size:13px">No recent notifications</div>';
     _notifSeen=[..._notifItems.map(i=>i.id)];
     const badge=$id('notifBadge');if(badge)badge.style.display='none';
   } else { dd.style.display='none'; }

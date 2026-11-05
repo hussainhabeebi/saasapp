@@ -272,6 +272,18 @@ describe('list, counts, thread', ()=>{
     assert.deepEqual(await ids(rahul), [1, 7, 6, 5, 4, 2]);
     assert.deepEqual(await ids(chatsV2Access({...CLIENT, lead_routing:'{"enabled":true}'}, RAHUL)), [1, 2]);
   });
+  test("a chat assigned to you stays visible even on someone else's (Strict) channel", async()=>{
+    const before=db.prepare(`SELECT lead_id, inbox_id FROM conversations WHERE lead_id IN (2,5)`).all();
+    db.prepare(`UPDATE conversations SET inbox_id='55' WHERE lead_id IN (2,5)`).run();
+    try{
+      const ids=async (acc, q={view:'all'})=>(await chatsV2List(env, CID, acc, q)).rows.map(r=>r.lead_id);
+      // Channel 55 is someone else's: its unassigned chat 5 is hidden, Rahul's own chat 2 is not.
+      assert.deepEqual(await ids(chatsV2Access(CLIENT, RAHUL, ['55'])), [1, 7, 6, 4, 2]);
+      const shafna=chatsV2Access(CLIENT, SHAFNA, ['55']);
+      assert.ok(!(await ids(shafna)).includes(2));
+      assert.ok((await ids(chatsV2Access(CLIENT, RAHUL, ['55']), {view:'all', inbox:'55'})).includes(2));
+    }finally{ for(const r of before) db.prepare(`UPDATE conversations SET inbox_id=? WHERE lead_id=?`).run(r.inbox_id, r.lead_id); }
+  });
   test('counts in one query, scoped like the list', async()=>{
     const c=await chatsV2Counts(env, CID, owner);
     assert.deepEqual({all:c.all, unread:c.unread, needs:c.needs, mine:c.mine, unassigned:c.unassigned, resolved:c.resolved},
@@ -291,8 +303,9 @@ describe('list, counts, thread', ()=>{
     const travel={...CLIENT, industry:'travel', team_permissions:JSON.stringify({[RAHUL]:{role:'staff', leadCategories:['Visa']}})};
     const visaOnly=chatsV2Access(travel, RAHUL);
     assert.deepEqual(visaOnly.categories, ['Visa']);
-    assert.deepEqual(await ids(visaOnly, {}), [1, 6]);
-    assert.deepEqual(await ids(chatsV2Access({...travel, team_permissions:JSON.stringify({[RAHUL]:{leadCategories:[]}})}, RAHUL), {}), []);
+    // Visa chats, plus his own chat 2 whatever its category.
+    assert.deepEqual(await ids(visaOnly, {}), [1, 6, 2]);
+    assert.deepEqual(await ids(chatsV2Access({...travel, team_permissions:JSON.stringify({[RAHUL]:{leadCategories:[]}})}, RAHUL), {}), [1, 2]);
     // Not travel, or no restriction saved: no category scope at all.
     assert.equal(chatsV2Access(CLIENT, RAHUL).categories, undefined);
     assert.equal(chatsV2Access({...travel, team_permissions:'{}'}, RAHUL).categories, undefined);
@@ -357,8 +370,15 @@ describe('actions', ()=>{
     assert.equal(row(1).last_message_preview, 'm1');
   });
   test('assign writes Owner and checks the teammate; staff can only take a chat themselves', async()=>{
-    await chatsV2Act(env, deps(), P, CLIENT, chatsV2Access(CLIENT, OWNER), {op:'assign', ids:[1], args:{email:'Shafna@acme.com'}});
+    const told=[];
+    await chatsV2Act(env, {...deps(), onAssigned:async(env, c, cid, items, by)=>{ told.push({cid, items, by}); }}, P, CLIENT, chatsV2Access(CLIENT, OWNER), {op:'assign', ids:[1], args:{email:'Shafna@acme.com'}});
     assert.equal(row(1).assignee_email, SHAFNA);
+    // The new owner is told (live alert + email), once, with who gave it to them.
+    assert.equal(told.length, 1);
+    assert.equal(told[0].by, OWNER);
+    assert.deepEqual(told[0].items.map(i=>[i.lead_id, i.to]), [[1, SHAFNA]]);
+    await chatsV2Act(env, {...deps(), onAssigned:async()=>{ told.push('again'); }}, P, CLIENT, chatsV2Access(CLIENT, OWNER), {op:'assign', ids:[1], args:{email:SHAFNA}});
+    assert.equal(told.length, 1, 'no alert when the owner did not change');
     assert.deepEqual(ncPatches.at(-1), {Id:1, Owner:SHAFNA});
     assert.match(db.prepare(`SELECT content FROM lead_messages WHERE kind='event'`).get().content, /Assigned to Shafna by boss/);
     await assert.rejects(chatsV2Act(env, deps(), P, CLIENT, chatsV2Access(CLIENT, OWNER), {op:'assign', ids:[1], args:{email:'stranger@x.com'}}), /Not a teammate/);
