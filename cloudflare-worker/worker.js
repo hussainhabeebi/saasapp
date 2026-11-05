@@ -17193,8 +17193,8 @@ async function engineChannelOwner(env, clientId, inboxId){
 }
 async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead){
   // ── Priority 0: channel inbox assignment — exclusive, so it bypasses every other rule, applies
-  // whether or not lead routing is switched on, and also claims existing leads from that channel
-  // (a lead that arrived before the channel was assigned moves to its user on its next message).
+  // whether or not lead routing is switched on, and also claims that channel's existing leads that
+  // nobody present owns (they move to its user on their next message).
   const routing=engineGetLeadRouting(c);
   // Baby Care: a teammate marked On leave gets no new leads (unattendedReallocProcessClient moves
   // the ones they already have).
@@ -17205,7 +17205,12 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
   const channelOwner=present.has(rawChannelOwner)?rawChannelOwner:'';
   if(channelOwner && !away.has(channelOwner)){
     const current=String(leadBody.Owner||state?.lead?.Owner||'').trim().toLowerCase();
-    if(current!==channelOwner) leadBody.Owner=channelOwner;
+    // New leads always go to the channel's user. An existing lead only moves when nobody present
+    // owns it (unassigned, a teammate who left, or one on leave): a lead someone deliberately gave
+    // to another teammate stays with them instead of snapping back on the customer's next message.
+    // Bulk moves are the explicit "Move existing leads" action (backfillChannelLeadOwner).
+    const keep=!isNewLead && current && current!==channelOwner && present.has(current) && !away.has(current);
+    if(!keep && current!==channelOwner) leadBody.Owner=channelOwner;
     return;
   }
   // An existing lead still owned by someone no longer on the team is re-routed like a new one
