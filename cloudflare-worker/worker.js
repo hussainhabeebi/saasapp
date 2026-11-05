@@ -11,6 +11,7 @@ import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
+import {TF_STATE_TTL_MS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
@@ -20522,7 +20523,10 @@ export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:
   // Contextual answers (Travel Settings → Itineraries): a follow-up such as "is it including flight
   // ticket?" right after a package is answered from THAT package's inclusions, and the flight
   // question that follows asks only where the customer flies from (the package is the destination).
-  lt_contextual_answers:true};
+  lt_contextual_answers:true,
+  // Travel Settings → 🧩 Flows: the "Use flows" master switch. Only published flows ever run, so
+  // this is on by default and an agency with no flows sees no change.
+  lt_flows_enabled:true};
 const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
 const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
 const ltPayQrLabel=v=>String(v||'').replace(/\s+/g,' ').trim().slice(0,40);
@@ -20545,6 +20549,7 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_flyindo_agency_name:String(raw?.lt_flyindo_agency_name||'').replace(/\s+/g,' ').trim().slice(0,60),
     lt_flyindo_child_ages:ltYesNo(raw?.lt_flyindo_child_ages,d.lt_flyindo_child_ages),
     lt_contextual_answers:ltYesNo(raw?.lt_contextual_answers,d.lt_contextual_answers),
+    lt_flows_enabled:ltYesNo(raw?.lt_flows_enabled,d.lt_flows_enabled),
   };
 }
 // The saved D1 settings when present, else the CLIENTS fields, else the defaults.
@@ -20562,7 +20567,7 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
     .bind(Number(clientId),'{}',email,ltNow(),JSON.stringify(settings)).run();
   const yn=v=>v?'Yes':'No';
   try{
-    await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS).filter(k=>!k.startsWith('lt_flyindo_')));
+    await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS).filter(k=>!k.startsWith('lt_flyindo_')&&k!=='lt_flows_enabled'));
     await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),lt_contextual_answers:yn(settings.lt_contextual_answers),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
   }catch(e){}
 }
@@ -21028,6 +21033,264 @@ export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,use
   }
   await flyindoSave(env,clientId,phone,fs);
   return {turn:{...base,text:p.text,deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
+}
+
+// ── Travel flows (travel-flows.js): AI-first booking flows from Travel Settings → 🧩 Flows. ──
+// Flows live in D1 per client; a running flow's progress is kept per chat for 24 h, with a copy of
+// the flow so an edit never breaks a chat half-way through it.
+async function tfEnsureSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lt_travel_flows (client_id INTEGER NOT NULL, id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', flow_json TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL DEFAULT 0, updated_by TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,id))`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lt_travel_flow_state (client_id INTEGER NOT NULL, phone TEXT NOT NULL, state_json TEXT NOT NULL DEFAULT '{}', expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone))`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lt_travel_flow_stats (client_id INTEGER NOT NULL, flow_id TEXT NOT NULL, metric TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (client_id,flow_id,metric))`).run();
+}
+export async function tfLoadFlows(env,clientId){
+  await tfEnsureSchema(env);
+  const {results}=await env.DB.prepare(`SELECT flow_json,status FROM lt_travel_flows WHERE client_id=? ORDER BY position,updated_at`).bind(Number(clientId)).all();
+  return (results||[]).map(r=>tfNormalizeFlow({...ltJson(r.flow_json,{}),status:r.status}));
+}
+async function tfLoadState(env,clientId,phone){
+  if(!phone)return null;
+  await tfEnsureSchema(env);
+  const row=await env.DB.prepare(`SELECT state_json FROM lt_travel_flow_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  return row?ltJson(row.state_json,null):null;
+}
+async function tfSaveState(env,clientId,phone,st){
+  if(!phone)return;
+  await tfEnsureSchema(env);
+  const now=new Date();
+  await env.DB.prepare(`INSERT INTO lt_travel_flow_state (client_id,phone,state_json,expires_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(client_id,phone) DO UPDATE SET state_json=excluded.state_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(st),new Date(now.getTime()+TF_STATE_TTL_MS).toISOString(),now.toISOString()).run();
+}
+async function tfClearState(env,clientId,phone){
+  if(phone)await env.DB.prepare(`DELETE FROM lt_travel_flow_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run().catch(()=>{});
+}
+async function tfStat(env,clientId,flowId,metric){
+  if(!flowId)return;
+  await env.DB.prepare(`INSERT INTO lt_travel_flow_stats (client_id,flow_id,metric,n) VALUES (?,?,?,1) ON CONFLICT(client_id,flow_id,metric) DO UPDATE SET n=n+1`)
+    .bind(Number(clientId),String(flowId),String(metric).slice(0,60)).run().catch(()=>{});
+}
+function tfLangFor(c,state,text){
+  return engineScriptLang(text)||engineSessionLanguage(state?.activeHistory,text,c.language||'en')||c.language||'en';
+}
+// One customer message through a running flow: a clean tap or short answer goes without the AI,
+// anything else is read by the AI (details out, side questions answered, next question asked).
+export async function tfRunCore(env,c,st,text,{packages=[],history=[],lang='en',firstTurn=false,skipAi=false,today=new Date()}={}){
+  const direct=firstTurn?{answers:{},clean:false}:tfDirectAnswer(st,text,today);
+  let ai=null;
+  if(!direct.clean&&!skipAi){
+    const pkg=st.pkg?.id?(packages||[]).find(p=>taPkgId(p)===st.pkg.id):null;
+    let packageText='';
+    if(pkg){try{packageText=taPackageItineraryText(pkg,null);}catch(e){packageText=pkg.name;}}
+    const p=tfBuildAiPrompt(st,{text,agency:c.client_name||'',mainPrompt:c.main_prompt||'',kb:engineSelectKb(c.kb_summary||'','QUESTION'),packageText,history,lang,
+      langName:ENGINE_LANG_NAMES[lang]||lang,replyStyle:engineReplyStyleRules(c),today});
+    const raw=await engineGeminiGenerateWithFallback(env,c,p.system,p.user,{json:true,maxOutputTokens:800,temperature:0.3,caller:'travel_flow'}).catch(()=>null);
+    ai=tfParseAiReply(raw);
+    // Handover is off for this agency: keep helping in the flow instead.
+    if(ai?.action==='handover'&&c.handover_enabled==='No')ai.action='continue';
+  }
+  const res=tfApplyTurn(st,{ai,direct,today,pkgAvailable:true,firstTurn});
+  return {res,ai};
+}
+// Text for the parts a turn sends besides the reply, for chat history and the preview.
+function tfOutputText(out,pkg){
+  if(out.kind==='package')return pkg?`📦 ${String(pkg.name||'').trim()}${out.details?`\n\n${taPackageItineraryText(pkg,null)}`:''}`:'';
+  return out.text||'';
+}
+// Travel Settings → 🧩 Flows: a published flow whose keyword or package the message matches (or a
+// chat already in a flow). Returns null when no flow applies, so the message goes down the normal
+// path unchanged; {turn} for a flow reply; {introAction} to hand the chat to a person.
+export async function engineHandleTravelFlows(env,c,clientId,state,phone,inboxId,userText,mediaType,isNewLead=false){
+  if(!ltLiveAgencyEnabled(c)||c.lt_flows_enabled===false||!['text','audio'].includes(mediaType))return null;
+  const text=String(userText||'').trim();
+  if(!text||text.length>1000)return null;
+  // Taps that belong to another feature (menu, flights, portal, PDF) keep their own path.
+  if(/^[A-Z][A-Z_]{1,15}:/.test(text)&&!/^(?:TPKG|TPKGENQ|TFLOW):/i.test(text))return null;
+  if(ENGINE_OPT_OUT_WORDS.includes(text.toLowerCase())){await tfClearState(env,clientId,phone);return null;}
+  let flows=[];
+  try{flows=await tfLoadFlows(env,clientId);}catch(e){return null;}
+  const active=flows.filter(f=>f.status==='active');
+  let st=await tfLoadState(env,clientId,phone).catch(()=>null);
+  if(!active.length&&!st)return null;
+  const lang=tfLangFor(c,state,text),convId=state.convId,history=state.activeHistory||state.history||[];
+  const needPackages=st?.pkg?.id||active.some(f=>f.trigger.type==='package'||f.steps.some(s=>s.type==='send_package'));
+  const packages=needPackages&&taResolveTable(c,'packages')?(await taReadRecords(env,c,clientId,'packages')).filter(p=>p?.name&&taPkgId(p)):[];
+  const pkgInMsg=packages.length?tfPackageInMessage(packages,text,{byKeyword:taPackagesByKeyword,findInText:taFindPackageInText}):null;
+  const isNewChat=isNewLead||!history.some(h=>h?.role==='assistant');
+  const match=tfMatchTrigger(active,text,{pkg:pkgInMsg,isNewChat});
+  const human=c.handover_enabled!=='No';
+  const base={route:'travel_flow',next:state.stage||'new',preserveCrmStage:true,lang,serviceCategory:'Package',historyUserText:text};
+  let firstTurn=false;
+  if(st){
+    if(tfWantsHuman(text)&&human){
+      await tfClearState(env,clientId,phone);await tfStat(env,clientId,st.flow_id,'handed_over');
+      return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
+    }
+    if(match&&match.flow.id!==st.flow_id){st=null;}
+    else if(st.paused){
+      if(!tfIsContinue(text)&&!(match&&match.flow.id===st.flow_id))return null;
+      st.paused=false;st.detours=0;
+      const adv=tfAdvance(st);
+      if(adv.ask){
+        st.current=adv.ask.id;st.asked[adv.ask.id]=true;
+        await tfSaveState(env,clientId,phone,st);await tfStat(env,clientId,st.flow_id,'resumed');
+        const q=await engineLocalizeReply(env,c,`Sure! Let's continue${st.pkg?.name?` with *${st.pkg.name}*`:''} 😊\n\n${tfStepQuestion(adv.ask,st)}`,lang);
+        const rows=tfQuestionRows(adv.ask);
+        return {turn:{...base,qualAnswers:{...(state.qualAnswers||{}),...tfQualAnswers(st)},text:q,
+          deliver:()=>rows.length?ltSendPicker(env,c,clientId,convId,phone,inboxId,q,rows,{button:'Choose',section:engineTruncateButtonTitle(tfStepLabel(adv.ask),24)}):engineDeliverReply(env,c,clientId,convId,q,{mediaType,langCode:lang}).then(()=>null)}};
+      }
+    }else if(tfIsCancel(text)){
+      await tfClearState(env,clientId,phone);await tfStat(env,clientId,st.flow_id,'cancelled');
+      const t=await engineLocalizeReply(env,c,'No problem 👍 I have stopped this booking request. Ask me anything, any time.',lang);
+      return {turn:{...base,text:t}};
+    }
+  }
+  if(!st){
+    if(!match)return null;
+    // A chat already with the team only re-enters a flow when the customer's new message asks for
+    // it (its keyword or package), which is the check above.
+    st=tfStart(match.flow,match.pkg||(match.flow.trigger.type==='package'?null:pkgInMsg));
+    firstTurn=true;
+    await tfStat(env,clientId,st.flow_id,'started');
+  }
+  const isTap=/^(?:TPKG|TPKGENQ|TFLOW):/i.test(text);
+  const {res,ai}=await tfRunCore(env,c,st,text,{packages,history,lang,firstTurn,skipAi:firstTurn&&isTap});
+  if(ai?.side_question)await tfStat(env,clientId,st.flow_id,'side_answers');
+  if(res.action==='handover'){
+    await tfClearState(env,clientId,phone);await tfStat(env,clientId,st.flow_id,'handed_over');
+    return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
+  }
+  if(res.action==='cancel'){
+    await tfClearState(env,clientId,phone);await tfStat(env,clientId,st.flow_id,'cancelled');
+    const t=res.reply||await engineLocalizeReply(env,c,'No problem 👍 Ask me anything, any time.',lang);
+    return {turn:{...base,text:t}};
+  }
+  if(res.action==='pause'){
+    await tfSaveState(env,clientId,phone,st);await tfStat(env,clientId,st.flow_id,'paused');
+    return null;
+  }
+  const qual={...(state.qualAnswers||{}),...tfQualAnswers(st)};
+  const outputs=res.outputs||[];
+  const isHandoverEnd=res.action==='finished_handover',finished=isHandoverEnd||res.action==='finished';
+  if(res.ask&&!st.asked['_seen_'+res.ask.id]){st.asked['_seen_'+res.ask.id]=true;await tfStat(env,clientId,st.flow_id,`step:${res.ask.id}`);}
+  if(res.action==='continue')await tfSaveState(env,clientId,phone,st);
+  else{await tfClearState(env,clientId,phone);await tfStat(env,clientId,st.flow_id,isHandoverEnd?'handed_over':'completed');await tfStat(env,clientId,st.flow_id,'finished');}
+  // What goes out, in order: the answer to their question, the package / quote / payment parts,
+  // then the next question (with its options as buttons or a list).
+  const loc=t=>t?engineLocalizeReply(env,c,t,lang):'';
+  const question=res.ask?(res.usedAi?res.reply:await loc(tfStepQuestion(res.ask,st))):'';
+  const lead=res.usedAi?'':(res.leadText||'');
+  const outTexts=[];
+  for(const o of outputs){
+    if(o.kind==='package')continue;
+    outTexts.push(o.kind==='quote'||o.kind==='payment'?o.text:await loc(o.text));
+  }
+  const pkgOf=o=>packages.find(p=>taPkgId(p)===String(o.package_id));
+  const historyText=[lead,...outputs.map(o=>o.kind==='package'?tfOutputText(o,pkgOf(o)):null).filter(Boolean),...outTexts,question].filter(Boolean).join('\n\n');
+  const turn={...base,qualAnswers:qual,text:historyText||question||'👍',
+    ...(isHandoverEnd?{route:'human',next:'human_handover',preserveCrmStage:false,intent:'BOOKING'}:finished?{intent:'BOOKING'}:{}),
+    deliver:async()=>{
+      if(lead)await engineDeliverReply(env,c,clientId,convId,lead,{mediaType,langCode:lang});
+      for(const o of outputs){
+        if(o.kind==='package'){
+          const pkg=pkgOf(o);if(!pkg)continue;
+          const itin=taMatchItinerary(pkg,await taReadRecords(env,c,clientId,'itineraries').catch(()=>[]));
+          if(o.photos)await taDeliverPackageMedia(env,c,clientId,convId,[pkg],{explicit:true,images:true,pdf:false});
+          if(o.details)await engineSendChatwootReply(env,c,clientId,convId,taPackageItineraryText(pkg,itin));
+          if(o.pdf){
+            const own=String(pkg.pdf_url||'').trim()?await taDeliverPackageMedia(env,c,clientId,convId,[pkg],{explicit:true,images:false,pdf:true}):false;
+            if(!own)await taSendItineraryPdf(env,c,clientId,convId,pkg,itin).catch(()=>false);
+          }
+        }else if(o.kind==='payment'){
+          await engineSendChatwootReply(env,c,clientId,convId,o.text);
+          if(o.send_qr&&ltPaymentQrs(c).length)await ltSendPaymentQrs(env,c,clientId,convId);
+        }else{
+          const t=o.kind==='quote'?o.text:await loc(o.text);
+          await engineSendChatwootReply(env,c,clientId,convId,t);
+        }
+      }
+      if(isHandoverEnd)await engineSendHandoverLabel(c,convId);
+      if(!question)return null;
+      const rows=tfQuestionRows(res.ask);
+      if(rows.length)return ltSendPicker(env,c,clientId,convId,phone,inboxId,question,rows,{button:'Choose',section:engineTruncateButtonTitle(tfStepLabel(res.ask),24)});
+      await engineDeliverReply(env,c,clientId,convId,question,{mediaType,langCode:lang});
+      return null;
+    }};
+  return {turn};
+}
+
+// /live-travel/flows — Travel Settings → 🧩 Flows.
+//   GET                → {enabled, flows, stats, packages, templates}
+//   PUT {enabled}      → the "Use flows" master switch
+//   POST /save {flow}  → saves a flow; publishing (status "active") needs a flow with no errors
+//   POST /delete {id}  → removes a flow
+//   POST /preview {flow, state, message} → one test turn with the real AI, nothing is sent
+async function handleLtTravelFlows(request,env,sub=''){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  await tfEnsureSchema(env);
+  let client=null;try{client=await getClientById(env,auth.cid);}catch(e){}
+  const c={...(client||{}),...await ltTravelSettingsStored(env,auth.cid,client||{})};
+  const packages=taResolveTable(c,'packages')?(await taReadRecords(env,c,auth.cid,'packages')).filter(p=>p?.name&&taPkgId(p)):[];
+  const flows=await tfLoadFlows(env,auth.cid);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT flow_id,metric,n FROM lt_travel_flow_stats WHERE client_id=?`).bind(auth.cid).all();
+    const stats={};for(const r of results||[])(stats[r.flow_id]||(stats[r.flow_id]={}))[r.metric]=r.n;
+    return json({enabled:c.lt_flows_enabled!==false,flows,stats,
+      packages:packages.map(p=>({id:taPkgId(p),name:String(p.name).trim(),keywords:String(p.keywords||''),destination:String(p.destination||''),price:taPackagePrice(p),currency:String(p.currency||''),region:taPackageRegion(p)})),
+      templates:TF_TEMPLATES.map(t=>({key:t.key,name:t.name,description:t.description,flow:tfTemplateFlow(t.key)})),
+      payment_qrs:ltPaymentQrs(c).length,handover_enabled:c.handover_enabled!=='No'});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='PUT'&&!sub){
+    if(typeof body.enabled!=='boolean')return json({error:'enabled must be true or false'},400);
+    const current=await ltTravelSettingsStored(env,auth.cid,client||{});
+    await ltTravelSettingsSave(env,auth.cid,ltTravelSettingsNormalize({...current,lt_flows_enabled:body.enabled}),auth.email);
+    await ltAudit(env,auth.cid,'travel_flows','all',body.enabled?'enabled':'disabled',auth.email,{});
+    return json({enabled:body.enabled});
+  }
+  if(sub==='save'){
+    const flow=tfNormalizeFlow(body.flow||{});
+    const existing=flows.find(f=>f.id===flow.id);
+    if(!existing&&flows.length>=TF_MAX_FLOWS)return json({error:`You can keep up to ${TF_MAX_FLOWS} flows. Delete one first.`},400);
+    const check=tfValidateFlow(flow,{packages,flows});
+    if(flow.status==='active'&&check.errors.length)return json({error:check.errors[0],errors:check.errors,warnings:check.warnings},400);
+    flow.version=existing?existing.version+1:1;
+    flow.updated_at=ltNow();flow.updated_by=auth.email;
+    const position=existing?flows.indexOf(existing):flows.length;
+    await env.DB.prepare(`INSERT INTO lt_travel_flows (client_id,id,status,flow_json,position,updated_by,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id,id) DO UPDATE SET status=excluded.status,flow_json=excluded.flow_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+      .bind(auth.cid,flow.id,flow.status,JSON.stringify(flow),position,auth.email,flow.updated_at).run();
+    await ltAudit(env,auth.cid,'travel_flow',flow.id,existing?'updated':'created',auth.email,{name:flow.name,status:flow.status,version:flow.version});
+    return json({flow,errors:check.errors,warnings:check.warnings});
+  }
+  if(sub==='delete'){
+    const id=String(body.id||'');
+    if(!flows.some(f=>f.id===id))return json({error:'Flow not found'},404);
+    await env.DB.prepare(`DELETE FROM lt_travel_flows WHERE client_id=? AND id=?`).bind(auth.cid,id).run();
+    await env.DB.prepare(`DELETE FROM lt_travel_flow_stats WHERE client_id=? AND flow_id=?`).bind(auth.cid,id).run();
+    await ltAudit(env,auth.cid,'travel_flow',id,'deleted',auth.email,{});
+    return json({ok:true});
+  }
+  if(sub==='preview'){
+    const flow=tfNormalizeFlow(body.flow||{});
+    const text=String(body.message||'').trim().slice(0,1000);
+    if(!text)return json({error:'Type a message to test'},400);
+    let st=body.state&&typeof body.state==='object'&&body.state.flow?body.state:null,firstTurn=false;
+    if(!st){
+      const pkg=tfPackageInMessage(packages,text,{byKeyword:taPackagesByKeyword,findInText:taFindPackageInText})
+        ||(flow.trigger.type==='package'?packages.find(p=>flow.trigger.package_ids.includes(taPkgId(p))):null);
+      st=tfStart(flow,pkg);firstTurn=true;
+    }
+    const history=(Array.isArray(body.history)?body.history:[]).slice(-6).map(h=>({role:h.role==='assistant'?'assistant':'user',content:String(h.content||'').slice(0,500)}));
+    const lang=engineScriptLang(text)||c.language||'en';
+    let res,ai;
+    try{({res,ai}=await tfRunCore(env,c,st,text,{packages,history,lang,firstTurn}));}
+    catch(e){return json({error:'This test chat could not continue. Restart the test.'},400);}
+    const outputs=(res.outputs||[]).map(o=>({kind:o.kind,text:tfOutputText(o,packages.find(p=>taPkgId(p)===String(o.package_id))),photos:!!o.photos,pdf:!!o.pdf,send_qr:!!o.send_qr}));
+    const question=res.ask?(res.usedAi?res.reply:tfStepQuestion(res.ask,st)):'';
+    return json({action:res.action,lead:res.usedAi?'':(res.leadText||''),outputs,question,options:res.ask?.options||[],
+      ask_label:res.ask?tfStepLabel(res.ask):'',ai_used:!!ai,side_question:!!ai?.side_question,state:['continue'].includes(res.action)||res.action==='pause'?st:null,
+      collected:tfQualAnswers(st)});
+  }
+  return json({error:'Not found'},404);
 }
 
 // "hi" / "menu" / a menu tap. Returns null for anything else so the message continues down the
@@ -25969,6 +26232,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     // Travel agencies: their own WhatsApp menu (Live Agency → 💬 WhatsApp Menu) answers "hi" /
     // "menu" and every menu tap before any AI path. Agencies without an enabled menu get null.
+    // Travel Settings → 🧩 Flows: a published flow whose keyword or package this message matches
+    // (or a chat already in one) — AI-first, so side questions are still answered. Runs before
+    // Flyindo, so a flow takes over only for its own trigger; everything else is unchanged.
+    if(!introAction){
+      const flowTurn=await engineHandleTravelFlows(env,c,clientId,state,phone,parsed.inboxId,userText,mediaType,isNewLead).catch(e=>{reportOpsError(env,'Travel flow failed',e,{clientId}).catch(()=>{});return null;});
+      if(flowTurn?.turn){
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,flowTurn.turn.historyUserText||userText,messageId,isNewLead,flowTurn.turn,startMs,mediaType,ctx);
+        return json({ok:true,route:flowTurn.turn.route,sent:c.bot_reply_disabled!=='Yes'});
+      }
+      if(flowTurn?.introAction){introAction=flowTurn.introAction;userText=introAction.text;}
+    }
     // Travel Settings → Chat Style "Flyindo": the guided, buttons-only booking flow replaces
     // answering — it runs before the menu and every AI path.
     if(!introAction){
@@ -40014,6 +40288,8 @@ export default {
       else if(url.pathname==='/live-travel/whatsapp-menu' && ['GET','PUT'].includes(request.method)){ res=await handleLtWhatsappMenu(request,env); }
       else if(url.pathname==='/live-travel/travel-flow' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlow(request,env); }
       else if(url.pathname==='/live-travel/travel-settings' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelSettings(request,env); }
+      else if(url.pathname==='/live-travel/flows' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlows(request,env); }
+      else if(/^\/live-travel\/flows\/(save|delete|preview)$/.test(url.pathname) && request.method==='POST'){ res=await handleLtTravelFlows(request,env,url.pathname.split('/').pop()); }
       else if(url.pathname==='/travel/drive-image' && request.method==='GET'){ res=await handleTravelDriveImage(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
