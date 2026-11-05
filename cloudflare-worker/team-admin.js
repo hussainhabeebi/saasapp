@@ -74,6 +74,7 @@ export function tmMemberView(c,email,meta={},{names=null,perms=null,whatsapp=nul
   const p=perms[e]||{};
   return {email:e,name:names[e]||meta?.name||e.split('@')[0],status:expired?'expired':status,on_team:onTeam,
     role:p.role||null,modules:Array.isArray(p.modules)?p.modules:null,lead_categories:Array.isArray(p.leadCategories)?p.leadCategories:null,
+    leads:TM_LEAD_LEVELS.includes(p.leads)?p.leads:'full',channels:p.channels&&typeof p.channels==='object'?p.channels:{},
     whatsapp:String(whatsapp[e]||''),chatwoot:!!chatwootUsers[e],
     invite_kind:meta?.invite_kind||null,invited_at:meta?.invited_at||null,invited_by:meta?.invited_by||null,expires_at:meta?.expires_at||null,
     last_login_at:meta?.last_login_at||null,deactivated_at:meta?.deactivated_at||null};
@@ -108,8 +109,16 @@ export function tmApplyMemberUpdate(c,email,body={}){
       cur.modules=uniq.length>=TM_MODULE_KEYS.length?null:uniq;
     }
   }
+  const accessErr=tmCheckAccess(body);
+  if(accessErr)return {error:accessErr};
+  if('leads' in body){ if(body.leads==null||body.leads==='full')delete cur.leads; else cur.leads=body.leads; }
+  if('channels' in body){
+    const ch={};
+    for(const [k,v] of Object.entries(body.channels||{})) if(v&&v!=='default') ch[String(k)]=v;
+    if(Object.keys(ch).length)cur.channels=ch; else delete cur.channels;
+  }
   const fields={};
-  if('role' in body||'modules' in body){perms[e]=cur;fields.team_permissions=JSON.stringify(perms);}
+  if('role' in body||'modules' in body||'leads' in body||'channels' in body){perms[e]=cur;fields.team_permissions=JSON.stringify(perms);}
   if('name' in body){
     const n=String(body.name||'').replace(/\s+/g,' ').trim().slice(0,80);
     if(!n)return {error:'Name cannot be empty.'};
@@ -151,9 +160,64 @@ export function tmAuditText(a){
     deactivated:`Deactivated ${t}`,
     reactivated:`Reactivated ${t}`,
     removed:`Removed ${t}`,
-    updated:`Updated ${t}${d.role!==undefined?`: role ${d.role||'custom'}`:''}${d.modules!==undefined?' (module access)':''}${d.name?`: name ${d.name}`:''}`,
+    updated:`Updated ${t}${d.role!==undefined?`: role ${d.role||'custom'}`:''}${d.modules!==undefined?' (module access)':''}${d.leads!==undefined?`: leads ${d.leads||'full'}`:''}${d.channels!==undefined?' (channel access)':''}${d.name?`: name ${d.name}`:''}`,
     repaired:`Moved ${t} to this team (archived their empty account #${d.archived_client_id||'?'})`,
     ownership_transferred:`Transferred ownership to ${t}`,
     create_failed:`Creating ${t} failed and was rolled back${d.reason?`: ${d.reason}`:''}`,
   })[a?.action]||`${a?.action||'Change'} ${t}`;
 }
+
+// ── Lead and channel permissions per teammate (team_permissions[email].leads / .channels) ──
+// leads: what they may do with the leads they can see.
+//   read  — view only;  write — view, add and edit (no delete);  full — everything (the default).
+// channels: per Chatwoot inbox id, on top of the normal channel-assignment rules.
+//   none  — that channel's chats and leads are hidden (a chat assigned to them stays visible);
+//   read  — visible as usual, but no replies or changes;
+//   write — visible as usual, can reply (same as no setting);
+//   full  — every chat and lead on that channel, even ones assigned to others or 🔒 Strict.
+// No setting = exactly today's behaviour. The account owner is never restricted.
+export const TM_LEAD_LEVELS=['read','write','full'];
+export const TM_CHANNEL_LEVELS=['none','read','write','full'];
+function tmPermsEntry(c,email){
+  const e=tmEmail(email);
+  const perms=tmJson(c?.team_permissions,{});
+  return perms[Object.keys(perms).find(k=>tmEmail(k)===e)]||{};
+}
+export function tmLeadLevel(c,email){
+  if(!tmEmail(email)||tmIsOwner(c,email)) return 'full';
+  const v=tmPermsEntry(c,email).leads;
+  return TM_LEAD_LEVELS.includes(v)?v:'full';
+}
+export function tmChannelPerms(c,email){
+  if(!tmEmail(email)||tmIsOwner(c,email)) return {};
+  const raw=tmPermsEntry(c,email).channels;
+  const out={};
+  if(raw&&typeof raw==='object') for(const [k,v] of Object.entries(raw)){const id=String(k).trim();if(/^\d+$/.test(id)&&TM_CHANNEL_LEVELS.includes(v))out[id]=v;}
+  return out;
+}
+export function tmInboxesAt(perms,level){ return Object.keys(perms||{}).filter(id=>perms[id]===level); }
+// The hidden-channel list after this person's channel settings: Full un-hides, No access hides.
+export function tmApplyChannelPerms(hidden,perms){
+  const full=new Set(tmInboxesAt(perms,'full'));
+  return [...new Set([...(hidden||[]).map(String).filter(id=>!full.has(id)),...tmInboxesAt(perms,'none')])];
+}
+// Refusal for a write to the Leads table, or ''. method: POST (add) / PATCH (edit) / DELETE.
+export function tmLeadWriteRefusal(level,method){
+  const m=String(method||'').toUpperCase();
+  if(level==='read'&&['POST','PATCH','PUT','DELETE'].includes(m)) return 'You have read-only access to leads. Ask your admin for edit access.';
+  if(level==='write'&&m==='DELETE') return 'Your access lets you add and edit leads, but not delete them.';
+  return '';
+}
+// Validates a {leads, channels} edit for tmApplyMemberUpdate.
+function tmCheckAccess(body){
+  if('leads' in body&&body.leads!=null&&!TM_LEAD_LEVELS.includes(body.leads)) return `Unknown lead access "${body.leads}".`;
+  if('channels' in body&&body.channels!=null){
+    if(typeof body.channels!=='object'||Array.isArray(body.channels)) return 'channels must be an object of inbox id → level.';
+    for(const [k,v] of Object.entries(body.channels)){
+      if(!/^\d+$/.test(String(k))) return `Unknown channel "${k}".`;
+      if(v!=null&&v!==''&&!TM_CHANNEL_LEVELS.includes(v)) return `Unknown channel access "${v}".`;
+    }
+  }
+  return '';
+}
+export {tmCheckAccess};

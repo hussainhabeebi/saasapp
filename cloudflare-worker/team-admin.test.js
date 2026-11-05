@@ -6,8 +6,9 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import worker, { handleTeamCreateUser, handleTeamCheckUser, handleTeamInvite } from './worker.js';
-import { tmIsOrphanAccount, tmDerivedName, tmParseBulk, tmApplyMemberUpdate, tmMembers, tmEmailMessage } from './team-admin.js';
+import worker, { handleTeamCreateUser, handleTeamCheckUser, handleTeamInvite, chatSendRefusal } from './worker.js';
+import { chatsV2Access } from './chats-v2.js';
+import { tmIsOrphanAccount, tmDerivedName, tmParseBulk, tmApplyMemberUpdate, tmMembers, tmEmailMessage, tmLeadLevel, tmChannelPerms, tmApplyChannelPerms, tmLeadWriteRefusal } from './team-admin.js';
 
 class D1Statement {
   constructor(db,sql,args=[]){this.db=db;this.sql=sql;this.args=args;}
@@ -263,5 +264,66 @@ describe('member routes', ()=>{
     assert.equal(acme().authentik_email,'a@x.com');
     assert.ok(acme().team_emails.split(',').includes('boss@x.com'));
     assert.equal(JSON.parse(acme().team_permissions)['boss@x.com'].role,'admin');
+  });
+});
+
+describe('lead and channel access', ()=>{
+  const C={authentik_email:'boss@x.com',team_emails:'rahul@x.com,sara@x.com',
+    team_permissions:JSON.stringify({'Rahul@x.com':{leads:'read',channels:{'11':'full','22':'read','33':'none','44':'bogus'}},'sara@x.com':{leads:'write'}})};
+  test('levels: default full, owner never limited, bad values ignored', ()=>{
+    assert.equal(tmLeadLevel(C,'rahul@x.com'),'read','email case does not matter');
+    assert.equal(tmLeadLevel(C,'sara@x.com'),'write');
+    assert.equal(tmLeadLevel(C,'new@x.com'),'full');
+    assert.equal(tmLeadLevel({...C,authentik_email:'rahul@x.com'},'rahul@x.com'),'full');
+    assert.deepEqual(tmChannelPerms(C,'rahul@x.com'),{'11':'full','22':'read','33':'none'});
+    assert.deepEqual(tmApplyChannelPerms(['11','55'],tmChannelPerms(C,'rahul@x.com')),['55','33'],'Full un-hides, No access hides');
+  });
+  test('lead writes: read blocks all changes, edit blocks delete', ()=>{
+    assert.match(tmLeadWriteRefusal('read','PATCH'),/read-only/);
+    assert.match(tmLeadWriteRefusal('read','POST'),/read-only/);
+    assert.equal(tmLeadWriteRefusal('read','GET'),'');
+    assert.equal(tmLeadWriteRefusal('write','PATCH'),'');
+    assert.match(tmLeadWriteRefusal('write','DELETE'),/not delete/);
+    assert.equal(tmLeadWriteRefusal('full','DELETE'),'');
+  });
+  test('chats: read-only channel blocks replies; full channel reaches others\' chats', ()=>{
+    const acc=chatsV2Access(C,'rahul@x.com',['11']);
+    assert.deepEqual(acc.hidden,['33']);
+    assert.deepEqual(acc.fullInboxes,['11']);
+    assert.deepEqual(acc.readInboxes,['22']);
+    assert.match(chatSendRefusal(acc,{InboxId:22,Owner:'rahul@x.com'}),/read-only access to this channel/,'even their own chat');
+    assert.equal(chatSendRefusal(acc,{InboxId:11,Owner:'sara@x.com'}),'','full: any chat on the channel');
+    assert.match(chatSendRefusal(acc,{InboxId:55,Owner:'sara@x.com'}),/assigned to someone else/,'other channels unchanged');
+    assert.deepEqual(chatsV2Access(C,'boss@x.com').hidden,[],'owner unaffected');
+    assert.equal(chatsV2Access(C,'sara@x.com').readInboxes,undefined,'no setting, no change');
+  });
+  test('member update stores leads/channels; Default clears a channel', ()=>{
+    const {next}=tmApplyMemberUpdate(C,'sara@x.com',{leads:'read',channels:{'11':'full','22':''}});
+    assert.deepEqual(JSON.parse(next.team_permissions)['sara@x.com'],{leads:'read',channels:{'11':'full'}});
+    const back=tmApplyMemberUpdate({team_permissions:next.team_permissions},'sara@x.com',{leads:'full',channels:{}}).next;
+    assert.deepEqual(JSON.parse(back.team_permissions)['sara@x.com'],{});
+    assert.match(tmApplyMemberUpdate(C,'sara@x.com',{leads:'admin'}).error,/Unknown lead access/);
+    assert.match(tmApplyMemberUpdate(C,'sara@x.com',{channels:{'11':'owner'}}).error,/Unknown channel access/);
+  });
+  test('API: a read-only teammate cannot change leads through the dashboard passthrough', async()=>{
+    acme().team_emails='a@x.com,ed@x.com';
+    acme().team_permissions=JSON.stringify({'a@x.com':{leads:'read'},'ed@x.com':{leads:'write'}});
+    const nc=async(as,method)=>{const r=await worker.fetch(new Request('https://w.test/nocodb/api/v2/tables/mvg6rcw0ia5qqrx/records',{method,headers:{Authorization:'Bearer '+await session(7,as),'Content-Type':'application/json'},body:JSON.stringify({Id:5,Name:'X'})}),env,{});return {status:r.status,data:await r.json().catch(()=>({}))};};
+    let r=await nc('a@x.com','PATCH');
+    assert.equal(r.status,403);
+    assert.equal(r.data.code,'LEAD_ACCESS');
+    r=await nc('ed@x.com','DELETE');
+    assert.equal(r.status,403);
+    r=await nc('ed@x.com','PATCH');
+    assert.notEqual(r.status,403,'edit may edit');
+    r=await nc('boss@x.com','DELETE');
+    assert.notEqual(r.status,403,'owner always may');
+    // Only the owner can set these.
+    r=await call('/team/member/update',{email:'a@x.com',leads:'full'},{as:'ed@x.com'});
+    assert.equal(r.status,403);
+    r=await call('/team/member/update',{email:'a@x.com',leads:'write',channels:{'9':'read'}});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(r.data.member.leads,'write');
+    assert.deepEqual(r.data.member.channels,{'9':'read'});
   });
 });

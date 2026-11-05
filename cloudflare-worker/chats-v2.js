@@ -1,3 +1,4 @@
+import {tmChannelPerms,tmApplyChannelPerms,tmInboxesAt} from './team-admin.js';
 // ── Chats v2 ─────────────────────────────────────────────────────────────────────────────────────
 // The inbox read model behind frontend/chats.html (design: docs/chats-v2-design.md). One D1 row per
 // conversation (`conversations`) carries everything the chat list shows (preview, assignee, status,
@@ -566,11 +567,15 @@ export function chatsV2Access(c, email, hiddenInboxes=[]){
   const locked=staff&&!!parse(c?.lead_routing, {})?.enabled;
   // Staff get every channel assigned to someone else hidden; admins / GMs only 🔒 Strict ones (the
   // caller passes just those — chatsV2HiddenInboxes fullAccess); the owner never has any hidden.
-  const hidden=me&&me!==owner?[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))]:[];
+  // User Management → channel access: Full un-hides a channel, No access hides it, Read only keeps
+  // it visible but blocks replies and changes (tmChannelPerms; nothing set = no change).
+  const chPerms=me&&me!==owner?tmChannelPerms(c, me):{};
+  const hidden=me&&me!==owner?tmApplyChannelPerms([...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))], chPerms):[];
+  const fullInboxes=tmInboxesAt(chPerms,'full'), readInboxes=tmInboxesAt(chPerms,'read');
   const mine=perms[Object.keys(perms).find(k=>lc(k)===me)];
   const categories=(me&&me!==owner&&c?.industry==='travel'&&Array.isArray(mine?.leadCategories))
     ?[...new Set(mine.leadCategories.map(x=>String(x||'').trim()).filter(Boolean))]:null;
-  return {me, staff, locked, hidden, ...(categories?{categories}:{})};
+  return {me, staff, locked, hidden, ...(fullInboxes.length?{fullInboxes}:{}), ...(readInboxes.length?{readInboxes}:{}), ...(categories?{categories}:{})};
 }
 // fullAccess (admin / general manager): only 🔒 Strict channels are hidden from them.
 export async function chatsV2HiddenInboxes(env, cid, email, {fullAccess=false}={}){
@@ -594,8 +599,11 @@ function scopeSql(acc){
   }
   if(acc.hidden?.length){ sql+=` AND (inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.hidden, acc.me); }
   if(!acc.staff) return {sql, vals};
-  if(acc.locked){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
-  else { sql+=` AND assignee_email IN (?, '')`; vals.push(acc.me); }
+  // Full access to a channel: every chat on it, whoever it is assigned to.
+  const full=acc.fullInboxes||[];
+  const fullSql=full.length?` OR inbox_id IN (${full.map(()=>'?').join(',')})`:'';
+  if(acc.locked){ sql+=` AND (assignee_email=?${fullSql})`; vals.push(acc.me, ...full); }
+  else { sql+=` AND (assignee_email IN (?, '')${fullSql})`; vals.push(acc.me, ...full); }
   return {sql, vals};
 }
 function canSee(acc, row){
@@ -603,6 +611,7 @@ function canSee(acc, row){
   if(acc.categories&&!acc.categories.includes(String(row.service_category||''))) return false;
   if(acc.hidden?.includes(String(row.inbox_id||''))) return false;
   if(!acc.staff) return true;
+  if(acc.fullInboxes?.includes(String(row.inbox_id||''))) return true;
   return row.assignee_email===acc.me||(!acc.locked&&!row.assignee_email);
 }
 
@@ -832,6 +841,9 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   const cid=Number(payload.cid);
   const rows=(await rowsByIds(env, ids)).filter(r=>Number(r.client_id)===cid&&canSee(acc, r));
   if(!rows.length) throw Object.assign(new Error('Conversation not found'), {status:404});
+  // Read only on a channel: they can mark chats read / unread for themselves, nothing else.
+  if(!['mark_read','mark_unread'].includes(op)&&rows.some(r=>acc.readInboxes?.includes(String(r.inbox_id||''))))
+    throw Object.assign(new Error('You have read-only access to this channel.'), {status:403});
   const now=new Date().toISOString();
   const agents=chatsV2Agents(c);
   const nameOf=e=>agents.find(a=>a.email===lc(e))?.name||e;
@@ -1100,7 +1112,7 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
       // user (Strict) are left out. Best-effort: a Chatwoot hiccup just hides the tabs.
       let inboxes=[];
       try{ inboxes=deps.inboxes?(await deps.inboxes(env, c)||[]).filter(ib=>!acc.hidden?.includes(String(ib.id))):[]; }catch(e){ inboxes=[]; }
-      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null}, travel:c.industry==='travel', categories_custom:c.industry==='travel'?customCategories(c):[], agents:chatsV2Agents(c), labels, inboxes, canned:canned||[], settings,
+      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null, read_inboxes:acc.readInboxes||[]}, travel:c.industry==='travel', categories_custom:c.industry==='travel'?customCategories(c):[], agents:chatsV2Agents(c), labels, inboxes, canned:canned||[], settings,
         views:(views||[]).map(v=>({...v, filter:parse(v.filter, {all:[]})})), macros:(macros||[]).map(m=>({...m, ops:parse(m.ops, [])}))};
       const version=await hashOf(data);
       if(qp.v&&qp.v===version) return json({version, unchanged:true});

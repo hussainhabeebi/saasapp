@@ -11,7 +11,7 @@ import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
-import {TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
+import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -1417,9 +1417,21 @@ export async function handleTeamMembers(request,env){
     account:{id:String(c.Id),name:c.client_name||'',industry:c.industry||''},
     owner:{email:ownerEmail,name:c.client_name||ownerEmail,whatsapp:String(tmJson(c.team_whatsapp,{})[ownerEmail]||''),last_login_at:ownerMeta.last_login_at||null},
     members:tmMembers(c,meta),
+    channels:await tmChannelList(env,c),
     seats:{used:countClientTeamUsers(c),max:limits?.max_users||null,plan:limits?.label||null},
     roles:TM_ROLE_KEYS,modules:TM_MODULE_KEYS,invite_ttl_days:TEAM_INVITE_TTL_DAYS,
   });
+}
+// Connected channels for the per-user channel access list: Chatwoot inboxes with who each one is
+// assigned to and whether it is 🔒 Strict. Best-effort: a Chatwoot hiccup gives an empty list.
+async function tmChannelList(env,c){
+  let inboxes=[];try{inboxes=await chatsInboxDirectory(c);}catch(e){}
+  if(!inboxes.length) return [];
+  let rows=[];
+  if(env.DB){try{await ensureInboxAssignmentsTable(env);rows=(await env.DB.prepare(`SELECT inbox_id,assigned_email,strict FROM channel_inbox_assignments WHERE client_id=?`).bind(Number(c.Id)).all()).results||[];}catch(e){}}
+  const by=Object.fromEntries(rows.map(r=>[String(r.inbox_id),r]));
+  return inboxes.map(ib=>({id:String(ib.id),name:ib.name||`Inbox ${ib.id}`,type:/whatsapp/i.test(ib.channel_type)?'whatsapp':/instagram/i.test(ib.channel_type)?'instagram':'other',
+    phone:ib.phone_number||'',assigned_email:String(by[String(ib.id)]?.assigned_email||''),strict:Number(by[String(ib.id)]?.strict)===1}));
 }
 // GET /team/audit — the last 200 User Management changes.
 export async function handleTeamAudit(request,env){
@@ -1448,14 +1460,14 @@ export async function handleTeamDiagnose(request,env){
 export async function handleTeamMemberUpdate(request,env){
   const body=await request.json().catch(()=>({}));
   const e=tmEmail(body.email);
-  const ownerOnly='role' in body||'modules' in body;
+  const ownerOnly='role' in body||'modules' in body||'leads' in body||'channels' in body;
   const a=await tmManagerAuth(new Request(request.url,{headers:request.headers}),env,{ownerOnly}); if(a.error) return a.error;
   if(!tmTeamEmails(a.c).includes(e)) return json({error:'This person is not on your team.'},404);
   const {next,error}=tmApplyMemberUpdate(a.c,e,body);
   if(error) return json({error},400);
   if(next.team_permissions) await ensureClientColumns(env,['team_permissions']).catch(()=>{});
   await patchClientFields(env,a.cid,next);
-  await tmAudit(env,a.cid,a.me,'updated',e,{...('role' in body?{role:body.role||null}:{}),...('modules' in body?{modules:true}:{}),...(body.name?{name:body.name}:{})});
+  await tmAudit(env,a.cid,a.me,'updated',e,{...('role' in body?{role:body.role||null}:{}),...('modules' in body?{modules:true}:{}),...('leads' in body?{leads:body.leads||'full'}:{}),...('channels' in body?{channels:true}:{}),...(body.name?{name:body.name}:{})});
   return json({ok:true,member:tmMemberView({...a.c,...next},e,await tmMetaGet(env,a.cid,e)||{})});
 }
 // POST /team/member/deactivate {email} — takes them off the team but keeps their name, role and
@@ -2136,6 +2148,14 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
     }
   }
 
+  // User Management → lead access: Read only = no adding, editing or deleting leads; Edit = no
+  // deleting. The account owner, and anyone with no setting, keep full access.
+  if(['POST','PATCH','PUT','DELETE'].includes(method) && payload.email && upstreamPath.startsWith(`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`)){
+    const lc_=await getClientById(env, payload.cid);
+    const refusal=tmLeadWriteRefusal(tmLeadLevel(lc_, payload.email), method);
+    if(refusal) return json({error:refusal, msg:refusal, code:'LEAD_ACCESS'}, 403);
+  }
+
   if(touchesProtectedField || (isLeadsList && payload.email)){
     const c=await getClientById(env, payload.cid);
     const ownerEmail=String(c?.authentik_email||'').trim().toLowerCase();
@@ -2181,7 +2201,9 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
         const asgns=await env.DB.prepare(
           `SELECT inbox_id,assigned_email,strict FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
         ).bind(payload.cid).all();
-        const clause=channelVisibilityClause(channelHiddenAssignments(c, asgns.results||[], requesterEmail), requesterEmail);
+        // User Management → channel access: Full un-hides a channel's leads, No access hides them.
+        const hiddenIds=tmApplyChannelPerms(channelHiddenAssignments(c, asgns.results||[], requesterEmail).map(a=>String(Number(a.inbox_id))), tmChannelPerms(c, requesterEmail));
+        const clause=channelVisibilityClause(hiddenIds.map(id=>({inbox_id:id, assigned_email:'\u0000other'})), requesterEmail);
         if(clause) qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
       }catch(e){}
     }
@@ -2456,12 +2478,17 @@ async function handleGetChatMessages(request, env){
 // message to refuse with, or ''.
 export function chatSendRefusal(acc, lead){
   if(!lead) return '';
+  // User Management → channel access: Read only blocks replies on that channel outright; Full
+  // lets them reply to any chat on it.
+  const inbox=String(lead.InboxId||'');
+  if(inbox&&acc?.readInboxes?.includes(inbox)) return 'You have read-only access to this channel.';
   // A lead assigned to you is yours to work, whichever channel it came in on and whatever its
   // category: the channel / category limits never lock its owner out.
   if(acc?.me&&String(lead.Owner||'').trim().toLowerCase()===acc.me) return '';
   if(acc?.categories&&!acc.categories.includes(String(lead.ServiceCategory||'').trim())) return 'This chat is in a category you don\'t have access to.';
   if(acc?.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
   if(!acc?.staff) return '';
+  if(inbox&&acc?.fullInboxes?.includes(inbox)) return '';
   const owner=String(lead.Owner||'').trim().toLowerCase();
   if(owner) return owner===acc.me?'':'This chat is assigned to someone else.';
   return acc.locked?'This chat is not assigned to you.':'';
@@ -2469,7 +2496,7 @@ export function chatSendRefusal(acc, lead){
 async function chatSendCheckAndClaim(env, c, payload, {leadId, convId}){
   if(!payload?.email) return {ok:true};
   const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, payload.cid, payload.email, {fullAccess:seesAllChannelLeads(c, payload.email)}));
-  if(!acc.staff&&!acc.categories&&!acc.hidden.length) return {ok:true};
+  if(!acc.staff&&!acc.categories&&!acc.hidden.length&&!acc.readInboxes?.length) return {ok:true};
   let id=Number(leadId)||0;
   if(!id && convId && env.DB){
     const row=await env.DB.prepare('SELECT lead_id FROM conversations WHERE client_id=? AND conv_id=?').bind(Number(payload.cid), String(convId)).first().catch(()=>null);

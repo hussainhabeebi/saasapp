@@ -14,6 +14,7 @@ const members = (me = { email: 'boss@acme.com', is_owner: true, can_manage: true
     { email: 'vinod@acme.com', name: 'Vinod', status: 'pending', role: null, modules: null, whatsapp: '', chatwoot: false, invited_at: day(-1), expires_at: day(6) },
     { email: 'meera@acme.com', name: 'Meera', status: 'deactivated', role: null, modules: null, whatsapp: '', chatwoot: false },
   ],
+  channels: [{ id: '11', name: 'Sales', type: 'whatsapp', phone: '+971 50 1', assigned_email: '', strict: false }, { id: '22', name: 'VIP', type: 'whatsapp', phone: '', assigned_email: 'boss@acme.com', strict: true }],
   seats: { used: 3, max: 5, plan: 'Growth' }, roles: [], modules: [], invite_ttl_days: 7,
 });
 
@@ -70,4 +71,16 @@ test('a teammate without manage rights sees the team read-only', async ({ page }
   await expect(page.getByText('Only the account owner or an Admin can make changes')).toBeVisible();
   await expect(page.locator('#inviteBtn')).toBeHidden();
   await expect(page.getByRole('tab', { name: 'Fix a user' })).toHaveCount(0);
+});
+
+test('lead and channel access are saved with the role', async ({ page }) => {
+  const calls = [];
+  await stub(page, members(), calls);
+  await page.goto(pageUrl);
+  await page.getByText('Anurag M').click();
+  await page.locator('#dLeads').getByRole('button', { name: 'Read only' }).click();
+  await page.locator('select[data-ch="11"]').selectOption('read');
+  await page.locator('select[data-ch="22"]').selectOption('full');
+  await page.getByRole('button', { name: 'Save role & access' }).click();
+  await expect.poll(() => calls.find(c => c.path === '/team/member/update')?.body).toMatchObject({ email: 'anurag@gmail.com', leads: 'read', channels: { 11: 'read', 22: 'full' } });
 });

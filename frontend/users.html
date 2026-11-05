@@ -65,7 +65,10 @@ tr:last-child td{border-bottom:0}
 .sec{margin-bottom:22px}.sec h4{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .kv{display:grid;grid-template-columns:120px 1fr;gap:8px 12px;font-size:13px}.kv span{color:var(--muted)}
 .mods{display:grid;grid-template-columns:1fr 1fr;gap:6px}.mods label{display:flex;gap:7px;align-items:center;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:9px}
-.row2{display:flex;gap:8px;flex-wrap:wrap}.lbl{display:block;font-size:12px;font-weight:600;color:var(--ink2);margin:0 0 5px}
+.row2{display:flex;gap:8px;flex-wrap:wrap}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg)}.seg button{border:0;background:transparent;padding:8px 14px;font-weight:600;color:var(--muted)}.seg button.on{background:var(--accent2);color:#fff}.seg button:disabled{cursor:not-allowed}
+.chrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}.chrow:last-child{border:0}.chrow .nm2{flex:1;min-width:0}.chrow .nm2 b{display:block;font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chrow .nm2 span{font-size:12px;color:var(--muted)}.chrow select{width:auto;min-width:130px;padding:7px 9px}
+.help{font-size:12px;color:var(--muted);margin:6px 0 0}.lbl{display:block;font-size:12px;font-weight:600;color:var(--ink2);margin:0 0 5px}
 .field{margin-bottom:12px}
 /* Modal */
 .modal{position:fixed;inset:0;display:none;place-items:center;z-index:50;padding:16px}.modal.on{display:grid}
@@ -109,6 +112,9 @@ const MODULES={home:'🏠 Home',humandeals:'🤝 Human Deals',chats:'💬 Chats'
   ecommerce:'🛒 Ecommerce',businessservices:'🏢 Business Services',saasops:'🚀 SaaS Ops',b2b:'🤝 B2B',agency:'🏢 Agency / Travel',recruit:'💼 Recruit',appointments:'📅 Appointments',hospitality:'🏨 Hospitality',
   realestate:'🏘️ Real Estate',healthcare:'🏥 Healthcare',matrimonial:'💍 Matrimonial',evcharging:'⚡ EV Charging',broadcast:'📢 Campaigns',settings:'⚙️ Settings'};
 const ALWAYS_ON=['leads','humandeals'];
+const LEAD_LEVELS=[['read','Read only','View leads; no adding, editing or deleting'],['write','Edit','View, add and edit leads; no deleting'],['full','Full','Everything, including deleting']];
+const CH_LEVELS=[['','Default','Follows the channel assignment'],['none','No access','Hidden: no chats or leads from this channel'],['read','Read only','Can see chats, cannot reply'],['write','Reply','Can see and reply'],['full','Full','Sees every chat on it, even ones assigned to others']];
+const CH_ICON={whatsapp:'🟢',instagram:'📸',other:'💬'};
 const STATUS={active:'Active',pending:'Invite sent',expired:'Invite expired',deactivated:'Deactivated',removed:'Removed',owner:'Owner'};
 let D=null,tab='members',filter='all',query='',audit=null,current=null;
 const $=id=>document.getElementById(id);
@@ -127,7 +133,7 @@ const HUES=['#6366F1','#0EA5E9','#10B981','#F59E0B','#EF4444','#8B5CF6','#EC4899
 function avatar(name,email){const n=String(name||email||'?').trim();const ini=(n.split(/[\s.@_-]+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('')||'?').toUpperCase();
   let h=0;for(const ch of String(email))h=(h*31+ch.charCodeAt(0))>>>0;return `<i class="av" style="background:${HUES[h%HUES.length]}">${esc(ini)}</i>`}
 const pill=s=>`<span class="pill p-${esc(s)}">${esc(STATUS[s]||s)}</span>`;
-const roleText=m=>m.role?ROLES[m.role]||m.role:(m.modules?'Custom access':'Full access');
+const roleText=m=>(m.role?ROLES[m.role]||m.role:(m.modules?'Custom access':'Full access'))+(m.leads&&m.leads!=='full'?` · leads ${m.leads==='read'?'read only':'edit'}`:'')+(Object.keys(m.channels||{}).length?' · channel limits':'');
 const canManage=()=>!!D?.me?.can_manage, isOwner=()=>!!D?.me?.is_owner;
 
 async function load(){
@@ -257,7 +263,15 @@ function openMember(email){
   ${!m._owner&&m.status!=='deactivated'?`<div class="sec"><h4>Role &amp; access</h4>${own?'':'<p class="dim" style="margin-top:-4px">Only the account owner can change roles and access.</p>'}
     <div class="field"><label class="lbl" for="dRole">Role</label><select class="in" id="dRole" ${own?'':'disabled'} onchange="pickRole(this.value)"><option value="">Custom (choose modules below)</option>${Object.entries(ROLES).map(([k,l])=>`<option value="${k}" ${current.role===k?'selected':''}>${l}</option>`).join('')}</select></div>
     <label class="lbl">Modules they can open</label><div class="mods" id="dMods">${Object.entries(MODULES).map(([k,l])=>`<label><input type="checkbox" value="${k}" ${!mods||mods.includes(k)||ALWAYS_ON.includes(k)?'checked':''} ${own&&!ALWAYS_ON.includes(k)?'':'disabled'}> ${l}</label>`).join('')}</div>
-    ${own?`<div style="margin-top:10px"><button class="btn primary" onclick="saveAccess(this)">Save role &amp; access</button></div>`:''}</div>`:''}
+    <label class="lbl" style="margin-top:16px">Leads</label>
+    <div class="seg" id="dLeads">${LEAD_LEVELS.map(([k,l])=>`<button type="button" class="${(current.leads||'full')===k?'on':''}" ${own?'':'disabled'} onclick="pickLeads('${k}')">${l}</button>`).join('')}</div>
+    <p class="help" id="dLeadsHelp">${esc(LEAD_LEVELS.find(x=>x[0]===(current.leads||'full'))[2])}. Which leads they can see is set by their role and the channels below.</p>
+    <label class="lbl" style="margin-top:16px">Channels</label>
+    ${(D.channels||[]).length?`<div>${D.channels.map(ch=>`<div class="chrow"><span>${CH_ICON[ch.type]||'💬'}</span><div class="nm2"><b>${esc(ch.name)}</b><span>${esc([ch.phone,ch.assigned_email?`assigned to ${ch.assigned_email===current.email?'them':ch.assigned_email}`:'',ch.strict?'🔒 Strict':''].filter(Boolean).join(' · ')||'Not assigned')}</span></div>
+      <select class="in" data-ch="${esc(ch.id)}" ${own?'':'disabled'} title="${esc(CH_LEVELS.map(x=>x[1]+': '+x[2]).join('\n'))}">${CH_LEVELS.map(([k,l])=>`<option value="${k}" ${(current.channels?.[ch.id]||'')===k?'selected':''}>${l}</option>`).join('')}</select></div>`).join('')}</div>
+      <p class="help">Default follows Channels → assignment rules. Read only hides the reply box. Full shows every chat on that channel, including 🔒 Strict ones.</p>`
+    :`<p class="help">No channels connected yet. Connect WhatsApp or Instagram in Channels to set access per channel.</p>`}
+    ${own?`<div style="margin-top:14px"><button class="btn primary" onclick="saveAccess(this)">Save role &amp; access</button></div>`:''}</div>`:''}
   ${m.status!=='deactivated'&&(own||me)?`<div class="sec"><h4>WhatsApp for hot-lead alerts</h4><div class="row2"><input class="in" id="dWa" value="${esc(m.whatsapp)}" placeholder="+91 98765 43210" style="flex:1"><button class="btn" onclick="saveWa(this)">Save</button></div></div>`:''}
   ${m.status!=='deactivated'&&(own||me)&&m.status!=='pending'?`<div class="sec"><h4>Password</h4><div class="row2"><input class="in" id="dPw" type="password" placeholder="New password (8+ characters)" style="flex:1" autocomplete="new-password"><button class="btn" onclick="setPw(this)">Set</button></div></div>`:''}
   ${actions.length?`<div class="sec"><h4>Actions</h4><div class="row2">${actions.join('')}</div>${m.status==='active'?'<p class="dim">Deactivating keeps their name, role and access so you can bring them back in one click. Their leads move to your other teammates.</p>':''}</div>`:''}
@@ -266,12 +280,14 @@ function openMember(email){
   $('drawer').classList.add('on');$('scrim').classList.add('on');
 }
 function closeDrawer(){$('drawer').classList.remove('on');$('scrim').classList.remove('on');current=null}
+function pickLeads(k){current.leads=k;document.querySelectorAll('#dLeads button').forEach((b,i)=>b.classList.toggle('on',LEAD_LEVELS[i][0]===k));$('dLeadsHelp').textContent=LEAD_LEVELS.find(x=>x[0]===k)[2]+'. Which leads they can see is set by their role and the channels below.'}
 function pickRole(r){const mods=r?ROLE_MODULES[r]:null;document.querySelectorAll('#dMods input').forEach(el=>{if(!ALWAYS_ON.includes(el.value))el.checked=!mods||mods.includes(el.value)})}
 async function saveName(btn){btn.disabled=true;try{await post('/team/member/update',{email:current.email,name:$('dName').value});toast('✓ Name saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}}
 async function saveAccess(btn){
   const checked=[...document.querySelectorAll('#dMods input:checked')].map(el=>el.value);
   const all=Object.keys(MODULES).length;
-  btn.disabled=true;try{await post('/team/member/update',{email:current.email,role:$('dRole').value||null,modules:checked.length>=all?null:checked});toast('✓ Role & access saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}
+  const channels={};document.querySelectorAll('select[data-ch]').forEach(el=>{if(el.value)channels[el.dataset.ch]=el.value});
+  btn.disabled=true;try{await post('/team/member/update',{email:current.email,role:$('dRole').value||null,modules:checked.length>=all?null:checked,leads:current.leads||'full',channels});toast('✓ Role & access saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}
 }
 async function saveWa(btn){btn.disabled=true;try{await post('/team/whatsapp',{email:current.email,phone:$('dWa').value});toast('✓ WhatsApp saved');await refresh(current.email)}catch(e){alert(e.message)}finally{btn.disabled=false}}
 async function setPw(btn){const pw=$('dPw').value;if(pw.length<8)return alert('Use at least 8 characters.');btn.disabled=true;try{await post('/team/set-password',{email:current.email,password:pw});$('dPw').value='';toast('✓ Password set')}catch(e){alert(e.message)}finally{btn.disabled=false}}

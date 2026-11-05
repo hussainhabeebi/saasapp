@@ -8227,6 +8227,7 @@ async function bulkSetBrand(){
   clearBulkSelection();
 }
 async function bulkDeleteLeads(){
+  if(leadAccessBlocked('delete')) return;
   const n=_bulkSelectedLeadIds.size;
   if(!confirm(`Permanently delete ${n} lead(s)? This cannot be undone.`)) return;
   const ids=[..._bulkSelectedLeadIds];
@@ -9762,6 +9763,7 @@ async function deleteAiCustom(id){
 
 /* ── ADD / EDIT LEAD ── */
 function openAddLead(){
+  if(leadAccessBlocked('add')) return;
   $id('modalLeadTitle').textContent=clientRecord?.industry==='travel'?'Add Inquiry':'Add Lead';
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
@@ -9856,6 +9858,7 @@ function companyFromEmail(email){
 // second copy of the same lead.
 let _leadSaving=false;
 async function saveLead(){
+  if(leadAccessBlocked('edit')) return;
   if(_leadSaving) return;
   _leadSaving=true;
   const btn=document.querySelector('#modalLead button[onclick="saveLead()"]');
@@ -12255,10 +12258,31 @@ function seesAllLeads(){ return isAccountOwner()||LEADS_FULL_ACCESS_ROLES.includ
 // team can pick them up — the first action claims it (claimLeadIfUnowned) and it leaves everyone
 // else's list. (Previously staff saw "mine + unassigned", so every unassigned lead showed to all.)
 // Build the predicate once per render — the role/routing JSON is parsed here, not once per lead.
+// User Management → lead / channel access (team_permissions[email].leads / .channels; the Worker
+// enforces both, this only keeps the page in line). leads: read | write | full (default full).
+// channels: {inboxId: none|read|write|full}; Full shows every lead on that channel.
+function myLeadAccess(){
+  if(!myEmail||isAccountOwner()) return 'full';
+  const v=getTeamPermissions()[myEmail]?.leads;
+  return ['read','write','full'].includes(v)?v:'full';
+}
+function myChannelAccess(){
+  if(!myEmail||isAccountOwner()) return {};
+  const v=getTeamPermissions()[myEmail]?.channels;
+  return v&&typeof v==='object'?v:{};
+}
+function leadAccessBlocked(action){
+  const lvl=myLeadAccess();
+  const msg=lvl==='read'&&action!=='view'?'You have read-only access to leads. Ask your admin for edit access.'
+    :lvl==='write'&&action==='delete'?'Your access lets you add and edit leads, but not delete them.':'';
+  if(msg) showToast(msg,'err');
+  return !!msg;
+}
 function leadVisibilityFilter(){
   if(seesAllLeads()) return ()=>true;
   const routed=!!getLeadRouting().enabled;
-  return l=>l?.Owner ? sameEmail(l.Owner,myEmail) : !routed;
+  const full=new Set(Object.entries(myChannelAccess()).filter(([,v])=>v==='full').map(([k])=>String(k)));
+  return l=>(full.size&&full.has(String(l?.InboxId||'')))||(l?.Owner ? sameEmail(l.Owner,myEmail) : !routed);
 }
 function leadVisibleToMe(l){ return leadVisibilityFilter()(l); }
 // The Leads list for the current My leads / All toggle. "mine" = assigned to me only. "all" = every
