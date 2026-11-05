@@ -19,7 +19,7 @@ function conv(id, over = {}) {
     last_message_dir: 'in', last_sender: 'customer', last_customer_at: minsAgo(id), waiting_since: null, synced: 1, updated_at: minsAgo(60), ...over };
 }
 
-async function open(page, { rows, thread = {}, failBootstrap = false, clock = false, travel = false, myCategories = null, customCategories = [] } = {}) {
+async function open(page, { rows, thread = {}, failBootstrap = false, clock = false, travel = false, myCategories = null, customCategories = [], inboxes = [], byInbox = undefined, byAssignee = undefined } = {}) {
   const calls = { list: [], act: [], thread: [], nocodbList: 0, canned: [] };
   const state = {
     rows: rows || [
@@ -47,12 +47,12 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
     if (p.endsWith('/chats/v2/bootstrap')) {
       if (failBootstrap) return route.fulfill({ status: 503, json: { error: 'down' } });
       return route.fulfill({ json: { version: 'v1', me: { email: ME, staff: false, locked: false, categories: myCategories }, travel, categories_custom: customCategories, agents: [{ email: ME, name: 'Boss' }, { email: SHAFNA, name: 'Shafna' }],
-        labels: ['Hot'], canned: [{ id: 1, shortcut: 'price-list', body: 'Hi {{name}}, here is our price list' }, { id: 2, shortcut: 'order', body: 'Your order {{order_id}} is ready' }],
+        labels: ['Hot'], inboxes, canned: [{ id: 1, shortcut: 'price-list', body: 'Hi {{name}}, here is our price list' }, { id: 2, shortcut: 'order', body: 'Your order {{order_id}} is ready' }],
         settings: { sla_warn_min: 15, sla_breach_min: 60 },
         views: [{ id: 7, name: 'Hot leads', shared: 1, filter: { all: [{ f: 'label', op: 'has', v: 'Hot' }] } }],
         macros: [{ id: 3, name: 'Mark as Hot lead', ops: [{ op: 'label_add', args: { label: 'Hot' } }, { op: 'assign', args: { email: SHAFNA } }] }] } });
     }
-    if (p.endsWith('/chats/v2/counts')) return route.fulfill({ json: { all: 3, unread: 1, needs: 1, mine: 0, unassigned: 1, pending: 0, snoozed: 0, resolved: 1, unread_by_channel: { whatsapp: 1, instagram: 0 } } });
+    if (p.endsWith('/chats/v2/counts')) return route.fulfill({ json: { all: 3, unread: 1, needs: 1, mine: 0, unassigned: 1, pending: 0, snoozed: 0, resolved: 1, unread_by_channel: { whatsapp: 1, instagram: 0 }, by_inbox: byInbox, by_assignee: byAssignee } });
     if (p.endsWith('/chats/v2/list')) {
       const q = Object.fromEntries(url.searchParams);
       calls.list.push(q);
@@ -61,6 +61,8 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       if (q.handler === 'human') rs = rs.filter(r => r.handover === 'Yes');
       if (q.filter) { calls.filter = JSON.parse(q.filter); rs = rs.filter(r => r.labels_key.includes(',hot,')); }
       if (q.channel === 'whatsapp' || q.channel === 'instagram') rs = rs.filter(r => r.channel === q.channel);
+      if (q.inbox) rs = rs.filter(r => r.inbox_id === q.inbox);
+      if (q.assignee) rs = rs.filter(r => r.assignee_email === (q.assignee === '__none' ? '' : q.assignee));
       rs.sort((a, b) => b.last_message_at.localeCompare(a.last_message_at));
       const start = q.cursor ? Number(q.cursor) : 0, limit = Number(q.limit || 40);
       return route.fulfill({ json: { rows: rs.slice(start, start + limit), cursor: start + limit < rs.length ? String(start + limit) : null } });
@@ -563,4 +565,45 @@ test('travel inbox: the category picker lists Marketing Messages and the account
   await expect(page.locator('#ddMenu button', { hasText: 'Marketing Messages' })).toBeVisible();
   await page.locator('#ddMenu button', { hasText: 'Cruise' }).click();
   await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: 'Cruise' });
+});
+
+test('one tab per WhatsApp number shows its phone and narrows the list to that channel', async ({ page }) => {
+  const { calls } = await open(page, {
+    rows: [conv(1, { name: 'Asha', inbox_id: '9' }), conv(2, { name: 'Binu', inbox_id: '12' }), conv(4, { name: 'Dev', inbox_id: '12' })],
+    inboxes: [{ id: '9', name: 'Aii academy', channel_type: 'Channel::Whatsapp', phone_number: '+919876543210' }, { id: '12', name: 'Onshope', channel_type: 'Channel::Whatsapp', phone_number: '971501234567' }],
+    byInbox: { 9: { whatsapp: 1, instagram: 0 }, 12: { whatsapp: 2, instagram: 0 } },
+  });
+  const row = page.locator('#inboxRow');
+  await expect(row).toBeVisible();
+  await expect(row.getByRole('button', { name: /All numbers/ })).toHaveClass(/active/);
+  const onshope = row.getByRole('button', { name: /Onshope/ });
+  await expect(onshope).toContainText('+971501234567');
+  await expect(onshope).toContainText('2');
+  await onshope.click();
+  await expect(page.locator('#list')).toContainText('Binu');
+  await expect(page.locator('#list')).not.toContainText('Asha');
+  expect(calls.list.some(q => q.inbox === '12')).toBe(true);
+});
+
+test('owners get a tab per teammate, plus Unassigned, that narrows the list', async ({ page }) => {
+  const { calls } = await open(page, {
+    rows: [conv(1, { name: 'Asha', assignee_email: SHAFNA }), conv(2, { name: 'Binu' }), conv(4, { name: 'Dev', assignee_email: ME })],
+    byAssignee: { [SHAFNA]: { whatsapp: 1, instagram: 0 }, [ME]: { whatsapp: 1, instagram: 0 }, '': { whatsapp: 1, instagram: 0 } },
+  });
+  const row = page.locator('#agentRow');
+  await expect(row).toBeVisible();
+  await expect(row.getByRole('button', { name: /Boss \(you\)/ })).toBeVisible();
+  await row.getByRole('button', { name: /Shafna/ }).click();
+  await expect(page.locator('#list')).toContainText('Asha');
+  await expect(page.locator('#list')).not.toContainText('Binu');
+  expect(calls.list.some(q => q.assignee === SHAFNA)).toBe(true);
+  await row.getByRole('button', { name: /Unassigned/ }).click();
+  await expect(page.locator('#list')).toContainText('Binu');
+  await expect(page.locator('#list')).not.toContainText('Asha');
+});
+
+test('a single connected number shows no inbox tabs', async ({ page }) => {
+  await open(page, { inboxes: [{ id: '9', name: 'Aii academy', channel_type: 'Channel::Whatsapp', phone_number: '+919876543210' }], byInbox: { 9: { whatsapp: 3, instagram: 0 } } });
+  await expect(page.locator('#list')).toContainText('Asha');
+  await expect(page.locator('#inboxRow')).toBeHidden();
 });

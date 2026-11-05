@@ -6499,6 +6499,28 @@ async function handleChannelsInboxCreate(request, env){
 // Live status, read straight from Chatwoot — not just the local CLIENTS columns — so the
 // Channels page always reflects what's actually connected and never offers to re-create
 // something that already exists there.
+// Name + WhatsApp number of each connected Chatwoot inbox, for the Chats inbox tabs. Cached per
+// client for 5 minutes per isolate; no credentials leave this function.
+const _chatsInboxDirCache=new Map();
+async function chatsInboxDirectory(c){
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return [];
+  const key=String(c.Id||c.id||c.chatwoot_account_id), hit=_chatsInboxDirCache.get(key);
+  if(hit&&Date.now()-hit.at<300000) return hit.list;
+  const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(), 4000);
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}, signal:ctl.signal});
+    if(!r.ok) return hit?.list||[];
+    const data=await r.json().catch(()=>({}));
+    const raw=data?.payload||data?.data?.payload||[];
+    const phones=Object.fromEntries(metaCredentialSummary(c).map(x=>[String(x.inbox_id), x.display_phone]));
+    const list=raw.map(ib=>({id:String(ib.id), name:String(ib.name||''), channel_type:String(ib.channel_type||''),
+      phone_number:ib.channel_type==='Channel::Whatsapp'?String(phones[String(ib.id)]||ib.phone_number||''):''}));
+    _chatsInboxDirCache.set(key, {at:Date.now(), list});
+    return list;
+  }catch(e){ return hit?.list||[]; }
+  finally{ clearTimeout(t); }
+}
+
 async function handleChannelsStatus(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -36300,6 +36322,8 @@ const CHATS_V2_DEPS={
   // Delivery ticks: recent Chatwoot messages (with status) for the open chat, and a check that the
   // engine webhook is subscribed to message_updated.
   cwMessages:(env, c, convId)=>chatwootRecentMessages(c, convId),
+  // Inbox tabs in Chats: connected inboxes with their name and WhatsApp number.
+  inboxes:(env, c)=>chatsInboxDirectory(c),
   syncWebhook:(env, c)=>engineSyncChatwootWebhook(env, c),
   // WhatsApp Cloud API block list (Block contact). Needs the channel's own Meta credentials.
   waBlock:async(env, c, phone, inboxId, block)=>{

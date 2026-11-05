@@ -98,6 +98,10 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .skel{position:absolute;left:0;right:0;height:76px;display:flex;gap:12px;align-items:center;padding:0 12px}.skel i{display:block;border-radius:6px;background:linear-gradient(90deg,#eef1f3 25%,#f6f8f9 50%,#eef1f3 75%);background-size:200% 100%;animation:sk 1.2s infinite}.skel .a{width:49px;height:49px;border-radius:50%;flex:none}.skel .t{flex:1;display:grid;gap:8px}.skel .t i:first-child{height:12px;width:55%}.skel .t i:last-child{height:10px;width:80%}@keyframes sk{to{background-position:-200% 0}}
 .seg-row{display:flex;gap:6px;align-items:center;padding:0 12px 7px;flex:none;border-bottom:1px solid var(--line)}.seg-row .pill{padding:3px 9px}.seg-row select{margin-left:auto;border:1px solid #d1d7db;border-radius:14px;background:#fff;color:#54656f;font-size:12px;padding:3px 6px}
 .filter-row{border-bottom:0}
+.tab-row{align-items:center}.tab-row .pill{display:inline-flex;align-items:center;flex:none}.tab-row .tab-lbl{flex:none;font-size:13px;opacity:.7;padding-right:1px}
+.tab-row .pill.tab{display:inline-flex;align-items:center;gap:6px;height:auto;min-height:32px;padding-top:3px;padding-bottom:3px}
+.tab-t{display:flex;flex-direction:column;align-items:flex-start;line-height:1.15;text-align:left}.tab-t b{font-weight:600;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tab-t small{font-size:10.5px;opacity:.75;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tab-row .pill .asg{margin-right:5px}
 .day{position:sticky;top:0;z-index:4}
 .unread-div{display:flex;justify-content:center;margin:10px -7% 10px;padding:6px;background:rgba(255,255,255,.75);color:#54656f;font-size:12px;font-weight:600}
 .event{display:flex;justify-content:center;margin:8px 0}.event span{background:rgba(233,237,239,.95);color:#54656f;font-size:11.5px;padding:4px 10px;border-radius:7px;max-width:85%;text-align:center}
@@ -195,6 +199,8 @@ button:active:not(:disabled){transform:scale(.96);filter:brightness(.94)}
     <div class="side-top"><div class="brand-avatar">L</div><div class="side-title">Chats</div><button class="icon-btn hidden" id="notifyBtn" title="Desktop notifications" onclick="toggleNotify()">🔕</button><button class="icon-btn" id="refreshBtn" title="Refresh" onclick="refreshAll()">↻</button><button class="dash-btn" title="Back to Dashboard" onclick="goBack()">← <span class="t">Dashboard</span></button></div>
     <div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="search" placeholder="Search name, number or message" autocomplete="off" oninput="renderContacts()"></div></div>
     <div class="channel-row"><button class="pill active" data-channel="whatsapp" onclick="setChannel('whatsapp')">WhatsApp</button><button class="pill" data-channel="instagram" onclick="setChannel('instagram')">Instagram</button><button class="pill hidden" data-channel="all" id="allChannelPill" onclick="setChannel('all')">All channels</button></div>
+    <div class="filter-row tab-row hidden" id="inboxRow" aria-label="Channels"></div>
+    <div class="filter-row tab-row hidden" id="agentRow" aria-label="Assigned to"></div>
     <div class="filter-row hidden" id="catRow"></div>
     <div class="filter-row hidden" id="srcRow"></div>
     <div class="filter-row" id="filters"></div>
@@ -281,6 +287,9 @@ let catFilter='';
 // Lead origin chips (conversations.created_via — worker.js LEAD_CREATED_VIA), from /chats/v2/counts
 // by_source; shown only when the open chats come from more than one source.
 let srcFilter='';
+// Inbox tabs: one connected channel / WhatsApp number (Chatwoot inbox id, '' = all), and
+// assigned-user tabs for owners/admins (an email, '__none' = unassigned, '' = everyone).
+let inboxFilter='',assigneeFilter='';
 const SRC_LABELS={chatwoot:'🤖 Auto',manual:'✍️ Manual',import:'📥 Imported',lead_ad:'📋 Lead form',web:'🌐 Website',partner:'🤝 Partner',calendar:'📅 Calendar',unknown:'❔ Older lead'};
 let V2=false,boot2=null,counts2=null,views2={},handlerFilter='',sortMode='newest',rowsUpdatedAt='',threadMeta={},dividerAt={},searchRows=null,ws=null,wsTries=0,syncTimer=null,syncIds=new Set();
 const ROW=76;
@@ -304,10 +313,12 @@ function v2Match(l){
  if(labelFilter.length&&!labelFilter.some(x=>String(r.labels_key||'').includes(','+lc(x)+',')))return false;
  if(catFilter&&String(r.service_category||'')!==(catFilter==='__none'?'':catFilter))return false;
  if(srcFilter&&String(r.created_via||'')!==srcFilter)return false;
+ if(inboxFilter&&String(r.inbox_id||'')!==inboxFilter)return false;
+ if(assigneeFilter&&lc(r.assignee_email)!==(assigneeFilter==='__none'?'':assigneeFilter))return false;
  const done=['resolved','snoozed'].includes(r.status);
  switch(filter){case'unread':return r.unread_count>0&&r.status!=='snoozed';case'needs':return r.handover==='Yes'&&!done;case'mine':return lc(r.assignee_email)===meEmail&&r.status!=='snoozed';case'unassigned':return !r.assignee_email&&!done;case'pending':return r.status==='pending';case'snoozed':return r.status==='snoozed';case'resolved':return r.status==='resolved';default:return r.status!=='snoozed'}
 }
-const viewKey=()=>[filter,channel,handlerFilter,sortMode,labelFilter.join(','),customView?JSON.stringify(customView.filter):'',catFilter,srcFilter].join('|');
+const viewKey=()=>[filter,channel,handlerFilter,sortMode,labelFilter.join(','),customView?JSON.stringify(customView.filter):'',catFilter,srcFilter,inboxFilter,assigneeFilter].join('|');
 function v2Visible(){
  const st=views2[viewKey()];
  let list=leads.filter(v2Match);
@@ -319,7 +330,7 @@ async function loadView(more=false){
  const k=viewKey(),st=views2[k]||(views2[k]={ids:new Set(),cursor:null,done:false,floor:'',loading:false,loaded:false});
  if(st.loading||(more&&(st.done||!st.cursor)))return;st.loading=true;
  try{
-  const qs=new URLSearchParams({view:filter,channel,limit:'40',sort:sortMode});if(handlerFilter)qs.set('handler',handlerFilter);if(labelFilter.length)qs.set('labels',labelFilter.join(','));if(customView)qs.set('filter',JSON.stringify(customView.filter));if(catFilter)qs.set('category',catFilter);if(srcFilter)qs.set('source',srcFilter);if(more)qs.set('cursor',st.cursor);
+  const qs=new URLSearchParams({view:filter,channel,limit:'40',sort:sortMode});if(handlerFilter)qs.set('handler',handlerFilter);if(labelFilter.length)qs.set('labels',labelFilter.join(','));if(customView)qs.set('filter',JSON.stringify(customView.filter));if(catFilter)qs.set('category',catFilter);if(srcFilter)qs.set('source',srcFilter);if(inboxFilter)qs.set('inbox',inboxFilter);if(assigneeFilter)qs.set('assignee',assigneeFilter);if(more)qs.set('cursor',st.cursor);
   const d=await apiJson(WORKER+'/chats/v2/list?'+qs);
   if(!more)st.ids=new Set();
   mergeRows(d.rows);(d.rows||[]).forEach(r=>st.ids.add(String(r.lead_id)));
@@ -330,14 +341,14 @@ async function loadView(more=false){
  }finally{st.loading=false}
  if(k===viewKey())renderContacts();
 }
-async function loadCounts(){try{counts2=await apiJson(WORKER+'/chats/v2/counts');renderFilters([]);renderCategoryRow();renderSourceRow();updateTitle()}catch{}}
+async function loadCounts(){try{counts2=await apiJson(WORKER+'/chats/v2/counts');renderFilters([]);renderCategoryRow();renderSourceRow();renderInboxRow();renderAgentRow();updateTitle()}catch{}}
 async function loadBootstrap(){
  const snapKey=`lv_chats_boot_${clientId}`;let cached=null;try{cached=JSON.parse(localStorage.getItem(snapKey)||'null')}catch{}
  const d=await apiJson(WORKER+'/chats/v2/bootstrap'+(cached?.version?`?v=${encodeURIComponent(cached.version)}`:''));
  boot2=d.unchanged&&cached?cached:d;if(!d.unchanged)try{localStorage.setItem(snapKey,JSON.stringify(d))}catch{}
 }
 const snapKey=()=>`lv_chats_snap_${clientId}`;
-function saveSnapshot(){if(filter!=='all'||handlerFilter||sortMode!=='newest'||labelFilter.length||customView||channel!=='whatsapp')return;try{const rows=v2Visible().slice(0,60).map(l=>l._v2);localStorage.setItem(snapKey(),JSON.stringify({me:meEmail,channel,rows,counts:counts2}))}catch{}}
+function saveSnapshot(){if(filter!=='all'||inboxFilter||assigneeFilter||handlerFilter||sortMode!=='newest'||labelFilter.length||customView||channel!=='whatsapp')return;try{const rows=v2Visible().slice(0,60).map(l=>l._v2);localStorage.setItem(snapKey(),JSON.stringify({me:meEmail,channel,rows,counts:counts2}))}catch{}}
 function loadSnapshot(){try{const s=JSON.parse(localStorage.getItem(snapKey())||'null');if(!s||s.me!==meEmail||!Array.isArray(s.rows))return false;mergeRows(s.rows);counts2=s.counts||null;const st=views2[viewKey()]={ids:new Set(s.rows.map(r=>String(r.lead_id))),cursor:null,done:false,floor:s.rows.filter(r=>!r.pinned).slice(-1)[0]?.last_message_at||'',loading:false,loaded:true};return s.rows.length>0}catch{return false}}
 // A delta names chats that changed; fetch just those rows (scoped by the server to what this
 // person may see), refresh the counts, and the open thread if it's one of them.
@@ -442,7 +453,7 @@ async function boot(){
  try{
   await Promise.all([loadBootstrap(),(async()=>{V2=true;await loadView(false)})(),loadCounts()]);
   if(!boot2)throw new Error('no bootstrap');
-  V2=true;show();$('app').classList.add('v2');$('allChannelPill').classList.remove('hidden');paintNotifyBtn();renderContacts();connectWs();
+  V2=true;show();$('app').classList.add('v2');$('allChannelPill').classList.remove('hidden');paintNotifyBtn();renderInboxRow();renderAgentRow();renderContacts();connectWs();
   // Safety net while the socket is down or a delta was missed.
   setInterval(()=>queueSync(),60000);
   setInterval(()=>{if(!document.hidden){paintList();renderHeaderCtl()}},30000);
@@ -465,12 +476,45 @@ async function loadLeads(show=true,silent=false,delta=false){
 }
 function refreshAll(){if(!V2)return loadLeads(true);views2={};loadView(false).then(()=>toast('Chats refreshed')).catch(()=>toast('Could not refresh chats'));loadCounts()}
 function onViewChange(){$('list').scrollTop=0;if(V2){const st=views2[viewKey()];if(!st?.loaded)loadView(false).catch(()=>{});else loadView(false).catch(()=>{})}renderContacts()}
-function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderCategoryRow();renderSourceRow();onViewChange()}
+function setChannel(c){channel=c;filter='all';inboxFilter='';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderCategoryRow();renderSourceRow();renderInboxRow();renderAgentRow();onViewChange()}
 function setFilter(f){filter=f;customView=null;onViewChange()}
 function setHandler(h){handlerFilter=handlerFilter===h?'':h;onViewChange()}
 function setSort(v){sortMode=v;onViewChange()}
 function setCategory(c){catFilter=catFilter===c?'':c;renderCategoryRow();onViewChange()}
 function setSource(k){srcFilter=srcFilter===k?'':k;renderSourceRow();onViewChange()}
+function setInbox(id){inboxFilter=inboxFilter===id?'':id;renderInboxRow();onViewChange()}
+function setAssignee(e){assigneeFilter=assigneeFilter===e?'':e;renderAgentRow();onViewChange()}
+const INBOX_TYPES={whatsapp:['Channel::Whatsapp'],instagram:['Channel::Instagram','Channel::FacebookPage']};
+function fmtPhone(v){v=String(v||'').trim();const d=v.replace(/\D/g,'');return !v?'':d.length<7?v:(v.startsWith('+')?v:'+'+d)}
+// One tab per connected channel (WhatsApp number) — shown once there are two or more.
+function renderInboxRow(){
+ const el=$('inboxRow');if(!el)return;
+ const by=V2&&counts2?.by_inbox||{};
+ const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
+ const types=INBOX_TYPES[channel];
+ const known=(boot2?.inboxes||[]).filter(ib=>!types||types.includes(ib.channel_type));
+ const ids=[...new Set([...known.map(ib=>String(ib.id)),...Object.keys(by).filter(k=>k&&n(k)>0)])];
+ if(ids.length<2&&!inboxFilter){el.classList.add('hidden');el.innerHTML='';return}
+ el.classList.remove('hidden');
+ const tab=id=>{const ib=known.find(x=>String(x.id)===id)||(boot2?.inboxes||[]).find(x=>String(x.id)===id)||{name:'Inbox '+id};const ph=fmtPhone(ib.phone_number);
+  return `<button class="pill tab ${inboxFilter===id?'active':''}" title="${esc(ib.name+(ph?' · '+ph:''))}" onclick="setInbox(${esc(JSON.stringify(id))})"><span class="tab-t"><b>${esc(ib.name)}</b>${ph?`<small>${esc(ph)}</small>`:''}</span><span class="n">${n(id)||''}</span></button>`};
+ el.innerHTML=`<span class="tab-lbl">📞</span><button class="pill tab ${!inboxFilter?'active':''}" onclick="setInbox('')"><span class="tab-t"><b>All numbers</b></span></button>`+ids.map(tab).join('');
+}
+// One tab per teammate (owner / admins / managers only — staff already see just their own chats).
+function renderAgentRow(){
+ const el=$('agentRow');if(!el)return;
+ if(isStaff()||!V2){el.classList.add('hidden');el.innerHTML='';if(assigneeFilter&&isStaff())assigneeFilter='';return}
+ const by=counts2?.by_assignee||{};
+ const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
+ const agents=agentsList().slice();
+ for(const e of Object.keys(by))if(e&&!agents.some(a=>a.email===e))agents.push({email:e,name:e.split('@')[0]});
+ if(agents.length<2&&!assigneeFilter){el.classList.add('hidden');el.innerHTML='';return}
+ agents.sort((a,b)=>(b.email===meEmail)-(a.email===meEmail)||n(b.email)-n(a.email)||a.name.localeCompare(b.name));
+ el.classList.remove('hidden');
+ el.innerHTML=`<span class="tab-lbl">👤</span><button class="pill ${!assigneeFilter?'active':''}" onclick="setAssignee('')">Everyone</button>`+
+  agents.map(a=>`<button class="pill ${assigneeFilter===a.email?'active':''}" title="${esc(a.email)}" onclick="setAssignee(${esc(JSON.stringify(a.email))})"><span class="asg">${esc(agentInitials(a.email))}</span>${esc(a.name)}${a.email===meEmail?' (you)':''}<span class="n">${n(a.email)||''}</span></button>`).join('')+
+  `<button class="pill ${assigneeFilter==='__none'?'active':''}" onclick="setAssignee('__none')">Unassigned<span class="n">${n('')||''}</span></button>`;
+}
 function renderSourceRow(){
  const el=$('srcRow');if(!el)return;
  const by=V2&&counts2?.by_source||{};
@@ -566,7 +610,7 @@ function renderContacts(){
   list=v2Visible();
   if(q){const ids=searchRows?new Set(searchRows.map(String)):null;list=leads.filter(l=>l._v2&&(channel==='all'||(l._v2.channel||'whatsapp')===channel)&&visibleToMe(l)&&(String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||ids?.has(String(l.Id)))).sort((a,b)=>String(b.LastMsgAt).localeCompare(String(a.LastMsgAt)));queueSearch(q)}
  }else{
-  list=base.filter(l=>{if(filter==='unread'&&!unread(l))return false;if(filter==='needs'&&l.Handover!=='Yes')return false;if(filter==='mine'&&!isMine(l))return false;if(filter==='unassigned'&&(String(l.Owner||'').trim()||l.ConvResolved==='Yes'))return false;if(filter==='resolved'&&l.ConvResolved!=='Yes')return false;if(handlerFilter==='human'&&l.Handover!=='Yes')return false;if(handlerFilter==='bot'&&l.Handover==='Yes')return false;if(q){let msg=false;try{msg=hist(l).some(m=>String(m.content||'').toLowerCase().includes(q))}catch{}return String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||msg}return true}).sort((a,b)=>((b.Pinned==='Yes')-(a.Pinned==='Yes'))||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||'')));
+  list=base.filter(l=>{if(inboxFilter&&String(l.InboxId||'')!==inboxFilter)return false;if(assigneeFilter&&lc(l.Owner)!==(assigneeFilter==='__none'?'':assigneeFilter))return false;if(filter==='unread'&&!unread(l))return false;if(filter==='needs'&&l.Handover!=='Yes')return false;if(filter==='mine'&&!isMine(l))return false;if(filter==='unassigned'&&(String(l.Owner||'').trim()||l.ConvResolved==='Yes'))return false;if(filter==='resolved'&&l.ConvResolved!=='Yes')return false;if(handlerFilter==='human'&&l.Handover!=='Yes')return false;if(handlerFilter==='bot'&&l.Handover==='Yes')return false;if(q){let msg=false;try{msg=hist(l).some(m=>String(m.content||'').toLowerCase().includes(q))}catch{}return String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||msg}return true}).sort((a,b)=>((b.Pinned==='Yes')-(a.Pinned==='Yes'))||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||'')));
  }
  listItems=list;updateTitle();paintList();if(current)renderHeaderCtl();
  if(list.length&&!listPainted){listPainted=true;rumMark('list-visible')}
