@@ -1,6 +1,6 @@
 // Channel (Chatwoot inbox) assignment: a channel assigned to a user owns every lead from it — new
-// leads are routed to that user whether or not lead routing is on, existing leads move over (on
-// their next message, and in bulk when the channel is assigned), and its chats are hidden from
+// leads are routed to that user whether or not lead routing is on, existing leads nobody present
+// owns move over on their next message (and any in bulk via "Move existing leads"), and its chats are hidden from
 // everyone else in Chats v2. Runs against node:sqlite through the same tiny D1 shim the other
 // module tests use; NocoDB is a fetch stub.
 import { test, describe, beforeEach } from 'node:test';
@@ -48,13 +48,22 @@ describe('lead owner from an assigned channel', ()=>{
     assert.equal(body.Owner, RITA);
   });
 
-  test('an existing lead from an assigned channel moves to its user on its next message', async()=>{
+  test('an existing unassigned (or departed-owner) lead moves to the channel user on its next message', async()=>{
     const body={};
-    await engineResolveLeadOwner(env, CLIENT, CID, body, {phone:'1', inboxId:22, lead:{Owner:RITA}}, false);
+    await engineResolveLeadOwner(env, CLIENT, CID, body, {phone:'1', inboxId:22, lead:{Owner:''}}, false);
     assert.equal(body.Owner, SAM);
+    const gone={};
+    await engineResolveLeadOwner(env, CLIENT, CID, gone, {phone:'1', inboxId:22, lead:{Owner:'left@acme.com'}}, false);
+    assert.equal(gone.Owner, SAM);
     const same={};
     await engineResolveLeadOwner(env, CLIENT, CID, same, {phone:'1', inboxId:22, lead:{Owner:'SAM@acme.com'}}, false);
     assert.equal(same.Owner, undefined, 'already owned by the channel user — no write');
+  });
+
+  test('a lead given to another teammate stays with them on the next message', async()=>{
+    const body={};
+    await engineResolveLeadOwner(env, CLIENT, CID, body, {phone:'1', inboxId:22, lead:{Owner:RITA}}, false);
+    assert.equal(body.Owner, undefined, 'manual reassignment is not undone');
   });
 
   test('channel assignment beats lead routing rules', async()=>{
