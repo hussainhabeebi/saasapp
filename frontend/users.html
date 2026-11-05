@@ -227,12 +227,15 @@ async function diagnose(){
   const login=d.login.exists?`✅ Has a login${d.login.username?` (${esc(d.login.username)})`:''}${d.login.last_login?`, last signed in ${esc(ago(d.login.last_login))}`:', never signed in'}`:'— No login yet';
   const head={owner:'👑 This is the account owner',team:'✅ Already on your team',other_account:'⛔ Owns another Leadvyne account',other_team:'⛔ On another account’s team',orphan_account:'🧩 Has an empty account created by mistake',has_login:'➕ Has a login, not on your team yet',new:'✉️ New to Leadvyne'}[d.status]||d.status;
   const action={repair:`<button class="btn primary" onclick="repair('${esc(d.email)}',this)">Move to my team</button>`,add:`<button class="btn primary" onclick="addExisting('${esc(d.email)}',this)">Add to my team</button>`,invite:`<button class="btn primary" onclick="openInvite('${esc(d.email)}')">Send an invite</button>`}[d.fix]||'';
+  lastDiag=d;
   $('fixOut').innerHTML=`<div class="diagcard"><b style="font-size:15px">${head}</b>${d.message?`<p style="margin:8px 0 0;color:var(--ink2)">${esc(d.message)}</p>`:''}
-<div class="kv" style="margin-top:12px"><span>Login</span><div>${login}</div>${d.member?`<span>On this team</span><div>${pill(d.member.status)}</div>`:''}${d.other_account?`<span>Other account</span><div>“${esc(d.other_account.name)}” (#${esc(d.other_account.id)}) · ${d.other_account.kind==='owner'?'they own it':'teammate there'}${d.other_account.empty?' · empty, no leads':''}</div>`:''}</div>
+<div class="kv" style="margin-top:12px"><span>Login</span><div>${login}</div>${d.member?`<span>On this team</span><div>${pill(d.member.status)}</div>`:''}${d.other_account?`<span>Other account</span><div>“${esc(d.other_account.name)}” (#${esc(d.other_account.id)}) · ${d.other_account.kind==='owner'?'they own it':'teammate there'}${d.other_account.duplicate?' · same name as your account':''}${d.other_account.empty?' · empty: no leads, channels or plan':''}${d.other_account.in_use?.length?` · in use: ${esc(d.other_account.in_use.join(', '))}`:''}</div>`:''}</div>
 ${action?`<div style="margin-top:14px">${action}</div>`:''}</div>`;
 }
+let lastDiag=null;
 async function repair(email,btn){
-  if(!confirm(`Move ${email} to your team?\n\nTheir empty Leadvyne account (no leads or settings) is archived, and they sign in to this account from now on.`))return;
+  const nm=lastDiag?.email===email&&lastDiag.other_account?.name?` “${lastDiag.other_account.name}” (#${lastDiag.other_account.id})`:'';
+  if(!confirm(`Move ${email} to your team?\n\nTheir empty Leadvyne account${nm} (no leads, channels or plan) is archived, not deleted, and they sign in to this account from now on.`))return;
   btn.disabled=true;try{await post('/team/repair',{email});toast('✓ Moved to your team');await refresh();diagnose()}catch(e){alert(e.message);btn.disabled=false}
 }
 async function addExisting(email,btn){btn.disabled=true;try{await post('/team/add-existing',{email});toast('✓ Added to your team');await refresh();diagnose()}catch(e){alert(e.message);btn.disabled=false}}

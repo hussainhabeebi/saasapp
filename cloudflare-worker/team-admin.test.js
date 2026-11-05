@@ -25,8 +25,10 @@ describe('rules', ()=>{
     assert.equal(row.client_name,'Anu');
     assert.equal(tmIsOrphanAccount(row,'anu@gmail.com'),true);
     assert.equal(tmIsOrphanAccount(row,'anu@gmail.com',{leadCount:1}),false,'has leads');
-    assert.equal(tmIsOrphanAccount({...row,client_name:'Anu Travels'},'anu@gmail.com'),false,'renamed');
-    assert.equal(tmIsOrphanAccount({...row,industry:'travel'},'anu@gmail.com'),false,'set up');
+    assert.equal(tmIsOrphanAccount({...row,client_name:'Anu Travels',industry:'travel'},'anu@gmail.com'),true,'a rename alone is not use');
+    assert.equal(tmIsOrphanAccount({...row,wa_phone_id:'123'},'anu@gmail.com'),false,'WhatsApp connected');
+    assert.equal(tmIsOrphanAccount({...row,plan_tier:'growth'},'anu@gmail.com'),false,'on a plan');
+    assert.equal(tmIsOrphanAccount({...row,signup_status:'archived'},'anu@gmail.com'),false,'already archived');
     assert.equal(tmIsOrphanAccount({...row,chatwoot_account_id:'3'},'anu@gmail.com'),false,'Chatwoot connected');
     assert.equal(tmIsOrphanAccount({...row,team_emails:'x@y.com'},'anu@gmail.com'),false,'has a team');
     assert.equal(tmIsOrphanAccount(row,'other@gmail.com'),false,'not the owner');
@@ -192,11 +194,28 @@ describe('stuck users', ()=>{
     assert.equal((await login('anuragmc914@gmail.com')).data.client_id,'7','now signs in to the team');
   });
   test('a real account is never touched', async()=>{
-    clients.push({Id:56,client_name:'Zed Tours',authentik_email:'zed@gmail.com',industry:'travel'});
+    clients.push({Id:56,client_name:'Zed Tours',authentik_email:'zed@gmail.com',industry:'travel',wa_phone_id:'99'});
+    leads.push({ClientId:56});
     const r=await call('/team/repair',{email:'zed@gmail.com'});
     assert.equal(r.status,409);
     const inv=await handleTeamInvite(new Request('https://w.test/team/invite',{method:'POST',headers:{Authorization:'Bearer '+await session(7,'boss@x.com')},body:JSON.stringify({email:'zed@gmail.com'})}),env);
-    assert.match((await inv.json()).error,/owns another Leadvyne account \(“Zed Tours”\)/);
+    const msg=(await inv.json()).error;
+    assert.match(msg,/owns another Leadvyne account \(“Zed Tours”\), which is in use \(has leads, WhatsApp connected\)/);
+    const diag=await call('/team/diagnose',{email:'zed@gmail.com'});
+    assert.deepEqual(diag.data.other_account.in_use,['has leads','WhatsApp connected']);
+  });
+  test('an empty duplicate with the same business name can be moved into the team', async()=>{
+    // The real case: a second, unused account carrying the business's own name.
+    clients.push({Id:58,client_name:'ACME TRAVELS',authentik_email:'anuragmc914@gmail.com',industry:'travel'});
+    users.push({pk:12,username:'anuragmc914',email:'anuragmc914@gmail.com'});
+    const diag=await call('/team/diagnose',{email:'anuragmc914@gmail.com'});
+    assert.equal(diag.data.status,'orphan_account');
+    assert.equal(diag.data.other_account.duplicate,true);
+    assert.match(diag.data.message,/second, empty Leadvyne account with your business name/);
+    const r=await call('/team/repair',{email:'anuragmc914@gmail.com'});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(clients.find(c=>c.Id===58).signup_status,'archived');
+    assert.ok(acme().team_emails.split(',').includes('anuragmc914@gmail.com'));
   });
   test('a teammate of another account is told so', async()=>{
     clients.push({Id:57,client_name:'Other Co',authentik_email:'own@o.com',team_emails:'pat@o.com'});
