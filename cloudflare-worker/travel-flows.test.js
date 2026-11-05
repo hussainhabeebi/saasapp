@@ -254,3 +254,60 @@ test('worker: a published package flow runs AI-first, then hands over with a sum
     assert.equal(r.introAction.intent,'WANTS_HUMAN');
   }finally{ globalThis.fetch=realFetch; }
 });
+
+// The /live-travel/flows API through worker.fetch: list, save a draft, publish, preview, delete.
+async function sessionToken(secret,cid=7,email='agent@example.com'){
+  const body=btoa(JSON.stringify({cid:String(cid),email,exp:Math.floor(Date.now()/1000)+3600}));
+  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const sig=await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(body));
+  return `${body}.${btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}`;
+}
+test('API: flows list, save a draft, publish checks, preview and delete', async()=>{
+  const {default:worker}=await import('./worker.js');
+  const {readFileSync}=await import('node:fs');
+  const DB=new D1Database();
+  for(const f of ['0069_live_travel_agency','0070_live_travel_client_credentials','0074_live_travel_credentials_reapply','0080_live_travel_poomas'])DB.db.exec(readFileSync(new URL(`./migrations/${f}.sql`,import.meta.url),'utf8'));
+  DB.batch=async st=>Promise.all(st.map(s=>s.run()));
+  const env={DB,SESSION_SIGNING_KEY:'flows-secret',NOCODB_BASE:'https://nc.test',NOCODB_TOKEN:'nc'},session=await sessionToken(env.SESSION_SIGNING_KEY);
+  const call=async(path,method='GET',body)=>{
+    const r=await worker.fetch(new Request(`https://worker.test${path}`,{method,headers:{Authorization:`Bearer ${session}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}),env,{});
+    return {status:r.status,data:await r.json()};
+  };
+  const realFetch=globalThis.fetch;
+  globalThis.fetch=async()=>new Response('{}',{status:404});
+  try{
+    let r=await call('/live-travel/flows');
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.deepEqual(r.data.flows,[]);
+    assert.ok(r.data.templates.length>=5);
+    // A blank flow saves as a draft, but cannot be published.
+    const blank={id:'fblank',name:'',status:'draft',trigger:{type:'keyword',keywords:[]},steps:[{type:'ask_date'},{type:'handover'}]};
+    r=await call('/live-travel/flows/save','POST',{flow:blank});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.ok(r.data.errors.length);
+    r=await call('/live-travel/flows/save','POST',{flow:{...blank,status:'active'}});
+    assert.equal(r.status,400);
+    assert.ok(r.data.errors.some(e=>/name/.test(e)));
+    // A complete flow publishes; its version goes up on each save.
+    r=await call('/live-travel/flows/save','POST',{flow:{...visaFlow(),status:'active'}});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(r.data.flow.status,'active');
+    r=await call('/live-travel/flows/save','POST',{flow:{...r.data.flow,name:'Visa desk'}});
+    assert.equal(r.data.flow.version,2);
+    r=await call('/live-travel/flows');
+    assert.deepEqual(r.data.flows.map(f=>[f.id,f.status]),[['fblank','draft'],['fvisa','active']]);
+    // Preview runs one turn without sending (no AI key here, so the flow asks its own question).
+    r=await call('/live-travel/flows/preview','POST',{flow:visaFlow(),message:'I need a tourist visa'});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(r.data.action,'continue');
+    assert.match(r.data.question,/Which country/);
+    assert.ok(r.data.state);
+    r=await call('/live-travel/flows','PUT',{enabled:false});
+    assert.equal(r.data.enabled,false);
+    r=await call('/live-travel/flows/delete','POST',{id:'fblank'});
+    assert.equal(r.status,200);
+    r=await call('/live-travel/flows');
+    assert.equal(r.data.enabled,false);
+    assert.deepEqual(r.data.flows.map(f=>f.id),['fvisa']);
+  }finally{ globalThis.fetch=realFetch; }
+});
