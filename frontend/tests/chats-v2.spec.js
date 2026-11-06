@@ -171,7 +171,7 @@ test('the thread shows who sent each reply, activity events and an unread divide
   await expect(page.locator('#list .contact', { hasText: 'Asha' }).locator('.badge')).toHaveCount(0);
 });
 
-test('header: take over from the bot, assign, and snooze from Resolve ▾', async ({ page }) => {
+test('header: take over from the bot, assign, and snooze from the ⋮ menu', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
   await expect(page.locator('#botPill')).toContainText('Bot active');
@@ -185,7 +185,8 @@ test('header: take over from the bot, assign, and snooze from Resolve ▾', asyn
   await expect(page.locator('#assignBtn')).toContainText('Shafna');
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'assign', args: { email: SHAFNA } });
 
-  await page.locator('.split button').nth(1).click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuSnooze').click();
   await page.locator('#ddMenu button', { hasText: '1 hour' }).click();
   await expect.poll(() => calls.act.at(-1)?.op).toBe('snooze');
   const snooze = calls.act.at(-1);
@@ -246,13 +247,17 @@ test('if the v2 API is unavailable, Chats falls back to the v1 lead list', async
 test('labels: pick or create from the header; filter the list by label', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
-  await page.locator('#labelBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuLabels').click();
   await page.locator('#lblQ').fill('Payment due');
   await page.locator('#ddMenu button', { hasText: 'Create' }).click();
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'label_add', ids: [2], args: { label: 'Payment due' } });
-  await expect(page.locator('#labelBtn')).toContainText('Payment due');
+  await page.locator('#menuBtn').click();
+  await expect(page.locator('#menuLabels')).toContainText('Payment due');
+  await page.locator('#menuBtn').click();
   await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.lbl')).toHaveText(['Payment due']);
-  await page.locator('#prioBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuPrio').click();
   await page.locator('#ddMenu button', { hasText: 'Urgent' }).click();
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'priority', args: { value: 4 } });
   await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.prio.p4')).toBeVisible();
@@ -294,7 +299,8 @@ test('send & resolve, clickable phone numbers and emails, and the 24-hour countd
 test('search in conversation highlights matches and steps through them', async ({ page }) => {
   await open(page);
   await page.locator('#list .contact', { hasText: 'Asha' }).click();
-  await page.locator('[title="Search in conversation"]').first().click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#chatMenu button', { hasText: 'Search in conversation' }).click();
   await page.locator('#threadSearchInput').fill('help');
   await expect(page.locator('#thread mark')).toHaveCount(2);
   await expect(page.locator('#tsCount')).toHaveText('2/2');
@@ -346,7 +352,8 @@ test('no AI suggestions for a chat the bot is handling', async ({ page }) => {
 test('contact sidebar: edit fields, see details and notes, summarise, add a note', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Asha' }).click();
-  await page.locator('#infoBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuInfo').click();
   const panel = page.locator('#infoPanel');
   await expect(panel.locator('input[data-k="Email"]')).toHaveValue('asha@example.com');
   await expect(panel.locator('input[data-k="Destination"]')).toHaveValue('Dubai');
@@ -444,10 +451,12 @@ test('inbox source chips: Auto vs Manual chats, filtered on the server', async (
 test('macros run their steps in order; schedule, forward and create a task', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
-  await page.locator('#infoBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuInfo').click();
   await page.locator('#infoPanel button', { hasText: 'Mark as Hot lead' }).click();
   await expect.poll(() => calls.act.slice(-2).map(a => a.op)).toEqual(['label_add', 'assign']);
-  await page.locator('#infoBtn').click();
+  await page.locator('#infoClose').click();
+  await expect(page.locator('#infoPanel')).toBeHidden();
   await page.locator('#msg').fill('Reminder: your visa appointment is tomorrow');
   await page.locator('#sendMore').click();
   await page.locator('#ddMenu button', { hasText: 'Schedule' }).last().click();
@@ -550,7 +559,8 @@ test('travel inbox: set or clear the service category from the header and the co
   await page.locator('#ddMenu button', { hasText: 'Clear category' }).click();
   await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: '' });
   // Contact panel picker
-  await page.locator('#infoBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuInfo').click();
   await page.locator('#infoPanel label.fld', { hasText: 'Service category' }).locator('select').selectOption('Hotel');
   await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: 'Hotel' });
   await expect(page.locator('#catBtn')).toContainText('Hotel');
@@ -643,4 +653,22 @@ test('after a reload a chat opens at once from this device, then new messages la
   await expect(page.locator('#thread .spinner')).toHaveCount(0);
   release();
   await expect(page.locator('#thread')).toContainText('Are you there?');
+});
+
+test('the chat header keeps six things; resolve, labels, priority, share and details are in ⋮', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#hdrCtl > *')).toHaveCount(2); // Bot / Human + assignee (category only on travel)
+  await expect(page.locator('#botPill')).toBeVisible();
+  await expect(page.locator('#assignBtn')).toBeVisible();
+  await expect(page.locator('.chat-actions > button, .chat-actions > a')).toHaveCount(2); // 📞 + ⋮
+  await expect(page.locator('#resolveBtn, #labelBtn, #prioBtn, #shareBtn, #infoBtn')).toHaveCount(0);
+  // The reply-window timer sits in the name / number line.
+  await expect(page.locator('.chat-sub #winTimer')).toBeVisible();
+  await page.locator('#menuBtn').click();
+  await expect(page.locator('#chatMenu #menuResolve')).toContainText('Resolve conversation');
+  await expect(page.locator('#chatMenu button', { hasText: 'Resolve conversation' })).toHaveCount(1);
+  await page.locator('#menuResolve').click();
+  await expect.poll(() => calls.act.at(-1)?.op).toBe('resolve');
+  await expect(page.locator('.chat-sub .sub-done')).toContainText('Resolved');
 });
