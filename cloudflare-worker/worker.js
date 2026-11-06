@@ -2497,7 +2497,7 @@ export async function d1InsertLeadMessages(env, leadId, clientId, msgs, {seed=fa
 
 // GET /chat/messages?lead_id=X[&after=ISO] — returns messages from D1.
 // First call for a lead auto-seeds D1 from NocoDB ConvHistory (lazy migration).
-async function handleGetChatMessages(request, env){
+async function handleGetChatMessages(request, env, ctx){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const u=new URL(request.url);
@@ -2520,9 +2520,10 @@ async function handleGetChatMessages(request, env){
     await d1InsertLeadMessages(env, leadId, payload.cid, history, {seed:true});
   }
 
-  // One-off: bring in photos/files from before media was recorded (see chatsBackfillChatwootMedia).
+  // One-off: every older Chatwoot conversation of this customer — text, photos, files, who sent
+  // it — so whoever has (or shares) the lead sees the whole history (chatsImportChatwootHistory).
   if(!after){
-    try{ await chatsBackfillChatwootMedia(env, await getClientById(env, payload.cid), payload.cid, lead); }catch(e){}
+    try{ await chatsImportHistoryBounded(env, await getClientById(env, payload.cid), payload.cid, lead, ctx); }catch(e){}
   }
 
   // Read from D1 — incremental if `after` is provided
@@ -2887,12 +2888,229 @@ async function chatsBackfillChatwootMedia(env, c, clientId, lead){
   }
 }
 
+/* ── Full Chatwoot history on a lead ─────────────────────────────────────────────────────────────
+   A lead keeps only its latest Chatwoot conversation (ConversationID), and replies typed inside
+   Chatwoot were only copied into the Chats thread for Leadvyne v2 accounts — so whatever an earlier
+   owner said in an older conversation, or from Chatwoot, could be missing for whoever has the lead
+   now (or shares it). The first time a chat is opened, every Chatwoot conversation of that contact
+   (all inboxes) is read and each message the thread doesn't already have is added: text, photos,
+   files, with who sent it. Matched by Chatwoot message id, else by same text within 15 minutes (or
+   the same longer text anywhere), so nothing shows twice. A marker row makes it a one-off; Chats →
+   "Load full history" runs it again on demand. ── */
+export const CW_HISTORY_MAX_CONVS=10, CW_HISTORY_MAX_PAGES=15;
+// One Chatwoot message (messages API shape) → thread rows. Private notes and activity lines skipped.
+export function chatwootHistoryRows(m){
+  if(!m||m.private) return [];
+  const t=m.message_type;
+  const inc=t===0||t==='incoming', out=t===1||t==='outgoing'||t===3||t==='template';
+  if(!inc&&!out) return [];
+  const role=inc?'user':'assistant';
+  const raw=m.created_at;
+  let baseMs=typeof raw==='number'?raw*1000:Date.parse(raw||'');
+  if(!Number.isFinite(baseMs)) return [];
+  // Chatwoot times are whole seconds; the message id's last digits keep two messages sent in the
+  // same second apart (the thread's unique key is lead + time + role).
+  const cwId=Number(m.id)||0;
+  baseMs+=cwId%1000;
+  const template=t===3||t==='template'||!!m.additional_attributes?.template_params;
+  const sender=inc?{sender_type:'customer'}
+    :m.sender?.type==='agent_bot'?{sender_type:'bot'}
+    :template?{sender_type:'automation'}
+    :{sender_type:'agent', sender_name:String(m.sender?.available_name||m.sender?.name||'').slice(0,80), sender_email:String(m.sender?.email||'').toLowerCase().slice(0,140)};
+  const text=String(m.content||'').trim();
+  if((m.attachments||[]).length){
+    return chatwootMediaRows(m, role, text).map((row, i)=>({...row, ts:new Date(baseMs+i).toISOString(), ...sender, ...(cwId?{cw_id:cwId}:{})}));
+  }
+  if(!text) return [];
+  return [{role, content:text, ts:new Date(baseMs).toISOString(), ...sender, ...(cwId?{cw_id:cwId}:{})}];
+}
+const CW_HISTORY_SAME_TEXT_MS=15*60*1000, CW_HISTORY_MEDIA_MS=3*60*1000;
+function cwHistoryNorm(t){ return String(t||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+// What the thread already holds, for chatwootHistoryDedupe.
+export function chatwootHistoryIndex(rows){
+  const idx={cw:new Set(), text:new Map(), media:new Map()};
+  for(const r of rows||[]) chatwootHistoryRemember(idx, r);
+  return idx;
+}
+function chatwootHistoryRemember(idx, r){
+  let att=r?.attachment; if(typeof att==='string'){ try{ att=JSON.parse(att); }catch(e){ att={}; } }
+  const cw=Number(r?.cw_id||att?.cw_id)||0;
+  if(cw) idx.cw.add(cw);
+  const ms=Date.parse(r?.ts||'');
+  if(att&&Object.keys(att).length){
+    const k=`${r.role}|${att.kind||''}`;
+    if(!idx.media.has(k)) idx.media.set(k, []);
+    if(Number.isFinite(ms)) idx.media.get(k).push(ms);
+    return;
+  }
+  const n=cwHistoryNorm(r?.content);
+  if(!n) return;
+  const k=`${r.role}|${n}`;
+  if(!idx.text.has(k)) idx.text.set(k, []);
+  idx.text.get(k).push(Number.isFinite(ms)?ms:NaN);
+}
+// The rows not already in the thread (and remembers them, so later pages don't repeat them).
+export function chatwootHistoryDedupe(idx, rows){
+  const out=[];
+  for(const r of rows||[]){
+    const cw=Number(r.cw_id||r.attachment?.cw_id)||0;
+    const ms=Date.parse(r.ts);
+    if(cw&&idx.cw.has(cw)&&!out.some(o=>Number(o.cw_id)===cw)) continue;
+    if(r.attachment&&Object.keys(r.attachment).length){
+      const seen=idx.media.get(`${r.role}|${r.attachment.kind||''}`)||[];
+      if(seen.some(t=>Math.abs(t-ms)<=CW_HISTORY_MEDIA_MS)) continue;
+    } else {
+      const n=cwHistoryNorm(r.content);
+      const seen=idx.text.get(`${r.role}|${n}`)||[];
+      if(seen.some(t=>!Number.isFinite(t)||Math.abs(t-ms)<=CW_HISTORY_SAME_TEXT_MS||n.length>=25)) continue;
+    }
+    out.push(r);
+  }
+  for(const r of out) chatwootHistoryRemember(idx, r);
+  return out;
+}
+// Every Chatwoot conversation of this lead's contact (newest first, capped), its own one included.
+async function chatwootContactConversationIds(c, lead){
+  const base=`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}`, h={headers:{api_access_token:c.chatwoot_token}};
+  const get=async path=>{ try{ const r=await fetch(base+path, h); return r.ok?await r.json().catch(()=>null):null; }catch(e){ return null; } };
+  const ids=new Set();
+  const cur=Number(lead.ConversationID)||0;
+  if(cur) ids.add(cur);
+  let contactId=0;
+  if(cur) contactId=Number((await get(`/conversations/${cur}`))?.meta?.sender?.id)||0;
+  const digits=String(lead.Phone||'').replace(/\D/g,'');
+  if(!contactId && digits.length>=8){
+    const list=(await get(`/contacts/search?q=${encodeURIComponent(digits.slice(-10))}`))?.payload||[];
+    contactId=Number(list.find(x=>String(x?.phone_number||'').replace(/\D/g,'').endsWith(digits.slice(-10)))?.id)||0;
+  }
+  if(contactId){
+    const convs=(await get(`/contacts/${contactId}/conversations`))?.payload||[];
+    convs.slice().sort((a,b)=>(Number(b?.last_activity_at)||0)-(Number(a?.last_activity_at)||0)).forEach(cv=>{ if(Number(cv?.id)) ids.add(Number(cv.id)); });
+  }
+  return [...ids].slice(0, CW_HISTORY_MAX_CONVS);
+}
+// force: run again even if done before (Chats → "Load full history"), at most once a minute.
+export async function chatsImportChatwootHistory(env, c, clientId, lead, {force=false}={}){
+  if(!env?.DB||!Number(lead?.Id)||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return {added:0, skipped:'not-configured'};
+  const leadId=Number(lead.Id), now=new Date().toISOString();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS lead_history_import (lead_id INTEGER PRIMARY KEY, at TEXT, added INTEGER NOT NULL DEFAULT 0, convs INTEGER NOT NULL DEFAULT 0)').run().catch(()=>{});
+  let claimed;
+  if(force){
+    claimed=await env.DB.prepare(`INSERT INTO lead_history_import (lead_id, at) VALUES (?1,?2) ON CONFLICT(lead_id) DO UPDATE SET at=?2 WHERE lead_history_import.at<?3`)
+      .bind(leadId, now, new Date(Date.now()-60000).toISOString()).run().catch(()=>null);
+    if(!claimed?.meta?.changes) return {added:0, skipped:'recent'};
+  } else {
+    claimed=await env.DB.prepare('INSERT OR IGNORE INTO lead_history_import (lead_id, at) VALUES (?,?)').bind(leadId, now).run().catch(()=>null);
+    if(!claimed?.meta?.changes) return {added:0, skipped:'done'};
+  }
+  const convIds=await chatwootContactConversationIds(c, lead);
+  const {results}=await env.DB.prepare('SELECT role, content, ts, attachment, cw_id FROM lead_messages WHERE lead_id=? ORDER BY ts DESC LIMIT 5000')
+    .bind(leadId).all().catch(async()=>env.DB.prepare('SELECT role, content, ts, attachment FROM lead_messages WHERE lead_id=? ORDER BY ts DESC LIMIT 5000').bind(leadId).all().catch(()=>({results:[]})));
+  const idx=chatwootHistoryIndex(results||[]);
+  let added=0;
+  for(const convId of convIds){
+    let before='';
+    for(let page=0;page<CW_HISTORY_MAX_PAGES;page++){
+      let msgs=[];
+      try{
+        const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages${before?`?before=${before}`:''}`, {headers:{api_access_token:c.chatwoot_token}});
+        if(!r.ok) break;
+        msgs=(await r.json().catch(()=>({})))?.payload||[];
+      }catch(e){ break; }
+      if(!msgs.length) break;
+      const fresh=chatwootHistoryDedupe(idx, msgs.flatMap(chatwootHistoryRows));
+      if(fresh.length){ await d1InsertLeadMessages(env, leadId, clientId, fresh, {seed:true}); added+=fresh.length; }
+      if(msgs.length<20) break;
+      before=Math.min(...msgs.map(m=>Number(m.id)||Infinity));
+      if(!isFinite(before)) break;
+    }
+  }
+  await env.DB.prepare('UPDATE lead_history_import SET added=added+?, convs=? WHERE lead_id=?').bind(added, convIds.length, leadId).run().catch(()=>{});
+  return {added, conversations:convIds.length};
+}
+// The thread waits this long for the import on a chat's first open, then shows what it has; the
+// rest finishes in the background.
+export const CW_HISTORY_WAIT_MS=4000;
+async function chatsImportHistoryBounded(env, c, clientId, lead, ctx){
+  const p=chatsImportChatwootHistory(env, c, clientId, lead).catch(()=>null);
+  if(ctx?.waitUntil) ctx.waitUntil(p);
+  await Promise.race([p, new Promise(r=>setTimeout(r, CW_HISTORY_WAIT_MS))]);
+}
+
+// POST /chats/history-import {lead_id} — Chats → "Load full history": read every Chatwoot
+// conversation of this customer again and add what the thread is missing. Anyone who can see the
+// chat may run it (a read-only channel included: it only adds what was already said).
+async function handleChatsHistoryImport(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=Number(body.lead_id)||0;
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  const lead=r.ok?await r.json().catch(()=>null):null;
+  if(!lead||String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  const c=await getClientById(env, payload.cid);
+  if(payload.email){
+    const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, payload.cid, payload.email, {fullAccess:seesAllChannelLeads(c, payload.email)}));
+    const refusal=chatSendRefusal({...acc, readInboxes:[]}, lead);
+    if(refusal) return json({error:'This chat isn\'t one you can see.'}, 403);
+  }
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not connected for this account.'}, 400);
+  const out=await chatsImportChatwootHistory(env, c, payload.cid, lead, {force:true});
+  if(out.skipped==='recent') return json({ok:true, added:0, note:'Already checked a moment ago.'});
+  return json({ok:true, ...out});
+}
+
+// The lead a Chatwoot webhook is about: by its conversation, else — an older conversation of the
+// same customer, after the lead moved on to a newer one — by the contact's phone.
+export function chatwootBodyPhone(body){
+  const conv=body?.conversation||{};
+  const raw=conv.meta?.sender?.phone_number||conv.contact_inbox?.source_id||'';
+  const d=String(raw).replace(/\D/g,'');
+  return d.length>=8?d:'';
+}
+async function engineLeadForChatwootBody(env, clientId, body, fields=''){
+  const convId=String(body?.conversation?.id||'');
+  const f=fields?`&fields=${fields}`:'';
+  if(convId){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${encodeURIComponent(convId)})&limit=1${f}`).catch(()=>null);
+    const lead=r?.ok?(await r.json().catch(()=>({})))?.list?.[0]:null;
+    if(lead?.Id) return lead;
+  }
+  const d=chatwootBodyPhone(body);
+  if(!d) return null;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(Phone,like,%${d.slice(-10)})`)}&limit=5&sort=-LastMsgAt${f?f+(fields.includes('Phone')?'':',Phone'):''}`).catch(()=>null);
+  const list=r?.ok?(await r.json().catch(()=>({})))?.list||[]:[];
+  return list.find(l=>String(l.Phone||'').replace(/\D/g,'').slice(-10)===d.slice(-10))||null;
+}
+// A reply a teammate typed inside Chatwoot → the Chats thread, with their name (every account; the
+// Leadvyne v2 path also folds it into the bot's history). Skips the bot's own echoes and anything
+// already in the thread (a Chats-page send, a replayed webhook).
+export async function engineRecordStaffReply(env, c, clientId, body){
+  const lead=await engineLeadForChatwootBody(env, clientId, body, 'Id,ConvHistory');
+  if(!lead?.Id) return false;
+  const cwId=Number(body?.id)||0;
+  if(cwId){
+    const seen=await env.DB.prepare('SELECT 1 AS x FROM lead_messages WHERE lead_id=? AND cw_id=? LIMIT 1').bind(Number(lead.Id), cwId).first().catch(()=>null);
+    if(seen) return false;
+  }
+  const {results}=await env.DB.prepare(`SELECT content, sender_type FROM lead_messages WHERE lead_id=? AND role='assistant' ORDER BY ts DESC LIMIT 6`)
+    .bind(Number(lead.Id)).all().catch(()=>({results:[]}));
+  if(!engineIsHumanAgentMessage(body, lead.ConvHistory, results)) return false;
+  const n=engineNormText(body.content);
+  if((results||[]).some(r=>{ const x=engineNormText(r.content); return x && (x===n || (n.length>=20 && x.includes(n)) || n.endsWith(x)); })) return false;
+  await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:String(body.content||'').trim(), ts:new Date().toISOString(), ...engineStaffSender(body), ...(cwId?{cw_id:cwId}:{})});
+  return true;
+}
+export function engineStaffSender(body){
+  return {sender_type:'agent', sender_name:String(body?.sender?.available_name||body?.sender?.name||'').slice(0,80), sender_email:String(body?.sender?.email||'').trim().toLowerCase().slice(0,140)};
+}
+
 async function engineRecordOutgoingChatwootMedia(env, clientId, body){
   const rows=chatwootOutgoingMediaRows(body);
   const convId=String(body.conversation?.id||'');
   if(!rows.length||!convId) return;
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1&fields=Id`);
-  const leadId=(await r.json().catch(()=>({})))?.list?.[0]?.Id;
+  const leadId=(await engineLeadForChatwootBody(env, clientId, body, 'Id'))?.Id;
   if(!leadId) return;
   // A Chats-page upload is already saved (with this cw_id) by chatsRecordOutgoing.
   if(await d1HasChatwootMessage(env, leadId, rows[0].attachment.cw_id)) return;
@@ -26237,8 +26455,7 @@ async function engineTrackHumanAgentReply(env, clientId, body, at){
   const convId=String(body.conversation?.id||'');
   if(!convId) return;
   await ensureLeadsColumns(env, ['LastAgentMsgAt']);
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1&fields=Id,ConvHistory`);
-  const lead=(await r.json().catch(()=>({})))?.list?.[0];
+  const lead=await engineLeadForChatwootBody(env, clientId, body, 'Id,ConvHistory');
   if(!lead?.Id) return;
   const {results}=await env.DB.prepare(`SELECT content, sender_type FROM lead_messages WHERE lead_id=? AND role='assistant' ORDER BY ts DESC LIMIT 6`)
     .bind(Number(lead.Id)).all().catch(()=>({results:[]}));
@@ -26254,8 +26471,7 @@ async function engineTrackHumanAgentReply(env, clientId, body, at){
 async function engineV2HandleStaffMessage(env, c, clientId, body){
   const convId=String(body.conversation?.id||'');
   if(!convId) return;
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1`);
-  const lead=(await r.json().catch(()=>({})))?.list?.[0];
+  const lead=await engineLeadForChatwootBody(env, clientId, body);
   if(!lead?.Id) return;
   const now=new Date().toISOString();
   const hist=engineAppendAgentReply(lead.ConvHistory, body, now);
@@ -26269,7 +26485,8 @@ async function engineV2HandleStaffMessage(env, c, clientId, body){
   if(d1Recent.some(x=>x && (x===n || (n.length>=20 && x.includes(n)) || n.endsWith(x)))){
     // In D1 but not in ConvHistory → a Chats-page send: history only, no second bubble.
   } else {
-    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:text, ts:now});
+    const cwId=Number(body?.id)||0;
+    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:text, ts:now, ...(hist[hist.length-1].by==='agent'?engineStaffSender(body):{sender_type:'automation'}), ...(cwId?{cw_id:cwId}:{})});
   }
   const patch={Id:Number(lead.Id), ConvHistory:JSON.stringify(hist.slice(-40))};
   if(hist[hist.length-1].by==='agent'){
@@ -26723,7 +26940,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // ConvHistory before Leadvyne v2 appends this message to it (+ Chats thread, + promises → facts).
         const work=new Promise(r=>setTimeout(r, 8000))
           .then(()=>engineTrackHumanAgentReply(env, clientId, body, at).catch(()=>{}))
-          .then(()=>engineV2On(c)?engineV2HandleStaffMessage(env, c, clientId, body):null).catch(()=>{});
+          .then(()=>engineV2On(c)?engineV2HandleStaffMessage(env, c, clientId, body):engineRecordStaffReply(env, c, clientId, body)).catch(()=>{});
         if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
       }
       return json({ok:true, handled:'agent-reply-tracked'});
@@ -37062,6 +37279,8 @@ const CHATS_V2_DEPS={
     return r.ok?{ok:true}:{ok:false, error:d?.message||'Resend HTTP '+r.status};
   },
   backfillMedia:chatsBackfillChatwootMedia,
+  // Every older Chatwoot conversation of the customer, on a chat's first open (chatsImportChatwootHistory).
+  importHistory:(env, c, cid, lead, ctx)=>chatsImportHistoryBounded(env, c, cid, lead, ctx),
   // First open of a chat Chats v2 has never seen: ownership check + ConvHistory → D1 (as
   // /chat/messages does), which also creates its conversations row.
   seedLead:async(env, cid, leadId)=>{
@@ -41055,7 +41274,8 @@ export default {
       else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
       else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length), ctx); }
-      else if(url.pathname==='/chat/messages' && request.method==='GET'){ res=await handleGetChatMessages(request, env); }
+      else if(url.pathname==='/chat/messages' && request.method==='GET'){ res=await handleGetChatMessages(request, env, ctx); }
+      else if(url.pathname==='/chats/history-import' && request.method==='POST'){ res=await handleChatsHistoryImport(request, env); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }

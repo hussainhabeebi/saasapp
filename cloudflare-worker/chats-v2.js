@@ -16,7 +16,7 @@ import {tmChannelPerms,tmApplyChannelPerms,tmInboxesAt} from './team-admin.js';
 // This file imports nothing from worker.js; worker.js passes helpers in as `deps` (CHATS_V2_DEPS):
 //   { json, requireSession, getClientById, ncFetch, leadsTable, broadcast(env,cid,obj),
 //     handover(env,payload,leadId,takeover)→fields, ensureLeadsColumns(env,cols),
-//     seedLead(env,cid,leadId)→lead|null, backfillMedia(env,c,cid,lead) }
+//     seedLead(env,cid,leadId)→lead|null, backfillMedia(env,c,cid,lead), importHistory(env,c,cid,lead,ctx) }
 
 export const CHATS_V2_SCHEMA=[
   `CREATE TABLE IF NOT EXISTS conversations (
@@ -1196,7 +1196,13 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
         row=await convRow(env, leadId);
       }
       if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
-      if(!row.media_backfilled&&!qp.before&&!qp.after&&deps.backfillMedia){
+      // First page: bring in the customer's older Chatwoot history once (all their conversations),
+      // waiting a few seconds so it shows in this very load. It covers photos/files too.
+      if(!qp.before&&!qp.after&&deps.importHistory){
+        try{ await deps.importHistory(env, c, cid, {Id:leadId, ConversationID:row.conv_id, Phone:row.phone}, ctx); }catch(e){}
+        if(!row.media_backfilled) await env.DB.prepare('UPDATE conversations SET media_backfilled=1 WHERE lead_id=?').bind(leadId).run();
+      }
+      else if(!row.media_backfilled&&!qp.before&&!qp.after&&deps.backfillMedia){
         await env.DB.prepare('UPDATE conversations SET media_backfilled=1 WHERE lead_id=?').bind(leadId).run();
         const p=deps.backfillMedia(env, c, cid, {Id:leadId, ConversationID:row.conv_id}).catch(()=>{});
         if(ctx?.waitUntil) ctx.waitUntil(p);
