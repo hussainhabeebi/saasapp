@@ -96,6 +96,34 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .lbl{font-size:10.5px;border-radius:4px;padding:1px 6px;background:#eef1f3;color:#54656f;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}.lbl.more{background:transparent;padding:0}
 .prio{width:8px;height:8px;border-radius:50%;flex:none}.prio.p3{background:#f59e0b}.prio.p4{background:#e5484d}
 .skel{position:absolute;left:0;right:0;height:76px;display:flex;gap:12px;align-items:center;padding:0 12px}.skel i{display:block;border-radius:6px;background:linear-gradient(90deg,#eef1f3 25%,#f6f8f9 50%,#eef1f3 75%);background-size:200% 100%;animation:sk 1.2s infinite}.skel .a{width:49px;height:49px;border-radius:50%;flex:none}.skel .t{flex:1;display:grid;gap:8px}.skel .t i:first-child{height:12px;width:55%}.skel .t i:last-child{height:10px;width:80%}@keyframes sk{to{background-position:-200% 0}}
+.sidebar{position:relative}
+.flt-wrap{display:flex;gap:8px;align-items:center}.flt-wrap .searchbox{flex:1;min-width:0}
+.flt-btn{flex:none;display:inline-flex;align-items:center;gap:4px;height:36px;padding:0 12px;border:1px solid #d1d7db;border-radius:18px;background:#fff;color:#54656f;font-size:13px;cursor:pointer}
+.flt-btn[aria-expanded="true"],.flt-btn.on{background:#e7fce9;color:#008069;border-color:#c6f0d2}
+.flt-btn .n{min-width:18px;height:18px;border-radius:9px;background:#008069;color:#fff;font-size:11px;font-weight:700;display:grid;place-items:center;padding:0 5px}
+.flt-active{display:flex;gap:6px;overflow-x:auto;padding:0 12px 7px;scrollbar-width:none;flex:none}.flt-active::-webkit-scrollbar{display:none}
+.flt-chip{flex:none;display:inline-flex;align-items:center;gap:6px;max-width:220px;border:1px solid #c6f0d2;background:#e7fce9;color:#008069;border-radius:16px;padding:4px 6px 4px 10px;font-size:12px;cursor:pointer}
+.flt-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.flt-chip b{font-weight:700;font-size:13px;line-height:1;opacity:.8}
+.flt-clear{flex:none;border:none;background:none;color:#54656f;font-size:12px;text-decoration:underline;cursor:pointer;padding:4px}
+.flt-back{position:absolute;inset:0;z-index:30;background:rgba(17,27,33,.08)}
+.flt-panel{position:absolute;left:10px;right:10px;top:110px;z-index:31;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(11,20,26,.18);max-height:calc(100% - 130px);overflow:auto;padding:6px 14px 0}
+.flt-sec{padding:10px 0;border-bottom:1px solid #f0f2f5}.flt-sec:last-of-type{border-bottom:none}
+.flt-sec>label,.flt-sec>.flt-h{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#667781;margin-bottom:6px}
+.flt-sec select{width:100%;height:38px;border:1px solid #d1d7db;border-radius:10px;background:#fff;color:#111b21;font-size:14px;padding:0 10px}
+.flt-sec select:focus{outline:2px solid #00a884;outline-offset:1px}
+.flt-labels{display:flex;flex-direction:column;gap:2px;max-height:180px;overflow:auto}
+.flt-labels label{display:flex;align-items:center;gap:9px;font-size:14px;color:#111b21;padding:6px 4px;border-radius:8px;cursor:pointer}.flt-labels label:hover{background:#f5f6f6}
+.flt-labels input{width:17px;height:17px;accent-color:#00a884}
+.flt-adv{width:100%;height:38px;border:1px dashed #b7c2c8;border-radius:10px;background:#fff;color:#54656f;font-size:13.5px;cursor:pointer}.flt-adv.on{border-style:solid;border-color:#00a884;color:#008069;background:#e7fce9}
+.flt-foot{position:sticky;bottom:0;display:flex;justify-content:space-between;gap:10px;padding:10px 0 12px;background:#fff;border-top:1px solid #f0f2f5;margin-top:2px}
+.flt-foot button{height:38px;border-radius:19px;padding:0 16px;font-size:14px;cursor:pointer}.flt-foot .clr{border:1px solid #d1d7db;background:#fff;color:#54656f}.flt-foot .done{border:none;background:#00a884;color:#fff;font-weight:600;flex:1;max-width:160px}
+@media(max-width:700px){
+ .flt-btn{height:40px}.flt-btn .t{display:none}
+ .flt-back{position:fixed;background:rgba(17,27,33,.45);z-index:57}
+ .flt-panel{position:fixed;left:0;right:0;top:auto;bottom:0;z-index:58;max-height:85dvh;border-radius:18px 18px 0 0;border:none;padding:4px 16px 0;padding-bottom:env(safe-area-inset-bottom)}
+ .flt-panel::before{content:'';display:block;width:40px;height:4px;border-radius:4px;background:#d1d7db;margin:6px auto 4px}
+ .flt-sec select{height:44px;font-size:16px}.flt-labels label{font-size:15.5px;padding:9px 4px}.flt-adv,.flt-foot button{height:44px;font-size:15px}
+}
 .seg-row{display:flex;gap:6px;align-items:center;padding:0 12px 7px;flex:none;border-bottom:1px solid var(--line)}.seg-row .pill{padding:3px 9px}.seg-row select{margin-left:auto;border:1px solid #d1d7db;border-radius:14px;background:#fff;color:#54656f;font-size:12px;padding:3px 6px}
 .filter-row{border-bottom:0}
 .tab-row{align-items:center}.tab-row .pill{display:inline-flex;align-items:center;flex:none}.tab-row .tab-lbl{flex:none;font-size:13px;opacity:.7;padding-right:1px}
@@ -197,14 +225,11 @@ button:active:not(:disabled){transform:scale(.96);filter:brightness(.94)}
 <div id="app" class="hidden">
   <aside class="sidebar" id="sidebar">
     <div class="side-top"><div class="brand-avatar">L</div><div class="side-title">Chats</div><button class="icon-btn hidden" id="notifyBtn" title="Desktop notifications" onclick="toggleNotify()">🔕</button><button class="icon-btn" id="refreshBtn" title="Refresh" onclick="refreshAll()">↻</button><button class="dash-btn" title="Back to Dashboard" onclick="goBack()">← <span class="t">Dashboard</span></button></div>
-    <div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="search" placeholder="Search name, number or message" autocomplete="off" oninput="renderContacts()"></div></div>
-    <div class="channel-row"><button class="pill active" data-channel="whatsapp" onclick="setChannel('whatsapp')">WhatsApp</button><button class="pill" data-channel="instagram" onclick="setChannel('instagram')">Instagram</button><button class="pill hidden" data-channel="all" id="allChannelPill" onclick="setChannel('all')">All channels</button></div>
-    <div class="filter-row tab-row hidden" id="inboxRow" aria-label="Channels"></div>
-    <div class="filter-row tab-row hidden" id="agentRow" aria-label="Assigned to"></div>
-    <div class="filter-row hidden" id="catRow"></div>
-    <div class="filter-row hidden" id="srcRow"></div>
+    <div class="search-wrap flt-wrap"><div class="searchbox"><span>⌕</span><input id="search" placeholder="Search name, number or message" autocomplete="off" oninput="renderContacts()"></div><button class="flt-btn" id="fltBtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="fltPanel" onclick="toggleFilterPanel()" title="Filters">⚙<span class="t"> Filters</span><span class="n hidden" id="fltCount"></span></button></div>
+    <div class="flt-active hidden" id="fltActive" aria-label="Filters on"></div>
+    <div class="flt-back hidden" id="fltBack" onclick="toggleFilterPanel(false)"></div>
+    <div class="flt-panel hidden" id="fltPanel" role="dialog" aria-label="Filters"></div>
     <div class="filter-row" id="filters"></div>
-    <div class="seg-row" id="segRow"></div>
     <div class="list" id="list"></div>
   </aside>
   <main class="main" id="main"><div class="empty-main"><div class="box"><div class="big">💬</div><h2>Leadvyne Chats</h2><p>Send messages, photos, documents and voice notes in a familiar WhatsApp-style workspace. Choose a conversation to start.</p></div></div></main>
@@ -470,7 +495,7 @@ async function boot(){
  try{
   await Promise.all([loadBootstrap(),(async()=>{V2=true;await loadView(false)})(),loadCounts()]);
   if(!boot2)throw new Error('no bootstrap');
-  V2=true;show();$('app').classList.add('v2');$('allChannelPill').classList.remove('hidden');paintNotifyBtn();renderInboxRow();renderAgentRow();renderContacts();connectWs();
+  V2=true;show();$('app').classList.add('v2');paintNotifyBtn();renderInboxRow();renderAgentRow();renderContacts();connectWs();
   // Safety net while the socket is down or a delta was missed.
   setInterval(()=>queueSync(),60000);
   setInterval(()=>{if(!document.hidden){paintList();renderHeaderCtl()}},30000);
@@ -503,56 +528,98 @@ function setInbox(id){inboxFilter=inboxFilter===id?'':id;renderInboxRow();onView
 function setAssignee(e){assigneeFilter=assigneeFilter===e?'':e;renderAgentRow();onViewChange()}
 const INBOX_TYPES={whatsapp:['Channel::Whatsapp'],instagram:['Channel::Instagram','Channel::FacebookPage']};
 function fmtPhone(v){v=String(v||'').trim();const d=v.replace(/\D/g,'');return !v?'':d.length<7?v:(v.startsWith('+')?v:'+'+d)}
-// One tab per connected channel (WhatsApp number) — shown once there are two or more.
-function renderInboxRow(){
- const el=$('inboxRow');if(!el)return;
- const by=V2&&counts2?.by_inbox||{};
- const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
- const types=INBOX_TYPES[channel];
+// ── ⚙ Filters panel ────────────────────────────────────────────────────────────────────────
+// Channel, WhatsApp number, teammate, category, source, bot/human, labels, sort and the advanced
+// filter all live in one panel (a popover in the sidebar on PC, a bottom sheet on a phone) instead
+// of a row of chips each. Only the filters this account can use are listed (a second number, a
+// teammate, categories, two sources); the ones that are on show as removable chips under the
+// search box, and the ⚙ button carries their count. Changes apply at once, as the chips did.
+let fltOpen=false;
+const fltN=(by,k)=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
+const fltOpt=(v,label,cur)=>`<option value="${esc(v)}"${String(cur)===String(v)?' selected':''}>${esc(label)}</option>`;
+function fltInboxes(){
+ const by=V2&&counts2?.by_inbox||{},types=INBOX_TYPES[channel];
  const known=(boot2?.inboxes||[]).filter(ib=>!types||types.includes(ib.channel_type));
- const ids=[...new Set([...known.map(ib=>String(ib.id)),...Object.keys(by).filter(k=>k&&n(k)>0)])];
- if(ids.length<2&&!inboxFilter){el.classList.add('hidden');el.innerHTML='';return}
- el.classList.remove('hidden');
- const tab=id=>{const ib=known.find(x=>String(x.id)===id)||(boot2?.inboxes||[]).find(x=>String(x.id)===id)||{name:'Inbox '+id};const ph=fmtPhone(ib.phone_number);
-  return `<button class="pill tab ${inboxFilter===id?'active':''}" title="${esc(ib.name+(ph?' · '+ph:''))}" onclick="setInbox(${esc(JSON.stringify(id))})"><span class="tab-t"><b>${esc(ib.name)}</b>${ph?`<small>${esc(ph)}</small>`:''}</span><span class="n">${n(id)||''}</span></button>`};
- el.innerHTML=`<span class="tab-lbl">📞</span><button class="pill tab ${!inboxFilter?'active':''}" onclick="setInbox('')"><span class="tab-t"><b>All numbers</b></span></button>`+ids.map(tab).join('');
+ const ids=[...new Set([...known.map(ib=>String(ib.id)),...Object.keys(by).filter(k=>k&&fltN(by,k)>0)])];
+ return ids.map(id=>{const ib=known.find(x=>String(x.id)===id)||(boot2?.inboxes||[]).find(x=>String(x.id)===id)||{name:'Inbox '+id};return {id,name:ib.name,phone:fmtPhone(ib.phone_number),n:fltN(by,id)}});
 }
-// One tab per teammate (owner / admins / managers only — staff already see just their own chats).
-function renderAgentRow(){
- const el=$('agentRow');if(!el)return;
- if(isStaff()||!V2){el.classList.add('hidden');el.innerHTML='';if(assigneeFilter&&isStaff())assigneeFilter='';return}
- const by=counts2?.by_assignee||{};
- const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
- const agents=agentsList().slice();
+function fltAgents(){
+ if(isStaff()||!V2)return [];
+ const by=counts2?.by_assignee||{},agents=agentsList().slice();
  for(const e of Object.keys(by))if(e&&!agents.some(a=>a.email===e))agents.push({email:e,name:e.split('@')[0]});
- if(agents.length<2&&!assigneeFilter){el.classList.add('hidden');el.innerHTML='';return}
- agents.sort((a,b)=>(b.email===meEmail)-(a.email===meEmail)||n(b.email)-n(a.email)||a.name.localeCompare(b.name));
- el.classList.remove('hidden');
- el.innerHTML=`<span class="tab-lbl">👤</span><button class="pill ${!assigneeFilter?'active':''}" onclick="setAssignee('')">Everyone</button>`+
-  agents.map(a=>`<button class="pill ${assigneeFilter===a.email?'active':''}" title="${esc(a.email)}" onclick="setAssignee(${esc(JSON.stringify(a.email))})"><span class="asg">${esc(agentInitials(a.email))}</span>${esc(a.name)}${a.email===meEmail?' (you)':''}<span class="n">${n(a.email)||''}</span></button>`).join('')+
-  `<button class="pill ${assigneeFilter==='__none'?'active':''}" onclick="setAssignee('__none')">Unassigned<span class="n">${n('')||''}</span></button>`;
+ return agents.sort((a,b)=>(b.email===meEmail)-(a.email===meEmail)||fltN(by,b.email)-fltN(by,a.email)||a.name.localeCompare(b.name)).map(a=>({...a,n:fltN(by,a.email)}));
 }
-function renderSourceRow(){
- const el=$('srcRow');if(!el)return;
- const by=V2&&counts2?.by_source||{};
- const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
- const keys=Object.keys(SRC_LABELS).filter(k=>n(k)>0);
- if(keys.length<2&&!srcFilter){el.classList.add('hidden');el.innerHTML='';return}
- el.classList.remove('hidden');
- el.innerHTML=`<button class="pill ${!srcFilter?'active':''}" onclick="setSource('')">All sources</button>`+
-  keys.map(k=>`<button class="pill ${srcFilter===k?'active':''}" onclick="setSource('${k}')">${SRC_LABELS[k]}<span class="n">${n(k)}</span></button>`).join('');
+function fltCats(){const by=V2&&counts2?.by_category||{};return {cats:Object.keys(by).filter(k=>k).sort((a,b)=>fltN(by,b)-fltN(by,a)||a.localeCompare(b)).map(k=>({k,n:fltN(by,k)})),none:by['']?fltN(by,''):0}}
+function fltSources(){const by=V2&&counts2?.by_source||{};return Object.keys(SRC_LABELS).filter(k=>fltN(by,k)>0).map(k=>({k,n:fltN(by,k)}))}
+// The filters that are on, as [key, label] — chips, the ⚙ count and "Clear all".
+function fltActive(){
+ const out=[];
+ if(channel!=='whatsapp')out.push(['channel',channel==='instagram'?'📸 Instagram':'All channels']);
+ if(inboxFilter){const ib=fltInboxes().find(x=>x.id===inboxFilter);out.push(['inbox','📞 '+(ib?.name||'Number')])}
+ if(assigneeFilter)out.push(['assignee','👤 '+(assigneeFilter==='__none'?'Unassigned':agentName(assigneeFilter))]);
+ if(catFilter)out.push(['cat','🗂 '+(catFilter==='__none'?'No category':catFilter)]);
+ if(srcFilter)out.push(['src',SRC_LABELS[srcFilter]||srcFilter]);
+ if(handlerFilter)out.push(['handler',handlerFilter==='bot'?'🤖 Bot':'👤 Human']);
+ if(labelFilter.length)out.push(['labels','🏷 '+labelFilter.slice(0,2).join(', ')+(labelFilter.length>2?' +'+(labelFilter.length-2):'')]);
+ if(customView&&!customView.id)out.push(['adv','⚙ Advanced filter']);
+ if(sortMode!=='newest')out.push(['sort',sortMode==='oldest'?'↑ Oldest first':'⏳ Waiting longest']);
+ return out;
 }
-function renderCategoryRow(){
- const el=$('catRow');if(!el)return;
- const by=V2&&counts2?.by_category||{};
- const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
- const cats=Object.keys(by).filter(k=>k).sort((a,b)=>n(b)-n(a)||a.localeCompare(b));
- if(!cats.length&&!catFilter){el.classList.add('hidden');el.innerHTML='';return}
- el.classList.remove('hidden');
- el.innerHTML=`<button class="pill ${!catFilter?'active':''}" onclick="setCategory('')">All categories</button>`+
-  cats.map(k=>`<button class="pill ${catFilter===k?'active':''}" onclick="setCategory(${esc(JSON.stringify(k))})">${esc(k)}<span class="n">${n(k)}</span></button>`).join('')+
-  (by['']?`<button class="pill ${catFilter==='__none'?'active':''}" onclick="setCategory('__none')">No category<span class="n">${n('')}</span></button>`:'');
+function clearFilter(k,quiet){
+ if(k==='channel'){channel='whatsapp';filter='all';inboxFilter=''}
+ else if(k==='inbox')inboxFilter='';else if(k==='assignee')assigneeFilter='';else if(k==='cat')catFilter='';else if(k==='src')srcFilter='';
+ else if(k==='handler')handlerFilter='';else if(k==='labels')labelFilter=[];else if(k==='adv'){customView=null;fbRows=[]}else if(k==='sort')sortMode='newest';
+ if(!quiet){renderFilterPanel();onViewChange()}
 }
+function clearAllFilters(){fltActive().forEach(([k])=>clearFilter(k,true));renderFilterPanel();onViewChange()}
+function toggleFilterPanel(on){
+ fltOpen=on===undefined?!fltOpen:!!on;
+ renderFilterPanel();
+ if(fltOpen){const f=$('fltPanel').querySelector('select,input,button');f?.focus({preventScroll:true})}else $('fltBtn')?.focus({preventScroll:true});
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&fltOpen&&!$('ddMenu')){e.preventDefault();toggleFilterPanel(false)}});
+function fltSetLabel(x,on){labelFilter=on?[...new Set([...labelFilter,x])]:labelFilter.filter(y=>y!==x);renderFilterPanel();onViewChange()}
+function renderFilterPanel(){
+ const btn=$('fltBtn'),panel=$('fltPanel'),back=$('fltBack'),chips=$('fltActive');if(!btn||!panel)return;
+ if(isStaff()&&assigneeFilter)assigneeFilter='';
+ const act=fltActive();
+ const cnt=$('fltCount');cnt.textContent=act.length||'';cnt.classList.toggle('hidden',!act.length);btn.classList.toggle('on',act.length>0);
+ btn.setAttribute('aria-expanded',fltOpen?'true':'false');
+ chips.classList.toggle('hidden',!act.length);
+ chips.innerHTML=act.map(([k,l])=>`<button class="flt-chip" data-k="${k}" title="Remove this filter" onclick="clearFilter('${k}')"><span>${esc(l)}</span><b aria-hidden="true">✕</b></button>`).join('')+(act.length>1?'<button class="flt-clear" onclick="clearAllFilters()">Clear all</button>':'');
+ panel.classList.toggle('hidden',!fltOpen);back.classList.toggle('hidden',!fltOpen);
+ if(!fltOpen)return;
+ // Redrawn after every change (a new channel changes the numbers listed); focus stays where it was.
+ const focusId=panel.contains(document.activeElement)?document.activeElement.id:'';
+ const sec=(id,label,body)=>`<div class="flt-sec" data-sec="${id}"><label for="flt-${id}">${label}</label>${body}</div>`;
+ const sel=(id,fn,opts)=>`<select id="flt-${id}" onchange="${fn}(this.value)">${opts}</select>`;
+ let h='';
+ h+=sec('channel','Channel',sel('channel','setChannel',fltOpt('whatsapp','WhatsApp',channel)+fltOpt('instagram','Instagram',channel)+(V2?fltOpt('all','All channels',channel):'')));
+ const ibs=fltInboxes();
+ if(ibs.length>1||inboxFilter)h+=sec('inbox','WhatsApp number',sel('inbox','setInbox',fltOpt('','All numbers',inboxFilter)+ibs.map(ib=>fltOpt(ib.id,`${ib.name}${ib.phone?' · '+ib.phone:''}${ib.n?' ('+ib.n+')':''}`,inboxFilter)).join('')));
+ const ags=fltAgents();
+ if(ags.length>1||assigneeFilter){const un=fltN(counts2?.by_assignee||{},'');h+=sec('assignee','Teammate',sel('assignee','setAssignee',fltOpt('','Everyone',assigneeFilter)+ags.map(a=>fltOpt(a.email,`${a.name}${a.email===meEmail?' (you)':''}${a.n?' ('+a.n+')':''}`,assigneeFilter)).join('')+fltOpt('__none',`Unassigned${un?' ('+un+')':''}`,assigneeFilter)))}
+ const {cats,none}=fltCats();
+ if(cats.length||catFilter)h+=sec('cat','Category',sel('cat','setCategory',fltOpt('','All categories',catFilter)+cats.map(c=>fltOpt(c.k,`${c.k} (${c.n})`,catFilter)).join('')+(none?fltOpt('__none',`No category (${none})`,catFilter):'')));
+ const srcs=fltSources();
+ if(srcs.length>1||srcFilter)h+=sec('src','Source',sel('src','setSource',fltOpt('','All sources',srcFilter)+srcs.map(x=>fltOpt(x.k,`${SRC_LABELS[x.k]} (${x.n})`,srcFilter)).join('')));
+ h+=sec('handler','Handled by',sel('handler','setHandler',fltOpt('','Anyone',handlerFilter)+fltOpt('bot','🤖 Bot',handlerFilter)+fltOpt('human','👤 Human',handlerFilter)));
+ if(V2){
+  const labels=[...new Set([...(boot2?.labels||[]),...labelFilter])];
+  h+=`<div class="flt-sec" data-sec="labels"><span class="flt-h">Labels</span><div class="flt-labels">${labels.map(x=>`<label><input type="checkbox" value="${esc(x)}"${labelFilter.includes(x)?' checked':''} onchange="fltSetLabel(this.value,this.checked)">${esc(x)}</label>`).join('')||'<span class="hint" style="font-size:13px;color:#667781">No labels yet</span>'}</div></div>`;
+  h+=sec('sort','Sort',sel('sort','setSort',fltOpt('newest','Newest first',sortMode)+fltOpt('oldest','Oldest first',sortMode)+fltOpt('waiting','Waiting longest',sortMode)));
+  h+=`<div class="flt-sec" data-sec="adv"><button class="flt-adv${customView&&!customView.id?' on':''}" id="filterBtn" onclick="openFilterBuilder(this)">⚙ Advanced filter${customView&&!customView.id?' · on':''}</button></div>`;
+ }
+ h+=`<div class="flt-foot"><button class="clr" onclick="clearAllFilters()"${act.length?'':' disabled'}>Clear all</button><button class="done" onclick="toggleFilterPanel(false)">Done</button></div>`;
+ panel.innerHTML=h;if(focusId)$(focusId)?.focus({preventScroll:true});
+ // PC: open just under the search row.
+ if(!matchMedia('(max-width:700px)').matches){const w=document.querySelector('.flt-wrap');if(w)panel.style.top=(w.offsetTop+w.offsetHeight+4)+'px'}else panel.style.top='';
+}
+// The old per-filter chip rows now all draw into the panel.
+function renderInboxRow(){renderFilterPanel()}
+function renderAgentRow(){renderFilterPanel()}
+function renderSourceRow(){renderFilterPanel()}
+function renderCategoryRow(){renderFilterPanel()}
 // 👥 Shared with: teammates who work a chat alongside its owner, with the same access (LEADS.SharedWith
 // / conversations.shared_with, ",a@x.com,b@x.com,"). A chat shared with me counts as mine.
 const sharedList=l=>String(l?.SharedWith||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
@@ -576,7 +643,7 @@ function renderFilters(base){
  const counts=V2&&counts2?counts2:{all:base.length,unread:base.filter(unread).length,needs:base.filter(l=>l.Handover==='Yes').length,mine:base.filter(isMine).length,unassigned:base.filter(l=>!String(l.Owner||'').trim()&&l.ConvResolved!=='Yes').length,resolved:base.filter(l=>l.ConvResolved==='Yes').length};
  if(staffLocked()&&filter!=='unassigned')items.splice(items.findIndex(x=>x[0]==='unassigned'),1);
  $('filters').innerHTML=items.map(([k,n])=>`<button class="pill ${filter===k&&!customView?'active':''}" onclick="setFilter('${k}')">${n}<span class="n">${counts[k]??''}</span></button>`).join('')+(V2?(boot2?.views||[]).map(v=>`<button class="pill view-pill ${customView?.id===v.id?'active':''}" title="Saved view${v.shared?' (shared)':''}" oncontextmenu="event.preventDefault();deleteView(${v.id})" onclick="applyView(${v.id})">${esc(v.name)}</button>`).join(''):'');
- const seg=$('segRow');if(seg)seg.innerHTML=`<button class="pill ${handlerFilter==='bot'?'active':''}" title="Chats the bot is handling" onclick="setHandler('bot')">🤖 Bot</button><button class="pill ${handlerFilter==='human'?'active':''}" title="Chats a person is handling" onclick="setHandler('human')">👤 Human</button>${V2?`<button class="pill ${customView&&!customView.id?'active':''}" id="filterBtn" title="Advanced filter" onclick="openFilterBuilder(this)">⚙ Filter</button>`:''}${V2?`<button class="pill ${labelFilter.length?'active':''}" id="labelFilterBtn" onclick="openLabelFilter(this)">🏷 ${labelFilter.length?esc(labelFilter.slice(0,2).join(', '))+(labelFilter.length>2?' +'+(labelFilter.length-2):''):'Labels'}</button>`:''}${V2?`<select id="sortSel" title="Sort" onchange="setSort(this.value)"><option value="newest"${sortMode==='newest'?' selected':''}>Newest</option><option value="oldest"${sortMode==='oldest'?' selected':''}>Oldest</option><option value="waiting"${sortMode==='waiting'?' selected':''}>Waiting longest</option></select>`:''}`;
+ renderFilterPanel();
 }
 
 // ── Message content helpers ──────────────────────────────────────────────────────────────────
