@@ -245,29 +245,107 @@ export function ltFlightDetailsText(s,{formatMoney,showFare=true}={}){
 }
 
 // manual: online booking is off — the team, not a booking page, takes it from here.
-export function ltBookingFormText(passenger={},{adults=1,manual=false}={}){
-  const missing=ltBookingFormMissing(passenger);
-  if(missing.length===2||!missing.length){
-    const others=adults>1?`\n\nDetails for the other ${adults-1} passenger${adults===2?'':'s'} ${manual?'will be collected by our team':'are entered on the booking page'}.`:'';
-    return `📝 *Booking ${manual?'request':'form'}*\n\nPlease reply with the lead passenger's details:\n\n*Full name* (as on passport)\n*Email address*\n\nExample:\nHussain Aparambil\nname@email.com${others}${manual?'\n\nOur team will confirm the booking and send payment details here.':''}`;
+// passport (Travel Settings → 🛂 Passenger details, optional, off by default): the form also asks
+// for date of birth, passport number and passport expiry date.
+export function ltBookingFormText(passenger={},{adults=1,manual=false,passport=false}={}){
+  const missing=ltBookingFormMissing(passenger,{passport});
+  const total=passport?5:2;
+  const others=adults>1?`\n\nDetails for the other ${adults-1} passenger${adults===2?'':'s'} ${manual?'will be collected by our team':'are entered on the booking page'}.`:'';
+  const footer=manual?'\n\nOur team will confirm the booking and send payment details here.':'';
+  if(passport&&(missing.length===total||!missing.length)){
+    return `📝 *Passenger details*\n\nPlease reply with the lead passenger's details, one per line:\n\n👤 *Full Name:* (as on passport)\n🎂 *Date of Birth:* DD/MM/YYYY\n🛂 *Passport Number:*\n📅 *Passport Expiry Date:* DD/MM/YYYY\n📧 *Email:*\n\nExample:\nFull Name: Hussain Aparambil\nDate of Birth: 15/04/1990\nPassport Number: N1234567\nPassport Expiry Date: 20/08/2031\nEmail: name@email.com\n\nYou can also send them one at a time.${others}${footer}`;
   }
-  return missing[0]==='name'
-    ? `Thanks! Now please send the lead passenger's *full name* exactly as on the passport.`
-    : `Thanks${passenger.name?`, ${passenger.name.split(' ')[0]}`:''}! Now please send your *email address* for the e-ticket.`;
+  if(!passport&&(missing.length===2||!missing.length)){
+    return `📝 *Booking ${manual?'request':'form'}*\n\nPlease reply with the lead passenger's details:\n\n*Full name* (as on passport)\n*Email address*\n\nExample:\nHussain Aparambil\nname@email.com${others}${footer}`;
+  }
+  const first=passenger.name?`, ${passenger.name.split(' ')[0]}`:'';
+  const done=passport?`✅ ${total-missing.length} of ${total} received.\n\n`:'';
+  switch(missing[0]){
+    case 'name':return `${done}Thanks! Now please send the lead passenger's *full name* exactly as on the passport.`;
+    case 'dob':return `${done}Thanks${first}! Now please send the passenger's 🎂 *date of birth* — e.g. *15/04/1990*.`;
+    case 'passport_number':return `${done}Thanks${first}! Now please send the 🛂 *passport number* — e.g. *N1234567*.`;
+    case 'passport_expiry':return `${done}Thanks${first}! Now please send the 📅 *passport expiry date* — e.g. *20/08/2031*.`;
+    default:return `${done}Thanks${first}! Now please send your 📧 *email address* for the e-ticket.`;
+  }
 }
-export function ltBookingFormMissing(p={}){
-  return [!p.name&&'name',!p.email&&'email'].filter(Boolean);
+export function ltBookingFormMissing(p={},{passport=false}={}){
+  return passport
+    ?[!p.name&&'name',!p.dob&&'dob',!p.passport_number&&'passport_number',!p.passport_expiry&&'passport_expiry',!p.email&&'email'].filter(Boolean)
+    :[!p.name&&'name',!p.email&&'email'].filter(Boolean);
 }
 const NOT_A_NAME=/^(?:ok(?:ay)?|k|thanks?|thank\s*you|thx|ty|yes|yeah|yep|no|nope|hi|hello|hey|sure|fine|done|good|great|nice|wait|later|cancel|stop|please|pls|menu|help)[\s!.]*$/i;
+const PAX_MONTHS={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+// "15/04/1990", "15-04-1990", "15.04.1990", "1990-04-15", "15 Apr 1990", "April 15, 1990" → ISO.
+// Day comes first in numeric dates (DD/MM/YYYY). '' when the text holds no full, valid date.
+export function ltParsePassengerDate(text){
+  const t=String(text||'');
+  const valid=(y,m,d)=>{const dt=new Date(Date.UTC(y,m-1,d));return y>=1900&&y<=2100&&dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d?dt.toISOString().slice(0,10):'';};
+  let m=t.match(/\b((?:19|20)\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})\b/);
+  if(m)return valid(+m[1],+m[2],+m[3]);
+  m=t.match(/\b(\d{1,2})[-\/.](\d{1,2})[-\/.]((?:19|20)\d{2})\b/);
+  if(m)return valid(+m[3],+m[2],+m[1]);
+  m=t.match(/\b(\d{1,2})(?:st|nd|rd|th)?[\s-]+([A-Za-z]{3,9})[\s,-]+((?:19|20)\d{2})\b/);
+  if(m&&PAX_MONTHS[m[2].slice(0,3).toLowerCase()])return valid(+m[3],PAX_MONTHS[m[2].slice(0,3).toLowerCase()],+m[1]);
+  m=t.match(/\b([A-Za-z]{3,9})[\s-]+(\d{1,2})(?:st|nd|rd|th)?[\s,-]+((?:19|20)\d{2})\b/);
+  if(m&&PAX_MONTHS[m[1].slice(0,3).toLowerCase()])return valid(+m[3],PAX_MONTHS[m[1].slice(0,3).toLowerCase()],+m[2]);
+  return '';
+}
+const PAX_DATE_RE=/\b(?:19|20)\d{2}[-\/.]\d{1,2}[-\/.]\d{1,2}\b|\b\d{1,2}[-\/.]\d{1,2}[-\/.](?:19|20)\d{2}\b|\b\d{1,2}(?:st|nd|rd|th)?[\s-]+[A-Za-z]{3,9}[\s,-]+(?:19|20)\d{2}\b|\b[A-Za-z]{3,9}[\s-]+\d{1,2}(?:st|nd|rd|th)?[\s,-]+(?:19|20)\d{2}\b/g;
+const PAX_DOB_LABEL=/\b(?:d\.?o\.?b|date\s*of\s*birth|birth\s*date|birthday|born)\b/i;
+const PAX_EXPIRY_LABEL=/\b(?:expiry|expiration|expires?|exp|valid\s*(?:till|until|upto|up\s*to)|doe)\b/i;
+const PAX_PASSPORT_LABEL=/\b(?:passport|pp)\s*(?:no\.?|num(?:ber)?|#)?\s*[:\-]?\s*/i;
+// Passport numbers: 6–9 letters/digits with at least one digit and at least one letter or 7+
+// digits, e.g. N1234567, P12345678, 123456789. Never a date or a phone-length number.
+const ltPassportToken=v=>{const t=String(v||'').toUpperCase().replace(/[\s-]/g,'');return /^(?=.*\d)[A-Z0-9]{6,9}$/.test(t)&&(/[A-Z]/.test(t)||t.length>=7)?t:'';};
+// The passport fields of one reply. Labelled lines win; otherwise a past date is the date of birth
+// and a future one the passport expiry. A lone expired date is reported so the bot can say so.
+function ltParsePassportFields(raw,prev={},today=new Date()){
+  const now=today.toISOString().slice(0,10),out={};
+  let expired='';
+  for(const line of String(raw||'').split(/\n|;/)){
+    const date=ltParsePassengerDate(line);
+    if(date&&PAX_DOB_LABEL.test(line))out.dob=date;
+    else if(date&&PAX_EXPIRY_LABEL.test(line)){if(date>now)out.passport_expiry=date;else expired=date;}
+    const labelled=line.match(/\b(?:passport|pp)\s*(?:no\.?|num(?:ber)?|#)?\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9 \-]{4,12})\s*$/i);
+    if(labelled&&!PAX_EXPIRY_LABEL.test(line)&&ltPassportToken(labelled[1]))out.passport_number=ltPassportToken(labelled[1]);
+  }
+  for(const m of String(raw||'').replace(/[^\n;]*(?:\b(?:d\.?o\.?b|date\s*of\s*birth|birth\s*date|birthday|born|expiry|expiration|expires?|exp|doe)\b)[^\n;]*/gi,' ').matchAll(PAX_DATE_RE)){
+    const date=ltParsePassengerDate(m[0]);if(!date)continue;
+    if(date<=now){
+      if(!out.dob&&!prev.dob)out.dob=date;
+      else if(!out.passport_expiry&&!prev.passport_expiry)expired=date;
+    }else if(!out.passport_expiry)out.passport_expiry=date;
+  }
+  if(!out.passport_number){
+    const stripped=String(raw||'').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,' ').replace(PAX_DATE_RE,' ');
+    const whole=ltPassportToken(stripped.replace(PAX_PASSPORT_LABEL,' ').trim());
+    const tokens=stripped.replace(PAX_PASSPORT_LABEL,' ').split(/[\s,;:]+/).map(ltPassportToken).filter(Boolean);
+    if(whole)out.passport_number=whole;
+    else if(tokens.length===1)out.passport_number=tokens[0];
+  }
+  if(expired&&!out.passport_expiry)out.expired_passport=expired;
+  return out;
+}
 // Free text with a name and/or an email, in any order or with "Name:" / "Email:" labels.
-export function ltParseBookingForm(text,prev={}){
+// passport: also date of birth, passport number and passport expiry date (labelled or not).
+export function ltParseBookingForm(text,prev={},{passport=false,today=new Date()}={}){
   const raw=String(text||'');
   const email=raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||'';
   const rest=raw.replace(email,' ').split(/\n|,|;/).map(line=>line.replace(/^\s*(?:full\s*name|name|passenger(?:\s*name)?|email(?:\s*address)?|e-?mail)\s*[:\-]\s*/i,'').trim())
-    .filter(line=>line&&!/\d{3,}/.test(line)&&/^[\p{L}][\p{L}\s.'-]{1,79}$/u.test(line)&&!NOT_A_NAME.test(line));
+    .filter(line=>line&&!/\d{3,}/.test(line)&&/^[\p{L}][\p{L}\s.'-]{1,79}$/u.test(line)&&!NOT_A_NAME.test(line)&&!(passport&&(PAX_DOB_LABEL.test(line)||PAX_EXPIRY_LABEL.test(line)||/\bpassport\b/i.test(line))));
   const nameLine=rest.find(line=>line.split(/\s+/).length>=2)||(prev.name?'':rest.find(line=>line.length>=3&&!ltCheckoutCommand(line)))||'';
   const name=nameLine.replace(/\s+/g,' ').replace(/\b\p{Ll}/gu,c=>c.toUpperCase()).slice(0,80);
-  return {name:name||prev.name||'',email:(email||prev.email||'').toLowerCase().slice(0,200)};
+  const base={name:name||prev.name||'',email:(email||prev.email||'').toLowerCase().slice(0,200)};
+  if(!passport)return base;
+  const pp=ltParsePassportFields(raw,prev,today);
+  const out={...base,dob:pp.dob||prev.dob||'',passport_number:pp.passport_number||prev.passport_number||'',passport_expiry:pp.passport_expiry||prev.passport_expiry||''};
+  if(pp.expired_passport)out.expired_passport=pp.expired_passport;
+  return out;
+}
+// The passport lines of a booking request, for the team's note and the saved quote.
+export function ltPassengerPassportLine(p={}){
+  const d=v=>{const m=String(v||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`${m[3]}/${m[2]}/${m[1]}`:'—';};
+  return p.dob||p.passport_number||p.passport_expiry?`🎂 DOB ${d(p.dob)} · 🛂 Passport ${p.passport_number||'—'} · 📅 Expires ${d(p.passport_expiry)}`:'';
 }
 
 // The booking-site link for the chosen fare. Contact details ride along so the site can prefill
