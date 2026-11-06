@@ -64,6 +64,13 @@ a{color:inherit}
 
 <script src="/lv-pixel.js?v=1"></script>
 <script>
+function addBrandLogo(id,url,h){ /* official logo from Settings → 📇 People & Contacts */
+  if(!url||!/^https:\/\//i.test(url)) return; const el=document.getElementById(id); if(!el||el.querySelector('img.brand-logo')) return;
+  const im=document.createElement('img'); im.className='brand-logo'; im.src=url; im.alt='';
+  im.style.cssText='height:'+h+'px;width:auto;max-width:'+(h*4)+'px;object-fit:contain;vertical-align:middle;margin-right:8px;border-radius:4px';
+  im.onerror=()=>im.remove(); el.prepend(im);
+}
+
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
 const clientId = params.get('client') || params.get('client_id') || '';
@@ -141,6 +148,7 @@ async function load(){
 
     document.title = storeInfo.client_name || 'Store';
     document.getElementById('storeName').textContent = storeInfo.client_name || 'Store';
+    addBrandLogo('storeName', storeInfo.logo_url, 30);
     const chatBtn = document.getElementById('chatBtn');
     const chat = waLink(storeInfo.whatsapp_phone, `Hi! I'm browsing your products.`);
     if(chat){ chatBtn.href = chat; chatBtn.style.display = 'inline-flex'; }
@@ -166,6 +174,7 @@ document.getElementById('grid').addEventListener('click', e => {
 });
 load();
 </script>
-<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
+<script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>

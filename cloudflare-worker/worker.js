@@ -17,7 +17,7 @@ import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyin
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
-import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection} from './business-contacts.js';
+import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -10466,6 +10466,7 @@ async function handleBusinessContactsSave(request,env){
   const prev=await bcLoad(env,a.cid);
   data.identity.logo_url=prev?.identity?.logo_url||'';
   data.identity.logo_wide_url=prev?.identity?.logo_wide_url||'';
+  data.identity.logo_print_url=prev?.identity?.logo_print_url||'';
   const now=new Date().toISOString();
   await env.DB.prepare(`INSERT INTO business_contacts (client_id,data_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET data_json=excluded.data_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
     .bind(a.cid,JSON.stringify(data),a.me,now).run();
@@ -10474,7 +10475,8 @@ async function handleBusinessContactsSave(request,env){
 }
 const BC_LOGO_TYPES={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}; // no SVG: it can carry script
 const BC_LOGO_MAX_BYTES=2*1024*1024;
-const BC_LOGO_VARIANTS={square:'logo_url',wide:'logo_wide_url'};
+// print: a JPEG copy of the square logo the settings page makes, for PDFs written on the server.
+const BC_LOGO_VARIANTS={square:'logo_url',wide:'logo_wide_url',print:'logo_print_url'};
 // POST /settings/contacts/logo — multipart {file, variant: square|wide}; {variant, remove:true} as
 // JSON removes it. A new file gets a new key, so every cached copy updates at once.
 async function handleBusinessContactsLogo(request,env){
@@ -10486,7 +10488,7 @@ async function handleBusinessContactsLogo(request,env){
   if(isJson){ const b=await request.json().catch(()=>({})); variant=b.variant; remove=b.remove===true; }
   else{ const form=await request.formData().catch(()=>null); if(!form) return json({error:'multipart form data required'},400); variant=form.get('variant'); file=form.get('file'); }
   const field=BC_LOGO_VARIANTS[String(variant||'square')];
-  if(!field) return json({error:'variant must be square or wide'},400);
+  if(!field) return json({error:'variant must be square, wide or print'},400);
   const data=(await bcLoad(env,a.cid))||bcEmpty();
   const oldUrl=data.identity[field]||'';
   const oldKey=oldUrl.includes('/brand/logo/')?oldUrl.split('/brand/logo/')[1]:'';
@@ -10497,6 +10499,7 @@ async function handleBusinessContactsLogo(request,env){
     const mime=String(file.type||'').split(';')[0].toLowerCase();
     const ext=BC_LOGO_TYPES[mime];
     if(!ext) return json({error:'Logo must be a PNG, JPG or WebP image.'},400);
+    if(variant==='print'&&ext!=='jpg') return json({error:'The print copy must be a JPEG.'},400);
     if(file.size>BC_LOGO_MAX_BYTES) return json({error:'Logo is too large — max 2 MB.'},400);
     const key=`brandlogo/${a.cid}/${variant}-${Date.now().toString(36)}.${ext}`;
     await env.ECOM_CATEGORY_MEDIA.put(key,await file.arrayBuffer(),{httpMetadata:{contentType:mime}});
@@ -14159,7 +14162,7 @@ async function ecomBuildElectronicsOrderPdf(c, details){
 
   // Fetch and attempt to embed JPEG logo
   let logoJpeg=null, imgPixW=0, imgPixH=0, logoDisplayW=0, logoDisplayH=0;
-  const logoUrl=(c?.quote_logo_url||'').trim();
+  const logoUrl=bcLogoForPdf(await bcForClient(env, c), c);
   if(logoUrl && (logoUrl.startsWith('http')||logoUrl.startsWith('https'))){
     try{
       const ctrl=new AbortController();
@@ -21326,7 +21329,7 @@ async function taDeliverWithButtons(env,c,clientId,convId,text,buttons,prompt){
 async function taSendItineraryPdf(env,c,clientId,convId,pkg,itin){
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!convId)return false;
   try{
-    const assets=await taFetchItineraryAssets(pkg,itin,{logoUrl:String(itin?.logo_url||c.quote_logo_url||'').trim()});
+    const assets=await taFetchItineraryAssets(pkg,itin,{logoUrl:String(itin?.logo_url||bcLogoForPdf(await bcForClient(env,c),c)||'').trim()});
     const bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',accent:c.quote_accent_color||'',assets});
     const fd=new FormData();
     fd.append('content',`📄 Here is the itinerary for *${pkg.name}*.`);
@@ -23523,6 +23526,22 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
   // Never knowingly send an invented phone number or email: drop the line that carries it.
   if(contactSource!=null && bcFindInventedContact(out, contactSource)) out=bcStripInvented(out, contactSource)||await engineLocalizeReply(env, c, 'Our team will share the right contact with you shortly.', c.language||'en');
   return out;
+}
+// People & Contacts: after a hand-over, a second fixed message with the contact for the department
+// the customer's message is about (else the default). Only the short lead-in is translated; the
+// contact lines are copied from settings as saved. Sent as text (numbers read badly as voice) and
+// kept out of ConvHistory, so the hand-over loop checks still see the hand-over text unchanged.
+async function engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx){
+  try{
+    const card=bcContactCard(await bcForClient(env, c), userText);
+    if(!card) return false;
+    let lead='You can also reach the right person directly:';
+    if(replyLang && replyLang!=='en'){
+      const t=await engineLocalizeReply(env, c, lead, replyLang).catch(()=>null);
+      if(t && !/\d/.test(t) && t.length<200) lead=t;
+    }
+    return await engineDeliverReply(env, c, clientId, convId, `${lead}\n\n${card}`, {mediaType:'text', langCode:replyLang, ctx});
+  }catch(e){ await reportOpsError(env, 'engineSendHandoverContact', e, {clientId}).catch(()=>{}); return false; }
 }
 // The bot prompt with the People & Contacts section after it ('' section when nothing is saved).
 function engineWithContacts(systemPrompt, contacts){
@@ -28972,6 +28991,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
+      await engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx);
     } else if(routing.route==='selfserve'){
       // Reached the end of the funnel with a positive reply and a self-serve link is configured —
       // send the order/booking link itself, a plain scripted send like qualify_next (not an LLM
@@ -29651,7 +29671,7 @@ async function handleEcomPublicClient(request, env){
   const url=new URL(request.url);
   const c=await ecomPublicResolveClient(env, url);
   if(!c) return json({error:'Store not found'},404);
-  return json({...ecomPublicClientOut(c), ...await marPublicPixel(env, c)});
+  return json({...ecomPublicClientOut(c), logo_url:bcLogoForPages(await bcForClient(env, c), c)||null, ...await marPublicPixel(env, c)});
 }
 
 async function handleEcomPublicProducts(request, env){
@@ -29798,7 +29818,7 @@ async function handleApptPublicClient(request, env){
   if(!c) return json({error:'Booking page not found'}, 404);
   // Healthcare clients use D1; non-healthcare clients require appt_enabled
   if(!apptPublicIsEnabled(c)) return json({error:'Booking page not found'}, 404);
-  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No', ...await marPublicPixel(env, c)});
+  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No', logo_url:bcLogoForPages(await bcForClient(env, c), c)||null, ...await marPublicPixel(env, c)});
 }
 
 async function handleApptPublicServices(request, env){
@@ -40330,6 +40350,7 @@ async function handlePublicChatConfig(request, env){
     client_name: c.client_name||'',
     greeting:    c.chat_greeting||'Hi! How can I help you today? 👋',
     brand_color: c.brand_color||'#0D9C93',
+    logo_url:    bcLogoForPages(await bcForClient(env, c), c)||null,
   });
 }
 

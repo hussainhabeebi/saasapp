@@ -1944,10 +1944,11 @@ const ROLES = {
 
           <div style="margin-top:14px">
             <label class="form-label">Logo (shown on the PDF)</label>
+            <div class="s-note" style="margin:0 0 6px">This is your one official logo, also kept in <a href="#" onclick="navigate('peoplecontacts');return false">Settings → 📇 People &amp; Contacts</a> — changing it here changes it everywhere.</div>
             <div class="kb-drop" id="quoteLogoDropZone" onclick="$id('quoteLogoInput').click()" ondragover="quoteLogoDragOver(event)" ondragleave="quoteLogoDragLeave(event)" ondrop="quoteLogoDropFile(event)">
               <div id="quoteLogoDropInner">
                 <div class="kb-drop-icon">🖼️</div>
-                <div class="kb-drop-label"><b>Click to upload</b> or drag &amp; drop<br>PNG or JPG — max 500 KB</div>
+                <div class="kb-drop-label"><b>Click to upload</b> or drag &amp; drop<br>PNG, JPG or WebP — max 2 MB</div>
               </div>
             </div>
             <input type="file" id="quoteLogoInput" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="quoteHandleLogoFile(this.files[0])">
@@ -14069,6 +14070,13 @@ async function quoteHandleLogoFile(file){
   if(!file) return;
   const allowed=['image/png','image/jpeg','image/webp'];
   if(!allowed.includes(file.type)){status.textContent='Unsupported file type. Use PNG, JPG, or WEBP.';return;}
+  // The official logo lives in Settings → 📇 People & Contacts (people-contacts.js): one upload
+  // there sets this PDF logo, the page/email logo and the server-side PDF copy together.
+  if(typeof pcSetOfficialLogo==='function'){
+    status.textContent='Uploading…';
+    try{ await pcSetOfficialLogo(file); status.textContent=''; }catch(e){ status.textContent='Error: '+e.message; }
+    return;
+  }
   if(file.size>500*1024){status.textContent='Logo must be under 500 KB.';return;}
   status.textContent='Uploading…';
   try{
@@ -14096,7 +14104,8 @@ function quoteRenderLogoPreview(dataUrl){
 }
 
 async function quoteRemoveLogo(){
-  if(!confirm('Remove the logo?')) return;
+  if(!confirm('Remove the logo? It is removed from documents, emails, pages and the top bar too.')) return;
+  if(typeof pcClearOfficialLogo==='function'){ try{ await pcClearOfficialLogo(); }catch(e){} }
   await patchClient({quote_logo_url:''});
   quoteRenderLogoPreview('');
   applyHeaderLogo();
@@ -24342,7 +24351,7 @@ async function deleteHospBooking(id){
 <script src="commerce-view.js?v=3"></script>
 <script src="staff-performance.js?v=1"></script>
 <script src="ads-report.js?v=4"></script>
-<script src="people-contacts.js?v=1"></script>
+<script src="people-contacts.js?v=2"></script>
 <script>
 
 /* ── PWA install prompt ──

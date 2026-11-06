@@ -76,3 +76,32 @@ test('normalize: validation, one default, hidden rows never default, bad links d
   assert.equal(bcParse('not json'), null);
   assert.equal(bcParse(JSON.stringify(data)).identity.official_name, 'Tripcode Travels LLC');
 });
+
+import { bcPickDepartment, bcContactCard, bcLogoForPages, bcLogoForPdf } from './business-contacts.js';
+
+test('hand-over: the department the message is about, else the default; hidden ones never', () => {
+  assert.equal(bcPickDepartment(data, 'What is my visa status?').name, 'Visa');
+  assert.equal(bcPickDepartment(data, 'I want to book the Bali package').name, 'Sales');
+  assert.equal(bcPickDepartment(data, 'എനിക്ക് സഹായം വേണം').name, 'Sales');   // no match → default
+  assert.equal(bcPickDepartment(data, 'accounts refund').name, 'Sales');      // Accounts is hidden
+});
+
+test('hand-over card: copied exactly from settings, off when switched off', () => {
+  const card=bcContactCard(data, 'visa status please');
+  assert.equal(card, '👤 Visa — Anu\n📞 +971 50 111 2222 (call / WhatsApp)');
+  assert.equal(bcFindInventedContact(card, source), null);
+  assert.equal(bcContactCard({...data, handover_contact:false}, 'visa'), '');
+  assert.equal(bcContactCard(null, 'visa'), '');
+  const noDepts=bcNormalize({identity:{official_name:'Tripcode', phone:'+971 52 931 9100', email:'hi@tripcode.ae'}, departments:[]}).data;
+  assert.equal(bcContactCard(noDepts, 'hi'), '🏢 Tripcode\n📞 +971 52 931 9100\n✉️ hi@tripcode.ae');
+});
+
+test('logo: uploaded logo first, http Quotation logo as fallback, data URIs kept off pages', () => {
+  const withLogo={identity:{logo_url:'https://w/brand/logo/a.png', logo_print_url:'https://w/brand/logo/p.jpg'}};
+  assert.equal(bcLogoForPages(withLogo, {quote_logo_url:'https://old/logo.png'}), 'https://w/brand/logo/a.png');
+  assert.equal(bcLogoForPages(null, {quote_logo_url:'https://old/logo.png'}), 'https://old/logo.png');
+  assert.equal(bcLogoForPages(null, {quote_logo_url:'data:image/png;base64,AAAA'}), '');
+  assert.equal(bcLogoForPdf(withLogo, {quote_logo_url:'https://old/logo.png'}), 'https://w/brand/logo/p.jpg');
+  assert.equal(bcLogoForPdf(null, {quote_logo_url:'https://old/logo.png'}), 'https://old/logo.png');
+  assert.equal(bcNormalize({identity:{logo_print_url:'https://w/p.jpg'}}).data.identity.logo_print_url, 'https://w/p.jpg');
+});

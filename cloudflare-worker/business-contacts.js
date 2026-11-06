@@ -16,7 +16,7 @@ export const BC_DEFAULT_DEPARTMENTS=[
   {name:'Sales',handles:'packages, bookings, prices, new enquiries'},
   {name:'Tech support',handles:'payment links, website or app problems'},
 ];
-const IDENTITY_FIELDS={official_name:120,short_name:60,address:300,map_url:500,hours:120,phone:40,whatsapp:40,email:120,website:300,logo_url:600,logo_wide_url:600};
+const IDENTITY_FIELDS={official_name:120,short_name:60,address:300,map_url:500,hours:120,phone:40,whatsapp:40,email:120,website:300,logo_url:600,logo_wide_url:600,logo_print_url:600};
 const DEPT_FIELDS={name:60,person:80,phone:40,email:120,hours:120,handles:200,teammate:120};
 export const BC_EMAIL_RE=/^[^\s@,<>]+@[^\s@,<>]+\.[a-z]{2,}$/i;
 
@@ -33,7 +33,7 @@ const deptId=()=>'d'+Math.random().toString(36).slice(2,9);
 export function bcEmpty(){
   return {identity:Object.fromEntries(Object.keys(IDENTITY_FIELDS).map(k=>[k,''])),
     departments:BC_DEFAULT_DEPARTMENTS.map((d,i)=>({id:'d'+(i+1),name:d.name,person:'',phone:'',whatsapp:true,email:'',hours:'',handles:d.handles,public:true,is_default:i===0,teammate:''})),
-    guard:true};
+    guard:true,handover_contact:true};
 }
 
 // Cleans what the settings page sent. Returns {data, errors}; errors are messages for the page.
@@ -46,7 +46,7 @@ export function bcNormalize(input){
   identity.phone=bcTidyPhone(identity.phone);
   identity.whatsapp=bcTidyPhone(identity.whatsapp);
   identity.email=identity.email.toLowerCase();
-  for(const k of ['map_url','website','logo_url','logo_wide_url']) identity[k]=safeUrl(identity[k]);
+  for(const k of ['map_url','website','logo_url','logo_wide_url','logo_print_url']) identity[k]=safeUrl(identity[k]);
   if(id.website&&!identity.website) errors.push('Website must start with https://');
   if(id.map_url&&!identity.map_url) errors.push('Map link must start with https://');
   if(identity.phone&&!bcValidPhone(identity.phone)) errors.push('Main phone number looks incomplete.');
@@ -79,7 +79,7 @@ export function bcNormalize(input){
   const pub=departments.filter(d=>d.public);
   let def=pub.find(d=>d.is_default)||pub[0]||null;
   departments.forEach(d=>{ d.is_default=d===def; });
-  return {data:{identity,departments,guard:src.guard!==false},errors};
+  return {data:{identity,departments,guard:src.guard!==false,handover_contact:src.handover_contact!==false},errors};
 }
 
 // Stored JSON → data, never throwing (an unreadable row reads as "nothing set yet").
@@ -201,4 +201,51 @@ export function bcCorrection(bad,data){
   }
   return `\n\nIMPORTANT: your draft reply included a phone number or email address that was never given to you: "${bad}". Never invent, guess or complete a phone number or email. `
     +(allowed.length?`The ONLY real ones you may share: ${allowed.join('; ')}. Give just the one that fits.`:'You have no contact number or email to share right now — say the team will reach out instead.');
+}
+
+// ── Hand-over contact (step 3) ──────────────────────────────────────────────────────────────
+// The department whose name or "handles" words appear in the customer's message (most matches
+// wins), else the default. Only departments customers may be given, and only ones with a way to
+// reach them. null when there is none.
+const STOP=new Set(['and','the','for','with','from','your','our','about','status','other','team','help','support','issue','issues','problem','problems','new']);
+const words=s=>String(s||'').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=3&&!STOP.has(w));
+export function bcPickDepartment(data,text){
+  const deps=(data?.departments||[]).filter(d=>d.public&&(d.phone||d.email));
+  if(!deps.length) return null;
+  const msg=` ${String(text||'').toLowerCase()} `;
+  let best=null,score=0;
+  for(const d of deps){
+    let n=0;
+    for(const w of new Set([...words(d.name),...words(d.handles)])) if(msg.includes(w)) n+=w.length>=5?2:1;
+    if(n>score){score=n;best=d;}
+  }
+  return best||deps.find(d=>d.is_default)||deps[0];
+}
+// The contact lines of the fixed hand-over message, copied from the saved data (never written by
+// the AI, so a number in it can't be invented). Main phone/email when no department fits.
+export function bcContactCard(data,text){
+  if(!data||data.handover_contact===false) return '';
+  const d=bcPickDepartment(data,text);
+  if(d){
+    const head=[d.name,d.person].filter(Boolean).join(' — ');
+    return [head?`👤 ${head}`:'',d.phone?`📞 ${d.phone}${d.whatsapp?' (call / WhatsApp)':''}`:'',d.email?`✉️ ${d.email}`:'',d.hours?`🕘 ${d.hours}`:''].filter(Boolean).join('\n');
+  }
+  const id=data.identity||{};
+  if(!id.phone&&!id.whatsapp&&!id.email) return '';
+  return [id.official_name?`🏢 ${id.official_name}`:'',id.phone?`📞 ${id.phone}`:'',id.whatsapp&&bcPhoneKey(id.whatsapp)!==bcPhoneKey(id.phone)?`💬 WhatsApp ${id.whatsapp}`:'',id.email?`✉️ ${id.email}`:'',id.hours?`🕘 ${id.hours}`:''].filter(Boolean).join('\n');
+}
+
+// ── Official logo (step 3) ──────────────────────────────────────────────────────────────────
+// For pages and <img>: the uploaded square logo, else an http(s) logo set the old way in
+// Quotation settings. Data URIs are left out (they can be 500 KB inside a JSON response).
+export function bcLogoForPages(data,c){
+  const u=data?.identity?.logo_url||'';
+  if(u) return u;
+  const q=String(c?.quote_logo_url||'').trim();
+  return /^https:\/\//i.test(q)?q:'';
+}
+// For server-made PDFs (order receipt, itinerary): the JPEG copy made at upload, which every PDF
+// writer here can embed, else the Quotation logo.
+export function bcLogoForPdf(data,c){
+  return data?.identity?.logo_print_url||String(c?.quote_logo_url||'').trim();
 }

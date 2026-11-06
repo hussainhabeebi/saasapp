@@ -28,6 +28,7 @@
     const d=S.data;
     for(const [k] of ID_FIELDS){ const el=$('pcId_'+k); if(el) d.identity[k]=el.value.trim(); }
     d.guard=$('pcGuard')?.checked!==false;
+    d.handover_contact=$('pcHandover')?.checked!==false;
     document.querySelectorAll('#pcDeptRows [data-dept]').forEach(row=>{
       const dep=d.departments.find(x=>x.id===row.dataset.dept); if(!dep) return;
       row.querySelectorAll('[data-f]').forEach(el=>{ dep[el.dataset.f]=el.type==='checkbox'?el.checked:el.value.trim(); });
@@ -38,7 +39,8 @@
   }
 
   function logoCard(variant,label,hint){
-    const url=S.data.identity[variant==='wide'?'logo_wide_url':'logo_url'];
+    // Square: the uploaded logo, else the one set earlier in Quotation settings (same logo, older place).
+    const url=S.data.identity[variant==='wide'?'logo_wide_url':'logo_url']||(variant==='square'?quoteLogo():'');
     const dis=S.canManage&&S.logoUpload?'':' disabled';
     return `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;min-width:240px;flex:1">
       <div style="width:${variant==='wide'?132:72}px;height:72px;border:1px dashed var(--line,#ddd);border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--bg-soft,#fafafa)">
@@ -109,6 +111,7 @@
           ${logoCard('wide','Logo (wide, optional)','For document headers and emails')}
         </div>
         ${S.logoUpload?'':'<div class="s-note">Logo storage is not set up on this server yet.</div>'}
+        <div class="s-note" style="margin-top:0">The square logo is the one official logo: quotations, invoices, receipts and itinerary PDFs, emails, your store / order / booking / chat pages and the top bar all use it.${!d.identity.logo_url&&quoteLogo()?' Showing the logo from Quotation settings — upload here to make it official everywhere.':''}</div>
         <span class="save-msg" id="pcLogoMsg"></span>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
           ${ID_FIELDS.map(([k,l,ph,t])=>`<div${t==='textarea'?' style="grid-column:1/-1"':''}><label class="form-label">${h(l)}</label>${t==='textarea'
@@ -126,9 +129,11 @@
       </div></div>
 
       <div class="card" style="margin-bottom:14px"><div class="settings-section" style="margin-bottom:0">
-        <div class="s-head">🛡️ Block invented contacts</div>
+        <div class="s-head">🛡️ Contact safety</div>
         <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px"><input type="checkbox" id="pcGuard"${d.guard!==false?' checked':''}${dis}>
           <span>Check every bot reply: a phone number or email that isn't here, in the prompt or knowledge base, or from the customer is rewritten, then removed. Recommended.</span></label>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-top:8px"><input type="checkbox" id="pcHandover"${d.handover_contact!==false?' checked':''}${dis}>
+          <span>When the bot hands a chat to the team, also send the matching department's contact (or the default) as a fixed message — copied from here, never written by the AI.</span></label>
       </div></div>
 
       <div class="card" style="margin-bottom:14px"><div class="settings-section" style="margin-bottom:0">
@@ -163,19 +168,74 @@
     }catch(e){ msg('pcSaveMsg',e.message,false); }
     finally{ const b=$('pcSaveBtn'); if(b) b.disabled=false; }
   };
+  // ── Official logo ──
+  // One upload makes three copies: the square PNG/WebP for pages and emails (R2), a white-backed
+  // JPEG for PDFs written on the server (variant print), and a small data URI on the client record
+  // (quote_logo_url), which the quotation / invoice PDFs, Campaign emails and the top bar already
+  // read — so every place that showed a logo before now shows this one.
+  function quoteLogo(){ try{ return (typeof clientRecord!=='undefined'&&clientRecord?.quote_logo_url)||''; }catch(e){ return ''; } }
+  const loadImg=file=>new Promise((res,rej)=>{ const u=URL.createObjectURL(file), im=new Image(); im.onload=()=>{ URL.revokeObjectURL(u); res(im); }; im.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('That file is not an image we can read.')); }; im.src=u; });
+  function draw(im,max,bg){
+    const k=Math.min(1,max/Math.max(im.naturalWidth||1,im.naturalHeight||1));
+    const cv=document.createElement('canvas'); cv.width=Math.max(1,Math.round(im.naturalWidth*k)); cv.height=Math.max(1,Math.round(im.naturalHeight*k));
+    const g=cv.getContext('2d'); if(bg){ g.fillStyle=bg; g.fillRect(0,0,cv.width,cv.height); } g.drawImage(im,0,0,cv.width,cv.height); return cv;
+  }
+  const toBlob=(cv,type,q)=>new Promise(r=>cv.toBlob(r,type,q));
+  async function smallDataUrl(im){
+    for(const max of [512,384,256]){
+      const png=draw(im,max).toDataURL('image/png'); if(png.length<450*1024) return png;
+      const jpg=draw(im,max,'#fff').toDataURL('image/jpeg',0.88); if(jpg.length<450*1024) return jpg;
+    }
+    return draw(im,200,'#fff').toDataURL('image/jpeg',0.8);
+  }
+  async function syncQuoteLogo(url){
+    if(typeof patchClient!=='function') return;
+    await patchClient({quote_logo_url:url});
+    try{ if(typeof clientRecord!=='undefined'&&clientRecord) clientRecord.quote_logo_url=url; }catch(e){}
+    try{ if(typeof applyHeaderLogo==='function') applyHeaderLogo(); }catch(e){}
+    try{ if(typeof quoteRenderLogoPreview==='function'&&document.getElementById('quoteLogoPreview')) quoteRenderLogoPreview(url); }catch(e){}
+  }
+  const postLogo=(variant,blob,name)=>{ const fd=new FormData(); fd.append('variant',variant); fd.append('file',blob,name); return api('/settings/contacts/logo',{method:'POST',body:fd}); };
+  const removeLogo=variant=>api('/settings/contacts/logo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({variant,remove:true})});
+  // Also used by Quotation settings' logo box, so both places set the same official logo.
+  window.pcSetOfficialLogo=async function(file,variant='square'){
+    if(!file) throw new Error('Choose an image file.');
+    if(!['image/png','image/jpeg','image/webp'].includes(file.type)) throw new Error('Logo must be a PNG, JPG or WebP image.');
+    if(file.size>2*1024*1024) throw new Error('Logo is too large — max 2 MB.');
+    const im=await loadImg(file);
+    const keepType=file.type==='image/jpeg'?'image/jpeg':'image/png';
+    const main=await toBlob(draw(im,1024,keepType==='image/jpeg'?'#fff':null),keepType,0.92);
+    const r=await postLogo(variant,main,variant+(keepType==='image/jpeg'?'.jpg':'.png'));
+    if(variant!=='square') return {url:r.url};
+    const print=await toBlob(draw(im,600,'#fff'),'image/jpeg',0.9);
+    const p=await postLogo('print',print,'print.jpg').catch(()=>null);
+    await syncQuoteLogo(await smallDataUrl(im));
+    return {url:r.url,print_url:p?.url||''};
+  };
+  window.pcClearOfficialLogo=async function(variant='square'){
+    await removeLogo(variant);
+    if(variant==='square'){ await removeLogo('print').catch(()=>{}); await syncQuoteLogo(''); }
+  };
   window.pcLogoUpload=async function(variant){
     const f=$('pcLogoFile_'+variant)?.files?.[0]; if(!f) return;
-    if(f.size>2*1024*1024){ msg('pcLogoMsg','Logo is too large — max 2 MB.',false); return; }
     readForm(); msg('pcLogoMsg','Uploading…');
-    const fd=new FormData(); fd.append('variant',variant); fd.append('file',f);
-    try{ const r=await api('/settings/contacts/logo',{method:'POST',body:fd}); S.data.identity[variant==='wide'?'logo_wide_url':'logo_url']=r.url; render(); msg('pcLogoMsg','✓ Logo saved.'); }
-    catch(e){ msg('pcLogoMsg',e.message,false); }
+    try{
+      const r=await window.pcSetOfficialLogo(f,variant);
+      S.data.identity[variant==='wide'?'logo_wide_url':'logo_url']=r.url;
+      if(r.print_url) S.data.identity.logo_print_url=r.print_url;
+      render(); msg('pcLogoMsg',variant==='square'?'✓ Logo saved — now used on documents, emails, pages and the top bar.':'✓ Wide logo saved.');
+    }catch(e){ msg('pcLogoMsg',e.message,false); }
   };
   window.pcLogoRemove=async function(variant){
-    if(!confirm('Remove this logo?')) return;
+    if(!confirm(variant==='square'?'Remove the official logo? It is removed from documents, emails, pages and the top bar too.':'Remove the wide logo?')) return;
     readForm();
-    try{ await api('/settings/contacts/logo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({variant,remove:true})}); S.data.identity[variant==='wide'?'logo_wide_url':'logo_url']=''; render(); msg('pcLogoMsg','Logo removed.'); }
-    catch(e){ msg('pcLogoMsg',e.message,false); }
+    try{
+      if(variant==='square'&&!S.data.identity.logo_url){ await syncQuoteLogo(''); }   // only the older Quotation logo was set
+      else await window.pcClearOfficialLogo(variant);
+      S.data.identity[variant==='wide'?'logo_wide_url':'logo_url']='';
+      if(variant==='square') S.data.identity.logo_print_url='';
+      render(); msg('pcLogoMsg','Logo removed.');
+    }catch(e){ msg('pcLogoMsg',e.message,false); }
   };
   window.peopleContactsInit=async function(){
     const root=$('pcRoot'); if(!root) return;
