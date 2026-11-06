@@ -33,3 +33,18 @@ test('city names and refundable come only from what is known', () => {
   assert.equal(ltOfferRefundable({ fare_rules: { refundable: false } }), false);
   assert.doesNotMatch(ltFormatChatOffers([{ ...offers[0], raw: {} }], { style: 'nanthana' }), /Refundable/);
 });
+
+test('a fare reply longer than WhatsApp\'s 1024-character button limit is split, never rejected', async () => {
+  const { engineSplitInteractiveBody, WA_INTERACTIVE_BODY_MAX } = await import('./worker.js');
+  const many = [1, 2, 3, 4, 5].map(i => ({ ...offers[0], supplier_offer_id: 'F' + i, total_amount: 15000 + i }));
+  const text = ltFormatChatOffers(many, { style: 'nanthana', limit: 5, pax: { adults: 1 }, filterHint: true });
+  assert.ok(text.length > WA_INTERACTIVE_BODY_MAX);
+  const { lead, body } = engineSplitInteractiveBody(text);
+  assert.ok(body.length <= WA_INTERACTIVE_BODY_MAX);
+  assert.match(body, /Tap the option you'd like to book below/);
+  assert.ok(lead.every(p => p.length <= 4096));
+  // Nothing is lost: every flight block still goes out.
+  assert.equal([...lead, body].join('\n\n'), text);
+  assert.deepEqual(engineSplitInteractiveBody('short'), { lead: [], body: 'short' });
+  assert.equal(engineSplitInteractiveBody('x'.repeat(1500)).body, 'Please choose an option below 👇');
+});
