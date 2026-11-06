@@ -2056,13 +2056,25 @@ export function leadSharedClause(email){
 }
 // The SharedWith column, created on first use. Resolves true once it exists; a failure is retried
 // on the next call, and until then nothing filters on it (so a table without it works as before).
+// "Exists" is proven by NocoDB accepting the column in a records field list (it refuses unknown
+// ones) — the table meta has been seen not to list it. When it's missing it is created through the
+// /fields API (as the other self-healing columns are) and checked again; every failure is logged.
 let _leadsSharedReady=null;
+async function leadsSharedWithProbe(env){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?limit=1&fields=Id,SharedWith`).catch(()=>null);
+  return !!r?.ok;
+}
 export function leadsSharedWithReady(env){
   if(!_leadsSharedReady) _leadsSharedReady=(async()=>{
-    await ensureLeadsColumns(env, ['SharedWith']);
-    const {names}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
-    if(!names.includes('SharedWith')) throw new Error('SharedWith column missing');
-    return true;
+    if(await leadsSharedWithProbe(env)) return true;
+    const cr=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{column_name:'SharedWith', title:'SharedWith', uidt:'LongText'}}).catch(e=>({ok:false, status:0, text:async()=>e.message}));
+    if(!cr.ok) console.error('[shared-access] could not create the SharedWith column:', cr.status, await cr.text().catch(()=>''));
+    if(await leadsSharedWithProbe(env)) return true;
+    // Some NocoDB versions only take the older /columns route.
+    const cr2=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/columns`, {method:'POST', body:{column_name:'SharedWith', title:'SharedWith', uidt:'LongText'}}).catch(()=>null);
+    if(await leadsSharedWithProbe(env)) return true;
+    console.error('[shared-access] SharedWith column still missing after create; /columns status', cr2?.status);
+    throw new Error('SharedWith column missing');
   })().catch(()=>{ _leadsSharedReady=null; return false; });
   return _leadsSharedReady;
 }

@@ -176,6 +176,21 @@ describe('Leads tab passthrough', ()=>{
     assert.equal(lead.Name, 'Fatima K');
     assert.equal(emails.length, 0, 'nobody newly added');
   });
+  test('first share on a table without the column: created through /fields, then saved', async()=>{
+    let exists=false; const created=[];
+    const base=globalThis.fetch;
+    globalThis.fetch=async(url, init={})=>{
+      const u=new URL(String(url));
+      if(u.host==='nc.test'&&u.pathname.endsWith('/fields')&&init.method==='POST'){ created.push(JSON.parse(init.body)); exists=true; return new Response('{}'); }
+      if(u.host==='nc.test'&&(u.searchParams.get('fields')||'').includes('SharedWith')&&!exists) return new Response('{"msg":"Field SharedWith not found"}', {status:404});
+      return base(url, init);
+    };
+    const r=await save(ANU, {Id:5, SharedWith:',rahul@acme.com,'});
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(created.length, 1);
+    assert.equal(created[0].title, 'SharedWith');
+    assert.equal(lead.SharedWith, ',rahul@acme.com,');
+  });
   test('saves without SharedWith are untouched (no extra reads, no checks)', async()=>{
     const r=await save(RAHUL, {Id:5, Name:'Only a name'});
     assert.equal(r.status, 200);

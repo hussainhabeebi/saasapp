@@ -10014,7 +10014,14 @@ async function saveLeadNow(){
     body.Id=parseInt(id);
     const shared=leadSharedFormValue(original);
     if(shared!==null) body.SharedWith=shared;
-    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
+    try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body); }
+    catch(e){
+      // Sharing refused (not available yet / not allowed): still save the rest of the lead.
+      if(!('SharedWith' in body)) throw e;
+      delete body.SharedWith;
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
+      showToast('Lead saved, but sharing was not: '+e.message,'err');
+    }
     reportLeadQualityChange(body.Id, original, body);
   }else{
     const created=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
