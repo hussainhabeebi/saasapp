@@ -17,7 +17,7 @@ import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyin
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
-import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf} from './business-contacts.js';
+import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -23999,6 +23999,22 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
   if(contactSource!=null && bcFindInventedContact(out, contactSource)) out=bcStripInvented(out, contactSource)||await engineLocalizeReply(env, c, 'Our team will share the right contact with you shortly.', c.language||'en');
   return out;
 }
+// People & Contacts: the reply to "contact number" / "talk to a staff member" — a translated lead-in
+// plus the contact lines copied from settings. '' when the message isn't a contact request or
+// nothing is saved, so the normal reply runs instead.
+async function engineContactRequestReply(env, c, userText, replyLang){
+  try{
+    if(!bcIsContactRequest(userText)) return '';
+    const card=bcContactCard(await bcForClient(env, c), userText);
+    if(!card) return '';
+    let lead='Sure! Here is who to contact:';
+    if(replyLang && replyLang!=='en'){
+      const t=await engineLocalizeReply(env, c, lead, replyLang).catch(()=>null);
+      if(t && !/\d/.test(t) && t.length<200) lead=t;
+    }
+    return `${lead}\n\n${card}`;
+  }catch(e){ await reportOpsError(env, 'engineContactRequestReply', e, {clientId:c?.Id}).catch(()=>{}); return ''; }
+}
 // People & Contacts: after a hand-over, a second fixed message with the contact for the department
 // the customer's message is about (else the default). Only the short lead-in is translated; the
 // contact lines are copied from settings as saved. Sent as text (numbers read badly as voice) and
@@ -29488,6 +29504,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
     const newLeadCategories=[];
 
+    // People & Contacts: a customer asking for a contact number / a staff member gets the matching
+    // department's contact straight from settings — not an AI reply (which may be told never to
+    // offer a person when hand-over is off) and not the "not sure I got that" fallback.
+    const contactReply=(!orderHandledInline && routing.route!=='human' && routing.route!=='drop')
+      ? await engineContactRequestReply(env, c, userText, replyLang) : '';
     if(orderHandledInline){
       // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
       // decision is left untouched so the flow/qualification funnel resumes from wherever it was
@@ -29501,6 +29522,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
       await engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx);
+    } else if(contactReply){
+      sentText=contactReply;
+      routing.reply=sentText;
+      routing.next=state.stage;            // nothing else was asked this turn — the funnel resumes as it was
+      routing.qualAnswers=state.qualAnswers;
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType:'text', langCode:replyLang, ctx});
     } else if(routing.route==='selfserve'){
       // Reached the end of the funnel with a positive reply and a self-serve link is configured —
       // send the order/booking link itself, a plain scripted send like qualify_next (not an LLM

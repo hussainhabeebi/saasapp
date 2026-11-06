@@ -105,3 +105,20 @@ test('logo: uploaded logo first, http Quotation logo as fallback, data URIs kept
   assert.equal(bcLogoForPdf(null, {quote_logo_url:'https://old/logo.png'}), 'https://old/logo.png');
   assert.equal(bcNormalize({identity:{logo_print_url:'https://w/p.jpg'}}).data.identity.logo_print_url, 'https://w/p.jpg');
 });
+
+import { bcIsContactRequest } from './business-contacts.js';
+
+test('contact requests from the screenshot (and other languages) are recognised', () => {
+  for(const t of ["I'm in dubai give me a staff member contact", 'Contact number', 'Talk to human', 'I want to talk to staff member',
+    'phone no pls', 'can I speak to someone', 'നിങ്ങളുടെ നമ്പർ തരൂ', 'ആളുമായി സംസാരിക്കണം', 'ممكن رقم الهاتف', 'नंबर दो', 'send your email'])
+    assert.equal(bcIsContactRequest(t), true, t);
+});
+
+test('ordinary messages and customers sharing their own number are not contact requests', () => {
+  for(const t of ['Bali package price?', 'my number is 9846012345', 'call me on +971 50 123 4567', 'I will contact you later', 'Hi', 'Do you have visa for Thailand?', ''])
+    assert.equal(bcIsContactRequest(t), false, t);
+});
+
+test('a contact request gets the default card when no department word matches', () => {
+  assert.equal(bcContactCard(data, 'Contact number'), '👤 Sales — Rahul\n📞 +971 52 931 9100 (call / WhatsApp)');
+});
