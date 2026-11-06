@@ -372,9 +372,21 @@ const FARE_PREVIEW={
   highlighted:{show:'*Option 1 · AI Express 359*\n💰 Cheapest · ⚡ Fastest\n🕗 20:00 → 22:30 · 4h 0m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n💳 *INR 17,365* · 🔥 Only 1 seat left\n\n*Option 2 · IndiGo 1435*\n🕗 21:45 → 00:25 (+1) · 4h 10m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n💳 *INR 17,865* · 🔥 Only 2 seats left',
     hide:'*Option 1 · AI Express 359*\n⚡ Fastest\n🕗 20:00 → 22:30 · 4h 0m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n🔥 Only 1 seat left\n\n*Option 2 · IndiGo 1435*\n🕗 21:45 → 00:25 (+1) · 4h 10m · Direct\n🧳 Cabin 7 kg · Check-in 30 kg\n🔥 Only 2 seats left'},
 };
+// Travel Settings → 🧩 Optional WhatsApp chat extras (worker LT_TRAVEL_OPTIONAL_KEYS), all off by default.
+const OPTIONAL_EXTRAS=[
+  {key:'lt_direct_list',id:'fsDirectList',label:'✈️ Direct flights list',off:'current fare layout',on:'direct flights in their own list',
+    help:'Lists ✈️ Direct flights and 🔁 Connecting flights in separate sections, one flight per block with each detail (departure, arrival, duration, baggage, fare) on its own line and a blank line between flights.'},
+  {key:'lt_date_picker',id:'fsDatePicker',label:'📅 Travel date picker',off:'customer types the date',on:'calendar list + type a date',
+    help:'When the travel date is missing, the bot sends a 📅 date list to tap (the next 9 days) plus a ✍️ "Type a date" option for any other date, e.g. 20 Nov or 20/11/2026.'},
+  {key:'lt_passport_details',id:'fsPassport',label:'🛂 Passenger details',off:'name and email only',on:'also date of birth and passport',
+    help:'The booking form asks for Full Name, Date of Birth, Passport Number and Passport Expiry Date (plus email), in one message or one at a time. Expired passports are flagged. The details are saved in 📄 Quotes and in the team note.'},
+];
+const LIST_PREVIEW={show:'✈️ <b>Direct flights (2)</b><br>━━━━━━━━━━━━<br><br><b>1. AI Express 359</b><br>• 🛫 Departs: CCJ · 20:00<br>• 🛬 Arrives: AUH · 22:30<br>• ⏱️ Duration: 4h 0m<br>• 🔀 Stops: Direct (non-stop)<br>• 🧳 Baggage: Cabin 7 kg · Check-in 30 kg<br>• 💳 Fare: <b>INR 17,365</b><br>• 💺 Only 1 seat left<br><br><b>2. IndiGo 1435</b><br>• 🛫 Departs: CCJ · 21:45<br>• 🛬 Arrives: AUH · 00:25 (+1 day)<br>• ⏱️ Duration: 4h 10m<br>• 🔀 Stops: Direct (non-stop)<br>• 🧳 Baggage: Cabin 7 kg · Check-in 30 kg<br>• 💳 Fare: <b>INR 17,865</b><br>• 💺 Only 2 seats left'};
 function farePreview(){
   const style=$('fsStyle')?.value==='highlighted'?'highlighted':'classic',show=$('fsShow')?.value!=='0';
-  const body=esc(FARE_PREVIEW[style][show?'show':'hide']).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
+  const body=$('fsDirectList')?.value==='1'
+    ?(show?LIST_PREVIEW.show:LIST_PREVIEW.show.replace(/<br>• 💳 Fare: <b>[^<]+<\/b>/g,''))
+    :esc(FARE_PREVIEW[style][show?'show':'hide']).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
   const el=$('fsPreview'); if(el)el.innerHTML=`<div class="wmbubble in">✈️ I found 2 flights from CCJ to AUH on 10 Nov 2026 (economy).<br><br>${body}</div>`;
 }
 async function renderSettings(){
@@ -387,6 +399,8 @@ async function renderSettings(){
 <div class="field span4"><label>🎫 Online booking</label><select id="fsBooking" onchange="$('fsQrBox').style.display=this.value==='0'?'block':'none'"><option value="1" ${f.lt_online_booking!==false?'selected':''}>Enabled — send the booking link</option><option value="0" ${f.lt_online_booking===false?'selected':''}>Disabled — collect details, our team books</option></select><div class="sub" style="margin-top:4px">When disabled, no booking link is sent for any supplier: the customer sends the lead passenger's name and email, and the request lands in 📄 Quotes with a note in the chat for your team.</div></div>
 <div class="field span4" id="fsQrBox" style="display:${f.lt_online_booking===false?'block':'none'}"><label>💳 Payment QR codes (optional)</label><div class="sub" style="margin:0 0 8px">Sent as images right after the customer's booking request while online booking is disabled. Paste a Google Drive image link (shared as "Anyone with the link") or a direct image link. Leave empty to send no QR.</div>${[1,2].map(i=>`<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2.5fr) 56px;gap:8px;align-items:center;margin-bottom:8px"><input id="fsQr${i}Label" maxlength="40" placeholder="Name, e.g. ${i===1?'UPI':'Bank transfer'}" value="${esc(f[`lt_pay_qr_${i}_label`]||'')}"><input id="fsQr${i}Url" placeholder="QR link ${i} — https://drive.google.com/file/d/…/view" value="${esc(f[`lt_pay_qr_${i}_url`]||'')}" oninput="qrPreview(${i})"><img id="fsQr${i}Img" alt="" style="width:56px;height:56px;object-fit:contain;border:1px solid var(--line);border-radius:6px;background:#fff;display:none"></div>`).join('')}</div>
 <div class="field span4"><label>✨ Fare card style</label><select id="fsStyle" onchange="farePreview()"><option value="classic" ${f.lt_fare_style!=='highlighted'?'selected':''}>Classic — current layout</option><option value="highlighted" ${f.lt_fare_style==='highlighted'?'selected':''}>Highlighted — labels, compact cards, +1 day</option></select><div class="sub" style="margin-top:4px">Highlighted marks the 💰 cheapest and ⚡ fastest option, uses a short emoji layout and shows (+1) for next-day arrivals.</div></div>
+<div class="field span4" style="border-top:1px solid var(--line);padding-top:14px;margin-top:4px"><label>🧩 Optional WhatsApp chat extras</label><div class="sub" style="margin-top:2px">Off by default — turn on only the ones you want. Nothing changes in the chat until you do.</div></div>
+${OPTIONAL_EXTRAS.map(o=>`<div class="field span4"><label>${o.label}</label><select id="${o.id}" onchange="farePreview()"><option value="0" ${f[o.key]!==true?'selected':''}>Off — ${o.off}</option><option value="1" ${f[o.key]===true?'selected':''}>On — ${o.on}</option></select><div class="sub" style="margin-top:4px">${o.help}</div></div>`).join('')}
 <div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="fsSave" onclick="saveFareSettings()">Save settings</button><span class="sub" id="fsMsg"></span></div></div></div>
 <div><div class="wmphone" style="height:auto"><div class="wmbar">Preview<span>Example search · CCJ → AUH</span></div><div class="wmchat" id="fsPreview"></div></div></div></div>`;
   farePreview();qrPreview(1);qrPreview(2);
@@ -406,6 +420,7 @@ async function saveFareSettings(){
   const btn=$('fsSave'),msg=$('fsMsg');btn.disabled=true;msg.textContent='';
   try{
     fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_show_fares:$('fsShow').value==='1',lt_fare_options:Number($('fsCount').value),lt_fare_style:$('fsStyle').value,lt_online_booking:$('fsBooking').value==='1',
+      ...Object.fromEntries(OPTIONAL_EXTRAS.map(o=>[o.key,$(o.id).value==='1'])),
       lt_pay_qr_1_label:$('fsQr1Label').value.trim(),lt_pay_qr_1_url:$('fsQr1Url').value.trim(),lt_pay_qr_2_label:$('fsQr2Label').value.trim(),lt_pay_qr_2_url:$('fsQr2Url').value.trim()})});
     msg.textContent='✓ Saved — the bot uses this from the next search';msg.style.color='var(--green)';
   }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}

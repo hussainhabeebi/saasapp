@@ -47,7 +47,37 @@ test('live fares & booking: load, preview the chosen style and save only those f
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.locator('#fsMsg')).toContainText('Saved');
   expect(saved).toEqual({ lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'highlighted', lt_online_booking: false,
+    lt_direct_list: false, lt_date_picker: false, lt_passport_details: false,
     lt_pay_qr_1_label: 'UPI', lt_pay_qr_1_url: 'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing', lt_pay_qr_2_label: '', lt_pay_qr_2_url: '' });
+});
+
+test('optional WhatsApp chat extras are off by default, preview the direct flights list and save', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: saved }); }
+      return route.fulfill({ json: { lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'classic', lt_online_booking: true, lt_direct_list: false, lt_date_picker: false, lt_passport_details: false } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  for (const id of ['#fsDirectList', '#fsDatePicker', '#fsPassport']) await expect(page.locator(id)).toHaveValue('0');
+  await page.selectOption('#fsDirectList', '1');
+  await expect(page.locator('#fsPreview')).toContainText('Direct flights (2)');
+  await expect(page.locator('#fsPreview')).toContainText('• 🛫 Departs: CCJ · 20:00');
+  await page.selectOption('#fsShow', '0');
+  await expect(page.locator('#fsPreview')).not.toContainText('💳 Fare');
+  await page.selectOption('#fsShow', '1');
+  await page.selectOption('#fsDatePicker', '1');
+  await page.selectOption('#fsPassport', '1');
+  await expect(page.locator('#main')).toContainText('Passport Expiry Date');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#fsMsg')).toContainText('Saved');
+  expect(saved).toMatchObject({ lt_direct_list: true, lt_date_picker: true, lt_passport_details: true });
 });
 
 test('currency, WhatsApp menu and itineraries are tabs of the same page; the old menu items are gone', async ({ page }) => {
