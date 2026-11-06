@@ -56,47 +56,56 @@ async function boot(page, me = OWNER, saveStatus = 200) {
 }
 
 const tileCount = (page, label) => page.locator('.ts-tile', { hasText: label }).locator('.n');
+const boardRow = (page, id) => page.locator(`#tsBody .tsb-row[data-lead="${id}"]`);
+// The status pill opens the picker; "Follow up pending" goes on to its date step (Tomorrow = default).
+async function pick(page, id, key) {
+  await boardRow(page, id).locator('.tsb-pill').click();
+  await page.locator(`#tsbSheet .tsb-opt[data-status="${key}"]`).click();
+  if (key === 'follow_up_pending') await page.locator('#tsbSheet .tsb-dates button[data-days="1"]').click();
+  await expect(page.locator('#tsbSheet')).toHaveCount(0);
+}
 
 test('status board counts every status, with auto statuses before anyone marks one', async ({ page }) => {
   await boot(page);
   await page.locator('#travelNav .dnTab[data-page="tvstatus"]').click();
   await expect(page.locator('#pageTvstatus')).toBeVisible();
-  await expect(tileCount(page, 'All inquiries')).toHaveText('4');
+  await expect(page.locator('#tsBody .tsb-group[data-group=""] .n')).toHaveText('4');
   await expect(tileCount(page, 'New inquiry')).toHaveText('1');        // Asha — no calls
   await expect(tileCount(page, 'First call done')).toHaveText('1');    // Ravi — derived from CallLog
   await expect(tileCount(page, 'Follow up pending')).toHaveText('1');
   await expect(tileCount(page, 'Booking closed')).toHaveText('1');
   await expect(tileCount(page, 'Follow-ups due')).toHaveText('1');
-  await expect(page.locator('tr[data-lead="2"]')).toContainText('auto');
-  await expect(page.locator('tr[data-lead="3"] .ts-due.overdue')).toBeVisible();
+  await expect(boardRow(page, 2)).toContainText('auto');
+  await expect(boardRow(page, 3).locator('.tsb-fu.overdue')).toBeVisible();
   // Overdue follow-ups sort to the top.
-  await expect(page.locator('.ts-tbl tbody tr').first()).toHaveAttribute('data-lead', '3');
+  await expect(page.locator('#tsBody .tsb-row').first()).toHaveAttribute('data-lead', '3');
   await page.locator('.ts-tile', { hasText: 'Booking closed' }).click();
-  await expect(page.locator('.ts-tbl tbody tr')).toHaveCount(1);
-  await expect(page.locator('.ts-tbl tbody tr')).toContainText('John');
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(1);
+  await expect(page.locator('#tsBody .tsb-row')).toContainText('John');
 });
 
 test('marking a status saves it to the lead with who and when', async ({ page }) => {
   const { patches, fieldsAdded } = await boot(page);
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
-  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('first_call');
+  await pick(page, 1, 'first_call');
   await expect.poll(() => patches.length).toBe(1);
   expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'first_call', TravelStatusBy: OWNER });
   expect(patches[0].TravelStatusAt).toBeTruthy();
   expect(fieldsAdded).toEqual(['TravelStatus', 'TravelFollowUpAt', 'TravelStatusAt', 'TravelStatusBy', 'TravelStatusLog']);
   await expect(tileCount(page, 'First call done')).toHaveText('2');
-  await expect(page.locator('tr[data-lead="1"]')).not.toContainText('auto');
+  await expect(boardRow(page, 1)).not.toContainText('auto');
 });
 
 test('follow up pending defaults to tomorrow and the date can be changed', async ({ page }) => {
   const { patches } = await boot(page);
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
-  await page.locator('tr[data-lead="2"] select.ts-sel').selectOption('follow_up_pending');
+  await pick(page, 2, 'follow_up_pending');
   await expect.poll(() => patches.length).toBe(1);
   expect(patches[0]).toMatchObject({ Id: 2, TravelStatus: 'follow_up_pending', TravelFollowUpAt: iso(1) });
-  await page.locator('tr[data-lead="2"] input.ts-date').fill(iso(0));
+  await boardRow(page, 2).locator('.tsb-fu').click();
+  await page.locator('#tsbSheet .tsb-dates button[data-days="0"]').click();
   await expect.poll(() => patches.length).toBe(2);
   expect(patches[1]).toMatchObject({ Id: 2, TravelFollowUpAt: iso(0) });
   await expect(tileCount(page, 'Follow-ups due')).toHaveText('2');
@@ -106,9 +115,9 @@ test('a failed save puts the old status back', async ({ page }) => {
   const { patches } = await boot(page, OWNER, 500);
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
-  await page.locator('tr[data-lead="4"] select.ts-sel').selectOption('cancelled');
+  await pick(page, 4, 'cancelled');
   await expect.poll(() => patches.length).toBe(1);
-  await expect(page.locator('tr[data-lead="4"] select.ts-sel')).toHaveValue('booking_closed');
+  await expect(boardRow(page, 4)).toHaveAttribute('data-status', 'booking_closed');
 });
 
 test('Today shows a teammate only their own inquiries; the board has no Staff column', async ({ page }) => {
@@ -122,7 +131,7 @@ test('Today shows a teammate only their own inquiries; the board has no Staff co
   await expect(page.locator('#tvHomeBody')).not.toContainText('Meera');
   await summary.locator('.tv-chip', { hasText: 'First call done' }).click();
   await expect(page.locator('#pageTvstatus')).toBeVisible();
-  await expect(page.locator('.ts-tbl thead')).not.toContainText('Staff');
+  await expect(page.locator('#tsBody .tsb-cols')).not.toContainText('Staff');
   // The full list comes back once Home is done — the board still has its own rules.
   // @ts-ignore
   expect(await page.evaluate(() => allLeads.length)).toBe(4);
@@ -147,26 +156,26 @@ test('travel status and the pipeline stage move together', async ({ page }) => {
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
   // Booking closed → the lead is Won (and the usual won-lead bookkeeping runs: ClosedAt).
-  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('booking_closed');
+  await pick(page, 1, 'booking_closed');
   await expect.poll(() => status().length).toBe(1);
   expect(status()[0]).toMatchObject({ Id: 1, TravelStatus: 'booking_closed', Stage: 'won' });
   await expect.poll(() => patches.some((p) => p.Id === 1 && p.ClosedAt)).toBe(true);
   // Back to an open status → reopened.
-  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('negotiating');
+  await pick(page, 1, 'negotiating');
   await expect.poll(() => status().length).toBe(2);
   expect(status()[1]).toMatchObject({ Id: 1, TravelStatus: 'negotiating', Stage: 'new' });
   // Cancelled → Lost; an open status on an open lead leaves Stage alone.
-  await page.locator('tr[data-lead="2"] select.ts-sel').selectOption('cancelled');
+  await pick(page, 2, 'cancelled');
   await expect.poll(() => status().length).toBe(3);
   expect(status()[2]).toMatchObject({ Id: 2, Stage: 'lost' });
-  await page.locator('tr[data-lead="3"] select.ts-sel').selectOption('quote_sent');
+  await pick(page, 3, 'quote_sent');
   await expect.poll(() => status().length).toBe(4);
   expect(status()[3].Stage).toBeUndefined();
   // Marked Won elsewhere → shows Booking closed (auto).
   // @ts-ignore
   await page.evaluate(() => { allLeads.find((l) => l.Id === 3).Stage = 'won'; renderTravelStatus(); });
-  await expect(page.locator('tr[data-lead="3"] select.ts-sel')).toHaveValue('booking_closed');
-  await expect(page.locator('tr[data-lead="3"]')).toContainText('auto');
+  await expect(boardRow(page, 3)).toHaveAttribute('data-status', 'booking_closed');
+  await expect(boardRow(page, 3)).toContainText('auto');
 });
 
 /* ── Service Category picker + Reports → 🗂️ Service Category ── */
@@ -193,9 +202,9 @@ test('a failed category save puts the old category back', async ({ page }) => {
   const { patches } = await boot(page, OWNER, 500);
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
-  await page.locator('tr[data-lead="1"] select.ts-cat').selectOption('Hotel');
+  await page.locator('#tsBody .tsb-row[data-lead="1"] select.ts-cat').selectOption('Hotel');
   await expect.poll(() => patches.length).toBe(1);
-  await expect(page.locator('tr[data-lead="1"] select.ts-cat')).toHaveValue('Visa');
+  await expect(page.locator('#tsBody .tsb-row[data-lead="1"] select.ts-cat')).toHaveValue('Visa');
   // @ts-ignore
   expect(await page.evaluate(() => allLeads.find(l => l.Id === 1).ServiceCategory)).toBe('Visa');
 });
@@ -259,8 +268,8 @@ test('custom categories from Settings show in every picker, and can be added and
   expect(await values('#leadCategoryFilter')).toContain('Cruise');
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
-  expect(await values('tr[data-lead="1"] select.ts-cat')).toContain('Cruise');
-  expect(await values('tr[data-lead="1"] select.ts-cat')).toContain('Marketing Messages');
+  expect(await values('#tsBody .tsb-row[data-lead="1"] select.ts-cat')).toContain('Cruise');
+  expect(await values('#tsBody .tsb-row[data-lead="1"] select.ts-cat')).toContain('Marketing Messages');
 
   // Settings: add one, then remove one.
   await page.evaluate(() => { /* @ts-ignore */ navigate('settings'); /* @ts-ignore */ populateSettings(); });
@@ -317,12 +326,12 @@ test('a changed status does not flip back when the 60s refresh repaints from the
     // @ts-ignore
     sessionStorage.setItem(_CACHE_KEY(), JSON.stringify({ ts: Date.now(), list: allLeads.map(l => ({ ...l })) }));
   });
-  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('quote_sent');
+  await pick(page, 1, 'quote_sent');
   await expect.poll(() => patches.length).toBe(1);
   // @ts-ignore
   await page.evaluate(() => loadAll());
   await expect(tileCount(page, 'Quote sent')).toHaveText('1');
-  await expect(page.locator('tr[data-lead="1"] select.ts-sel')).toHaveValue('quote_sent');
+  await expect(boardRow(page, 1)).toHaveAttribute('data-status', 'quote_sent');
   // The cache itself now carries the new status, so a reload shows it too.
   await expect.poll(() => page.evaluate(() => {
     // @ts-ignore
@@ -334,7 +343,7 @@ test('a leads reload that started before the save does not undo it', async ({ pa
   await boot(page);
   // @ts-ignore
   await page.evaluate(() => navigate('tvstatus'));
-  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('negotiating');
+  await pick(page, 1, 'negotiating');
   // The server copy read before the save landed: still no status.
   const out = await page.evaluate(() => {
     // @ts-ignore
@@ -355,5 +364,69 @@ test("a teammate's status change shows on an open Status Board without a reload"
   // @ts-ignore
   await page.evaluate((STAFF) => onLiveLeadUpdatedEvent({ type: 'lead_updated', lead_ids: [1], fields: ['TravelStatus', 'TravelStatusBy'], by: STAFF }), STAFF);
   await expect(tileCount(page, 'Payment pending')).toHaveText('1');
-  await expect(page.locator('tr[data-lead="1"] select.ts-sel')).toHaveValue('payment_pending');
+  await expect(boardRow(page, 1)).toHaveAttribute('data-status', 'payment_pending');
+});
+
+test('group cards filter the board, and the chip row narrows to that group', async ({ page }) => {
+  await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await page.locator('#tsBody .tsb-group[data-group="__won"]').click();
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(1);
+  await expect(page.locator('#tsBody .tsb-chip')).toHaveCount(3); // Booking closed, Ticket issued, Travelled
+  await page.locator('#tsBody .tsb-group[data-group="__open"]').click();
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(3);
+  await page.locator('#tsBody .tsb-chip[data-status="first_call"]').click();
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(1);
+  // The group stays highlighted while one of its statuses is picked; Clear filters resets everything.
+  await expect(page.locator('#tsBody .tsb-group[data-group="__open"]')).toHaveClass(/\bon\b/);
+  await page.locator('#tsBody .tsb-clear').first().click();
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(4);
+});
+
+test('picking Follow up pending saves the status and the chosen date in one change', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await boardRow(page, 1).locator('.tsb-pill').click();
+  await page.locator('#tsbSheet .tsb-opt[data-status="follow_up_pending"]').click();
+  await page.locator('#tsbSheet .tsb-dates button[data-days="3"]').click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'follow_up_pending', TravelFollowUpAt: iso(3) });
+  await expect(boardRow(page, 1)).toHaveAttribute('data-status', 'follow_up_pending');
+});
+
+test('Esc closes the picker without saving, and focus goes back to the pill', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await boardRow(page, 2).locator('.tsb-pill').click();
+  await expect(page.locator('#tsbSheet .tsb-opt.cur')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#tsbSheet')).toHaveCount(0);
+  await expect(boardRow(page, 2).locator('.tsb-pill')).toBeFocused();
+  expect(patches.length).toBe(0);
+});
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('rows are cards with a full-width status button, and the picker is a bottom sheet', async ({ page }) => {
+    const { patches } = await boot(page);
+    // @ts-ignore
+    await page.evaluate(() => navigate('tvstatus'));
+    // No sideways scrolling of the page.
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    const pill = boardRow(page, 1).locator('.tsb-pill');
+    const pb = await pill.boundingBox(), rb = await boardRow(page, 1).boundingBox();
+    expect(pb.width).toBeGreaterThan(rb.width * 0.8);
+    expect(pb.height).toBeGreaterThanOrEqual(44);
+    await pill.tap();
+    const sb = await page.locator('#tsbSheet').boundingBox();
+    expect(Math.round(sb.y + sb.height)).toBeGreaterThanOrEqual(843);
+    expect(sb.width).toBeGreaterThan(380);
+    await page.locator('#tsbSheet .tsb-opt[data-status="quote_sent"]').tap();
+    await expect.poll(() => patches.length).toBe(1);
+    expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'quote_sent' });
+  });
 });

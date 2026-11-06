@@ -114,6 +114,122 @@ function tsInjectStyle(){
 .ts-chip{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;padding:3px 9px;white-space:nowrap;border:1px solid var(--line)}
 .ts-chip.gray{background:#F1F5F9;color:#475569}.ts-chip.blue{background:#E0F2FE;color:#075985}.ts-chip.amber{background:#FEF3C7;color:#92400E}.ts-chip.green{background:#DCFCE7;color:#166534}.ts-chip.red{background:#FEE2E2;color:#991B1B}
 .ts-rpt-tbl{width:100%;min-width:720px}
+/* ── Status Board v2: group cards, one status-chip row, rows that become cards on a phone,
+   and a status picker (popover on PC, bottom sheet on a phone). Colour tokens follow dark mode. */
+#pageTvstatus,.tsb-sheet{--tsg-bg:#F1F5F9;--tsg-fg:#475569;--tsg-bd:#CBD5E1;--tsb-bg:#E0F2FE;--tsb-fg:#075985;--tsb-bd:#7DD3FC;
+  --tsa-bg:#FEF3C7;--tsa-fg:#92400E;--tsa-bd:#FBBF24;--tsn-bg:#DCFCE7;--tsn-fg:#166534;--tsn-bd:#34D399;--tsr-bg:#FEE2E2;--tsr-fg:#991B1B;--tsr-bd:#F87171}
+html.dark #pageTvstatus,html.dark .tsb-sheet{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;--tsg-bd:#334155;--tsb-bg:#0C2A3F;--tsb-fg:#7DD3FC;--tsb-bd:#0369A1;
+  --tsa-bg:#3A2A12;--tsa-fg:#FCD34D;--tsa-bd:#B45309;--tsn-bg:#0F2E22;--tsn-fg:#6EE7B7;--tsn-bd:#047857;--tsr-bg:#3B1416;--tsr-fg:#FCA5A5;--tsr-bd:#B91C1C}
+@media(prefers-color-scheme:dark){html:not(.light):not(.dark) #pageTvstatus,html:not(.light):not(.dark) .tsb-sheet{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;--tsg-bd:#334155;--tsb-bg:#0C2A3F;--tsb-fg:#7DD3FC;--tsb-bd:#0369A1;
+  --tsa-bg:#3A2A12;--tsa-fg:#FCD34D;--tsa-bd:#B45309;--tsn-bg:#0F2E22;--tsn-fg:#6EE7B7;--tsn-bd:#047857;--tsr-bg:#3B1416;--tsr-fg:#FCA5A5;--tsr-bd:#B91C1C}}
+.tsb-c-gray{--c-bg:var(--tsg-bg);--c-fg:var(--tsg-fg);--c-bd:var(--tsg-bd)}.tsb-c-blue{--c-bg:var(--tsb-bg);--c-fg:var(--tsb-fg);--c-bd:var(--tsb-bd)}
+.tsb-c-amber{--c-bg:var(--tsa-bg);--c-fg:var(--tsa-fg);--c-bd:var(--tsa-bd)}.tsb-c-green{--c-bg:var(--tsn-bg);--c-fg:var(--tsn-fg);--c-bd:var(--tsn-bd)}.tsb-c-red{--c-bg:var(--tsr-bg);--c-fg:var(--tsr-fg);--c-bd:var(--tsr-bd)}
+.tsb-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.tsb-head h2{font-family:var(--disp);font-size:20px;margin:0;line-height:1.2}
+.tsb-sub{font-size:12.5px;color:var(--muted);margin-top:3px}
+.tsb-search{position:relative;flex:1;max-width:340px;min-width:200px}
+.tsb-search input{width:100%;box-sizing:border-box;font:inherit;font-size:14px;padding:10px 12px 10px 34px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink)}
+.tsb-search input:focus{outline:none;border-color:var(--accent)}
+.tsb-search span{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none}
+.tsb-groups{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.tsb-group{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;font:inherit;color:inherit;cursor:pointer;background:var(--card);border:1.5px solid var(--line);border-radius:12px;padding:11px 13px;transition:border-color .15s,box-shadow .15s}
+.tsb-group:hover{border-color:var(--c-bd,var(--accent))}
+.tsb-group.on{border-color:var(--c-bd,var(--accent));background:var(--c-bg,var(--accent-soft));box-shadow:0 0 0 2px var(--c-bd,var(--accent)) inset}
+.tsb-group .n{font-family:var(--disp);font-size:24px;font-weight:700;line-height:1.1;color:var(--c-fg,var(--ink))}
+.tsb-group .l{font-size:12px;font-weight:600;color:var(--muted)}
+.tsb-group.alert .n{color:var(--tsr-fg)}
+.tsb-chips{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;margin-bottom:6px;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
+.tsb-chip{flex:none;display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:pointer;border-radius:999px;padding:6px 11px;border:1.5px solid var(--line);background:var(--card);color:var(--ink)}
+.tsb-chip .c{font-size:11px;font-weight:700;border-radius:999px;padding:1px 7px;background:var(--c-bg,var(--tsg-bg));color:var(--c-fg,var(--tsg-fg))}
+.tsb-chip.on{background:var(--c-bg,var(--accent-soft));border-color:var(--c-bd,var(--accent));color:var(--c-fg,var(--ink))}
+.tsb-chip.on .c{background:var(--card)}
+.tsb-chip.zero{opacity:.55}
+.tsb-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.tsb-bar select{font:inherit;font-size:13px;padding:8px 10px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);min-height:38px}
+.tsb-bar .ts-meta{margin-left:auto}
+.tsb-clear{font:inherit;font-size:12.5px;background:none;border:none;color:var(--accent-ink);cursor:pointer;text-decoration:underline;padding:6px}
+.tsb-list{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.tsb-cols,.tsb-row{display:grid;grid-template-columns:minmax(190px,2.2fr) minmax(130px,1.1fr) var(--tsb-staff,minmax(100px,.9fr)) minmax(170px,1.3fr) minmax(120px,1fr) minmax(90px,.8fr) 76px;gap:12px;align-items:center;padding:10px 14px}
+.tsb-list.nostaff .tsb-cols,.tsb-list.nostaff .tsb-row{grid-template-columns:minmax(190px,2.2fr) minmax(130px,1.1fr) minmax(170px,1.3fr) minmax(120px,1fr) minmax(90px,.8fr) 76px}
+.tsb-cols{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border-bottom:1px solid var(--line);padding-top:9px;padding-bottom:9px}
+.tsb-row{border-bottom:1px solid var(--line);font-size:13px;border-left:3px solid var(--c-bd,transparent)}
+.tsb-row:last-child{border-bottom:none}
+.tsb-row:hover{background:var(--accent-soft)}
+.tsb-who{display:flex;gap:10px;align-items:center;min-width:0;cursor:pointer}
+.tsb-av{flex:none;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--c-bg);color:var(--c-fg)}
+.tsb-who b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsb-who .ts-meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsb-who>div{min-width:0}
+.tsb-pill{display:inline-flex;align-items:center;gap:6px;max-width:100%;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;border-radius:999px;padding:6px 10px 6px 11px;border:1.5px solid var(--c-bd);background:var(--c-bg);color:var(--c-fg);min-height:34px}
+.tsb-pill .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsb-pill .car{opacity:.7;font-size:10px}
+.tsb-pill:focus-visible,.tsb-chip:focus-visible,.tsb-group:focus-visible,.tsb-opt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tsb-fu{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border-radius:8px;padding:5px 9px;border:1.5px dashed var(--line);background:none;color:var(--ink);white-space:nowrap}
+.tsb-fu.overdue{border:1.5px solid var(--tsr-bd);background:var(--tsr-bg);color:var(--tsr-fg)}
+.tsb-fu.today{border:1.5px solid var(--tsa-bd);background:var(--tsa-bg);color:var(--tsa-fg)}
+.tsb-acts{display:flex;gap:6px;justify-content:flex-end}
+.tsb-row .ts-cat{width:100%;max-width:100%;min-height:34px;box-sizing:border-box}
+.tsb-row>div{min-width:0}
+.tsb-row .staff{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsb-pill .t{flex:1;text-align:left}
+.tsb-ic{width:32px;height:32px;display:grid;place-items:center;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--ink);text-decoration:none;font-size:15px;cursor:pointer}
+.tsb-ic:hover{border-color:var(--accent)}
+.tsb-lbl{display:none}
+.tsb-more{text-align:center;padding:12px}
+.tsb-empty{color:var(--muted);text-align:center;padding:36px 16px;font-size:13.5px}
+.tsb-empty b{display:block;font-size:28px;margin-bottom:6px}
+/* Picker */
+.tsb-back{position:fixed;inset:0;z-index:1200;background:transparent}
+.tsb-sheet{position:fixed;z-index:1201;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-md,0 8px 30px rgba(0,0,0,.18));width:300px;max-height:min(70vh,520px);overflow:auto;padding:8px}
+.tsb-sheet.list{width:480px}
+.tsb-cols2{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.tsb-sheet h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:8px 8px 4px}
+.tsb-sheet .grab,.tsb-sheet .ttl{display:none}
+.tsb-opt{display:flex;align-items:center;gap:10px;width:100%;text-align:left;font:inherit;font-size:13.5px;cursor:pointer;border:none;background:none;color:var(--ink);border-radius:9px;padding:8px 9px}
+.tsb-opt:hover{background:var(--accent-soft)}
+.tsb-opt .dot{width:10px;height:10px;border-radius:50%;background:var(--c-bd);flex:none}
+.tsb-opt .ck{margin-left:auto;color:var(--accent);font-weight:700}
+.tsb-opt.cur{background:var(--c-bg);color:var(--c-fg);font-weight:600}
+.tsb-dates{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px}
+.tsb-dates button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;border-radius:10px;padding:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink)}
+.tsb-dates button:hover{border-color:var(--accent)}
+.tsb-dates small{display:block;font-weight:500;color:var(--muted);font-size:11px;margin-top:2px}
+.tsb-custom{display:flex;gap:8px;padding:6px}
+.tsb-custom input{flex:1;font:inherit;font-size:14px;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink)}
+.tsb-custom button{font:inherit;font-weight:600;border:none;border-radius:10px;padding:0 14px;background:var(--accent);color:#fff;cursor:pointer}
+.tsb-backlink{font:inherit;font-size:12.5px;background:none;border:none;color:var(--accent-ink);cursor:pointer;padding:6px 8px}
+@media(max-width:1023px){.tsb-groups{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:767px){
+  .tsb-head h2{font-size:18px}.tsb-search{max-width:none;min-width:100%}
+  .tsb-search input{font-size:16px}
+  .tsb-groups{display:flex;overflow-x:auto;gap:8px;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .tsb-groups::-webkit-scrollbar,.tsb-chips::-webkit-scrollbar{display:none}
+  .tsb-group{flex:none;min-width:92px;padding:9px 12px}.tsb-group .n{font-size:20px}.tsb-group .l{font-size:11px;white-space:nowrap}
+  .tsb-chip{padding:8px 12px;font-size:13px}
+  .tsb-bar select{flex:1;min-width:0;font-size:15px;min-height:42px}.tsb-bar .ts-meta{width:100%;margin-left:0}
+  .tsb-list{background:none;border:none;border-radius:0;overflow:visible;display:flex;flex-direction:column;gap:10px}
+  .tsb-cols{display:none}
+  .tsb-row,.tsb-list.nostaff .tsb-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-left:4px solid var(--c-bd);border-radius:12px;background:var(--card)}
+  .tsb-row:hover{background:var(--card)}
+  .tsb-row>.who{order:1;flex:1 1 0;min-width:0}.tsb-row>.acts{order:2}
+  .tsb-row>.st{order:3;flex:1 1 100%}
+  .tsb-row>.svc{order:4;flex:1 1 150px}.tsb-row>.fu{order:5;flex:0 1 auto}
+  .tsb-row>.staff{order:6;flex:1 1 auto}.tsb-row>.upd{order:7;margin-left:auto;text-align:right}
+  .tsb-row .ts-cat{font-size:15px;min-height:40px}
+  .tsb-row>.fu:has(>.ts-meta){display:none}
+  .tsb-pill{width:100%;font-size:15px;min-height:46px;padding:8px 14px;border-radius:12px;gap:10px}
+  .tsb-fu{min-height:40px}
+  .tsb-ic{width:40px;height:40px;font-size:17px;border-radius:11px}
+  .tsb-fu{font-size:13px;padding:8px 10px}
+  .tsb-lbl{display:inline;color:var(--muted);font-size:11px;font-weight:600;margin-right:4px}
+  .tsb-back{background:rgba(0,0,0,.4)}
+  .tsb-sheet{left:0!important;right:0;top:auto!important;bottom:0;width:auto;max-height:82vh;border-radius:18px 18px 0 0;padding:6px 12px calc(14px + env(safe-area-inset-bottom));border-bottom:none}
+  .tsb-sheet.list{width:auto}.tsb-cols2{display:block}
+  .tsb-sheet .grab{display:block;width:40px;height:4px;border-radius:4px;background:var(--line);margin:6px auto 4px}
+  .tsb-sheet .ttl{display:block;font-weight:700;font-size:15px;padding:6px 8px 2px}
+  .tsb-opt{font-size:15.5px;padding:12px 10px;min-height:46px}
+  .tsb-dates button{padding:13px 10px;font-size:14.5px}
+}
 @media(max-width:767px){.ts-cat{width:100%;max-width:none;font-size:16px;min-height:42px}.ts-sel-inline{width:100%;max-width:none;font-size:16px;min-height:42px;padding:6px 2px 6px 6px;letter-spacing:-.2px}.ts-inline .ts-due{margin-left:0}}
 `;
   document.head.appendChild(st);
@@ -144,6 +260,7 @@ function tsFiltered(){
   return (typeof allLeads!=='undefined'?allLeads:[]).filter(l=>{
     if(_tsFilter.status){
       if(_tsFilter.status==='__overdue'){ if(tsFollowUpState(l)!=='overdue'&&tsFollowUpState(l)!=='today') return false; }
+      else if(['__open','__won','__lost'].includes(_tsFilter.status)){ if(tsGroupOf(tsStatusOf(l).key)!==_tsFilter.status.slice(2)) return false; }
       else if(tsStatusOf(l).key!==_tsFilter.status) return false;
     }
     if(_tsFilter.owner==='__none'){ if(String(l.Owner||'').trim()) return false; }
@@ -160,53 +277,148 @@ function tsSort(list){
     ||String(b.TravelStatusAt||b.Date||'').localeCompare(String(a.TravelStatusAt||a.Date||'')));
 }
 
+// Group of a status for the summary cards: open / won / lost.
+const tsGroupOf=key=>TS_WON.has(key)?'won':TS_LOST.has(key)?'lost':'open';
+const TS_GROUPS=[['','All','📋','blue'],['__overdue','Follow-ups due','🔔','red'],['__open','In progress','⏳','blue'],['__won','Won','🎉','green'],['__lost','Lost','❌','red']];
+function tsInitials(l){ const n=String(tsLeadName(l)||'?').trim().split(/\s+/); return ((n[0]||'?')[0]+(n[1]?.[0]||'')).toUpperCase(); }
+function tsFmtDate(d){ try{ return new Date(String(d).slice(0,10)+'T00:00:00').toLocaleDateString([], {day:'numeric', month:'short'}); }catch(e){ return String(d||''); } }
+let _tsPickerOpen=false, _tsRenderPending=false;
+
 function renderTravelStatus(){
   tsInjectStyle(); tsEnsurePage();
   const el=$id('tsBody'); if(!el) return;
+  // A live update while the picker is open would pull the row out from under it: draw after it closes.
+  if(_tsPickerOpen){ _tsRenderPending=true; return; }
   const leads=typeof allLeads!=='undefined'?allLeads:[];
-  const counts={}; let due=0;
-  leads.forEach(l=>{ const k=tsStatusOf(l).key; counts[k]=(counts[k]||0)+1; const f=tsFollowUpState(l); if(f==='overdue'||f==='today') due++; });
+  const counts={}, groups={open:0, won:0, lost:0}; let due=0;
+  leads.forEach(l=>{ const k=tsStatusOf(l).key; counts[k]=(counts[k]||0)+1; groups[tsGroupOf(k)]++; const f=tsFollowUpState(l); if(f==='overdue'||f==='today') due++; });
   const list=tsSort(tsFiltered());
   const all=seesAllLeads();
-  const tile=(key,label,icon,grp,n)=>`<button class="ts-tile ${grp}${_tsFilter.status===key?' on':''}" onclick="tsSetFilter('status','${key}')"><div class="n">${n}</div><div class="l">${icon} ${esc(label)}</div></button>`;
-  const opt=(cur,s)=>`<option value="${s[0]}"${cur===s[0]?' selected':''}>${s[2]} ${esc(s[1])}</option>`;
-  el.innerHTML=`
-    <div class="card-title" style="font-size:16px;margin-bottom:12px">📌 Inquiry Status Board</div>
-    <div class="ts-tiles">
-      ${tile('','All inquiries','📋','blue',leads.length)}
-      ${tile('__overdue','Follow-ups due','🔔',due?'amber':'gray',due)}
-      ${TS_STATUSES.map(([k,l,i,g])=>tile(k,l,i,g,counts[k]||0)).join('')}
-    </div>
-    <div class="ts-bar">
-      <input class="form-input" id="tsSearch" placeholder="Search name, phone, destination…" value="${esc(_tsFilter.q)}" oninput="tsSetFilter('q',this.value)">
-      ${all?`<select class="form-input" onchange="tsSetFilter('owner',this.value)">
-        <option value="">All staff</option>
+  const f=_tsFilter.status;
+  const groupN={'':leads.length, __overdue:due, __open:groups.open, __won:groups.won, __lost:groups.lost};
+  // The group a chip row belongs to: the selected group, or the group of the selected status.
+  const activeGroup=f.startsWith('__')&&f!=='__overdue'?f.slice(2):(TS_BY_KEY[f]?tsGroupOf(f):'');
+  const groupOn=k=>k===f||(k==='__'+activeGroup&&TS_BY_KEY[f]);
+  const chipStatuses=TS_STATUSES.filter(s=>!activeGroup||tsGroupOf(s[0])===activeGroup);
+  const filtered=!!(f||_tsFilter.owner||_tsFilter.cat||_tsFilter.q);
+  const staffSel=all?`<select aria-label="Staff" onchange="tsSetFilter('owner',this.value)">
+        <option value="">👤 All staff</option>
         ${getTeamMembers().map(m=>`<option value="${esc(m.email)}"${sameEmail(_tsFilter.owner,m.email)?' selected':''}>${esc(m.name||m.email)}</option>`).join('')}
         <option value="__none"${_tsFilter.owner==='__none'?' selected':''}>Unassigned</option>
-      </select>`:''}
-      <select class="form-input" onchange="tsSetFilter('cat',this.value)">
-        <option value="">All services</option>
+      </select>`:'';
+  const row=l=>{
+    const st=tsStatusOf(l), s=TS_BY_KEY[st.key], grp=s[3], fu=tsFollowUpState(l), id=Number(l.Id);
+    const tel=String(l.Phone||'').startsWith('ig:')?'':String(l.Phone||'').replace(/[^0-9+]/g,'');
+    const fuCell=st.key==='follow_up_pending'
+      ?`<button class="tsb-fu ${fu==='overdue'?'overdue':fu==='today'?'today':''}" onclick="tsPick(${id},this,'date')" aria-label="Follow-up date">⏰ ${l.TravelFollowUpAt?esc(tsFmtDate(l.TravelFollowUpAt)):'Set date'}${fu==='overdue'?' · Overdue':fu==='today'?' · Today':''}</button>`
+      :'<span class="ts-meta">—</span>';
+    return `<div class="tsb-row tsb-c-${grp} ${tsOriginClass(l)}" data-lead="${id}" data-status="${st.key}">
+      <div class="who tsb-who" onclick="openDetail(${id})" title="Open inquiry"><span class="tsb-av">${esc(tsInitials(l))}</span>
+        <div><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div></div></div>
+      <div class="svc">${tsInlineCategoryHTML(l)}</div>
+      ${all?`<div class="staff ts-meta" data-mob="1"><span class="tsb-lbl">Staff</span>${esc(tsOwnerName(l.Owner))}</div>`:''}
+      <div class="st"><button class="tsb-pill" onclick="tsPick(${id},this)" aria-haspopup="dialog" aria-label="Status: ${esc(s[1])}${st.auto?' (auto)':''}. Change status"><span>${s[2]}</span><span class="t">${esc(s[1])}${st.auto?' <span class="ts-auto">auto</span>':''}</span><span class="car">▼</span></button></div>
+      <div class="fu">${fuCell}</div>
+      <div class="upd ts-meta">${l.TravelStatusAt?`${esc(tsAgo(l.TravelStatusAt))}${l.TravelStatusBy?' · '+esc(tsOwnerName(l.TravelStatusBy)):''}`:'—'}</div>
+      <div class="acts tsb-acts">${tel?`<a class="tsb-ic" href="tel:${esc(tel)}" title="Call" aria-label="Call ${esc(tsLeadName(l))}" onclick="event.stopPropagation()">📞</a>`:''}${typeof openLeadChat==='function'?`<button class="tsb-ic" title="Open chat" aria-label="Open chat" onclick="openLeadChat(${id})">💬</button>`:''}</div>
+    </div>`;
+  };
+  el.innerHTML=`
+    <div class="tsb-head">
+      <div><h2>📌 Status Board</h2><div class="tsb-sub">${leads.length} inquir${leads.length===1?'y':'ies'}${due?` · <b style="color:var(--tsr-fg)">${due} follow-up${due===1?'':'s'} due</b>`:''}</div></div>
+      <div class="tsb-search"><span>⌕</span><input id="tsSearch" type="search" placeholder="Search name, phone, destination…" value="${esc(_tsFilter.q)}" oninput="tsSetFilter('q',this.value)" aria-label="Search inquiries"></div>
+    </div>
+    <div class="tsb-groups" role="group" aria-label="Status groups">
+      ${TS_GROUPS.map(([k,l,i,g])=>`<button class="tsb-group ts-tile tsb-c-${g}${groupOn(k)?' on':''}${k==='__overdue'&&due?' alert':''}" data-group="${k}" onclick="tsSetFilter('status','${k}')" aria-pressed="${groupOn(k)?'true':'false'}"><span class="n">${groupN[k]}</span><span class="l">${i} ${esc(l)}</span></button>`).join('')}
+    </div>
+    <div class="tsb-chips" role="group" aria-label="Statuses">
+      ${chipStatuses.map(([k,l,i,g])=>`<button class="tsb-chip ts-tile tsb-c-${g}${f===k?' on':''}${counts[k]?'':' zero'}" data-status="${k}" onclick="tsSetFilter('status',${f===k?`'${activeGroup?'__'+activeGroup:''}'`:`'${k}'`})" aria-pressed="${f===k?'true':'false'}">${i} <span class="l">${esc(l)}</span> <span class="c n">${counts[k]||0}</span></button>`).join('')}
+    </div>
+    <div class="tsb-bar">
+      ${staffSel}
+      <select aria-label="Service" onchange="tsSetFilter('cat',this.value)">
+        <option value="">🗂️ All services</option>
         ${(typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[]).map(c=>`<option value="${esc(c)}"${_tsFilter.cat===c?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')}
       </select>
-      <span class="ts-meta">${list.length} inquir${list.length===1?'y':'ies'}</span>
+      ${filtered?'<button class="tsb-clear" onclick="tsClearFilters()">Clear filters</button>':''}
+      <span class="ts-meta">Showing ${Math.min(list.length,_tsShown)} of ${list.length}</span>
     </div>
-    <div class="card" style="padding:6px 8px"><div style="overflow-x:auto">
-      <table class="ts-tbl">
-        <thead><tr><th>Inquiry</th><th>Service</th>${all?'<th>Staff</th>':''}<th>Status</th><th>Follow-up</th><th>Updated</th></tr></thead>
-        <tbody>${list.length?list.slice(0,_tsShown).map(l=>{
-          const st=tsStatusOf(l); const grp=TS_BY_KEY[st.key][3]; const f=tsFollowUpState(l);
-          return `<tr data-lead="${Number(l.Id)}" class="${tsOriginClass(l)}">
-            <td><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(tsLeadName(l))}</b></a>${tsOriginBadge(l)}
-              <div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')}</div></td>
-            <td>${tsInlineCategoryHTML(l)}</td>
-            ${all?`<td>${esc(tsOwnerName(l.Owner))}</td>`:''}
-            <td><select class="ts-sel ${grp}" aria-label="Status" onchange="tsSetStatus(${Number(l.Id)},this.value)">${TS_STATUSES.map(s=>opt(st.key,s)).join('')}</select>${st.auto?'<span class="ts-auto">auto</span>':''}</td>
-            <td>${st.key==='follow_up_pending'?`<input type="date" class="ts-date" aria-label="Follow-up date" value="${esc(String(l.TravelFollowUpAt||'').slice(0,10))}" onchange="tsSetFollowUp(${Number(l.Id)},this.value)">${f==='overdue'?'<span class="ts-due overdue">Overdue</span>':f==='today'?'<span class="ts-due today">Today</span>':''}`:'<span class="ts-meta">—</span>'}</td>
-            <td class="ts-meta">${l.TravelStatusAt?`${esc(tsAgo(l.TravelStatusAt))}${l.TravelStatusBy?' · '+esc(tsOwnerName(l.TravelStatusBy)):''}`:'—'}</td>
-          </tr>`;}).join(''):`<tr><td colspan="${all?6:5}" class="ts-empty">No inquiries match these filters.</td></tr>`}</tbody>
-      </table></div>
-      ${list.length>_tsShown?`<div style="text-align:center;padding:10px"><button class="btn-ghost" onclick="tsMore()">Show more (${list.length-_tsShown} left)</button></div>`:''}
-    </div>`;
+    <div class="tsb-list${all?'':' nostaff'}">
+      <div class="tsb-cols"><span>Inquiry</span><span>Service</span>${all?'<span>Staff</span>':''}<span>Status</span><span>Follow-up</span><span>Updated</span><span></span></div>
+      ${list.length?list.slice(0,_tsShown).map(row).join(''):`<div class="tsb-empty"><b>🔍</b>No inquiries match these filters.${filtered?'<br><button class="tsb-clear" onclick="tsClearFilters()">Clear filters</button>':''}</div>`}
+    </div>
+    ${list.length>_tsShown?`<div class="tsb-more"><button class="btn-ghost" onclick="tsMore()">Show more (${list.length-_tsShown} left)</button></div>`:''}`;
+}
+function tsClearFilters(){ _tsFilter={status:'',owner:'',cat:'',q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
+
+/* ── Status picker: a popover under the pill on PC, a bottom sheet on a phone. Picking "Follow up
+   pending" goes straight to a date step (Today / Tomorrow / In 3 days / Next week / any date), so
+   the status and its date are saved in one change. Esc or a tap outside closes it. */
+function tsIsoIn(days){ const d=new Date(); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); }
+function tsPickClose(){
+  $id('tsbBack')?.remove(); $id('tsbSheet')?.remove();
+  document.removeEventListener('keydown', tsPickKey, true);
+  const ret=_tsPickReturn; _tsPickReturn=null;
+  _tsPickerOpen=false;
+  if(_tsRenderPending){ _tsRenderPending=false; renderTravelStatus(); }
+  if(ret){ const b=document.querySelector(`#tsBody .tsb-row[data-lead="${ret}"] .tsb-pill`); b?.focus({preventScroll:true}); }
+}
+let _tsPickReturn=null;
+function tsPickKey(e){
+  if(e.key==='Escape'){ e.preventDefault(); tsPickClose(); return; }
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    const opts=[...document.querySelectorAll('#tsbSheet .tsb-opt, #tsbSheet .tsb-dates button')]; if(!opts.length) return;
+    e.preventDefault(); const i=opts.indexOf(document.activeElement);
+    opts[(i+(e.key==='ArrowDown'?1:-1)+opts.length)%opts.length].focus();
+  }
+}
+function tsPick(id, anchor, step){
+  const lead=(typeof allLeads!=='undefined'?allLeads:[]).find(l=>Number(l.Id)===Number(id)); if(!lead) return;
+  tsPickClose();
+  _tsPickerOpen=true; _tsPickReturn=Number(id);
+  const back=document.createElement('div'); back.className='tsb-back'; back.id='tsbBack'; back.onclick=tsPickClose;
+  const sh=document.createElement('div'); sh.className='tsb-sheet'; sh.id='tsbSheet'; sh.setAttribute('role','dialog'); sh.setAttribute('aria-modal','true'); sh.setAttribute('aria-label','Change status');
+  document.body.append(back, sh);
+  const draw=(mode)=>{
+    const cur=tsStatusOf(lead).key;
+    sh.classList.toggle('list', mode!=='date'); sh.style.left=''; sh.style.top='';
+    if(mode==='date'){
+      const quick=[['Today',0],['Tomorrow',1],['In 3 days',3],['Next week',7]];
+      sh.innerHTML=`<div class="grab"></div>
+        <h4>⏰ Follow up when? · ${esc(tsLeadName(lead))}</h4>
+        <div class="tsb-dates">${quick.map(([l,d])=>`<button data-days="${d}" onclick="tsPickDate(${Number(id)},'${tsIsoIn(d)}')">${l}<small>${esc(tsFmtDate(tsIsoIn(d)))}</small></button>`).join('')}</div>
+        <div class="tsb-custom"><input type="date" id="tsbDate" aria-label="Pick a date" min="${tsIsoIn(0)}" value="${esc(String(lead.TravelFollowUpAt||'').slice(0,10)||tsIsoIn(1))}"><button onclick="tsPickDate(${Number(id)},$id('tsbDate').value)">Save</button></div>
+        ${cur==='follow_up_pending'?'':'<button class="tsb-backlink" onclick="tsPickBack()">← Back to statuses</button>'}`;
+    } else {
+      const sec=(title, keys)=>`<h4>${title}</h4>${TS_STATUSES.filter(s=>keys(s[0])).map(([k,l,i,g])=>`<button class="tsb-opt tsb-c-${g}${k===cur?' cur':''}" data-status="${k}" onclick="tsPickStatus(${Number(id)},'${k}')"><span class="dot"></span>${i} ${esc(l)}${k===cur?'<span class="ck">✓</span>':''}</button>`).join('')}`;
+      sh.innerHTML=`<div class="grab"></div><div class="ttl">${esc(tsLeadName(lead))}</div>
+        <div class="tsb-cols2"><div>${sec('In progress', k=>tsGroupOf(k)==='open')}</div><div>${sec('Won', k=>TS_WON.has(k))}${sec('Lost', k=>TS_LOST.has(k))}</div></div>`;
+    }
+    // PC: under the pill (or above it when there's no room), kept on screen.
+    if(!window.matchMedia('(max-width:767px)').matches && anchor){
+      const r=anchor.getBoundingClientRect(), w=sh.offsetWidth, h=sh.offsetHeight;
+      let left=Math.min(Math.max(8, r.left), window.innerWidth-w-8);
+      let top=r.bottom+6; if(top+h>window.innerHeight-8) top=Math.max(8, r.top-h-6);
+      sh.style.left=left+'px'; sh.style.top=top+'px';
+    }
+    (sh.querySelector('.tsb-opt.cur')||sh.querySelector('.tsb-opt, .tsb-dates button'))?.focus({preventScroll:true});
+  };
+  window.tsPickBack=()=>draw('list');
+  sh._draw=draw;
+  draw(step==='date'?'date':'list');
+  document.addEventListener('keydown', tsPickKey, true);
+}
+function tsPickStatus(id, key){
+  if(key==='follow_up_pending'){ $id('tsbSheet')?._draw('date'); return; }
+  tsPickClose();
+  tsSetStatus(id, key);
+}
+function tsPickDate(id, date){
+  if(!date) return;
+  const lead=allLeads.find(l=>Number(l.Id)===Number(id));
+  tsPickClose();
+  if(lead?.TravelStatus==='follow_up_pending') return tsSetFollowUp(id, date);
+  return tsSave(id, {TravelStatus:'follow_up_pending', TravelFollowUpAt:date});
 }
 
 function tsSetFilter(k,v){

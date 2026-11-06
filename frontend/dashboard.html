@@ -6801,7 +6801,7 @@ async function onLiveLeadUpdatedEvent(msg){
   if(typeof tsRefreshCategoryViews==='function') tsRefreshCategoryViews();
   // A teammate's Status Board / pipeline change shows here without a refresh (unless this person
   // is mid-edit on the board, same rule as renderHome).
-  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !$id('tsBody')?.contains(document.activeElement)) renderTravelStatus(); }catch(e){}
+  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !($id('tsBody')?.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))) renderTravelStatus(); }catch(e){}
   try{ if(fields.some(f=>f!=='ServiceCategory') && !$id('pageLeads')?.classList.contains('hidden') && !document.querySelector('#pageLeads select:focus, #pageLeads input:focus')) renderLeadsCurrentView(); }catch(e){}
   if(_reportsPage==='category'&&!$id('pageReports')?.classList.contains('hidden')) renderReportsCategory();
 }
@@ -6890,7 +6890,7 @@ function renderHome(){
   // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
   try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
   // 📌 Status Board (travel-status.js) — refresh with new leads unless someone is mid-edit on it.
-  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !$id('tsBody')?.contains(document.activeElement)) renderTravelStatus(); }catch(e){}
+  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !($id('tsBody')?.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))) renderTravelStatus(); }catch(e){}
 }
 function renderHomeScoped(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
@@ -24470,7 +24470,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=6"></script>
+<script src="travel-status.js?v=7"></script>
 <script src="travel-view.js?v=7"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>
