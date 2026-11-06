@@ -21738,6 +21738,11 @@ async function ltSendPicker(env,c,clientId,convId,phone,inboxId,text,items,{butt
   const rows=(items||[]).filter(i=>i&&(i.title||i.value)).slice(0,10);
   if(!interactive&&rows.length<=3)return rows.length?engineSendChatwootQuickReply(env,c,clientId,convId,text,rows):(await engineSendChatwootReply(env,c,clientId,convId,text),null);
   engineSendChatwootTyping(env,c,convId,false);
+  if(!interactive&&String(text||'').trim().length>WA_INTERACTIVE_BODY_MAX){
+    const {lead,body}=engineSplitInteractiveBody(text);
+    for(const part of lead)await engineSendChatwootReply(env,c,clientId,convId,part);
+    text=body;
+  }
   const prepared=rows.map(i=>({title:engineTruncateButtonTitle(String(i.title||i.value),24),value:String(i.value||i.title).slice(0,200),description:i.description?engineTruncateButtonTitle(String(i.description),72):''}));
   const body=interactive||{type:'list',body:{text:String(text||'').slice(0,1024)},action:{button:engineTruncateButtonTitle(button,20),sections:[{title:engineTruncateButtonTitle(section,24),rows:prepared.map(i=>({id:i.value,title:i.title,...(i.description?{description:i.description}:{})}))}]}};
   const creds=resolveMetaCredentials(c,{inbox_id:inboxId}),to=String(phone||'').replace(/\D/g,'');
@@ -24497,8 +24502,41 @@ export function engineTruncateButtonTitle(title, cap){
 // resolving the specific product. Callers now use THIS return value for routing.quickReplies
 // instead of guessing, so what's stored is always exactly what was sent (or null when nothing
 // tappable actually went out, so a failed send doesn't get misrecorded as one that succeeded).
+// WhatsApp interactive messages (reply buttons / lists) reject a body over 1024 characters with
+// "(#131009) Parameter value is not valid" — the whole reply, flight options included, never
+// arrives. A longer text is split at paragraph breaks: everything but the closing paragraphs goes
+// out first as plain text (in chunks under WhatsApp's 4096 limit), and the buttons carry the
+// closing paragraphs that fit, or a short prompt.
+export const WA_INTERACTIVE_BODY_MAX=1024;
+export function engineSplitInteractiveBody(text,max=WA_INTERACTIVE_BODY_MAX,fallback='Please choose an option below 👇'){
+  const t=String(text||'').trim();
+  if(t.length<=max)return {lead:[],body:t};
+  const paras=t.split(/\n{2,}/);
+  let body='';
+  while(paras.length>1){
+    const next=body?`${paras[paras.length-1]}\n\n${body}`:paras[paras.length-1];
+    if(next.length>max)break;
+    body=next;paras.pop();
+  }
+  if(!body)body=fallback;
+  const lead=[];let chunk='';
+  for(const p of paras){
+    const piece=p.length>4000?p.match(/[\s\S]{1,4000}/g):[p];
+    for(const part of piece){
+      if(chunk&&chunk.length+2+part.length>4000){lead.push(chunk);chunk='';}
+      chunk=chunk?`${chunk}\n\n${part}`:part;
+    }
+  }
+  if(chunk)lead.push(chunk);
+  return {lead,body};
+}
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
   if(typeof text==='string') text=engineFormatBotText(c, text);
+  if(typeof text==='string'&&text.trim().length>WA_INTERACTIVE_BODY_MAX&&(items||[]).some(it=>it&&(it.title||it.value))){
+    const {lead,body}=engineSplitInteractiveBody(text);
+    for(const part of lead) await engineSendChatwootReply(env, c, clientId, convId, part);
+    text=body;
+  }
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
   const titleCap=isList?24:20;
@@ -24583,6 +24621,11 @@ async function engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, tex
     return {title:engineTruncateButtonTitle(full,titleCap),value:String(item.value||item.title).slice(0,200),full};
   });
   const destination=String(phone||'').replace(/\D/g,'');
+  if(c.wa_phone_id&&c.wa_token&&destination&&String(text||'').trim().length>WA_INTERACTIVE_BODY_MAX){
+    const {lead,body}=engineSplitInteractiveBody(text);
+    for(const part of lead) await engineSendChatwootReply(env, c, clientId, convId, part);
+    text=body;
+  }
   if(c.wa_phone_id&&c.wa_token&&destination){
     const action=isList
       ? {button:'Choose an item',sections:[{title:'Available options',rows:prepared.map(item=>({id:item.value,title:item.title,...(item.title!==item.full?{description:engineTruncateButtonTitle(item.full,72)}:{})}))}]}
