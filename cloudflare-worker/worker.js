@@ -17,6 +17,7 @@ import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyin
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
+import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -10406,6 +10407,123 @@ async function handleEcomCategoryMediaServe(env, key){
   return new Response(obj.body, {headers});
 }
 
+/* ── PEOPLE & CONTACTS (business-contacts.js) ──────────────────────────────────────────────────
+   Settings → 📇 People & Contacts: the official name, logo, address, phone, email and the contact
+   person for each department. D1 business_contacts holds one JSON row per account (no CLIENTS
+   column, so NocoDB needs no change). Logos go in the ECOM_CATEGORY_MEDIA R2 bucket under
+   brandlogo/, served publicly by /brand/logo/… so a PDF, email or plain <img> can load them. ── */
+const _bcSchemaReady=new WeakSet();
+const _bcCache=new WeakMap(); // per client object, so one bot turn reads D1 once
+async function bcEnsureSchema(env){
+  if(!env.DB) return false;
+  if(_bcSchemaReady.has(env.DB)) return true;
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_contacts (client_id INTEGER PRIMARY KEY, data_json TEXT NOT NULL, updated_by TEXT, updated_at TEXT NOT NULL)`).run();
+    _bcSchemaReady.add(env.DB);
+    return true;
+  }catch(e){ return false; }
+}
+async function bcLoad(env,cid){
+  if(!await bcEnsureSchema(env)) return null;
+  const row=await env.DB.prepare(`SELECT data_json,updated_at FROM business_contacts WHERE client_id=?`).bind(Number(cid)).first().catch(()=>null);
+  const data=bcParse(row?.data_json);
+  return data?{...data,updated_at:row.updated_at}:null;
+}
+// The saved contacts for a client, or null. Never throws: a D1 hiccup must not stop a reply.
+export async function bcForClient(env,c){
+  if(!c||!c.Id) return null;
+  if(_bcCache.has(c)) return _bcCache.get(c);
+  let data=null;
+  try{ data=await bcLoad(env,c.Id); }catch(e){}
+  _bcCache.set(c,data);
+  return data;
+}
+// GET /settings/contacts — any signed-in teammate can read; can_manage says who may edit.
+async function handleBusinessContactsGet(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,payload.cid);
+  if(!c) return json({error:'Client not found'},404);
+  const saved=await bcLoad(env,payload.cid);
+  const data=saved||bcEmpty();
+  let teammates=[];
+  try{ const meta=await tmMetaAll(env,payload.cid); teammates=tmMembers(c,meta).filter(m=>m.status!=='removed').map(m=>({email:m.email,name:m.name||m.email})); }catch(e){}
+  const ownerEmail=tmEmail(c.authentik_email);
+  if(ownerEmail&&!teammates.some(t=>t.email===ownerEmail)) teammates.unshift({email:ownerEmail,name:c.client_name?`${c.client_name} (owner)`:ownerEmail});
+  return json({data,saved:!!saved,prompt_block:bcPromptBlock(data),can_manage:tmCanManage(c,payload.email),
+    billing:{client_name:c.client_name||'',company_address:c.company_address||'',billing_email:c.billing_email||''},
+    teammates,logo_upload:!!env.ECOM_CATEGORY_MEDIA});
+}
+// POST /settings/contacts — owner or Admin. Saves only when the data is valid.
+async function handleBusinessContactsSave(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  const body=await request.json().catch(()=>null);
+  if(!body||typeof body!=='object') return json({error:'JSON body required'},400);
+  const {data,errors}=bcNormalize(body.data||body);
+  if(errors.length) return json({error:errors[0],errors},400);
+  if(!await bcEnsureSchema(env)) return json({error:'Storage is not available right now — please try again.'},503);
+  // Logo links are set only by the upload route; a save keeps whatever is stored.
+  const prev=await bcLoad(env,a.cid);
+  data.identity.logo_url=prev?.identity?.logo_url||'';
+  data.identity.logo_wide_url=prev?.identity?.logo_wide_url||'';
+  data.identity.logo_print_url=prev?.identity?.logo_print_url||'';
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO business_contacts (client_id,data_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET data_json=excluded.data_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+    .bind(a.cid,JSON.stringify(data),a.me,now).run();
+  await tmAudit(env,a.cid,a.me,'contacts_saved','',{departments:data.departments.length}).catch(()=>{});
+  return json({ok:true,data:{...data,updated_at:now},prompt_block:bcPromptBlock(data)});
+}
+const BC_LOGO_TYPES={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}; // no SVG: it can carry script
+const BC_LOGO_MAX_BYTES=2*1024*1024;
+// print: a JPEG copy of the square logo the settings page makes, for PDFs written on the server.
+const BC_LOGO_VARIANTS={square:'logo_url',wide:'logo_wide_url',print:'logo_print_url'};
+// POST /settings/contacts/logo — multipart {file, variant: square|wide}; {variant, remove:true} as
+// JSON removes it. A new file gets a new key, so every cached copy updates at once.
+async function handleBusinessContactsLogo(request,env){
+  const a=await tmManagerAuth(request,env); if(a.error) return a.error;
+  if(!env.ECOM_CATEGORY_MEDIA) return json({error:'Logo storage is not set up on this server.'},503);
+  if(!await bcEnsureSchema(env)) return json({error:'Storage is not available right now — please try again.'},503);
+  const isJson=/json/i.test(request.headers.get('content-type')||'');
+  let variant,file=null,remove=false;
+  if(isJson){ const b=await request.json().catch(()=>({})); variant=b.variant; remove=b.remove===true; }
+  else{ const form=await request.formData().catch(()=>null); if(!form) return json({error:'multipart form data required'},400); variant=form.get('variant'); file=form.get('file'); }
+  const field=BC_LOGO_VARIANTS[String(variant||'square')];
+  if(!field) return json({error:'variant must be square, wide or print'},400);
+  const data=(await bcLoad(env,a.cid))||bcEmpty();
+  const oldUrl=data.identity[field]||'';
+  const oldKey=oldUrl.includes('/brand/logo/')?oldUrl.split('/brand/logo/')[1]:'';
+  if(remove){
+    data.identity[field]='';
+  }else{
+    if(!file||typeof file==='string') return json({error:'Choose an image file.'},400);
+    const mime=String(file.type||'').split(';')[0].toLowerCase();
+    const ext=BC_LOGO_TYPES[mime];
+    if(!ext) return json({error:'Logo must be a PNG, JPG or WebP image.'},400);
+    if(variant==='print'&&ext!=='jpg') return json({error:'The print copy must be a JPEG.'},400);
+    if(file.size>BC_LOGO_MAX_BYTES) return json({error:'Logo is too large — max 2 MB.'},400);
+    const key=`brandlogo/${a.cid}/${variant}-${Date.now().toString(36)}.${ext}`;
+    await env.ECOM_CATEGORY_MEDIA.put(key,await file.arrayBuffer(),{httpMetadata:{contentType:mime}});
+    data.identity[field]=`${env.WORKER_BASE_URL||new URL(request.url).origin}/brand/logo/${key}`;
+  }
+  if(oldKey&&oldKey.startsWith(`brandlogo/${a.cid}/`)) await env.ECOM_CATEGORY_MEDIA.delete(oldKey).catch(()=>{});
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO business_contacts (client_id,data_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET data_json=excluded.data_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+    .bind(a.cid,JSON.stringify(data),a.me,now).run();
+  return json({ok:true,variant,url:data.identity[field]});
+}
+// GET /brand/logo/<key> — public (PDFs, emails and <img> tags send no session); keys aren't guessable.
+async function handleBrandLogoServe(env,key){
+  if(!key||!/^brandlogo\/\d+\/[a-z]+-[a-z0-9]+\.(?:png|jpg|webp)$/.test(key)||!env.ECOM_CATEGORY_MEDIA) return json({error:'Not found'},404);
+  const obj=await env.ECOM_CATEGORY_MEDIA.get(key);
+  if(!obj) return json({error:'Not found'},404);
+  const headers=new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set('etag',obj.httpEtag);
+  headers.set('Cache-Control','public, max-age=31536000, immutable');
+  headers.set('X-Content-Type-Options','nosniff');
+  return new Response(obj.body,{headers});
+}
+
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
    BUSINESS SERVICES MODULE
    D1-backed CRUD for service centres (CSC/Akshaya-style). Services behave like Ecom products
@@ -14044,7 +14162,7 @@ async function ecomBuildElectronicsOrderPdf(c, details){
 
   // Fetch and attempt to embed JPEG logo
   let logoJpeg=null, imgPixW=0, imgPixH=0, logoDisplayW=0, logoDisplayH=0;
-  const logoUrl=(c?.quote_logo_url||'').trim();
+  const logoUrl=bcLogoForPdf(await bcForClient(env, c), c);
   if(logoUrl && (logoUrl.startsWith('http')||logoUrl.startsWith('https'))){
     try{
       const ctrl=new AbortController();
@@ -21211,7 +21329,7 @@ async function taDeliverWithButtons(env,c,clientId,convId,text,buttons,prompt){
 async function taSendItineraryPdf(env,c,clientId,convId,pkg,itin){
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!convId)return false;
   try{
-    const assets=await taFetchItineraryAssets(pkg,itin,{logoUrl:String(itin?.logo_url||c.quote_logo_url||'').trim()});
+    const assets=await taFetchItineraryAssets(pkg,itin,{logoUrl:String(itin?.logo_url||bcLogoForPdf(await bcForClient(env,c),c)||'').trim()});
     const bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',accent:c.quote_accent_color||'',assets});
     const fd=new FormData();
     fd.append('content',`📄 Here is the itinerary for *${pkg.name}*.`);
@@ -21537,8 +21655,12 @@ export async function tfRunCore(env,c,st,text,{packages=[],history=[],lang='en',
     if(pkg){try{packageText=taPackageItineraryText(pkg,null);}catch(e){packageText=pkg.name;}}
     const p=tfBuildAiPrompt(st,{text,agency:c.client_name||'',mainPrompt:c.main_prompt||'',kb:engineSelectKb(c.kb_summary||'','QUESTION'),packageText,history,lang,
       langName:ENGINE_LANG_NAMES[lang]||lang,replyStyle:engineReplyStyleRules(c),today});
-    const raw=await engineGeminiGenerateWithFallback(env,c,p.system,p.user,{json:true,maxOutputTokens:800,temperature:0.3,caller:'travel_flow'}).catch(()=>null);
+    const tfContacts=await bcForClient(env,c);
+    const tfSystem=engineWithContacts(p.system,tfContacts);
+    const raw=await engineGeminiGenerateWithFallback(env,c,tfSystem,p.user,{json:true,maxOutputTokens:800,temperature:0.3,caller:'travel_flow'}).catch(()=>null);
     ai=tfParseAiReply(raw);
+    if(ai?.reply) ai.reply=await engineGuardContacts(env,c,ai.reply,tfSystem,p.user);
+    if(ai?.answer) ai.answer=await engineGuardContacts(env,c,ai.answer,tfSystem,p.user);
     // Handover is off for this agency: keep helping in the flow instead.
     if(ai?.action==='handover'&&c.handover_enabled==='No')ai.action='continue';
   }
@@ -23000,7 +23122,7 @@ async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   sys+=promptFirstReply
     ? `\n\nA new customer has just messaged for the first time. Write the FIRST reply exactly as the business prompt above says the first reply / welcome message must be — same content, offer, price and question it specifies, in ${lang}. Do not replace it with a generic greeting, do not add "How can I help you today?", and output only the customer-facing message.`
     : `\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
-  const out=await engineCallLlm(env, c, sys, '(new conversation)', promptFirstReply?300:120);
+  const out=await engineCallLlmCustomer(env, c, sys, '(new conversation)', promptFirstReply?300:120);
   // When the LLM fails, build a minimal intro from the business name so the customer sees
   // "Welcome to [Name]! How can I help you today?" instead of a bare unanswered question.
   const _bizName=String(c.client_name||'').trim();
@@ -23370,26 +23492,82 @@ export function enginePriceGuardOpts(c, systemPrompt, userText, replyLang){
 // retry still isn't clean, a last-resort string-replace strips a still-hallucinated link (never
 // knowingly sends a fabricated URL a customer might click) rather than blocking the reply outright.
 async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks, priceGuard){
+  // People & Contacts: the official details go AFTER the bot prompt, and (unless the owner turned
+  // the check off) any phone number or email the reply invents is regenerated away, then removed.
+  const contacts=await bcForClient(env, c);
+  systemPrompt=engineWithContacts(systemPrompt, contacts);
+  const contactSource=contacts?.guard===false ? null : engineContactSource(c, contacts, systemPrompt, userText);
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
-  if(!reply) return reply;
+  if(!reply || reply==='One moment 🙏') return reply;
   const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
   const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
   const badPrice=priceGuard ? engineFindHallucinatedPrice(reply, priceGuard.priceSource) : null;
-  if(!isRepeat && !badLink && !badPrice) return reply;
+  const badContact=contactSource!=null ? bcFindInventedContact(reply, contactSource) : null;
+  if(badContact) await reportOpsError(env, 'Bot reply invented a phone number or email; regenerated', new Error(badContact), {clientId:c?.Id}).catch(()=>{});
+  if(!isRepeat && !badLink && !badPrice && !badContact) return reply;
   let correction='';
   if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
   if(badLink){
     const linksLine=allowedLinks.length?`The ONLY real link(s) you may share right now: ${allowedLinks.join(', ')}.`:'You have NO real link to share right now — do not include any URL at all.';
     correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
   }
+  if(badContact) correction+=bcCorrection(badContact, contacts);
   if(badPrice) correction+=`\n\nIMPORTANT: your draft reply quoted a price that does not exist in the Product Catalog or business prompt: "${badPrice}". Never invent, estimate, round, total, discount or convert a price. Quote only a price written exactly in the data above for that exact product; if there isn't one, say the team will confirm the exact price.`;
   const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
   // When the only problem was a made-up price, the original reply must not go out as the fallback.
-  if(!retryReply) return badPrice ? engineStripHallucinatedPrices(env, c, reply, priceGuard.priceSource, priceGuard.replyLang) : reply;
-  const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
-  let out=retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
-  if(priceGuard && engineFindHallucinatedPrice(out, priceGuard.priceSource)) out=await engineStripHallucinatedPrices(env, c, out, priceGuard.priceSource, priceGuard.replyLang);
+  let out;
+  if(!retryReply || retryReply==='One moment 🙏'){
+    out=badPrice ? await engineStripHallucinatedPrices(env, c, reply, priceGuard.priceSource, priceGuard.replyLang) : reply;
+  }else{
+    const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
+    out=retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
+    if(priceGuard && engineFindHallucinatedPrice(out, priceGuard.priceSource)) out=await engineStripHallucinatedPrices(env, c, out, priceGuard.priceSource, priceGuard.replyLang);
+  }
+  // Never knowingly send an invented phone number or email: drop the line that carries it.
+  if(contactSource!=null && bcFindInventedContact(out, contactSource)) out=bcStripInvented(out, contactSource)||await engineLocalizeReply(env, c, 'Our team will share the right contact with you shortly.', c.language||'en');
   return out;
+}
+// People & Contacts: after a hand-over, a second fixed message with the contact for the department
+// the customer's message is about (else the default). Only the short lead-in is translated; the
+// contact lines are copied from settings as saved. Sent as text (numbers read badly as voice) and
+// kept out of ConvHistory, so the hand-over loop checks still see the hand-over text unchanged.
+async function engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx){
+  try{
+    const card=bcContactCard(await bcForClient(env, c), userText);
+    if(!card) return false;
+    let lead='You can also reach the right person directly:';
+    if(replyLang && replyLang!=='en'){
+      const t=await engineLocalizeReply(env, c, lead, replyLang).catch(()=>null);
+      if(t && !/\d/.test(t) && t.length<200) lead=t;
+    }
+    return await engineDeliverReply(env, c, clientId, convId, `${lead}\n\n${card}`, {mediaType:'text', langCode:replyLang, ctx});
+  }catch(e){ await reportOpsError(env, 'engineSendHandoverContact', e, {clientId}).catch(()=>{}); return false; }
+}
+// The bot prompt with the People & Contacts section after it ('' section when nothing is saved).
+function engineWithContacts(systemPrompt, contacts){
+  const block=bcPromptBlock(contacts);
+  return block && !String(systemPrompt||'').includes('## Official business details') ? String(systemPrompt||'')+block : String(systemPrompt||'');
+}
+// Everything a reply may quote a phone/email from: the prompt it saw, the customer's message, the
+// full bot prompt and knowledge base (in case a prompt builder trimmed them) and the contacts.
+function engineContactSource(c, contacts, systemPrompt, userText){
+  return bcAllowedSource(contacts, systemPrompt, userText, c?.main_prompt, c?.kb_summary, c?.client_phone, c?.wa_display_phone);
+}
+// A customer-facing reply from one LLM call, with the same contact section and check as
+// engineCallLlmAvoidingRepeat (used where there is no previous bot message to compare against).
+async function engineCallLlmCustomer(env, c, systemPrompt, userText, maxTokens){
+  return engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens);
+}
+// For replies produced outside engineCallLlmAvoidingRepeat (travel flows' JSON reply): remove an
+// invented contact from finished text.
+async function engineGuardContacts(env, c, text, systemPrompt, userText){
+  if(!text) return text;
+  const contacts=await bcForClient(env, c);
+  if(contacts?.guard===false) return text;
+  const src=engineContactSource(c, contacts, systemPrompt, userText);
+  if(!bcFindInventedContact(text, src)) return text;
+  await reportOpsError(env, 'Bot reply invented a phone number or email; line removed', new Error(String(bcFindInventedContact(text, src))), {clientId:c?.Id}).catch(()=>{});
+  return bcStripInvented(text, src);
 }
 
 // Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
@@ -27606,7 +27784,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const _qSys=_isGreeting
           ? `You are a friendly WhatsApp sales assistant for an electronics ecommerce brand. The customer has greeted you while they have an active order in progress. Welcome them warmly (1 line), then briefly remind them what step their order is at (the current order step in the context below) and let them know they can continue or cancel. Use 1 emoji. Do NOT answer product questions. Respond in the same language as the customer's message.\n\n${_prodCtx}`
           : `You are a helpful WhatsApp sales assistant for an electronics/home-appliance ecommerce brand. Answer the customer's question directly and naturally using the product details below — no hallucination, no invented specs. Keep the reply concise (2-5 lines), friendly, and use 1-2 fitting emojis. Do NOT include phrases like "Would you like to continue" or offer buttons — just answer the question. Respond in the same language as the customer's message.\n\n${_prodCtx}`;
-        const _aiAnswer=await engineCallLlm(env,c,_qSys,userText.trim(),180);
+        const _aiAnswer=await engineCallLlmCustomer(env,c,_qSys,userText.trim(),180);
         const _finalReply=`${_aiAnswer}\n\nWould you like to continue with the order?`;
         sentText=await engineLocalizeReply(env,c,_finalReply,replyLang);
         routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
@@ -28813,6 +28991,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
+      await engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx);
     } else if(routing.route==='selfserve'){
       // Reached the end of the funnel with a positive reply and a self-serve link is configured —
       // send the order/booking link itself, a plain scripted send like qualify_next (not an LLM
@@ -29492,7 +29671,7 @@ async function handleEcomPublicClient(request, env){
   const url=new URL(request.url);
   const c=await ecomPublicResolveClient(env, url);
   if(!c) return json({error:'Store not found'},404);
-  return json({...ecomPublicClientOut(c), ...await marPublicPixel(env, c)});
+  return json({...ecomPublicClientOut(c), logo_url:bcLogoForPages(await bcForClient(env, c), c)||null, ...await marPublicPixel(env, c)});
 }
 
 async function handleEcomPublicProducts(request, env){
@@ -29639,7 +29818,7 @@ async function handleApptPublicClient(request, env){
   if(!c) return json({error:'Booking page not found'}, 404);
   // Healthcare clients use D1; non-healthcare clients require appt_enabled
   if(!apptPublicIsEnabled(c)) return json({error:'Booking page not found'}, 404);
-  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No', ...await marPublicPixel(env, c)});
+  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No', logo_url:bcLogoForPages(await bcForClient(env, c), c)||null, ...await marPublicPixel(env, c)});
 }
 
 async function handleApptPublicServices(request, env){
@@ -40171,6 +40350,7 @@ async function handlePublicChatConfig(request, env){
     client_name: c.client_name||'',
     greeting:    c.chat_greeting||'Hi! How can I help you today? 👋',
     brand_color: c.brand_color||'#0D9C93',
+    logo_url:    bcLogoForPages(await bcForClient(env, c), c)||null,
   });
 }
 
@@ -40209,7 +40389,7 @@ async function handlePublicChatMessage(request, env){
     userText=`[Conversation so far]\n${ctx}\n\n[New message from customer]\n${message}`;
   }
 
-  const reply=await engineCallLlm(env, c, sys, userText, 350);
+  const reply=await engineCallLlmCustomer(env, c, sys, userText, 350);
   const botText=reply||"I'm sorry, I couldn't process that. Please try again.";
 
   await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
@@ -40711,6 +40891,9 @@ export default {
       else if(url.pathname==='/team/invite' && request.method==='POST'){ res=await handleTeamInvite(request, env); }
       else if(url.pathname==='/team/check-user' && request.method==='POST'){ res=await handleTeamCheckUser(request, env); }
       else if(url.pathname==='/team/add-existing' && request.method==='POST'){ res=await handleTeamAddExisting(request, env); }
+      else if(url.pathname==='/settings/contacts' && request.method==='GET'){ res=await handleBusinessContactsGet(request, env); }
+      else if(url.pathname==='/settings/contacts' && request.method==='POST'){ res=await handleBusinessContactsSave(request, env); }
+      else if(url.pathname==='/settings/contacts/logo' && request.method==='POST'){ res=await handleBusinessContactsLogo(request, env); }
       else if(url.pathname==='/team/members' && request.method==='GET'){ res=await handleTeamMembers(request, env); }
       else if(url.pathname==='/team/audit' && request.method==='GET'){ res=await handleTeamAudit(request, env); }
       else if(url.pathname==='/team/diagnose' && request.method==='POST'){ res=await handleTeamDiagnose(request, env); }
@@ -41379,6 +41562,7 @@ export default {
       else if(url.pathname==='/hospitality/units/media' && request.method==='POST'){ res=await handleHospitalityUnitMediaUpload(request, env); }
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
+      else if(url.pathname.startsWith('/brand/logo/') && request.method==='GET'){ res=await handleBrandLogoServe(env, url.pathname.slice('/brand/logo/'.length)); }
       else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
       // FLOWVYNE PLUGIN
       else if(url.pathname==='/flowvyne/settings' && request.method==='GET'){ res=await handleFlowvyneSettingsGet(request,env); }

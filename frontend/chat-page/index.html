@@ -187,6 +187,9 @@ async function init(){
     $('headerName').textContent=cfg.client_name||'Chat';
     const initials=(cfg.client_name||'L').trim().slice(0,1).toUpperCase();
     $('avatar').textContent=initials;
+    // Official logo from Settings → 📇 People & Contacts, in place of the initial.
+    if(cfg.logo_url&&/^https:\/\//i.test(cfg.logo_url)){ const av=$('avatar'), im=new Image(); im.alt=''; im.style.cssText='width:100%;height:100%;object-fit:contain;border-radius:50%;background:#fff';
+      im.onload=()=>{ av.textContent=''; av.style.background='#fff'; av.appendChild(im); }; im.src=cfg.logo_url; }
     showChat();
 
     const hist=histRes.ok?await histRes.json():{messages:[]};
