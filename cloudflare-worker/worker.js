@@ -313,6 +313,58 @@ async function logEngineSkip(env, clientId, phone, convId, reason, detail){
 async function cleanupEngineEventLog(env){
   if(!env.DB) return;
   try{ await env.DB.prepare(`DELETE FROM engine_event_log WHERE created_at < ?`).bind(new Date(Date.now()-30*86400000).toISOString()).run(); }catch(e){}
+  try{ await env.DB.prepare(`DELETE FROM bot_reply_log WHERE created_at < ?`).bind(new Date(Date.now()-30*86400000).toISOString()).run(); }catch(e){}
+}
+
+/* ── Bot reply trace (Settings → Logs) ─────────────────────────────────────────────────────────
+   Every message the bot sends is logged with what led to it: the customer's message, the route,
+   each AI attempt (provider, error, time), each check that changed or blocked the reply (leak,
+   repeat, invented link/price/contact) and any fallback text used. Steps are collected per bot
+   turn against the client object of that request, then written with the message as it goes out.
+   Best-effort: logging never throws and never delays or changes a reply. ── */
+const BOT_TRACES=new WeakMap();
+const BOT_TRACE_MAX_STEPS=40;
+const botTraceClip=(v,n=300)=>v==null?v:String(v).slice(0,n);
+export function botTraceStart(c,turn={}){
+  if(!c||typeof c!=='object') return;
+  BOT_TRACES.set(c,{turn:{...turn,user_text:botTraceClip(turn.user_text,500)},steps:[],t0:Date.now()});
+}
+export function botTraceTurn(c,fields={}){
+  const t=c&&BOT_TRACES.get(c); if(!t) return;
+  Object.assign(t.turn,fields);
+}
+export function botTrace(c,step,data={}){
+  const t=c&&typeof c==='object'?BOT_TRACES.get(c):null; if(!t) return;
+  if(t.steps.length>=BOT_TRACE_MAX_STEPS) return;
+  const out={ms:Date.now()-t.t0,step};
+  for(const [k,v] of Object.entries(data||{})) if(v!==undefined&&v!==null&&v!=='') out[k]=typeof v==='string'?botTraceClip(v):v;
+  t.steps.push(out);
+}
+export function botTraceSnapshot(c){
+  const t=c&&BOT_TRACES.get(c);
+  return t?{turn:{...t.turn},steps:t.steps.slice()}:null;
+}
+let _botLogReady=false;
+async function botLogEnsure(env){
+  if(_botLogReady||!env.DB) return !!env.DB;
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS bot_reply_log (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, phone TEXT, conv_id TEXT, user_text TEXT, route TEXT, reply TEXT, kind TEXT, ok INTEGER, steps_json TEXT, created_at TEXT NOT NULL)`).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bot_reply_log_client_time ON bot_reply_log(client_id, created_at DESC)`).run();
+    _botLogReady=true; return true;
+  }catch(e){ return false; }
+}
+// One row per message sent. The steps collected so far go with it and are then cleared, so a
+// turn that sends three messages logs what led to each.
+async function botLogReply(env,c,clientId,convId,text,{kind='text',ok=true}={}){
+  try{
+    if(!env?.DB||!c) return;
+    const t=BOT_TRACES.get(c);
+    const turn=t?.turn||{},steps=t?.steps||[];
+    if(!await botLogEnsure(env)) return;
+    await env.DB.prepare(`INSERT INTO bot_reply_log (client_id,phone,conv_id,user_text,route,reply,kind,ok,steps_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId||c.Id)||0,turn.phone||null,convId!=null?String(convId):(turn.conv_id||null),turn.user_text||null,turn.route||null,botTraceClip(text,2000),kind,ok?1:0,JSON.stringify(steps),new Date().toISOString()).run();
+    if(t) t.steps=[];
+  }catch(e){}
 }
 
 /* ── Platform-level error monitoring — deliberately NOT client-facing (see clients' own
@@ -21009,8 +21061,9 @@ async function engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inbox
   if(creds?.wa_phone_id&&creds?.wa_token&&phone){
     try{
       const r=await fetch(`https://graph.facebook.com/v24.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(ltCheckoutCtaPayload(phone,url,opts))});
-      if(r.ok)return true;
+      if(r.ok){await botLogReply(env,c,clientId,convId,`${opts.text||'Book now'} [${opts.button||'Book Now'} → ${url}]`,{kind:'link_button'});return true;}
       const body=await r.text().catch(()=>'');
+      botTrace(c,'link_button_failed',{via:'meta',status:r.status,error:body.slice(0,200)});
       await reportOpsError(env,'Travel checkout CTA rejected by Meta',new Error(`HTTP ${r.status} — ${body.slice(0,500)}`),{clientId,convId});
     }catch(e){await reportOpsError(env,'Travel checkout CTA send failed',e,{clientId,convId});}
   }
@@ -21757,7 +21810,8 @@ async function ltSendPicker(env,c,clientId,convId,phone,inboxId,text,items,{butt
   if(creds?.wa_phone_id&&creds?.wa_token&&to){
     try{
       const r=await fetch(`https://graph.facebook.com/v24.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',to,type:'interactive',interactive:body})});
-      if(r.ok)return prepared.map(i=>({title:i.title,value:i.value}));
+      if(r.ok){botTrace(c,'list',{items:prepared.map(i=>i.title).join(' | ')});await botLogReply(env,c,clientId,convId,body.body?.text||text,{kind:'list'});return prepared.map(i=>({title:i.title,value:i.value}));}
+      botTrace(c,'list_failed',{via:'meta',status:r.status});
       await reportOpsError(env,'Travel WhatsApp list rejected by Meta',new Error(`HTTP ${r.status} — ${(await r.text().catch(()=>'')).slice(0,500)}`),{clientId,convId});
     }catch(e){await reportOpsError(env,'Travel WhatsApp list send failed',e,{clientId,convId});}
   }
@@ -23852,6 +23906,7 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   const reply=await engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens);
   const customer=engineCustomerLinesFromPrompt(systemPrompt, userText);
   if(!reply || reply==='One moment 🙏' || !engineReplyEchoesCustomer(reply, customer)) return reply;
+  botTrace(c,'check_echo',{result:'reply repeated the customer\'s message — regenerating',draft:reply});
   await reportOpsError(env, 'engineCallLlm — reply repeated the customer\'s own message; regenerated', new Error(String(reply).slice(0,200)), {clientId:c?.Id}).catch(()=>{});
   const retry=await engineCallLlmOnce(env, c, systemPrompt+`\n\nIMPORTANT: your draft reply was the customer's own message copied back to them ("${String(reply).slice(0,200)}"). Never repeat or quote the customer's words. Reply AS THE BUSINESS and answer their latest message ("${String(userText||'').slice(0,200)}") directly from the business prompt.`, userText, maxTokens);
   return retry && !engineReplyEchoesCustomer(retry, customer) ? retry : 'One moment 🙏';
@@ -23863,17 +23918,24 @@ async function engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens){
     if(safe!==stripped) await reportOpsError(env, 'engineCallLlm — reply recited the system prompt; leaked part removed', new Error(String(stripped).slice(String(safe||'').length, String(safe||'').length+300)), {clientId:c?.Id});
     return safe;
   };
+  let t0=Date.now();
   const own=await aiClientGenerate(env, c, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, caller:'reply'});
   const ownReply=await clean(own?.text);
+  if(own) botTrace(c,'ai_own_provider',{ok:!!ownReply,took_ms:Date.now()-t0,chars:own.text?String(own.text).length:0,error:own.error,shared_fallback:!!own.fallback,leak_cut:own.text&&!ownReply?'whole reply removed as leaked instructions':undefined});
   if(ownReply) return ownReply;
   if(own && !own.fallback){
+    botTrace(c,'ai_gave_up',{reason:'own AI provider failed and "use shared AI as fallback" is off'});
     await reportOpsError(env, 'engineCallLlm — client\'s own AI provider failed and shared fallback is off', new Error(own.error||'no usable AI reply'), {clientId:c?.Id});
     return 'One moment 🙏';
   }
-  const geminiReply=await clean(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
+  t0=Date.now();
+  const geminiRaw=await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'});
+  const geminiReply=await clean(geminiRaw);
+  botTrace(c,'ai_shared_gemini',{model:ENGINE_REPLY_MODEL,ok:!!geminiReply,took_ms:Date.now()-t0,chars:geminiRaw?String(geminiRaw).length:0,error:!geminiRaw?'no text returned (API error, quota, timeout or safety block)':undefined,leak_cut:geminiRaw&&!geminiReply?'whole reply removed as leaked instructions':undefined,prompt_chars:String(systemPrompt||'').length});
   if(geminiReply) return geminiReply;
   // OpenRouter is optional legacy fallback only; never request it with an absent key.
   if(!c?.openrouter_key){
+    botTrace(c,'ai_gave_up',{reason:'shared Gemini returned no usable reply and no OpenRouter key is set'});
     await reportOpsError(env, 'engineCallLlm — shared Gemini returned no usable reply and no OpenRouter fallback exists', new Error('no usable AI reply'), {clientId:c?.Id});
     return 'One moment 🙏';
   }
@@ -23884,6 +23946,7 @@ async function engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens){
     });
     const data=await r.json().catch(()=>({}));
     const text=await clean(data?.choices?.[0]?.message?.content?.trim());
+    botTrace(c,'ai_openrouter',{model:c.model||'google/gemini-2.5-flash',ok:!!text,status:r.status,error:text?undefined:JSON.stringify(data?.error||data).slice(0,200)});
     if(text) return text;
     await reportOpsError(env, 'engineCallLlm — Gemini and OpenRouter both returned no usable reply', new Error(JSON.stringify(data).slice(0,500)), {clientId:c?.Id});
   }catch(e){
@@ -23977,7 +24040,9 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
   const contacts=await bcForBot(env, c);
   systemPrompt=engineWithContacts(systemPrompt, contacts);
   const contactSource=!contacts||contacts.guard===false ? null : engineContactSource(c, contacts, systemPrompt, userText);
+  botTrace(c,'ai_request',{prompt_chars:String(systemPrompt||'').length,max_tokens:maxTokens,people_contacts:contacts?'on':'off',contact_check:contactSource!=null?'on':'off'});
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
+  botTrace(c,'ai_draft',{result:!reply||reply==='One moment 🙏'?'no usable AI reply':'ok',draft:reply});
   if(!reply || reply==='One moment 🙏') return reply;
   const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
   const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
@@ -23985,6 +24050,7 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
   const badContact=contactSource!=null ? bcFindInventedContact(reply, contactSource) : null;
   if(badContact) await reportOpsError(env, 'Bot reply invented a phone number or email; regenerated', new Error(badContact), {clientId:c?.Id}).catch(()=>{});
   if(!isRepeat && !badLink && !badPrice && !badContact) return reply;
+  botTrace(c,'checks_failed',{repeat:isRepeat?'same as the last bot message':undefined,invented_link:badLink||undefined,invented_price:badPrice||undefined,invented_contact:badContact||undefined,action:'regenerating once'});
   let correction='';
   if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
   if(badLink){
@@ -24004,7 +24070,11 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
     if(priceGuard && engineFindHallucinatedPrice(out, priceGuard.priceSource)) out=await engineStripHallucinatedPrices(env, c, out, priceGuard.priceSource, priceGuard.replyLang);
   }
   // Never knowingly send an invented phone number or email: drop the line that carries it.
-  if(contactSource!=null && bcFindInventedContact(out, contactSource)) out=bcStripInvented(out, contactSource)||await engineLocalizeReply(env, c, 'Our team will share the right contact with you shortly.', c.language||'en');
+  if(contactSource!=null && bcFindInventedContact(out, contactSource)){
+    botTrace(c,'contact_stripped',{invented:bcFindInventedContact(out, contactSource)});
+    out=bcStripInvented(out, contactSource)||await engineLocalizeReply(env, c, 'Our team will share the right contact with you shortly.', c.language||'en');
+  }
+  botTrace(c,'ai_final',{retry:!retryReply||retryReply==='One moment 🙏'?'retry failed — kept the first draft':'used the regenerated reply',reply:out});
   return out;
 }
 // People & Contacts: the reply to "contact number" / "talk to a staff member" — a translated lead-in
@@ -24411,10 +24481,15 @@ export async function engineSendChatwootReply(env, c, clientId, convId, text){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
       await logEngineSkip(env, clientId, null, convId, 'send-failed', `Chatwoot rejected the send: HTTP ${r.status}`);
+      botTrace(c,'send_failed',{via:'chatwoot',status:r.status,error:errBody.slice(0,200)});
+      await botLogReply(env, c, clientId, convId, trimmed, {kind:'text', ok:false});
       return false;
     }
+    await botLogReply(env, c, clientId, convId, trimmed, {kind:'text'});
     return true;
   }catch(e){
+    botTrace(c,'send_failed',{via:'chatwoot',error:e?.message||String(e)});
+    await botLogReply(env, c, clientId, convId, trimmed, {kind:'text', ok:false});
     await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
     await logEngineSkip(env, clientId, null, convId, 'send-failed', `send threw: ${e?.message||e}`);
     return false;
@@ -24621,6 +24696,7 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootQuickReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      botTrace(c,'buttons_failed',{status:r.status,error:errBody.slice(0,200),action:'sent as plain text instead'});
       const sent=await engineSendChatwootReply(env, c, clientId, convId, trimmed);
       return sent?null:false;
     }
@@ -24629,6 +24705,8 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     const sent=await engineSendChatwootReply(env, c, clientId, convId, trimmed);
     return sent?null:false;
   }
+  botTrace(c,'buttons',{items:trimmedItems.map(it=>it.title).join(' | ')});
+  await botLogReply(env, c, clientId, convId, trimmed, {kind:trimmedItems.length>3?'list':'buttons'});
   return trimmedItems.map(it=>({title:it.title, value:it.value}));
 }
 
@@ -24657,7 +24735,7 @@ async function engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, tex
     const body={messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:isList?'list':'button',body:{text:String(text||'').trim()},action}};
     try{
       const response=await fetch(`https://graph.facebook.com/v24.0/${c.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if(response.ok) return prepared.map(item=>({title:item.title,value:item.value}));
+      if(response.ok){botTrace(c,isList?'list':'buttons',{items:prepared.map(i=>i.title).join(' | ')});await botLogReply(env,c,clientId,convId,String(text||'').trim(),{kind:isList?'list':'buttons'});return prepared.map(item=>({title:item.title,value:item.value}));}
       const errorBody=await response.text().catch(()=>'');
       await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta rejected interactive',new Error(`HTTP ${response.status} — ${errorBody.slice(0,500)}`),{clientId,convId});
     }catch(error){
@@ -26337,7 +26415,27 @@ async function handleEngineLogsList(request, env){
     }));
   }catch(e){}
 
-  const merged=[...skipRows, ...repliedRows].sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0, limit);
+  // Detailed per-message trace (bot_reply_log, botLogReply above): what the customer sent, the
+  // route, every AI attempt and check, and the exact text sent.
+  let traceRows=[];
+  try{
+    if(await botLogEnsure(env)){
+      const q=phone
+        ? env.DB.prepare(`SELECT phone, conv_id, user_text, route, reply, kind, ok, steps_json, created_at FROM bot_reply_log WHERE client_id=? AND phone=? ORDER BY created_at DESC LIMIT ?`).bind(Number(payload.cid), phone, limit)
+        : env.DB.prepare(`SELECT phone, conv_id, user_text, route, reply, kind, ok, steps_json, created_at FROM bot_reply_log WHERE client_id=? ORDER BY created_at DESC LIMIT ?`).bind(Number(payload.cid), limit);
+      const r=await q.all();
+      traceRows=(r.results||[]).map(row=>{
+        let steps=[];try{steps=JSON.parse(row.steps_json||'[]');}catch(e){}
+        const fallback=steps.some(st=>st.step==='fallback_used');
+        return {type:!row.ok?'error':fallback?'fallback':'reply', phone:row.phone, convId:row.conv_id, reason:row.route||'', detail:row.kind,
+          user_text:row.user_text||'', reply:row.reply||'', kind:row.kind, steps, at:row.created_at};
+      });
+    }
+  }catch(e){}
+  // The detailed rows replace the summary "replied" rows for the same time span.
+  const traceSince=traceRows.length?traceRows[traceRows.length-1].at:null;
+  if(traceSince) repliedRows=repliedRows.filter(r=>new Date(r.at)<new Date(traceSince));
+  const merged=[...skipRows, ...repliedRows, ...traceRows].sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0, limit);
   return json({ok:true, logs:merged});
 }
 
@@ -27386,6 +27484,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    botTraceStart(c,{phone,conv_id:parsed.convId!=null?String(parsed.convId):'',user_text:userText||text||`[${mediaType}]`,media:mediaType});
     let introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
     // Travel Flow switch (saved in D1 by Live Agency / Settings) — read once here so every travel
@@ -27638,6 +27737,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const sessionLang=engineSessionLanguage(state.activeHistory, userText, cls.customerLanguage);
     if(sessionLang) cls.customerLanguage=sessionLang;
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
+    botTraceTurn(c,{route:routing.route,intent:routing.intent||cls?.intent||''});
+    botTrace(c,'routed',{route:routing.route,intent:routing.intent||cls?.intent,stage:state.stage,next:routing.next,language:cls?.customerLanguage});
     if(introAction) routing.historyUserText=parsed.text;
     Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text, body.id||body.message?.id));
     // A generic ad CTA/business-information request must be answered from the client's prompt,
@@ -29672,6 +29773,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
         else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
         else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
+        botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
         reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
       }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
@@ -29837,6 +29939,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
         else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
         else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
+        botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
         reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
       }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
