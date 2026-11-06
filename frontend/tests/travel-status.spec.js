@@ -62,6 +62,7 @@ async function pick(page, id, key) {
   await boardRow(page, id).locator('.tsb-pill').click();
   await page.locator(`#tsbSheet .tsb-opt[data-status="${key}"]`).click();
   if (key === 'follow_up_pending') await page.locator('#tsbSheet .tsb-dates button[data-days="1"]').click();
+  if (key === 'booking_not_done' || key === 'cancelled') await page.locator('#tsbSheet [data-skip]').click();
   await expect(page.locator('#tsbSheet')).toHaveCount(0);
 }
 
@@ -92,7 +93,7 @@ test('marking a status saves it to the lead with who and when', async ({ page })
   await expect.poll(() => patches.length).toBe(1);
   expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'first_call', TravelStatusBy: OWNER });
   expect(patches[0].TravelStatusAt).toBeTruthy();
-  expect(fieldsAdded).toEqual(['TravelStatus', 'TravelFollowUpAt', 'TravelStatusAt', 'TravelStatusBy', 'TravelStatusLog']);
+  expect(fieldsAdded).toEqual(['TravelStatus', 'TravelFollowUpAt', 'TravelStatusAt', 'TravelStatusBy', 'TravelStatusLog', 'TravelLostReason']);
   await expect(tileCount(page, 'First call done')).toHaveText('2');
   await expect(boardRow(page, 1)).not.toContainText('auto');
 });
@@ -428,5 +429,134 @@ test.describe('on a phone', () => {
     await page.locator('#tsbSheet .tsb-opt[data-status="quote_sent"]').tap();
     await expect.poll(() => patches.length).toBe(1);
     expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'quote_sent' });
+  });
+});
+
+test('bulk: tick inquiries, set one status for all of them, or assign them', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await boardRow(page, 1).locator('.tsb-ck').check();
+  await boardRow(page, 2).locator('.tsb-ck').check();
+  await expect(page.locator('.tsb-bulk')).toContainText('2 selected');
+  await page.locator('.tsb-bulk .tsb-bbtn').click();
+  await page.locator('#tsbSheet .tsb-opt[data-status="quote_sent"]').click();
+  await expect.poll(() => patches.filter(p => p.TravelStatus === 'quote_sent').map(p => p.Id).sort()).toEqual([1, 2]);
+  await expect(page.locator('.tsb-bulk')).toHaveCount(0);
+  await expect(tileCount(page, 'Quote sent')).toHaveText('2');
+  // Assign: one PATCH with every picked inquiry.
+  await boardRow(page, 1).locator('.tsb-ck').check();
+  await boardRow(page, 3).locator('.tsb-ck').check();
+  await page.locator('.tsb-bulk .tsb-bsel').selectOption(STAFF);
+  await expect.poll(() => patches.find(p => Array.isArray(p))).toEqual([{ Id: 1, Owner: STAFF }, { Id: 3, Owner: STAFF }]);
+});
+
+test('a lost status asks why, and Reports counts the reasons', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await boardRow(page, 1).locator('.tsb-pill').click();
+  await page.locator('#tsbSheet .tsb-opt[data-status="booking_not_done"]').click();
+  await page.locator('#tsbSheet [data-reason="Price too high"]').click();
+  await expect.poll(() => patches.length).toBeGreaterThanOrEqual(1);
+  expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'booking_not_done', TravelLostReason: 'Price too high' });
+  expect(JSON.parse(patches[0].TravelStatusLog)[0]).toMatchObject({ to: 'booking_not_done', reason: 'Price too high' });
+  await expect(boardRow(page, 1)).toContainText('Price too high');
+  // @ts-ignore
+  await page.evaluate(() => { navigate('reports'); _reportsPage = 'tvstatus'; renderReportsTravelStatus(); });
+  await expect(page.locator('#reportsContent')).toContainText('Why bookings were lost');
+  await expect(page.locator('#reportsContent .ts-lr')).toHaveCount(1);
+  await expect(page.locator('#reportsContent .ts-lr')).toContainText('Price too high');
+  await expect(page.locator('#reportsContent .ts-lr b')).toHaveText('1');
+});
+
+// HTML5 drag and drop, fired directly (a target column off-screen would otherwise scroll the board
+// between mouse down and drop).
+async function kbDrag(page, from, to) {
+  await page.evaluate(({ from, to }) => {
+    const dt = new DataTransfer(), src = document.querySelector(from), dst = document.querySelector(to);
+    src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+  }, { from, to });
+}
+
+test('Board view: a column per status; drag a card or use its move button', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await page.locator('.tsb-seg button[data-view="board"]').click();
+  await expect(page.locator('.tsk-col')).toHaveCount(14);
+  await expect(page.locator('.tsk-col[data-col="new"] .tsk-card')).toHaveCount(1);
+  await kbDrag(page, '.tsk-card[data-lead="1"]', '.tsk-col[data-col="negotiating"]');
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'negotiating' });
+  await expect(page.locator('.tsk-col[data-col="negotiating"] .tsk-card[data-lead="1"]')).toHaveCount(1);
+  // Dropping on Follow up pending asks for the date first.
+  await page.locator('.tsk-card[data-lead="2"] .tsk-move').click();
+  await page.locator('#tsbSheet .tsb-opt[data-status="follow_up_pending"]').click();
+  await page.locator('#tsbSheet .tsb-dates button[data-days="7"]').click();
+  await expect.poll(() => patches.length).toBe(2);
+  expect(patches[1]).toMatchObject({ Id: 2, TravelStatus: 'follow_up_pending', TravelFollowUpAt: iso(7) });
+});
+
+test('Leads → Pipeline for a travel account uses the Status Board stages', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); setLeadsViewMode('pipeline'); });
+  await expect(page.locator('#kanbanWrap .tsk-col')).toHaveCount(14);
+  await expect(page.locator('#kanbanWrap .tsk-col[data-col="booking_closed"] .tsk-card')).toContainText('John');
+  await kbDrag(page, '#kanbanWrap .tsk-card[data-lead="1"]', '#kanbanWrap .tsk-col[data-col="quote_sent"]');
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'quote_sent' });
+  await expect(page.locator('#kanbanWrap .tsk-col[data-col="quote_sent"] .tsk-card[data-lead="1"]')).toHaveCount(1);
+});
+
+test('saved default view, My follow-ups, the due badge and the auto follow-up switch', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  // Due badge on the Status Board tab: Meera's overdue follow-up.
+  await expect(page.locator('#travelNav [data-page="tvstatus"] .tsb-badge')).toHaveText('1');
+  await page.locator('.tsb-preset', { hasText: 'My follow-ups' }).click();
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(1);
+  await expect(page.locator('#tsBody .tsb-row')).toContainText('Meera');
+  await page.locator('.tsb-seg button[data-view="board"]').click();
+  await page.locator('.tsb-preset', { hasText: 'Save as default' }).click();
+  await expect(page.locator('.tsb-preset', { hasText: 'My default' })).toBeVisible();
+  // A fresh page load opens with the saved view.
+  // @ts-ignore
+  await page.evaluate(() => { _tsPrefsLoaded = false; _tsView = 'list'; _tsFilter = { status: '', owner: '', cat: '', q: '' }; renderTravelStatus(); });
+  await expect(page.locator('.tsb-seg button[data-view="board"]')).toHaveClass(/\bon\b/);
+  await expect(page.locator('.tsk-card')).toHaveCount(1);
+  // Owner-only switch, saved on the client record.
+  await page.locator('.tsb-preset[data-auto]').click();
+  await expect.poll(() => patches.find(p => 'travel_auto_followup' in p)).toEqual({ Id: 7, travel_auto_followup: 'No' });
+  await expect(page.locator('.tsb-preset[data-auto]')).toContainText('Off');
+});
+
+test.describe('swipe on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('swipe right moves to the next step with Undo; swipe left opens the follow-up dates', async ({ page }) => {
+    const { patches } = await boot(page);
+    // @ts-ignore
+    await page.evaluate(() => navigate('tvstatus'));
+    const swipe = async (id, dx) => page.evaluate(({ id, dx }) => {
+      const row = document.querySelector(`#tsBody .tsb-row[data-lead="${id}"] .tsb-av`);
+      const r = row.getBoundingClientRect(), x = r.left + 5, y = r.top + 5;
+      const t = (cx) => new Touch({ identifier: 1, target: row, clientX: cx, clientY: y });
+      row.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [t(x)] }));
+      for (let i = 1; i <= 5; i++) row.dispatchEvent(new TouchEvent('touchmove', { bubbles: true, touches: [t(x + dx * i / 5)] }));
+      row.dispatchEvent(new TouchEvent('touchend', { bubbles: true, touches: [] }));
+    }, { id, dx });
+    await swipe(1, 130); // Asha: New inquiry → First call done
+    await expect.poll(() => patches.length).toBe(1);
+    expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'first_call' });
+    await page.locator('#_undoToast button').click();
+    await expect.poll(() => patches.length).toBe(2);
+    expect(patches[1]).toMatchObject({ Id: 1, TravelStatus: 'new' });
+    await swipe(2, -130);
+    await expect(page.locator('#tsbSheet .tsb-dates')).toBeVisible();
   });
 });

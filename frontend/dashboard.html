@@ -6801,6 +6801,7 @@ async function onLiveLeadUpdatedEvent(msg){
   if(typeof tsRefreshCategoryViews==='function') tsRefreshCategoryViews();
   // A teammate's Status Board / pipeline change shows here without a refresh (unless this person
   // is mid-edit on the board, same rule as renderHome).
+  try{ if(typeof tsUpdateBadge==='function') tsUpdateBadge(); }catch(e){}
   try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !($id('tsBody')?.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))) renderTravelStatus(); }catch(e){}
   try{ if(fields.some(f=>f!=='ServiceCategory') && !$id('pageLeads')?.classList.contains('hidden') && !document.querySelector('#pageLeads select:focus, #pageLeads input:focus')) renderLeadsCurrentView(); }catch(e){}
   if(_reportsPage==='category'&&!$id('pageReports')?.classList.contains('hidden')) renderReportsCategory();
@@ -7197,6 +7198,10 @@ function stageLabel(id){
 }
 
 function renderKanban(){
+  // Travel: the pipeline is the 📌 Status Board's own stages (travel-status.js), so a card moves the
+  // same way here as on the board.
+  if(clientRecord?.industry==='travel' && typeof tsRenderLeadsKanban==='function') return tsRenderLeadsKanban($id('kanbanWrap'));
+  $id('kanbanWrap')?.classList.remove('tsk-host');
   const flow=getFlow();
   const stages=['new',...Object.keys(flow.stages||{}).filter(k=>k!=='new'),'human_handover'];
   const wrap=$id('kanbanWrap');
@@ -24470,7 +24475,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=7"></script>
+<script src="travel-status.js?v=8"></script>
 <script src="travel-view.js?v=7"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>

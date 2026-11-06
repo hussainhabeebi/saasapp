@@ -17,6 +17,7 @@ import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyin
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
+import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -18877,6 +18878,43 @@ export async function notifyLeadsShared(env, c, cid, items, byEmail){
     const who=by?esc(nameOf(by)):'Your team';
     await coldReallocEmail(env, to, leadNames.length===1?`👥 Lead shared with you: ${leadNames[0]}`:`👥 ${leadNames.length} leads shared with you`,
       `<p>${who} shared ${leadNames.length===1?'a lead':'these leads'} with you. You can see the full chat in Leads and Chats and reply to the customer, alongside the lead's owner.</p><ul>${leadNames.slice(0,50).map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>`);
+  }
+}
+
+// Daily: travel-status-auto.js over every travel account (see its header).
+export async function runTravelStaleFollowupsForAllClients(env, now=new Date()){
+  const statuses=['quote_sent','negotiating','docs_pending','payment_pending'];
+  const deps={
+    listLeads:async cid=>{
+      const where=encodeURIComponent(`(ClientId,eq,${cid})~and(${statuses.map(x=>`(TravelStatus,eq,${x})`).join('~or')})`);
+      const fields='Id,Name,Phone,Owner,TravelStatus,TravelStatusAt,TravelStatusLog';
+      let out=[];
+      for(let off=0; off<5000; off+=200){
+        const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&fields=${fields}&limit=200&offset=${off}`);
+        if(!r.ok) break;
+        const list=(await r.json().catch(()=>({})))?.list||[];
+        out=out.concat(list);
+        if(list.length<200) break;
+      }
+      return out;
+    },
+    patch:async rows=>{ const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:rows}); if(!r.ok) throw new Error('NocoDB '+r.status); },
+    email:(to, subject, html)=>coldReallocEmail(env, to, subject, html),
+    broadcast:(cid, msg)=>engineBroadcastUpdate(env, cid, msg),
+  };
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!travelAutoFollowupOn(c)) continue;
+      try{ await travelStaleProcessClient(c, deps, now); }
+      catch(e){ console.error('[travel-stale] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
   }
 }
 
@@ -42303,6 +42341,9 @@ export default {
       ctx.waitUntil(runDepartedReassignForAllClients(env));
       // Leadvyne v2 — staff phrasing from Won chats; see runStaffWinExamplesForAllClients.
       ctx.waitUntil(runStaffWinExamplesForAllClients(env));
+      // Travel 📌 Status Board — inquiries stuck 2+ days at Quote sent / Negotiating / Docs / Payment
+      // pending become a follow-up due today, and their owner is emailed (travel-status-auto.js).
+      ctx.waitUntil(runTravelStaleFollowupsForAllClients(env).catch(e=>reportOpsError(env, 'travel stale follow-ups', e)));
     }
     else if(event.cron==='*/15 * * * *'){
       // Chats v2 "Schedule message" — sends whatever is due (15-minute granularity).

@@ -56,7 +56,13 @@ function tsStageFor(key, lead){
   if(stages.includes(key)) return lead?.Stage===key?null:key;
   return (tsStageWon(lead)||tsStageLost(lead))?'new':null;
 }
-const TS_FIELDS=['TravelStatus','TravelFollowUpAt','TravelStatusAt','TravelStatusBy',['TravelStatusLog','LongText']];
+const TS_FIELDS=['TravelStatus','TravelFollowUpAt','TravelStatusAt','TravelStatusBy',['TravelStatusLog','LongText'],'TravelLostReason'];
+// Why a booking was lost — asked when an inquiry moves to Booking not done / Cancelled, stored on the
+// lead (TravelLostReason) and in its status history; Reports → 📌 Status Changes counts them.
+const TS_LOST_REASONS=['Price too high','Dates didn\'t work','Booked with a competitor','No response','Changed plans','Visa issue'];
+// The usual next step from each open status — a swipe right on a phone card moves it there.
+const TS_NEXT={new:'first_call', first_call:'quote_sent', not_reachable:'first_call', quote_sent:'negotiating', follow_up_pending:'follow_up_done',
+  follow_up_done:'negotiating', negotiating:'payment_pending', docs_pending:'payment_pending', payment_pending:'booking_closed', booking_closed:'ticket_issued', ticket_issued:'travelled'};
 const TS_LOG_MAX=200;
 const TS_PAGE_SIZE=100;
 
@@ -116,11 +122,11 @@ function tsInjectStyle(){
 .ts-rpt-tbl{width:100%;min-width:720px}
 /* ── Status Board v2: group cards, one status-chip row, rows that become cards on a phone,
    and a status picker (popover on PC, bottom sheet on a phone). Colour tokens follow dark mode. */
-#pageTvstatus,.tsb-sheet{--tsg-bg:#F1F5F9;--tsg-fg:#475569;--tsg-bd:#CBD5E1;--tsb-bg:#E0F2FE;--tsb-fg:#075985;--tsb-bd:#7DD3FC;
+#pageTvstatus,.tsb-sheet,#kanbanWrap.tsk-host{--tsg-bg:#F1F5F9;--tsg-fg:#475569;--tsg-bd:#CBD5E1;--tsb-bg:#E0F2FE;--tsb-fg:#075985;--tsb-bd:#7DD3FC;
   --tsa-bg:#FEF3C7;--tsa-fg:#92400E;--tsa-bd:#FBBF24;--tsn-bg:#DCFCE7;--tsn-fg:#166534;--tsn-bd:#34D399;--tsr-bg:#FEE2E2;--tsr-fg:#991B1B;--tsr-bd:#F87171}
-html.dark #pageTvstatus,html.dark .tsb-sheet{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;--tsg-bd:#334155;--tsb-bg:#0C2A3F;--tsb-fg:#7DD3FC;--tsb-bd:#0369A1;
+html.dark #pageTvstatus,html.dark .tsb-sheet,html.dark #kanbanWrap.tsk-host{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;--tsg-bd:#334155;--tsb-bg:#0C2A3F;--tsb-fg:#7DD3FC;--tsb-bd:#0369A1;
   --tsa-bg:#3A2A12;--tsa-fg:#FCD34D;--tsa-bd:#B45309;--tsn-bg:#0F2E22;--tsn-fg:#6EE7B7;--tsn-bd:#047857;--tsr-bg:#3B1416;--tsr-fg:#FCA5A5;--tsr-bd:#B91C1C}
-@media(prefers-color-scheme:dark){html:not(.light):not(.dark) #pageTvstatus,html:not(.light):not(.dark) .tsb-sheet{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;--tsg-bd:#334155;--tsb-bg:#0C2A3F;--tsb-fg:#7DD3FC;--tsb-bd:#0369A1;
+@media(prefers-color-scheme:dark){html:not(.light):not(.dark) #pageTvstatus,html:not(.light):not(.dark) .tsb-sheet,html:not(.light):not(.dark) #kanbanWrap.tsk-host{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;--tsg-bd:#334155;--tsb-bg:#0C2A3F;--tsb-fg:#7DD3FC;--tsb-bd:#0369A1;
   --tsa-bg:#3A2A12;--tsa-fg:#FCD34D;--tsa-bd:#B45309;--tsn-bg:#0F2E22;--tsn-fg:#6EE7B7;--tsn-bd:#047857;--tsr-bg:#3B1416;--tsr-fg:#FCA5A5;--tsr-bd:#B91C1C}}
 .tsb-c-gray{--c-bg:var(--tsg-bg);--c-fg:var(--tsg-fg);--c-bd:var(--tsg-bd)}.tsb-c-blue{--c-bg:var(--tsb-bg);--c-fg:var(--tsb-fg);--c-bd:var(--tsb-bd)}
 .tsb-c-amber{--c-bg:var(--tsa-bg);--c-fg:var(--tsa-fg);--c-bd:var(--tsa-bd)}.tsb-c-green{--c-bg:var(--tsn-bg);--c-fg:var(--tsn-fg);--c-bd:var(--tsn-bd)}.tsb-c-red{--c-bg:var(--tsr-bg);--c-fg:var(--tsr-fg);--c-bd:var(--tsr-bd)}
@@ -198,6 +204,55 @@ html.dark #pageTvstatus,html.dark .tsb-sheet{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;-
 .tsb-custom input{flex:1;font:inherit;font-size:14px;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink)}
 .tsb-custom button{font:inherit;font-weight:600;border:none;border-radius:10px;padding:0 14px;background:var(--accent);color:#fff;cursor:pointer}
 .tsb-backlink{font:inherit;font-size:12.5px;background:none;border:none;color:var(--accent-ink);cursor:pointer;padding:6px 8px}
+.tsb-tools{display:flex;gap:10px;align-items:center;flex:1;justify-content:flex-end;flex-wrap:wrap}
+.tsb-seg{display:inline-flex;border:1.5px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card);flex:none}
+.tsb-seg button{font:inherit;font-size:13px;font-weight:600;border:none;background:none;color:var(--muted);padding:9px 14px;cursor:pointer;min-height:40px}
+.tsb-seg button.on{background:var(--accent);color:#fff}
+.tsb-preset{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;border-radius:999px;padding:8px 12px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);min-height:38px}
+.tsb-short{display:none}
+.tsb-preset:hover{border-color:var(--accent)}.tsb-preset.on{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-soft)}
+.tsb-ck{width:17px;height:17px;flex:none;accent-color:var(--accent);cursor:pointer;margin:0}
+.tsb-ckh{display:flex;align-items:center;gap:10px}
+.tsb-row.picked{background:var(--accent-soft)}
+.tsb-why{display:block;margin-top:3px;font-size:11px}
+.tsb-hint{font-size:12px;color:var(--muted);text-align:center;padding:10px 4px}
+.tsb-bulk{position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:900;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--ink);color:var(--card);padding:8px 8px 8px 16px;border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.25);max-width:calc(100vw - 24px);box-sizing:border-box}
+.tsb-bulk b{font-size:13.5px;margin-right:4px}
+.tsb-bbtn,.tsb-bsel{font:inherit;font-size:13px;font-weight:600;border-radius:10px;padding:8px 12px;border:none;background:var(--card);color:var(--ink);cursor:pointer;min-height:38px}
+.tsb-bx{font:inherit;border:none;background:none;color:var(--card);font-size:16px;cursor:pointer;padding:6px 10px}
+.tsb-badge{display:inline-block;min-width:18px;box-sizing:border-box;margin-left:6px;padding:1px 6px;border-radius:999px;background:#DC2626;color:#fff;font-size:10.5px;font-weight:700;line-height:16px;text-align:center;vertical-align:middle}
+.more-item .tsb-badge{position:absolute;top:6px;right:10px;margin:0}
+.tsb-dot{position:absolute;top:6px;right:22px;width:8px;height:8px;border-radius:50%;background:#DC2626}
+.tsb-reasons .tsb-opt{font-size:13.5px}
+.tsb-bulkttl{margin-top:2px}
+/* Swipe hint behind a phone card */
+.tsb-row{position:relative}
+.tsb-row.sw-right,.tsb-row.sw-left{box-shadow:0 0 0 2px var(--c-bd)}
+.tsb-row[data-swipe]:not([data-swipe=""])::after{content:attr(data-swipe);position:absolute;top:-11px;padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:700;background:var(--ink);color:var(--card);pointer-events:none}
+.tsb-row.sw-right::after{left:12px}.tsb-row.sw-left::after{right:12px}
+/* ▦ Board (kanban) */
+.tsk-wrap{display:flex;gap:12px;overflow-x:auto;padding:2px 2px 14px;align-items:flex-start;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
+.tsk-col{flex:0 0 260px;background:color-mix(in srgb,var(--c-bg) 55%,var(--card));border:1px solid var(--line);border-top:3px solid var(--c-bd);border-radius:12px;display:flex;flex-direction:column;max-height:calc(100vh - 260px);min-height:160px;scroll-snap-align:start;transition:box-shadow .15s}
+.tsk-col.over{box-shadow:0 0 0 2px var(--c-bd) inset;background:var(--c-bg)}
+.tsk-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;font-size:12.5px;font-weight:700;color:var(--c-fg);position:sticky;top:0}
+.tsk-ct{font-size:11px;border-radius:999px;padding:1px 8px;background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.tsk-cards{display:flex;flex-direction:column;gap:8px;padding:0 8px 10px;overflow-y:auto;min-height:60px}
+.tsk-empty{font-size:12px;color:var(--muted);text-align:center;padding:16px 6px;border:1.5px dashed var(--line);border-radius:10px}
+.tsk-card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--c-bd);border-radius:10px;padding:9px 10px;font-size:12.5px;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.tsk-card:hover{border-color:var(--c-bd)}
+.tsk-card.dragging{opacity:.45}
+.tsk-top{display:flex;gap:8px;align-items:center;cursor:pointer;min-width:0}
+.tsk-top>div{min-width:0}.tsk-top b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsk-card .tsb-av{width:28px;height:28px;font-size:11px}
+.tsk-meta{margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsk-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px}
+.tsk-foot .tsb-fu{padding:3px 7px;font-size:11px}
+.tsk-owner{margin-left:auto;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tsk-move{font:inherit;font-size:14px;line-height:1;width:28px;height:28px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;flex:none}
+.tsk-move:hover{border-color:var(--accent)}
+.tsk-more{font:inherit;font-size:12px;border:none;background:none;color:var(--accent-ink);cursor:pointer;padding:6px;text-decoration:underline}
+.tsk-note{margin-bottom:10px}
+#kanbanWrap.tsk-host{display:block;min-height:0}
 @media(max-width:1023px){.tsb-groups{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:767px){
   .tsb-head h2{font-size:18px}.tsb-search{max-width:none;min-width:100%}
@@ -229,6 +284,17 @@ html.dark #pageTvstatus,html.dark .tsb-sheet{--tsg-bg:#1E293B;--tsg-fg:#CBD5E1;-
   .tsb-sheet .ttl{display:block;font-weight:700;font-size:15px;padding:6px 8px 2px}
   .tsb-opt{font-size:15.5px;padding:12px 10px;min-height:46px}
   .tsb-dates button{padding:13px 10px;font-size:14.5px}
+  .tsb-head{flex-direction:column;align-items:stretch}
+  .tsb-tools{width:100%;flex-direction:column;align-items:stretch;gap:10px}.tsb-seg{width:100%}.tsb-seg button{flex:1;min-height:42px}
+  .tsb-bar select{flex:1 1 calc(50% - 4px)}
+  .tsb-preset{flex:1 1 0;min-width:0;min-height:40px;font-size:12.5px;padding:8px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tsb-full{display:none}.tsb-short{display:inline}
+  .tsb-row .tsb-ck{width:22px;height:22px}
+  .tsb-bulk{bottom:calc(var(--nav,60px) + 12px);left:12px;right:12px;transform:none;justify-content:space-between}
+  .tsb-bulk .tsb-bbtn,.tsb-bulk .tsb-bsel{flex:1;min-height:42px;font-size:14px}
+  .tsk-col{flex:0 0 82vw;max-height:none}
+  .tsk-card{font-size:14px;padding:11px 12px}.tsk-move{width:38px;height:38px;font-size:17px}
+  .tsk-cards{overflow:visible}
 }
 @media(max-width:767px){.ts-cat{width:100%;max-width:none;font-size:16px;min-height:42px}.ts-sel-inline{width:100%;max-width:none;font-size:16px;min-height:42px;padding:6px 2px 6px 6px;letter-spacing:-.2px}.ts-inline .ts-due{margin-left:0}}
 `;
@@ -244,6 +310,7 @@ function tsEnsurePage(){
 
 function tsOwnerName(email){
   if(!email) return 'Unassigned';
+  if(email==='auto') return '🤖 Auto';
   const m=getTeamMembers().find(x=>sameEmail(x.email,email));
   return m?.name||email;
 }
@@ -282,10 +349,51 @@ const tsGroupOf=key=>TS_WON.has(key)?'won':TS_LOST.has(key)?'lost':'open';
 const TS_GROUPS=[['','All','📋','blue'],['__overdue','Follow-ups due','🔔','red'],['__open','In progress','⏳','blue'],['__won','Won','🎉','green'],['__lost','Lost','❌','red']];
 function tsInitials(l){ const n=String(tsLeadName(l)||'?').trim().split(/\s+/); return ((n[0]||'?')[0]+(n[1]?.[0]||'')).toUpperCase(); }
 function tsFmtDate(d){ try{ return new Date(String(d).slice(0,10)+'T00:00:00').toLocaleDateString([], {day:'numeric', month:'short'}); }catch(e){ return String(d||''); } }
+const tsIsPhone=()=>window.matchMedia('(max-width:767px)').matches;
 let _tsPickerOpen=false, _tsRenderPending=false;
+let _tsView='list';           // 'list' | 'board' (kanban)
+let _tsPicked=new Set();      // bulk selection (lead Ids)
+let _tsPrefsLoaded=false;
+
+/* ── Saved default view: each person keeps their own filters + List/Board choice on this device ── */
+const tsPrefKey=()=>`lv_tsb_${typeof clientId!=='undefined'?clientId:''}_${String(typeof myEmail!=='undefined'?myEmail:'').toLowerCase()}`;
+function tsReadPref(){ try{ return JSON.parse(localStorage.getItem(tsPrefKey())||'null'); }catch(e){ return null; } }
+function tsLoadPrefs(){
+  if(_tsPrefsLoaded) return; _tsPrefsLoaded=true;
+  const p=tsReadPref(); if(!p) return;
+  if(p.view==='board'||p.view==='list') _tsView=p.view;
+  if(p.filter&&typeof p.filter==='object') _tsFilter={status:'',owner:'',cat:'',q:'',...p.filter,q:''};
+}
+function tsSaveDefault(){
+  try{ localStorage.setItem(tsPrefKey(), JSON.stringify({view:_tsView, filter:{status:_tsFilter.status, owner:_tsFilter.owner, cat:_tsFilter.cat}})); }catch(e){}
+  if(typeof showToast==='function') showToast('⭐ Saved as your default view');
+  renderTravelStatus();
+}
+function tsIsDefault(){ const p=tsReadPref(); return !!p&&p.view===_tsView&&(p.filter?.status||'')===_tsFilter.status&&(p.filter?.owner||'')===_tsFilter.owner&&(p.filter?.cat||'')===_tsFilter.cat; }
+function tsMyFollowups(){ _tsFilter={status:'__overdue', owner:typeof myEmail!=='undefined'?myEmail:'', cat:'', q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
+function tsSetView(v){ _tsView=v==='board'?'board':'list'; renderTravelStatus(); }
+
+/* ── Due-count badge on the Status Board tab (desktop nav, phone More sheet + More button) ── */
+function tsDueCount(){
+  const leads=typeof allLeads!=='undefined'?allLeads:[];
+  const mine=typeof seesAllLeads==='function'&&!seesAllLeads();
+  return leads.filter(l=>{ const f=tsFollowUpState(l); return (f==='overdue'||f==='today')&&(!mine||sameEmail(l.Owner,myEmail)); }).length;
+}
+function tsUpdateBadge(){
+  if(!tsIsTravel()) return;
+  const n=tsDueCount();
+  document.querySelectorAll('[data-page="tvstatus"]').forEach(b=>{
+    let s=b.querySelector('.tsb-badge');
+    if(!n){ s?.remove(); return; }
+    if(!s){ s=document.createElement('span'); s.className='tsb-badge'; b.appendChild(s); }
+    s.textContent=n>99?'99+':String(n); s.title=`${n} follow-up${n===1?'':'s'} due`;
+  });
+  const more=$id('bnMore');
+  if(more){ let d=more.querySelector('.tsb-dot'); if(!n) d?.remove(); else if(!d){ d=document.createElement('span'); d.className='tsb-dot'; more.style.position='relative'; more.appendChild(d); } }
+}
 
 function renderTravelStatus(){
-  tsInjectStyle(); tsEnsurePage();
+  tsInjectStyle(); tsEnsurePage(); tsLoadPrefs();
   const el=$id('tsBody'); if(!el) return;
   // A live update while the picker is open would pull the row out from under it: draw after it closes.
   if(_tsPickerOpen){ _tsRenderPending=true; return; }
@@ -293,68 +401,186 @@ function renderTravelStatus(){
   const counts={}, groups={open:0, won:0, lost:0}; let due=0;
   leads.forEach(l=>{ const k=tsStatusOf(l).key; counts[k]=(counts[k]||0)+1; groups[tsGroupOf(k)]++; const f=tsFollowUpState(l); if(f==='overdue'||f==='today') due++; });
   const list=tsSort(tsFiltered());
+  // A picked inquiry that no longer shows (filtered out, reassigned away) drops out of the selection.
+  const shownIds=new Set(list.map(l=>Number(l.Id))); _tsPicked=new Set([..._tsPicked].filter(id=>shownIds.has(id)));
   const all=seesAllLeads();
   const f=_tsFilter.status;
   const groupN={'':leads.length, __overdue:due, __open:groups.open, __won:groups.won, __lost:groups.lost};
-  // The group a chip row belongs to: the selected group, or the group of the selected status.
   const activeGroup=f.startsWith('__')&&f!=='__overdue'?f.slice(2):(TS_BY_KEY[f]?tsGroupOf(f):'');
   const groupOn=k=>k===f||(k==='__'+activeGroup&&TS_BY_KEY[f]);
   const chipStatuses=TS_STATUSES.filter(s=>!activeGroup||tsGroupOf(s[0])===activeGroup);
   const filtered=!!(f||_tsFilter.owner||_tsFilter.cat||_tsFilter.q);
+  const board=_tsView==='board';
   const staffSel=all?`<select aria-label="Staff" onchange="tsSetFilter('owner',this.value)">
         <option value="">👤 All staff</option>
         ${getTeamMembers().map(m=>`<option value="${esc(m.email)}"${sameEmail(_tsFilter.owner,m.email)?' selected':''}>${esc(m.name||m.email)}</option>`).join('')}
         <option value="__none"${_tsFilter.owner==='__none'?' selected':''}>Unassigned</option>
       </select>`:'';
-  const row=l=>{
-    const st=tsStatusOf(l), s=TS_BY_KEY[st.key], grp=s[3], fu=tsFollowUpState(l), id=Number(l.Id);
-    const tel=String(l.Phone||'').startsWith('ig:')?'':String(l.Phone||'').replace(/[^0-9+]/g,'');
-    const fuCell=st.key==='follow_up_pending'
-      ?`<button class="tsb-fu ${fu==='overdue'?'overdue':fu==='today'?'today':''}" onclick="tsPick(${id},this,'date')" aria-label="Follow-up date">⏰ ${l.TravelFollowUpAt?esc(tsFmtDate(l.TravelFollowUpAt)):'Set date'}${fu==='overdue'?' · Overdue':fu==='today'?' · Today':''}</button>`
-      :'<span class="ts-meta">—</span>';
-    return `<div class="tsb-row tsb-c-${grp} ${tsOriginClass(l)}" data-lead="${id}" data-status="${st.key}">
-      <div class="who tsb-who" onclick="openDetail(${id})" title="Open inquiry"><span class="tsb-av">${esc(tsInitials(l))}</span>
-        <div><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div></div></div>
-      <div class="svc">${tsInlineCategoryHTML(l)}</div>
-      ${all?`<div class="staff ts-meta" data-mob="1"><span class="tsb-lbl">Staff</span>${esc(tsOwnerName(l.Owner))}</div>`:''}
-      <div class="st"><button class="tsb-pill" onclick="tsPick(${id},this)" aria-haspopup="dialog" aria-label="Status: ${esc(s[1])}${st.auto?' (auto)':''}. Change status"><span>${s[2]}</span><span class="t">${esc(s[1])}${st.auto?' <span class="ts-auto">auto</span>':''}</span><span class="car">▼</span></button></div>
-      <div class="fu">${fuCell}</div>
-      <div class="upd ts-meta">${l.TravelStatusAt?`${esc(tsAgo(l.TravelStatusAt))}${l.TravelStatusBy?' · '+esc(tsOwnerName(l.TravelStatusBy)):''}`:'—'}</div>
-      <div class="acts tsb-acts">${tel?`<a class="tsb-ic" href="tel:${esc(tel)}" title="Call" aria-label="Call ${esc(tsLeadName(l))}" onclick="event.stopPropagation()">📞</a>`:''}${typeof openLeadChat==='function'?`<button class="tsb-ic" title="Open chat" aria-label="Open chat" onclick="openLeadChat(${id})">💬</button>`:''}</div>
-    </div>`;
-  };
+  const visible=list.slice(0,_tsShown);
+  const allPicked=visible.length>0&&visible.every(l=>_tsPicked.has(Number(l.Id)));
   el.innerHTML=`
     <div class="tsb-head">
       <div><h2>📌 Status Board</h2><div class="tsb-sub">${leads.length} inquir${leads.length===1?'y':'ies'}${due?` · <b style="color:var(--tsr-fg)">${due} follow-up${due===1?'':'s'} due</b>`:''}</div></div>
-      <div class="tsb-search"><span>⌕</span><input id="tsSearch" type="search" placeholder="Search name, phone, destination…" value="${esc(_tsFilter.q)}" oninput="tsSetFilter('q',this.value)" aria-label="Search inquiries"></div>
+      <div class="tsb-tools">
+        <div class="tsb-seg" role="group" aria-label="View">
+          <button class="${board?'':'on'}" data-view="list" onclick="tsSetView('list')" aria-pressed="${!board}">☰ List</button>
+          <button class="${board?'on':''}" data-view="board" onclick="tsSetView('board')" aria-pressed="${board}">▦ Board</button>
+        </div>
+        <div class="tsb-search"><span>⌕</span><input id="tsSearch" type="search" placeholder="Search name, phone, destination…" value="${esc(_tsFilter.q)}" oninput="tsSetFilter('q',this.value)" aria-label="Search inquiries"></div>
+      </div>
     </div>
     <div class="tsb-groups" role="group" aria-label="Status groups">
       ${TS_GROUPS.map(([k,l,i,g])=>`<button class="tsb-group ts-tile tsb-c-${g}${groupOn(k)?' on':''}${k==='__overdue'&&due?' alert':''}" data-group="${k}" onclick="tsSetFilter('status','${k}')" aria-pressed="${groupOn(k)?'true':'false'}"><span class="n">${groupN[k]}</span><span class="l">${i} ${esc(l)}</span></button>`).join('')}
     </div>
-    <div class="tsb-chips" role="group" aria-label="Statuses">
+    ${board?'':`<div class="tsb-chips" role="group" aria-label="Statuses">
       ${chipStatuses.map(([k,l,i,g])=>`<button class="tsb-chip ts-tile tsb-c-${g}${f===k?' on':''}${counts[k]?'':' zero'}" data-status="${k}" onclick="tsSetFilter('status',${f===k?`'${activeGroup?'__'+activeGroup:''}'`:`'${k}'`})" aria-pressed="${f===k?'true':'false'}">${i} <span class="l">${esc(l)}</span> <span class="c n">${counts[k]||0}</span></button>`).join('')}
-    </div>
+    </div>`}
     <div class="tsb-bar">
       ${staffSel}
       <select aria-label="Service" onchange="tsSetFilter('cat',this.value)">
         <option value="">🗂️ All services</option>
         ${(typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[]).map(c=>`<option value="${esc(c)}"${_tsFilter.cat===c?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')}
       </select>
+      <button class="tsb-preset" onclick="tsMyFollowups()" title="Follow-ups due on inquiries you own">🔔 My <span class="tsb-full">follow-ups</span><span class="tsb-short">due</span></button>
+      <button class="tsb-preset${tsIsDefault()?' on':''}" onclick="tsSaveDefault()" title="Open the board with these filters and view next time">${tsIsDefault()?'★ My default':'☆ <span class="tsb-full">Save as default</span><span class="tsb-short">Default</span>'}</button>
+      ${all?`<button class="tsb-preset${tsAutoOn()?' on':''}" data-auto="1" onclick="tsToggleAuto()" title="Inquiries left 2+ days at Quote sent / Negotiating / Documents / Payment pending become a follow-up due today, and the owner gets an email (checked every morning)">🤖 <span class="tsb-full">Auto follow-up</span><span class="tsb-short">Auto</span>: ${tsAutoOn()?'On':'Off'}</button>`:''}
       ${filtered?'<button class="tsb-clear" onclick="tsClearFilters()">Clear filters</button>':''}
-      <span class="ts-meta">Showing ${Math.min(list.length,_tsShown)} of ${list.length}</span>
+      <span class="ts-meta">${board?`${list.length} on the board`:`Showing ${Math.min(list.length,_tsShown)} of ${list.length}`}</span>
     </div>
+    ${board?tsKanbanHTML(list):`
     <div class="tsb-list${all?'':' nostaff'}">
-      <div class="tsb-cols"><span>Inquiry</span><span>Service</span>${all?'<span>Staff</span>':''}<span>Status</span><span>Follow-up</span><span>Updated</span><span></span></div>
-      ${list.length?list.slice(0,_tsShown).map(row).join(''):`<div class="tsb-empty"><b>🔍</b>No inquiries match these filters.${filtered?'<br><button class="tsb-clear" onclick="tsClearFilters()">Clear filters</button>':''}</div>`}
+      <div class="tsb-cols"><span class="tsb-ckh"><input type="checkbox" class="tsb-ck" aria-label="Select all shown" ${allPicked?'checked':''} onchange="tsPickAll(this.checked)">Inquiry</span><span>Service</span>${all?'<span>Staff</span>':''}<span>Status</span><span>Follow-up</span><span>Updated</span><span></span></div>
+      ${list.length?visible.map(l=>tsRowHTML(l,all)).join(''):`<div class="tsb-empty"><b>🔍</b>No inquiries match these filters.${filtered?'<br><button class="tsb-clear" onclick="tsClearFilters()">Clear filters</button>':''}</div>`}
     </div>
-    ${list.length>_tsShown?`<div class="tsb-more"><button class="btn-ghost" onclick="tsMore()">Show more (${list.length-_tsShown} left)</button></div>`:''}`;
+    ${list.length>_tsShown?`<div class="tsb-more"><button class="btn-ghost" onclick="tsMore()">Show more (${list.length-_tsShown} left)</button></div>`:''}
+    ${tsIsPhone()&&list.length?'<div class="tsb-hint">Tip: swipe a card right to move it to the next step, left to set a follow-up.</div>':''}`}
+    ${_tsPicked.size?tsBulkBarHTML(all):''}`;
+  tsUpdateBadge();
+  if(!board) tsBindSwipe(el);
+}
+function tsRowHTML(l, all){
+  const st=tsStatusOf(l), s=TS_BY_KEY[st.key], grp=s[3], fu=tsFollowUpState(l), id=Number(l.Id);
+  const tel=String(l.Phone||'').startsWith('ig:')?'':String(l.Phone||'').replace(/[^0-9+]/g,'');
+  const fuCell=st.key==='follow_up_pending'
+    ?`<button class="tsb-fu ${fu==='overdue'?'overdue':fu==='today'?'today':''}" onclick="tsPick(${id},this,'date')" aria-label="Follow-up date">⏰ ${l.TravelFollowUpAt?esc(tsFmtDate(l.TravelFollowUpAt)):'Set date'}${fu==='overdue'?' · Overdue':fu==='today'?' · Today':''}</button>`
+    :'<span class="ts-meta">—</span>';
+  const reason=TS_LOST.has(st.key)&&l.TravelLostReason?`<span class="ts-meta tsb-why" title="Why it was lost">· ${esc(l.TravelLostReason)}</span>`:'';
+  const picked=_tsPicked.has(id);
+  return `<div class="tsb-row tsb-c-${grp} ${tsOriginClass(l)}${picked?' picked':''}" data-lead="${id}" data-status="${st.key}">
+    <div class="who tsb-who"><input type="checkbox" class="tsb-ck" aria-label="Select ${esc(tsLeadName(l))}" ${picked?'checked':''} onclick="event.stopPropagation()" onchange="tsTogglePick(${id},this.checked)">
+      <span class="tsb-av" onclick="openDetail(${id})">${esc(tsInitials(l))}</span>
+      <div onclick="openDetail(${id})" title="Open inquiry"><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div></div></div>
+    <div class="svc">${tsInlineCategoryHTML(l)}</div>
+    ${all?`<div class="staff ts-meta"><span class="tsb-lbl">Staff</span>${esc(tsOwnerName(l.Owner))}</div>`:''}
+    <div class="st"><button class="tsb-pill" onclick="tsPick(${id},this)" aria-haspopup="dialog" aria-label="Status: ${esc(s[1])}${st.auto?' (auto)':''}. Change status"><span>${s[2]}</span><span class="t">${esc(s[1])}${st.auto?' <span class="ts-auto">auto</span>':''}</span><span class="car">▼</span></button>${reason}</div>
+    <div class="fu">${fuCell}</div>
+    <div class="upd ts-meta">${l.TravelStatusAt?`${esc(tsAgo(l.TravelStatusAt))}${l.TravelStatusBy?' · '+esc(tsOwnerName(l.TravelStatusBy)):''}`:'—'}</div>
+    <div class="acts tsb-acts">${tel?`<a class="tsb-ic" href="tel:${esc(tel)}" title="Call" aria-label="Call ${esc(tsLeadName(l))}" onclick="event.stopPropagation()">📞</a>`:''}${typeof openLeadChat==='function'?`<button class="tsb-ic" title="Open chat" aria-label="Open chat" onclick="openLeadChat(${id})">💬</button>`:''}</div>
+  </div>`;
+}
+// 🤖 Auto follow-up (worker travel-status-auto.js): on unless the account switched it off.
+const tsAutoOn=()=>String(clientRecord?.travel_auto_followup||'').trim().toLowerCase()!=='no';
+async function tsToggleAuto(){
+  const next=tsAutoOn()?'No':'Yes', prev=clientRecord.travel_auto_followup;
+  clientRecord.travel_auto_followup=next; renderTravelStatus();
+  try{
+    if(typeof ensureClientField==='function') await ensureClientField('travel_auto_followup');
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:Number(clientId), travel_auto_followup:next});
+    if(typeof showToast==='function') showToast(next==='Yes'?'🤖 Auto follow-up is on — stalled inquiries become a follow-up after 2 days':'Auto follow-up is off');
+  }catch(e){
+    clientRecord.travel_auto_followup=prev; renderTravelStatus();
+    if(typeof showToast==='function') showToast('Could not save — '+e.message,'err');
+  }
 }
 function tsClearFilters(){ _tsFilter={status:'',owner:'',cat:'',q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
 
-/* ── Status picker: a popover under the pill on PC, a bottom sheet on a phone. Picking "Follow up
-   pending" goes straight to a date step (Today / Tomorrow / In 3 days / Next week / any date), so
-   the status and its date are saved in one change. Esc or a tap outside closes it. */
+/* ── Bulk: tick inquiries, then set one status (with its date / lost reason) or one owner for all ── */
+function tsTogglePick(id,on){ id=Number(id); if(on) _tsPicked.add(id); else _tsPicked.delete(id); renderTravelStatus(); }
+function tsPickAll(on){ const vis=tsSort(tsFiltered()).slice(0,_tsShown).map(l=>Number(l.Id)); if(on) vis.forEach(i=>_tsPicked.add(i)); else _tsPicked.clear(); renderTravelStatus(); }
+function tsBulkBarHTML(all){
+  const n=_tsPicked.size;
+  return `<div class="tsb-bulk" role="region" aria-label="Bulk actions"><b>${n} selected</b>
+    <button class="tsb-bbtn" onclick="tsPick(null,this,'',[..._tsPicked])">🏷️ Set status</button>
+    ${all?`<select class="tsb-bsel" aria-label="Assign to" onchange="tsBulkAssign(this.value);this.value=''"><option value="">👤 Assign to…</option>${getTeamMembers().map(m=>`<option value="${esc(m.email)}">${esc(m.name||m.email)}</option>`).join('')}<option value="__none">Unassigned</option></select>`:''}
+    <button class="tsb-bx" onclick="_tsPicked.clear();renderTravelStatus()" aria-label="Clear selection">✕</button></div>`;
+}
+async function tsBulkAssign(email){
+  if(!email) return;
+  const owner=email==='__none'?'':email, ids=[..._tsPicked];
+  const leads=ids.map(id=>allLeads.find(l=>Number(l.Id)===id)).filter(Boolean);
+  if(!leads.length) return;
+  const before=leads.map(l=>({l, Owner:l.Owner}));
+  leads.forEach(l=>{ l.Owner=owner; });
+  _tsPicked.clear(); renderTravelStatus();
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`, leads.map(l=>({Id:l.Id, Owner:owner})));
+    if(typeof showToast==='function') showToast(`👤 ${leads.length} inquir${leads.length===1?'y':'ies'} assigned to ${owner?tsOwnerName(owner):'nobody'}`);
+  }catch(e){
+    before.forEach(b=>{ b.l.Owner=b.Owner; }); renderTravelStatus();
+    if(typeof showToast==='function') showToast('Could not assign — '+e.message,'err');
+  }
+}
+// One status change for one or many inquiries; one toast for a bulk change.
+async function tsApply(ids, patch){
+  ids=[].concat(ids).map(Number).filter(Boolean);
+  if(ids.length===1){ const ok=await tsSave(ids[0], patch); return ok; }
+  _tsPicked.clear();
+  const res=[]; const queue=[...ids];
+  const worker=async()=>{ while(queue.length){ const id=queue.shift(); res.push(await tsSave(id, {...patch}, {quiet:true})); } };
+  await Promise.all([worker(),worker(),worker(),worker()]);
+  const ok=res.filter(Boolean).length, s=TS_BY_KEY[patch.TravelStatus];
+  if(typeof showToast==='function') showToast(ok===ids.length?`${s?s[2]+' ':''}${ok} inquiries updated`:`${ok} of ${ids.length} updated — ${ids.length-ok} could not be saved`, ok===ids.length?undefined:'err');
+  renderTravelStatus();
+  return ok===ids.length;
+}
+
+/* ── Swipe on a phone card: right = next usual step (with Undo), left = set a follow-up ── */
+function tsBindSwipe(el){
+  if(el._tsSwipe) return; el._tsSwipe=true;
+  let row=null, x0=0, y0=0, dx=0, locked=null;
+  el.addEventListener('touchstart', e=>{
+    if(!tsIsPhone()||_tsView==='board') return;
+    const r=e.target.closest('.tsb-row'); if(!r||e.target.closest('select,input,a')) { row=null; return; }
+    row=r; x0=e.touches[0].clientX; y0=e.touches[0].clientY; dx=0; locked=null;
+  }, {passive:true});
+  el.addEventListener('touchmove', e=>{
+    if(!row) return;
+    const mx=e.touches[0].clientX-x0, my=e.touches[0].clientY-y0;
+    if(locked===null&&(Math.abs(mx)>10||Math.abs(my)>10)) locked=Math.abs(mx)>Math.abs(my)*1.3?'x':'y';
+    if(locked!=='x') return;
+    dx=Math.max(-140, Math.min(140, mx));
+    row.style.transform=`translateX(${dx}px)`; row.style.transition='none';
+    row.classList.toggle('sw-right', dx>40); row.classList.toggle('sw-left', dx<-40);
+    const next=TS_NEXT[row.dataset.status];
+    row.dataset.swipe=dx>40?(next?`${TS_BY_KEY[next][2]} ${TS_BY_KEY[next][1]}`:'No next step'):dx<-40?'⏰ Follow up':'';
+  }, {passive:true});
+  const end=()=>{
+    if(!row) return;
+    const r=row, d=dx; row=null;
+    r.style.transition='transform .18s'; r.style.transform=''; r.classList.remove('sw-right','sw-left'); r.dataset.swipe='';
+    if(locked!=='x') return;
+    const id=Number(r.dataset.lead);
+    if(d>90) tsSwipeNext(id);
+    else if(d<-90) tsPick(id, null, 'date');
+  };
+  el.addEventListener('touchend', end); el.addEventListener('touchcancel', end);
+}
+async function tsSwipeNext(id){
+  const lead=allLeads.find(l=>Number(l.Id)===Number(id)); if(!lead) return;
+  const cur=tsStatusOf(lead).key, next=TS_NEXT[cur];
+  if(!next){ if(typeof showToast==='function') showToast('This inquiry has no next step — tap its status to change it'); return; }
+  if(next==='follow_up_pending'||TS_LOST.has(next)) return tsChoose([id], next, null);
+  const prev={TravelStatus:lead.TravelStatus||'', TravelFollowUpAt:lead.TravelFollowUpAt||''};
+  const ok=await tsSave(id, {TravelStatus:next}, {quiet:true});
+  if(ok && typeof showUndoToast==='function') showUndoToast(`${TS_BY_KEY[next][2]} ${tsLeadName(lead)} → ${TS_BY_KEY[next][1]}`, ()=>tsSave(id, {TravelStatus:prev.TravelStatus||cur, TravelFollowUpAt:prev.TravelFollowUpAt}));
+}
+
+/* ── Status picker: a popover under the pill on PC, a bottom sheet on a phone. "Follow up pending"
+   goes to a date step (Today / Tomorrow / In 3 days / Next week / any date) and a lost status to a
+   reason step, so status + date / reason are saved in one change. Works for one inquiry or a bulk
+   selection. Esc or a tap outside closes it; arrow keys move; focus goes back to the pill. ── */
 function tsIsoIn(days){ const d=new Date(); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); }
+let _tsPickReturn=null;
 function tsPickClose(){
   $id('tsbBack')?.remove(); $id('tsbSheet')?.remove();
   document.removeEventListener('keydown', tsPickKey, true);
@@ -363,7 +589,6 @@ function tsPickClose(){
   if(_tsRenderPending){ _tsRenderPending=false; renderTravelStatus(); }
   if(ret){ const b=document.querySelector(`#tsBody .tsb-row[data-lead="${ret}"] .tsb-pill`); b?.focus({preventScroll:true}); }
 }
-let _tsPickReturn=null;
 function tsPickKey(e){
   if(e.key==='Escape'){ e.preventDefault(); tsPickClose(); return; }
   if(e.key==='ArrowDown'||e.key==='ArrowUp'){
@@ -372,53 +597,131 @@ function tsPickKey(e){
     opts[(i+(e.key==='ArrowDown'?1:-1)+opts.length)%opts.length].focus();
   }
 }
-function tsPick(id, anchor, step){
-  const lead=(typeof allLeads!=='undefined'?allLeads:[]).find(l=>Number(l.Id)===Number(id)); if(!lead) return;
+// ids: one inquiry ([id]) or a bulk selection. step: '' (statuses) | 'date' | 'reason'.
+function tsPick(id, anchor, step, ids, presetKey){
+  ids=ids&&ids.length?ids.map(Number):[Number(id)];
+  const leads=ids.map(i=>(typeof allLeads!=='undefined'?allLeads:[]).find(l=>Number(l.Id)===i)).filter(Boolean);
+  if(!leads.length) return;
+  const lead=leads[0], bulk=leads.length>1;
   tsPickClose();
-  _tsPickerOpen=true; _tsPickReturn=Number(id);
+  _tsPickerOpen=true; _tsPickReturn=bulk?null:Number(lead.Id);
   const back=document.createElement('div'); back.className='tsb-back'; back.id='tsbBack'; back.onclick=tsPickClose;
   const sh=document.createElement('div'); sh.className='tsb-sheet'; sh.id='tsbSheet'; sh.setAttribute('role','dialog'); sh.setAttribute('aria-modal','true'); sh.setAttribute('aria-label','Change status');
+  sh._ids=leads.map(l=>Number(l.Id));
   document.body.append(back, sh);
-  const draw=(mode)=>{
-    const cur=tsStatusOf(lead).key;
-    sh.classList.toggle('list', mode!=='date'); sh.style.left=''; sh.style.top='';
+  const who=bulk?`${leads.length} inquiries`:esc(tsLeadName(lead));
+  const draw=(mode, key)=>{
+    const cur=bulk?'':tsStatusOf(lead).key;
+    sh.classList.toggle('list', mode==='list'); sh.style.left=''; sh.style.top='';
     if(mode==='date'){
       const quick=[['Today',0],['Tomorrow',1],['In 3 days',3],['Next week',7]];
-      sh.innerHTML=`<div class="grab"></div>
-        <h4>⏰ Follow up when? · ${esc(tsLeadName(lead))}</h4>
-        <div class="tsb-dates">${quick.map(([l,d])=>`<button data-days="${d}" onclick="tsPickDate(${Number(id)},'${tsIsoIn(d)}')">${l}<small>${esc(tsFmtDate(tsIsoIn(d)))}</small></button>`).join('')}</div>
-        <div class="tsb-custom"><input type="date" id="tsbDate" aria-label="Pick a date" min="${tsIsoIn(0)}" value="${esc(String(lead.TravelFollowUpAt||'').slice(0,10)||tsIsoIn(1))}"><button onclick="tsPickDate(${Number(id)},$id('tsbDate').value)">Save</button></div>
+      sh.innerHTML=`<div class="grab"></div><h4>⏰ Follow up when? · ${who}</h4>
+        <div class="tsb-dates">${quick.map(([l,d])=>`<button data-days="${d}" onclick="tsPickDate('${tsIsoIn(d)}')">${l}<small>${esc(tsFmtDate(tsIsoIn(d)))}</small></button>`).join('')}</div>
+        <div class="tsb-custom"><input type="date" id="tsbDate" aria-label="Pick a date" min="${tsIsoIn(0)}" value="${esc((!bulk&&String(lead.TravelFollowUpAt||'').slice(0,10))||tsIsoIn(1))}"><button onclick="tsPickDate($id('tsbDate').value)">Save</button></div>
         ${cur==='follow_up_pending'?'':'<button class="tsb-backlink" onclick="tsPickBack()">← Back to statuses</button>'}`;
+    } else if(mode==='reason'){
+      const s=TS_BY_KEY[key];
+      sh.innerHTML=`<div class="grab"></div><h4>${s[2]} Why was it lost? · ${who}</h4>
+        <div class="tsb-reasons">${TS_LOST_REASONS.map(r=>`<button class="tsb-opt tsb-c-red" data-reason="${esc(r)}" onclick="tsPickReason('${key}',this.dataset.reason)"><span class="dot"></span>${esc(r)}</button>`).join('')}</div>
+        <div class="tsb-custom"><input id="tsbReason" placeholder="Other reason…" maxlength="120" aria-label="Other reason" onkeydown="if(event.key==='Enter'){event.preventDefault();tsPickReason('${key}',this.value)}"><button onclick="tsPickReason('${key}',$id('tsbReason').value)">Save</button></div>
+        <div style="display:flex;justify-content:space-between"><button class="tsb-backlink" onclick="tsPickBack()">← Back to statuses</button><button class="tsb-backlink" data-skip="1" onclick="tsPickReason('${key}','')">Skip</button></div>`;
     } else {
-      const sec=(title, keys)=>`<h4>${title}</h4>${TS_STATUSES.filter(s=>keys(s[0])).map(([k,l,i,g])=>`<button class="tsb-opt tsb-c-${g}${k===cur?' cur':''}" data-status="${k}" onclick="tsPickStatus(${Number(id)},'${k}')"><span class="dot"></span>${i} ${esc(l)}${k===cur?'<span class="ck">✓</span>':''}</button>`).join('')}`;
-      sh.innerHTML=`<div class="grab"></div><div class="ttl">${esc(tsLeadName(lead))}</div>
+      const sec=(title, keys)=>`<h4>${title}</h4>${TS_STATUSES.filter(s=>keys(s[0])).map(([k,l,i,g])=>`<button class="tsb-opt tsb-c-${g}${k===cur?' cur':''}" data-status="${k}" onclick="tsPickStatus('${k}')"><span class="dot"></span>${i} ${esc(l)}${k===cur?'<span class="ck">✓</span>':''}</button>`).join('')}`;
+      sh.innerHTML=`<div class="grab"></div><div class="ttl">${who}</div>${bulk?`<h4 class="tsb-bulkttl">Set status for ${leads.length} inquiries</h4>`:''}
         <div class="tsb-cols2"><div>${sec('In progress', k=>tsGroupOf(k)==='open')}</div><div>${sec('Won', k=>TS_WON.has(k))}${sec('Lost', k=>TS_LOST.has(k))}</div></div>`;
     }
-    // PC: under the pill (or above it when there's no room), kept on screen.
-    if(!window.matchMedia('(max-width:767px)').matches && anchor){
+    if(!tsIsPhone() && anchor && document.body.contains(anchor)){
       const r=anchor.getBoundingClientRect(), w=sh.offsetWidth, h=sh.offsetHeight;
-      let left=Math.min(Math.max(8, r.left), window.innerWidth-w-8);
+      const left=Math.min(Math.max(8, r.left), window.innerWidth-w-8);
       let top=r.bottom+6; if(top+h>window.innerHeight-8) top=Math.max(8, r.top-h-6);
       sh.style.left=left+'px'; sh.style.top=top+'px';
-    }
+    } else if(!tsIsPhone()){ sh.style.left=Math.max(8,(window.innerWidth-sh.offsetWidth)/2)+'px'; sh.style.top=Math.max(8,(window.innerHeight-sh.offsetHeight)/2)+'px'; }
     (sh.querySelector('.tsb-opt.cur')||sh.querySelector('.tsb-opt, .tsb-dates button'))?.focus({preventScroll:true});
   };
   window.tsPickBack=()=>draw('list');
   sh._draw=draw;
-  draw(step==='date'?'date':'list');
+  draw(step==='date'?'date':step==='reason'?'reason':'list', presetKey);
   document.addEventListener('keydown', tsPickKey, true);
 }
-function tsPickStatus(id, key){
-  if(key==='follow_up_pending'){ $id('tsbSheet')?._draw('date'); return; }
-  tsPickClose();
-  tsSetStatus(id, key);
+const tsPickIds=()=>$id('tsbSheet')?._ids||[];
+// The one entry point for "move these inquiries to this status" (picker, kanban drop, swipe):
+// follow-up asks for a date, lost asks for a reason, everything else saves straight away.
+function tsChoose(ids, key, anchor){
+  if(key==='follow_up_pending') return tsPick(ids[0], anchor, 'date', ids);
+  if(TS_LOST.has(key)) return tsPick(ids[0], anchor, 'reason', ids, key);
+  return tsApply(ids, {TravelStatus:key});
 }
-function tsPickDate(id, date){
-  if(!date) return;
-  const lead=allLeads.find(l=>Number(l.Id)===Number(id));
+function tsPickStatus(key){
+  const ids=tsPickIds();
+  if(key==='follow_up_pending'){ $id('tsbSheet')?._draw('date'); return; }
+  if(TS_LOST.has(key)){ $id('tsbSheet')?._draw('reason', key); return; }
   tsPickClose();
-  if(lead?.TravelStatus==='follow_up_pending') return tsSetFollowUp(id, date);
-  return tsSave(id, {TravelStatus:'follow_up_pending', TravelFollowUpAt:date});
+  return tsApply(ids, {TravelStatus:key});
+}
+function tsPickDate(date){
+  if(!date) return;
+  const ids=tsPickIds();
+  tsPickClose();
+  const one=ids.length===1&&allLeads.find(l=>Number(l.Id)===ids[0]);
+  if(one&&one.TravelStatus==='follow_up_pending') return tsSetFollowUp(ids[0], date);
+  return tsApply(ids, {TravelStatus:'follow_up_pending', TravelFollowUpAt:date});
+}
+function tsPickReason(key, reason){
+  const ids=tsPickIds();
+  tsPickClose();
+  return tsApply(ids, {TravelStatus:key, TravelLostReason:String(reason||'').trim().slice(0,120)});
+}
+
+/* ── ▦ Board (kanban): one column per Status Board status, in journey order. Drag a card to another
+   column on PC; on a phone the columns scroll sideways and each card's status button moves it. The
+   same filters apply. Also used as Leads → 🗂 Pipeline for a travel account (tsRenderLeadsKanban). ── */
+const TS_KB_MAX=60;
+function tsKanbanHTML(list, opts={}){
+  const by={}; TS_STATUSES.forEach(s=>{ by[s[0]]=[]; });
+  list.forEach(l=>{ by[tsStatusOf(l).key].push(l); });
+  const col=([k,label,icon,grp])=>{
+    const cards=by[k];
+    return `<section class="tsk-col tsb-c-${grp}" data-col="${k}" ondragover="tsKbOver(event)" ondragleave="tsKbLeave(event)" ondrop="tsKbDrop(event,'${k}')" aria-label="${esc(label)}">
+      <header class="tsk-hd"><span>${icon} ${esc(label)}</span><span class="tsk-ct">${cards.length}</span></header>
+      <div class="tsk-cards">${cards.slice(0,TS_KB_MAX).map(tsKbCard).join('')||'<div class="tsk-empty">Drop here</div>'}
+      ${cards.length>TS_KB_MAX?`<button class="tsk-more" onclick="_tsView='list';_tsFilter.status='${k}';renderTravelStatus()${opts.fromLeads?";navigate('tvstatus')":''}">+${cards.length-TS_KB_MAX} more in List</button>`:''}</div>
+    </section>`;
+  };
+  return `<div class="tsk-wrap">${TS_STATUSES.map(col).join('')}</div>`;
+}
+function tsKbCard(l){
+  const st=tsStatusOf(l), id=Number(l.Id), fu=tsFollowUpState(l);
+  const meta=[l.Destination, l.ServiceCategory].filter(Boolean).map(esc).join(' · ');
+  return `<article class="tsk-card tsb-c-${TS_BY_KEY[st.key][3]} ${tsOriginClass(l)}" draggable="true" data-lead="${id}" ondragstart="tsKbStart(event,${id})" ondragend="tsKbEnd(event)">
+    <div class="tsk-top" onclick="openDetail(${id})"><span class="tsb-av">${esc(tsInitials(l))}</span><div><b>${esc(tsLeadName(l))}</b>${tsOriginBadge(l)}<div class="ts-meta">${esc(tsPhone(l))}</div></div></div>
+    ${meta?`<div class="ts-meta tsk-meta">${meta}</div>`:''}
+    <div class="tsk-foot">
+      ${st.key==='follow_up_pending'&&l.TravelFollowUpAt?`<button class="tsb-fu ${fu==='overdue'?'overdue':fu==='today'?'today':''}" onclick="tsPick(${id},this,'date')">⏰ ${esc(tsFmtDate(l.TravelFollowUpAt))}</button>`:''}
+      ${TS_LOST.has(st.key)&&l.TravelLostReason?`<span class="ts-meta">${esc(l.TravelLostReason)}</span>`:''}
+      ${st.auto?'<span class="ts-auto">auto</span>':''}
+      <span class="tsk-owner ts-meta">${l.Owner?esc(tsOwnerName(l.Owner)):'Unassigned'}</span>
+      <button class="tsk-move" onclick="tsPick(${id},this)" aria-label="Move ${esc(tsLeadName(l))} to another status" title="Move to…">⇄</button>
+    </div>
+  </article>`;
+}
+let _tsDragId=null;
+function tsKbStart(e,id){ _tsDragId=Number(id); try{ e.dataTransfer.setData('text/plain', String(id)); e.dataTransfer.effectAllowed='move'; }catch(x){} setTimeout(()=>e.target?.classList?.add('dragging'),0); }
+function tsKbEnd(e){ e.target?.classList?.remove('dragging'); document.querySelectorAll('.tsk-col.over').forEach(c=>c.classList.remove('over')); }
+function tsKbOver(e){ e.preventDefault(); e.currentTarget.classList.add('over'); }
+function tsKbLeave(e){ if(!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove('over'); }
+function tsKbDrop(e,key){
+  e.preventDefault(); e.currentTarget.classList.remove('over');
+  const id=_tsDragId||Number(e.dataTransfer?.getData('text/plain')); _tsDragId=null;
+  const lead=allLeads.find(l=>Number(l.Id)===id); if(!lead) return;
+  if(tsStatusOf(lead).key===key) return;
+  tsChoose([id], key, e.currentTarget.querySelector('.tsk-hd'));
+}
+// Leads → 🗂 Pipeline for a travel account: the same status board, so the stages match everywhere.
+function tsRenderLeadsKanban(wrap){
+  if(!wrap) return; tsInjectStyle();
+  wrap.classList.add('tsk-host');
+  const list=(typeof allLeads!=='undefined'?allLeads:[]).slice();
+  wrap.innerHTML=`<div class="tsk-note ts-meta">Stages from the 📌 Status Board — drag a card to move it. <a href="#" onclick="navigate('tvstatus');return false">Open the Status Board →</a></div>${tsKanbanHTML(tsSort(list),{fromLeads:true})}`;
 }
 
 function tsSetFilter(k,v){
@@ -441,7 +744,7 @@ async function tsEnsureFields(){
 function tsParseLog(raw){
   try{ const v=typeof raw==='string'?JSON.parse(raw||'[]'):raw; return Array.isArray(v)?v:[]; }catch(e){ return []; }
 }
-async function tsSave(id,patch){
+async function tsSave(id,patch,opts={}){
   const lead=(typeof allLeads!=='undefined'?allLeads:[]).find(l=>l.Id===id);
   if(!lead) return;
   const now=new Date().toISOString();
@@ -468,6 +771,7 @@ async function tsSave(id,patch){
       let log=tsParseLog(before.TravelStatusLog);
       if(freshLog) log=tsParseLog(freshLog.TravelStatusLog);
       const entry={at:now, by:myEmail||'', from, to:patch.TravelStatus};
+      if(patch.TravelLostReason) entry.reason=patch.TravelLostReason;
       if(full.TravelFollowUpAt) entry.fu=full.TravelFollowUpAt;
       full.TravelStatusLog=JSON.stringify([entry,...log].slice(0,TS_LOG_MAX));
       lead.TravelStatusLog=full.TravelStatusLog;
@@ -475,18 +779,23 @@ async function tsSave(id,patch){
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,...full});
     if(stage && typeof reportLeadQualityChange==='function') reportLeadQualityChange(id, {Stage:before.Stage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:stage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
     if(stage && !$id('pageLeads')?.classList.contains('hidden') && typeof renderLeadsCurrentView==='function') renderLeadsCurrentView();
-    if(typeof showToast==='function') showToast(stage?`Status saved — lead moved to ${typeof stageLabel==='function'?stageLabel(stage):stage}`:'Status saved');
+    if(!opts.quiet && typeof showToast==='function') showToast(stage?`Status saved — lead moved to ${typeof stageLabel==='function'?stageLabel(stage):stage}`:'Status saved');
+    return true;
   }catch(e){
     if(typeof _dropLeadEdits==='function') _dropLeadEdits({Id:id});
     Object.assign(lead,before);
     tsRefreshViews(true);
-    if(typeof showToast==='function') showToast('Could not save status — '+e.message,'err');
+    if(!opts.quiet && typeof showToast==='function') showToast('Could not save status — '+e.message,'err');
+    return false;
   }
 }
 // Re-render whichever views show travel status. The Inquiries list only needs a redraw when a save
 // failed (to put the old value back) — the dropdown the user just changed already shows the new one.
 function tsRefreshViews(failed){
   if(!$id('pageTvstatus')?.classList.contains('hidden')) renderTravelStatus();
+  else tsUpdateBadge();
+  // Leads → 🗂 Pipeline is the status kanban for a travel account (tsRenderLeadsKanban).
+  if(tsIsTravel() && !$id('pageLeads')?.classList.contains('hidden') && typeof _leadsViewMode!=='undefined' && _leadsViewMode==='pipeline' && typeof renderKanban==='function') renderKanban();
   if(failed && !$id('pageLeads')?.classList.contains('hidden') && typeof renderLeadsCurrentView==='function') renderLeadsCurrentView();
 }
 function tsSetStatus(id,key){
@@ -665,6 +974,7 @@ function renderReportsTravelStatus(){
       <div class="stat"><div class="stat-lbl">❌ Booking not done</div><div class="stat-val">${count('booking_not_done')}</div></div>
       <div class="stat"><div class="stat-lbl">⏰ Follow ups set</div><div class="stat-val">${count('follow_up_pending')}</div></div>
     </div>
+    ${tsLostReasonsHTML(all)}
     <div class="ts-bar">
       <input class="form-input" id="tsRptSearch" placeholder="Search inquiry name or phone…" value="${esc(_tsRpt.q)}" oninput="tsRptSet('q',this.value)">
       <select class="form-input" onchange="tsRptSet('status',this.value)"><option value="">Any new status</option>
@@ -675,6 +985,15 @@ function renderReportsTravelStatus(){
     ${more?`<div style="text-align:center;padding:10px"><button class="btn-ghost" onclick="tsRptSet('shown',${_tsRpt.shown+300})">Show more</button></div>`:''}`;
   if(document.activeElement?.id!=='tsRptSearch' && _tsRpt._focus){ const s=$id('tsRptSearch'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); } }
   _tsRpt._focus=false;
+}
+// ❌ Why bookings were lost in the period: one bar per reason (changes to a lost status only).
+function tsLostReasonsHTML(changes){
+  const lost=changes.filter(c=>TS_LOST.has(c.to)); if(!lost.length) return '';
+  const by={}; lost.forEach(c=>{ const r=String(c.reason||'').trim()||'No reason given'; by[r]=(by[r]||0)+1; });
+  const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]), max=rows[0][1];
+  return `<div class="card" style="margin-bottom:14px;padding:14px 16px"><div class="card-title" style="font-size:14px;margin-bottom:10px">❌ Why bookings were lost <span class="ts-meta">(${lost.length})</span></div>
+    ${rows.map(([r,n])=>`<div class="ts-lr" style="display:grid;grid-template-columns:minmax(120px,190px) 1fr 36px;gap:10px;align-items:center;margin:6px 0;font-size:13px"><span>${esc(r)}</span>
+      <span style="height:10px;border-radius:6px;background:var(--line);overflow:hidden"><span style="display:block;height:100%;width:${Math.round(n/max*100)}%;background:#DC2626;border-radius:6px"></span></span><b style="text-align:right">${n}</b></div>`).join('')}</div>`;
 }
 function tsRptSet(k,v){
   _tsRpt[k]=v; if(k!=='shown') _tsRpt.shown=300;
