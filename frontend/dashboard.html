@@ -4146,7 +4146,7 @@ const ROLES = {
       <div class="page-pad s-content">
 
         <div class="card-title" style="margin-bottom:14px">🪵 Conversation Logs</div>
-        <div class="s-note" style="margin-bottom:14px">Every WhatsApp turn the bot handled or stayed silent on, most recent first — including the exact reason whenever it didn't reply (rate-limited, duplicate delivery, handed over to a human, etc). Filter by phone number to see one conversation's full history.</div>
+        <div class="s-note" style="margin-bottom:14px">Every WhatsApp turn the bot handled or stayed silent on, most recent first — including the exact reason whenever it didn't reply (rate-limited, duplicate delivery, handed over to a human, etc). Each bot message shows the customer's message, the reply sent and <b>Show steps</b>: the route, every AI attempt (provider, error, time), the checks that changed the reply and any ⚠️ fallback used. Filter by phone number to see one conversation's full history.</div>
 
         <div class="card" style="margin-bottom:14px">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -16132,6 +16132,18 @@ async function bizaiClear(){
   bizaiInit();
 }
 
+// One bot message from bot_reply_log: what the customer sent, what was sent back, and every step
+// (route, AI attempts and errors, checks, fallback) behind it.
+const LOGS_STEP_LABEL={routed:'🧭 Routed',ai_request:'🧠 AI request',ai_own_provider:'🔑 Own AI provider',ai_shared_gemini:'✨ Shared Gemini',ai_openrouter:'🔁 OpenRouter',ai_gave_up:'⛔ AI gave up',ai_draft:'📝 AI draft',check_echo:'🔍 Echo check',checks_failed:'🔍 Checks failed',contact_stripped:'📇 Contact removed',ai_final:'✅ Final AI reply',fallback_used:'⚠️ Fallback used',buttons:'🔘 Buttons',list:'📋 List',buttons_failed:'⚠️ Buttons failed',list_failed:'⚠️ List failed',send_failed:'❌ Send failed',link_button_failed:'⚠️ Link button failed'};
+function logsTraceBody(l){
+  const kv=st=>Object.entries(st).filter(([k])=>k!=='step'&&k!=='ms').map(([k,v])=>`<div style="display:grid;grid-template-columns:120px 1fr;gap:6px"><span style="color:var(--muted)">${esc(k.replace(/_/g,' '))}</span><span style="white-space:pre-wrap;word-break:break-word">${esc(typeof v==='object'?JSON.stringify(v):String(v))}</span></div>`).join('');
+  const steps=(l.steps||[]).map(st=>`<div style="padding:8px 10px;border-left:3px solid ${/failed|gave_up|fallback/.test(st.step)?'#dc3545':/check|stripped/.test(st.step)?'#ff9f0a':'var(--line)'};background:var(--bg);border-radius:6px;font-size:11px;display:flex;flex-direction:column;gap:3px">
+      <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(LOGS_STEP_LABEL[st.step]||st.step)}</b><span style="color:var(--muted)">+${Number(st.ms)||0} ms</span></div>${kv(st)}</div>`).join('');
+  return `${l.reason?`<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Route: <b>${esc(l.reason)}</b> · ${esc(l.kind||'text')}</div>`:''}
+    ${l.user_text?`<div style="font-size:12px;margin-bottom:4px"><span style="color:var(--muted)">👤 Customer:</span> ${esc(l.user_text)}</div>`:''}
+    <div style="font-size:12px;margin-bottom:6px;white-space:pre-wrap;word-break:break-word"><span style="color:var(--muted)">🤖 Bot:</span> ${esc(l.reply)}</div>
+    ${steps?`<details><summary style="cursor:pointer;font-size:12px;color:var(--accent)">Show ${l.steps.length} step${l.steps.length===1?'':'s'}</summary><div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">${steps}</div></details>`:''}`;
+}
 async function logsInit(){
   const el=$id('logsContent');
   if(!el) return;
@@ -16144,9 +16156,11 @@ async function logsInit(){
   const typeBadge={
     replied:'background:rgba(var(--accent-rgb,0,168,132),.12);color:var(--accent);border:1px solid rgba(var(--accent-rgb,0,168,132),.25)',
     skipped:'background:var(--surface2,rgba(0,0,0,.04));color:var(--muted);border:1px solid var(--line)',
-    error:'background:rgba(220,53,69,.1);color:var(--red,#dc3545);border:1px solid rgba(220,53,69,.25)'
+    error:'background:rgba(220,53,69,.1);color:var(--red,#dc3545);border:1px solid rgba(220,53,69,.25)',
+    fallback:'background:rgba(255,159,10,.12);color:#b26a00;border:1px solid rgba(255,159,10,.35)'
   };
-  const typeLabel={replied:'✓ Replied', skipped:'⏭ Skipped', error:'✗ Error'};
+  typeBadge.reply=typeBadge.replied;
+  const typeLabel={replied:'✓ Replied', reply:'✓ Replied', skipped:'⏭ Skipped', error:'✗ Error', fallback:'⚠️ Fallback reply'};
   el.innerHTML=`<div style="display:flex;flex-direction:column;gap:8px">${logs.map(l=>{
     const badge=typeBadge[l.type]||typeBadge.skipped;
     const label=typeLabel[l.type]||esc(l.type);
@@ -16159,8 +16173,8 @@ async function logsInit(){
           <span style="font-size:13px;font-weight:600;font-family:monospace;letter-spacing:.5px">${esc(l.phone||'—')}</span>
           <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;${badge}">${label}</span>
         </div>
-        ${l.reason?`<div style="font-size:12px;color:var(--ink);margin-bottom:2px">${esc(l.reason)}</div>`:''}
-        ${l.detail?`<div style="font-size:11px;color:var(--muted)">${esc(l.detail)}</div>`:''}
+        ${l.steps?logsTraceBody(l):`${l.reason?`<div style="font-size:12px;color:var(--ink);margin-bottom:2px">${esc(l.reason)}</div>`:''}
+        ${l.detail?`<div style="font-size:11px;color:var(--muted)">${esc(l.detail)}</div>`:''}`}
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:11px;font-weight:600;color:var(--ink)">${timeStr}</div>
