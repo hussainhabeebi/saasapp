@@ -21806,7 +21806,7 @@ function taOptionsApply(d){
   clientRecord.itin_auto_images=yn(d.itin_auto_images);
   clientRecord.lt_show_fares=yn(d.lt_show_fares);
   clientRecord.lt_fare_options=String(d.lt_fare_options);
-  clientRecord.lt_fare_style=d.lt_fare_style==='highlighted'?'highlighted':'classic';
+  clientRecord.lt_fare_style=['highlighted','nanthana'].includes(d.lt_fare_style)?d.lt_fare_style:'classic';
 }
 function taOptionsFill(rec){
   const set=(id,v)=>{const el=$id(id); if(el) el.value=v;};

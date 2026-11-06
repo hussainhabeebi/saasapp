@@ -21072,6 +21072,16 @@ export function ltFormatChatOffers(offers,opts={}){
   const lines=[`✈️ I found ${count} from ${firstLeg.origin||'—'} to ${firstLeg.destination||'—'}${dateLabel?` on ${dateLabel}`:''} (${cabin}${opts.filterLabel?` · ${opts.filterLabel}`:''}).${!opts.sort&&hasDirect&&hasConnecting?' Direct flights are listed first.':''}`];
   if(opts.note)lines.unshift(opts.note);
   const tags=opts.style==='highlighted'?ltChatFareTags(top,showFares):[];
+  // Settings → Travel Settings → Fare card style "Nanthana": a trip summary, then each flight as a
+  // "FLIGHT DETAILS" block between divider lines (its own layout, so the Direct flights list
+  // option does not apply to it).
+  if(opts.style==='nanthana'){
+    const out=[...(opts.note?[opts.note]:[]),ltNanthanaSummary(top[0],opts),...top.map((o,i)=>ltNanthanaFareCard(o,i,showFares))];
+    out.push(showFares
+      ?`Tap the option you'd like to book below.${opts.filterHint?'\nTo filter, reply e.g. *direct only*, *morning*, *cheapest*, *under 30000* or an airline like *flynas only*.':''}\n_Fares may change until checkout._${ltChatFxNote(top)}`
+      :`Tap the option you'd like to book below — the fare is shown at checkout.${opts.filterHint?'\nTo filter, reply e.g. *direct only*, *morning* or an airline like *flynas only*.':''}`);
+    return out.join('\n\n');
+  }
   if(opts.directList){
     // Travel Settings → Direct flights list: each section is its own message block, each flight a
     // card with one detail per line. Without a customer sort the order is already direct-first,
@@ -21158,6 +21168,60 @@ export function ltListFareCard(o,i,tags=[],showFares=true){
   if(showFares)out.push(`• 💳 Fare: *${ltFxFormat(o.total_amount,o.currency)}*`);
   if(seats)out.push(`• 💺 ${seats}`);
   return out.join('\n');
+}
+// ── Fare card style "Nanthana" ──
+const LT_NANTHANA_DIVIDER='------------------------------';
+// "TRZ" → "Tiruchirapally"-style city name from the airport alias table ('' when unknown).
+export function ltAirportCityName(code){
+  const hit=LT_AIRPORT_ALIASES.find(([c])=>c===String(code||'').toUpperCase());
+  const word=hit?String(hit[1].source).replace(/^\\b(?:\(\?:)?/,'').split(/[|)]/)[0].replace(/\\b$/,'').replace(/\\s[*+?]?/g,' ').trim():'';
+  return word&&/^[a-z ]+$/i.test(word)&&word.toLowerCase()!==String(code||'').toLowerCase()?word.replace(/\b\p{Ll}/gu,ch=>ch.toUpperCase()):'';
+}
+// "2026-11-11T16:25" → "2026-11-11 04:25 PM".
+function ltNanthanaClock(v){
+  const c=ltFlightClock(v);if(!c)return '—';
+  const h=c.hour%12||12,p=c.hour<12?'AM':'PM',pad=n=>String(n).padStart(2,'0');
+  return `${c.year}-${pad(c.month)}-${pad(c.day)} ${pad(h)}:${pad(c.minute)} ${p}`;
+}
+// "IX 660" with airline code IX stays "IX 660"; "660" becomes "IX 660" — never "IX IX 660".
+function ltNanthanaFlightNo(o){
+  const code=String(o.airline_code||'').trim().toUpperCase(),nums=String(o.flight_numbers||'').trim();
+  if(!nums)return code;
+  return nums.split(/\s*,\s*/).map(n=>!code||n.toUpperCase().startsWith(code)?n:`${code} ${n}`).join(', ');
+}
+// true / false when the supplier says whether the fare is refundable, null when it does not.
+export function ltOfferRefundable(o){
+  const r=o?.fare_rules||{},raw=o?.raw||{};
+  for(const v of [r.refundable,r.isRefundable,raw.refundable,raw.isRefundable,raw.is_refundable,o?.refundable]){
+    if(typeof v==='boolean')return v;
+    if(/^(yes|true|1|refundable)$/i.test(String(v??'')))return true;
+    if(/^(no|false|0|non[- ]?refundable)$/i.test(String(v??'')))return false;
+  }
+  return null;
+}
+function ltNanthanaSummary(first,opts={}){
+  const leg=Array.isArray(first?.itinerary)?first.itinerary[0]||{}:{};
+  const p=opts.pax||{},a=Number(p.adults||1),ch=Number(p.children||0),inf=Number(p.infants||0);
+  const pax=[`${a} Adult${a===1?'':'s'}`,ch&&`${ch} Child${ch===1?'':'ren'}`,inf&&`${inf} Infant${inf===1?'':'s'}`].filter(Boolean).join(', ');
+  const cabin=String(first?.cabin||'economy').replace('_',' ').replace(/\b\p{Ll}/gu,c=>c.toUpperCase());
+  return [`📍 *Route:* ${leg.origin||'—'} → ${leg.destination||'—'}`,`🛫 *Journey Type:* ${opts.tripType==='round_trip'?'Round-trip':'One-way'}`,`👤 *Passengers:* ${pax}`,`💺 *Class:* ${cabin}`].join('\n');
+}
+export function ltNanthanaFareCard(o,i,showFares=true){
+  const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
+  const place=c=>{const city=ltAirportCityName(c);return city?`${city} (${c})`:(c||'—');};
+  const plus=ltArrivalDayOffset(leg.departureTime,leg.arrivalTime);
+  const duration=Number(leg.duration||0),stops=Number(leg.stops||0);
+  const checked=o.baggage?.checked||o.baggage?.checkedBaggage,cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage;
+  const refundable=ltOfferRefundable(o);
+  const lines=[LT_NANTHANA_DIVIDER,'',`✈️ *FLIGHT DETAILS — OPTION ${i+1}*`,'',`✈️ ${o.airline_name||o.airline_code||'Flight'} ${ltNanthanaFlightNo(o)}`.trim(),'',
+    `🛫 *From:* ${place(leg.origin)}`,ltNanthanaClock(leg.departureTime),
+    `🛬 *To:* ${place(leg.destination)}`,`${ltNanthanaClock(leg.arrivalTime)}${plus===1?' [Next Day]':plus>1?` [+${plus} Days]`:''}`];
+  if(duration)lines.push(`⏱️ *Duration:* ${Math.floor(duration/60)}h ${duration%60}m · ${stops===0?'Non-stop':`${stops} stop${stops===1?'':'s'}`}`);
+  lines.push(checked?`🛄 *Check-in Baggage:* ${checked}`:'🛄 *Baggage:* To be confirmed.');
+  if(cabinBag)lines.push(`🎒 *Cabin Baggage:* ${cabinBag}`);
+  if(refundable!=null)lines.push(`💰 *Refundable:* ${refundable?'Yes':'No'}`);
+  if(showFares)lines.push(`💳 *Fare:* ${ltFxFormat(o.total_amount,o.currency)}`);
+  return lines.join('\n');
 }
 // Converted chat fares are estimates: POOMAS charges in its own currency at checkout.
 function ltChatFxNote(offers){
@@ -21496,7 +21560,7 @@ const LT_TRAVEL_OPTIONAL_KEYS=['lt_direct_list','lt_date_picker','lt_passport_de
 const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
 const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
 const ltPayQrLabel=v=>String(v||'').replace(/\s+/g,' ').trim().slice(0,40);
-export const LT_FARE_STYLES=['classic','highlighted'];
+export const LT_FARE_STYLES=['classic','highlighted','nanthana'];
 export const LT_FARE_OPTIONS_MAX=5;
 const ltYesNo=(v,def)=>v==null||v===''?def:typeof v==='boolean'?v:/^(yes|true|1|on)$/i.test(String(v).trim());
 export function ltTravelSettingsNormalize(raw={}){
@@ -22705,7 +22769,7 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
     await ltSaveChatOffers(env,clientId,phone,bookingOffers,filters.sort,prefs.limit);
     await ltSaveChatLastSearch(env,clientId,phone,input);
     await ltClearChatSearchDraft(env,clientId,phone);
-    return {handled:true,reply:ltFormatChatOffers(bookingOffers,{sort:filters.sort,limit:prefs.limit,showFares:prefs.showFares,style:prefs.style,directList:prefs.directList,note,filterLabel:fallback?'':ltChatFlightFilterLabel(filters),filterHint:!ltHasChatFlightFilters(filters)||fallback}),buttons:ltBookButtons(bookingOffers)};
+    return {handled:true,reply:ltFormatChatOffers(bookingOffers,{sort:filters.sort,limit:prefs.limit,showFares:prefs.showFares,style:prefs.style,directList:prefs.directList,pax:input,tripType:input.trip_type,note,filterLabel:fallback?'':ltChatFlightFilterLabel(filters),filterHint:!ltHasChatFlightFilters(filters)||fallback}),buttons:ltBookButtons(bookingOffers)};
   }catch(e){
     await reportOpsError(env,'Live ticketing chat search',e,{clientId});
     return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};
