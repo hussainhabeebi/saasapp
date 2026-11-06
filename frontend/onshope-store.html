@@ -69,7 +69,15 @@ a{color:inherit}
 
 <div class="foot">Powered by <a href="/">onshope</a> — WhatsApp commerce for local businesses</div>
 
+<script src="/lv-pixel.js?v=1"></script>
 <script>
+function addBrandLogo(id,url,h){ /* official logo from Settings → 📇 People & Contacts */
+  if(!url||!/^https:\/\//i.test(url)) return; const el=document.getElementById(id); if(!el||el.querySelector('img.brand-logo')) return;
+  const im=document.createElement('img'); im.className='brand-logo'; im.src=url; im.alt='';
+  im.style.cssText='height:'+h+'px;width:auto;max-width:'+(h*4)+'px;object-fit:contain;vertical-align:middle;margin-right:8px;border-radius:4px';
+  im.onerror=()=>im.remove(); el.prepend(im);
+}
+
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
 const slug = params.get('slug') || '';
@@ -147,11 +155,15 @@ async function load(){
 
     document.title = (storeInfo.client_name || 'Store') + ' · onshope';
     document.getElementById('storeName').textContent = storeInfo.client_name || 'Store';
+    addBrandLogo('storeName', storeInfo.logo_url, 28);
     const chatBtn = document.getElementById('chatBtn');
     const chat = waLink(storeInfo.whatsapp_phone, `Hi! I'm browsing your products.`);
     if(chat){ chatBtn.href = chat; chatBtn.style.display = 'inline-flex'; }
 
+    LVPixel.init({pixelId:storeInfo.meta_pixel_id, consent:storeInfo.pixel_consent_banner});
     renderProducts();
+    const focus = focusSku && allProducts.find(p => p.sku === focusSku);
+    if(focus) LVPixel.track('ViewContent', {content_ids:[focusSku], content_type:'product', content_name:focus.name, value:Number(focus.price)||0, currency:focus.currency||'INR'});
     if(focusSku){
       const el = document.getElementById('p-'+focusSku);
       if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
@@ -160,8 +172,14 @@ async function load(){
     document.getElementById('errMsg').style.display = 'block';
   }
 }
+document.getElementById('grid')?.addEventListener('click', e => {
+  const btn = e.target.closest('a.order-btn'); if(!btn) return;
+  const sku = (btn.closest('.card')?.id || '').replace(/^p-/, '');
+  LVPixel.track('Contact', {content_ids:sku?[sku]:[], content_type:'product'});
+});
 load();
 </script>
-<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
+<script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>

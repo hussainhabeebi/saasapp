@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json .
 RUN npm install --omit=dev
 
-COPY nba.js recovery.js ./
+COPY nba.js recovery.js followup-guard.js ./
 
 ENV NOCODB_BASE=https://whizz.aiingo.com
 ENV NOCODB_TOKEN=
