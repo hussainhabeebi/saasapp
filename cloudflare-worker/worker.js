@@ -37627,6 +37627,8 @@ async function runWaShopDailySyncForAllClients(env){
 }
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
+  // 📝 Internal notes need a long-text NotesList on the Leads table (created once if missing).
+  ensureNotesColumn:async env=>{ const {names}=await ncTableMeta(env, DEFAULT_LEADS_TABLE); await ncEnsureField(env, DEFAULT_LEADS_TABLE, names, 'NotesList', 'LongText'); },
   // A label added in Chats that marks a purchase → Purchase to Meta (capiPurchaseFromLabels).
   afterLeadPatches:(env, cid, patches)=>capiPurchaseFromLabels(env, cid, patches),
   leadsTable:DEFAULT_LEADS_TABLE,

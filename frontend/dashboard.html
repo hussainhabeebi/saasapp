@@ -6671,6 +6671,7 @@ function connectLiveUpdates(){
     else if(msg?.type==='lead_reassigned') onLiveReassignEvent(msg);
     else if(msg?.type==='lead_updated') onLiveLeadUpdatedEvent(msg);
     else if(msg?.type==='lead_shared') onLiveSharedEvent(msg);
+    else if(msg?.type==='note') onLiveNoteEvent(msg);
   };
   // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
   // app is still actually open — checked at fire time, not just at schedule time, so a logout in
@@ -10374,14 +10375,22 @@ async function removeTag(tag,e){
   await patchDetailField('Tags',val);
 }
 
+// Newest first. Notes come from here and from Chats (which used to store them oldest first), so
+// they are sorted by ts; a note without one keeps its place.
+function sortedLeadNotes(lead){
+  let notes=[]; try{notes=JSON.parse(lead?.NotesList||'[]');}catch(e){}
+  if(!Array.isArray(notes)) return [];
+  return notes.map((n,i)=>({...(typeof n==='object'&&n?n:{text:String(n)}),_i:i}))
+    .sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||''))||a._i-b._i);
+}
 function renderDetailNotes(lead){
-  let notes=[]; try{notes=JSON.parse(lead.NotesList||'[]');}catch(e){}
+  const notes=sortedLeadNotes(lead).map(n=>({...n, date:n.date||(n.ts?new Date(n.ts).toLocaleString():'')}));
   $id('detailNotes').innerHTML=notes.length
     ?notes.map(n=>{
       // author — added alongside the Chats tab's internal-note composer (chats.js chatSubmitNote)
       // so a note written from either place shows who wrote it; older notes simply lack it.
-      const authorName=n.author?(getTeamMembers().find(m=>m.email===n.author)?.name||n.author):'';
-      return `<div class="note-item">${esc(n.text).replace(/\n/g,'<br>')}<div class="note-meta">${authorName?esc(authorName)+' · ':''}${n.date||''}</div></div>`;
+      const authorName=n.author?(getTeamMembers().find(m=>m.email===n.author)?.name||n.author_name||n.author):'';
+      return `<div class="note-item${n._saving?' saving':''}" style="${n._saving?'opacity:.6':''}">${esc(n.text||'').replace(/\n/g,'<br>')}<div class="note-meta">${authorName?esc(authorName)+' · ':''}${n.date||''}</div></div>`;
     }).join('')
     :'<div style="color:var(--muted);font-size:13px;margin-bottom:10px">No notes yet.</div>';
 }
@@ -10394,11 +10403,41 @@ async function addNote(){
   // ts (ISO) is what chats.js's merged timeline sorts by — date stays for the existing display
   // format above, ts is the addition. author lets both this panel and the Chats tab show who
   // wrote it.
-  notes.unshift({text,date:new Date().toLocaleString(),ts:new Date().toISOString(),author:myEmail});
-  currentLead.NotesList=JSON.stringify(notes);
+  const lead=currentLead, before=lead.NotesList;
+  notes.unshift({text,date:new Date().toLocaleString(),ts:new Date().toISOString(),author:myEmail,_saving:true});
+  lead.NotesList=JSON.stringify(notes);
   $id('noteInput').value='';
-  renderDetailNotes(currentLead);
-  await patchDetailField('NotesList',currentLead.NotesList);
+  renderDetailNotes(lead);
+  // Through the Worker (same endpoint as Chats' internal notes): it adds the note to the stored list
+  // — a teammate's note added meanwhile is kept — and every open dashboard and Chats page is told.
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chats/v2/note`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:Number(lead.Id),text})});
+    const d=await r.json().catch(()=>({}));
+    if(r.status===404&&d.error==='Not found'){ // A Worker without the notes endpoint yet: the old way.
+      notes[0]={...notes[0]}; delete notes[0]._saving; lead.NotesList=JSON.stringify(notes);
+      await patchDetailField('NotesList',lead.NotesList); return;
+    }
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    lead.NotesList=JSON.stringify([...(d.notes||[])].reverse());
+    if(currentLead?.Id===lead.Id) renderDetailNotes(lead);
+    if(typeof _cacheLeadsSoon==='function') _cacheLeadsSoon();
+  }catch(e){
+    lead.NotesList=before;
+    if(currentLead?.Id===lead.Id){ renderDetailNotes(lead); $id('noteInput').value=text; }
+    showToast('Could not save note — '+e.message,'err');
+  }
+}
+// A teammate's note, from Chats or another dashboard (worker type:'note'): shown at once on that lead.
+function onLiveNoteEvent(msg){
+  const lead=allLeads.find(l=>l.Id===Number(msg.lead_id)); const n=msg.note;
+  if(!lead||!n) return;
+  let notes=[]; try{notes=JSON.parse(lead.NotesList||'[]');}catch(e){}
+  if(!Array.isArray(notes)) notes=[];
+  if(notes.some(x=>x&&x.ts===n.ts&&x.text===n.text)) return;
+  notes=notes.filter(x=>!(x&&x._saving&&x.text===n.text));
+  lead.NotesList=JSON.stringify([n,...notes]);
+  if(currentLead?.Id===lead.Id && $id('detailNotes')) renderDetailNotes(currentLead);
+  if(typeof _cacheLeadsSoon==='function') _cacheLeadsSoon();
 }
 
 // ── REFERRALS ── a lead's own shareable code (generated on demand, never overwritten once set —

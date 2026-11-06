@@ -1119,6 +1119,47 @@ async function hashOf(obj){
   return [...new Uint8Array(buf)].slice(0,8).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
+
+// ── 📝 Internal notes ─────────────────────────────────────────────────────────────────────────
+// Stored on the lead as NotesList: JSON [{text, ts, author, author_name, date}], newest first (the
+// CRM's own order). Either side may have written either order, so readers sort by ts.
+export function chatsV2NotesSorted(raw){
+  let list=[]; try{ list=typeof raw==='string'?JSON.parse(raw||'[]'):(raw||[]); }catch(e){ list=[]; }
+  if(!Array.isArray(list)) return [];
+  return list.map((n,i)=>typeof n==='object'&&n?n:{text:String(n)}).map((n,i)=>({...n, _i:i}))
+    .sort((a,b)=>String(a.ts||'').localeCompare(String(b.ts||''))||b._i-a._i).map(({_i,...n})=>n);
+}
+// The lead behind a note request, if this person may see it: its Chats row when it has one,
+// otherwise the lead itself (a manual lead with no chat yet), checked with the same rules.
+async function notesLeadFor(env, deps, cid, acc, leadIdRaw){
+  const leadId=Number(leadIdRaw); if(!leadId) return null;
+  const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}`);
+  if(!r.ok) return null;
+  const lead=await r.json().catch(()=>null);
+  if(!lead||String(lead.ClientId)!==String(cid)) return null;
+  const row=await convRow(env, leadId).catch(()=>null);
+  const view=row&&Number(row.client_id)===Number(cid)?row:{assignee_email:lc(lead.Owner), shared_with:chatsV2SharedKey(lead.SharedWith), service_category:String(lead.ServiceCategory||''), inbox_id:String(lead.InboxId||'')};
+  return canSee(acc, view)?lead:null;
+}
+export async function chatsV2NoteAdd(env, deps, cid, lead, {text, email, name}){
+  const leadId=Number(lead.Id), now=new Date();
+  const note={text, ts:now.toISOString(), date:now.toLocaleString('en-GB'), author:email||'', author_name:name||''};
+  if(deps.ensureNotesColumn) await deps.ensureNotesColumn(env).catch(()=>{});
+  // Start from the stored list (re-read just now), so a teammate's note is never overwritten.
+  const fresh=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}?fields=Id,NotesList`);
+  const stored=fresh.ok?((await fresh.json().catch(()=>({})))?.NotesList??lead.NotesList):lead.NotesList;
+  let list=[]; try{ list=JSON.parse(stored||'[]'); }catch(e){ list=[]; }
+  if(!Array.isArray(list)) list=[];
+  const next=JSON.stringify([note, ...list]);
+  await ncPatchLeads(env, deps, [{Id:leadId, NotesList:next}]);
+  // Read back: a note that didn't stick is an error the page shows, not a silent loss.
+  const check=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}?fields=Id,NotesList`);
+  const saved=check.ok?((await check.json().catch(()=>({})))?.NotesList||''):next;
+  if(!String(saved).includes(note.ts)) throw Object.assign(new Error('The note could not be saved — please try again.'), {status:502});
+  if(deps.broadcast) await deps.broadcast(env, cid, {type:'note', lead_id:leadId, note, by:email||''}).catch(()=>{});
+  return {note, notes:chatsV2NotesSorted(saved)};
+}
+
 export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
   const {json}=deps;
   const path=url.pathname, method=request.method;
@@ -1232,6 +1273,26 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
     if(path==='/chats/v2/ai'&&method==='POST'){
       const body=await request.json().catch(()=>({}));
       return json(await chatsV2Ai(env, deps, c, acc, body));
+    }
+    // 📝 Internal notes (LEADS.NotesList, shared with the CRM's lead notes): read fresh from the
+    // server every time a chat opens, and added here — appended to the stored list, never a whole
+    // list from a browser's possibly-old copy — then every open page is told (type:'note').
+    if(path==='/chats/v2/notes'&&method==='GET'){
+      const lead=await notesLeadFor(env, deps, cid, acc, qp.lead_id);
+      if(!lead) return json({error:'Conversation not found'}, 404);
+      return json({notes:chatsV2NotesSorted(lead.NotesList)});
+    }
+    if(path==='/chats/v2/note'&&method==='POST'){
+      const body=await request.json().catch(()=>({}));
+      const text=String(body.text||'').trim().slice(0,4000);
+      if(!text) return json({error:'Write a note first'}, 400);
+      const lead=await notesLeadFor(env, deps, cid, acc, body.lead_id);
+      if(!lead) return json({error:'Conversation not found'}, 404);
+      const name=chatsV2Agents(c).find(a=>a.email===acc.me)?.name||acc.me||'Team';
+      try{
+        const out=await chatsV2NoteAdd(env, deps, cid, lead, {text, email:acc.me, name});
+        return json({ok:true, ...out});
+      }catch(e){ return json({error:e.message||'Could not save the note'}, e.status||502); }
     }
     if(path==='/chats/v2/block'&&method==='POST'){
       const body=await request.json().catch(()=>({}));

@@ -560,3 +560,25 @@ test.describe('swipe on a phone', () => {
     await expect(page.locator('#tsbSheet .tsb-dates')).toBeVisible();
   });
 });
+
+test('lead card notes are saved through the server and a teammate\'s note shows live', async ({ page }) => {
+  await boot(page);
+  const posted = [];
+  await page.route(WORKER + '/chats/v2/note', async (route) => {
+    const b = route.request().postDataJSON(); posted.push(b);
+    const n = { text: b.text, author: OWNER, ts: new Date().toISOString() };
+    return route.fulfill({ json: { ok: true, note: n, notes: [{ text: 'Old note', author: STAFF, ts: '2026-01-01T00:00:00.000Z' }, n] } });
+  });
+  // @ts-ignore
+  await page.evaluate(() => { claimLeadIfUnowned = async () => {}; openDetail(1); });
+  await page.locator('#noteInput').fill('Wants a sea-view room');
+  // @ts-ignore
+  await page.evaluate(() => addNote());
+  await expect.poll(() => posted).toEqual([{ lead_id: 1, text: 'Wants a sea-view room' }]);
+  // The stored list (with the teammate's older note) comes back, newest first.
+  await expect(page.locator('#detailNotes .note-item')).toContainText(['Wants a sea-view room', 'Old note']);
+  // @ts-ignore
+  await page.evaluate((STAFF) => onLiveNoteEvent({ type: 'note', lead_id: 1, note: { text: 'Paid the advance', author: STAFF, ts: new Date(Date.now() + 5000).toISOString() } }), STAFF);
+  await expect(page.locator('#detailNotes .note-item').first()).toContainText('Paid the advance');
+  await expect(page.locator('#detailNotes .note-item').first()).toContainText('Rita');
+});

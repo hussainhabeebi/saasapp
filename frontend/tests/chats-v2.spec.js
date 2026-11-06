@@ -28,6 +28,7 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       conv(3, { name: 'Chitra', status: 'resolved' }),
     ],
     updated: [],
+    notes: [{ text: 'Prefers calls after 6pm', author: SHAFNA, ts: minsAgo(300) }],
   };
   const messages = thread.messages || [
     { id: 11, role: 'user', content: 'Hi', ts: minsAgo(40), sender_type: 'customer' },
@@ -104,6 +105,15 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
         return n;
       });
       return route.fulfill({ json: { ok: true, rows: out, events: {} } });
+    }
+    if (p.endsWith('/chats/v2/notes')) return route.fulfill({ json: { notes: state.notes } });
+    if (p.endsWith('/chats/v2/note')) {
+      const b = req.postDataJSON();
+      calls.note = (calls.note || []).concat([b]);
+      if (state.failNote) return route.fulfill({ status: 502, json: { error: 'The note could not be saved — please try again.' } });
+      const n = { text: b.text, author: ME, author_name: 'Boss', ts: new Date().toISOString() };
+      state.notes = [...state.notes, n];
+      return route.fulfill({ json: { ok: true, note: n, notes: state.notes } });
     }
     if (p.endsWith('/chats/v2/canned')) { calls.canned.push(req.postDataJSON()); return route.fulfill({ json: { ok: true } }); }
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(p)) { calls.nocodbList++; return route.fulfill({ json: { list: [] } }); }
@@ -366,7 +376,9 @@ test('contact sidebar: edit fields, see details and notes, summarise, add a note
   await expect(panel.locator('.sum')).toContainText('Asha wants a price');
   await panel.locator('#infoNote').fill('VIP — offer free upgrade');
   await panel.locator('#infoNote').press('Enter');
-  await expect.poll(() => (calls.patch || []).at(-1)?.NotesList || '').toContain('VIP — offer free upgrade');
+  await expect.poll(() => calls.note?.at(-1)).toEqual({ lead_id: 1, text: 'VIP — offer free upgrade' });
+  await expect(panel).toContainText('VIP — offer free upgrade');
+  expect((calls.patch || []).some(x => 'NotesList' in x)).toBe(false); // never a whole list from this browser
 });
 
 test('location and contact cards; a failed send says why', async ({ page }) => {
@@ -671,4 +683,27 @@ test('the chat header keeps six things; resolve, labels, priority, share and det
   await page.locator('#menuResolve').click();
   await expect.poll(() => calls.act.at(-1)?.op).toBe('resolve');
   await expect(page.locator('.chat-sub .sub-done')).toContainText('Resolved');
+});
+
+test('internal notes: saved through the server, shown to everyone, and kept on failure', async ({ page }) => {
+  const { calls, state } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  // Read fresh when the chat opens.
+  await expect(page.locator('#thread .note')).toContainText(['Prefers calls after 6pm']);
+  await page.locator('#modeRow button', { hasText: 'Internal note' }).click();
+  await page.locator('#msg').fill('Customer wants a window seat');
+  await page.locator('#msg').press('Enter');
+  await expect.poll(() => calls.note?.at(-1)?.text).toBe('Customer wants a window seat');
+  await expect(page.locator('#thread .note').last()).toContainText('Customer wants a window seat');
+  await expect(page.locator('#thread .note.saving')).toHaveCount(0);
+  // A teammate's note arrives live (worker broadcast type:'note').
+  await page.evaluate((SHAFNA) => onNoteEvent({ type: 'note', lead_id: 1, note: { text: 'Called her — will pay today', author: SHAFNA, author_name: 'Shafna', ts: new Date(Date.now() + 1000).toISOString() } }), SHAFNA);
+  await expect(page.locator('#thread .note').last()).toContainText('Called her — will pay today');
+  await expect(page.locator('#thread .note').last()).toContainText('Shafna');
+  // A save that fails: the note comes back out and the text is back in the box.
+  state.failNote = true;
+  await page.locator('#msg').fill('This one fails');
+  await page.locator('#msg').press('Enter');
+  await expect(page.locator('#msg')).toHaveValue('This one fails');
+  await expect(page.locator('#thread .note', { hasText: 'This one fails' })).toHaveCount(0);
 });

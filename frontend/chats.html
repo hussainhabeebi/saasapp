@@ -101,6 +101,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .chat-sub .sub-meta{display:inline-flex;gap:6px;align-items:center;margin-left:6px}.chat-sub .sub-meta .win,.chat-sub .sub-meta .viewers{font-size:11.5px;padding:1px 7px;border-radius:10px;background:#f0f2f5;color:#54656f;white-space:nowrap}.chat-sub .sub-meta .win.low{background:#fff4e5;color:#b45309}.chat-sub .sub-meta .win .t{display:none}.sub-done{font-size:11.5px;color:#008069;font-weight:600}
 .menu{min-width:260px}.menu .menu-val{margin-left:auto;padding-left:10px;color:var(--muted);font-size:12.5px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.menu button{display:flex;align-items:center;gap:8px}.menu .menu-strong{font-weight:600;color:#008069}.menu hr{border:none;border-top:1px solid var(--line);margin:4px 0}
 .info-head{display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:1}.info-head h4{margin:0}.info-x{border:none;background:none;font-size:16px;color:#54656f;cursor:pointer;width:36px;height:36px;border-radius:50%;margin-right:8px}.info-x:hover{background:#f0f2f5}
+.note.saving{opacity:.6}
 .flt-btn{flex:none;display:inline-flex;align-items:center;gap:4px;height:36px;padding:0 12px;border:1px solid #d1d7db;border-radius:18px;background:#fff;color:#54656f;font-size:13px;cursor:pointer}
 .flt-btn[aria-expanded="true"],.flt-btn.on{background:#e7fce9;color:#008069;border-color:#c6f0d2}
 .flt-btn .n{min-width:18px;height:18px;border-radius:9px;background:#008069;color:#fff;font-size:11px;font-weight:700;display:grid;place-items:center;padding:0 5px}
@@ -426,6 +427,7 @@ function connectWs(){
   else if(['message','new_lead','lead_reassigned','lead_shared'].includes(m.type)){queueSync(m.lead_id?[m.lead_id]:[]);if(m.type==='lead_shared'&&lc(m.to)===meEmail)toast(`👥 ${m.lead_name||'A chat'} was shared with you${m.by_name?' by '+m.by_name:''}`)}
   else if(m.type==='cfg')loadBootstrap().catch(()=>{});
   else if(m.type==='viewing'||m.type==='typing')onPresence(m);
+  else if(m.type==='note')onNoteEvent(m);
   else if(m.type==='mention'&&lc(m.to)===meEmail){const l=leads.find(x=>String(x.Id)===String(m.lead_id));toast(`${m.name} mentioned you in a note`);const was=notifyOn;notifyOn=true;notify(`${m.name} mentioned you`,l?(who(l)):'Open the chat',m.lead_id);notifyOn=was}
  };
  ws.onclose=()=>{ws=null;const wait=[1000,2000,5000,10000][Math.min(wsTries++,3)];setTimeout(connectWs,wait)};
@@ -793,6 +795,7 @@ async function openConversation(id){
  try{fetch(WORKER+'/leads/opened',{method:'POST',keepalive:true,headers:headers({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:lead.Id})}).catch(()=>{})}catch{}
  if(r0&&r0.unread_count>0){r0.unread_count=0;act('mark_read',{},[lead.Id]).catch(()=>{})}
  if(V2&&lead.NotesList===undefined)fetchNotes(lead);
+ if(V2)loadNotes(lead);
  startViewing();
  $('main').classList.add('open');$('sidebar').classList.add('thread-open');
  buildShell();applyReadOnlyChannel(lead);renderContacts();paintFollowup(lead);loadFollowup(lead);loadMeetingChip(lead);
@@ -819,7 +822,7 @@ async function loadOlder(){
  const lead=current;if(!lead)return;const k=String(lead.Id),meta=threadMeta[k];if(!meta||!meta.has_more||meta.loading)return;
  meta.loading=true;try{const d=await fetchThread(lead,{before:meta.before});const ids=new Set((histCache[k]||[]).map(m=>m.id).filter(Boolean));histCache[k]=[...d.messages.filter(m=>!ids.has(m.id)),...(histCache[k]||[])];meta.before=d.before;meta.has_more=d.has_more;if(current===lead)drawMessages(false,'prepend')}catch{}finally{meta.loading=false}
 }
-async function fetchNotes(lead){lead.NotesList=lead.NotesList??'';try{const d=await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records/${encodeURIComponent(lead.Id)}`);lead._rec=d;lead.NotesList=d.NotesList||'';if(current===lead){renderInfo();renderHeaderCtl()}if(d.LastCustomerMsgAt&&(!lead.LastCustomerMsgAt||d.LastCustomerMsgAt>lead.LastCustomerMsgAt))lead.LastCustomerMsgAt=d.LastCustomerMsgAt;if(current===lead&&lead.NotesList&&lead.NotesList!=='[]')drawMessages(false)}catch{}}
+async function fetchNotes(lead){lead.NotesList=lead.NotesList??'';try{const d=await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records/${encodeURIComponent(lead.Id)}`);lead._rec=d;if(!lead._notesFresh)lead.NotesList=d.NotesList||'';if(current===lead){renderInfo();renderHeaderCtl()}if(d.LastCustomerMsgAt&&(!lead.LastCustomerMsgAt||d.LastCustomerMsgAt>lead.LastCustomerMsgAt))lead.LastCustomerMsgAt=d.LastCustomerMsgAt;if(current===lead&&lead.NotesList&&lead.NotesList!=='[]')drawMessages(false)}catch{}}
 async function refreshMessages(lead,stick=false){
  const k=String(lead.Id);
  if(V2){try{await fetchThread(lead);if(current&&String(current.Id)===k){drawMessages(stick);const t=$('thread');if(t&&t.scrollHeight<=t.clientHeight+200)loadOlder();maybeSuggest();renderInfo();loadScheduled()}return}catch(e){}}
@@ -945,7 +948,7 @@ function drawMessages(stick=false,mode=''){
   body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${who}${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}${trHtml}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${why}${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}${V2&&text?`<button type="button" data-act="translate" title="Translate">🌐</button><button type="button" data-act="forward" title="Forward">↪</button><button type="button" data-act="task" title="Create task / reminder">⏰</button>`:''}</div></div>`;
  });
  updateWindowBar();updateHandoverBar();
- let notes=[];try{notes=JSON.parse(current.NotesList||'[]')}catch{}for(const n of notes.slice(-10)){body+=`<div class="note">📝 ${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}</small>`:''}</div>`}
+ for(const n of notesOf(current).slice(-10)){const by=n.author_name||(n.author?agentName(n.author):'');body+=`<div class="note${n._saving?' saving':''}">📝 ${esc(n.text||n.content||'')}<small>${esc([by,n.ts?ago(n.ts):'',n._saving?'saving…':''].filter(Boolean).join(' · '))}</small></div>`}
  t.innerHTML=body||'<div class="empty-list">No messages yet. Say hello 👋</div>';
  t.dataset.count=h.length;
  const q=$('threadSearchInput')?.value;if(q)searchThread(q);
@@ -1051,7 +1054,7 @@ async function sendMessage(){
  if(!current)return;const box=$('msg');let text=(box.value||'').trim();if(!text)return;const lead=current;
  const unfilled=composeMode==='reply'&&text.match(/\{\{\s*\w+\s*\}\}/);if(unfilled){const at=box.value.indexOf(unfilled[0]);box.focus();box.setSelectionRange(at,at+unfilled[0].length);toast('Fill in '+unfilled[0]+' before sending');return}
  if(composeMode==='reply'&&!isIg(lead)&&!windowOpen(lead)){toast('The 24-hour window has closed — send a template');return}
- if(composeMode==='note'){const prevNotes=lead.NotesList;let n=[];try{n=JSON.parse(prevNotes||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});lead.NotesList=JSON.stringify(n);box.value='';grow(box);saveDraft(lead.Id,'');drawMessages(true);try{await patchLead(lead,{NotesList:lead.NotesList});sendMentions(lead,text)}catch(e){lead.NotesList=prevNotes;if(current===lead){box.value=text;grow(box);drawMessages(false)}toast('Could not save note: '+e.message)}return}
+ if(composeMode==='note'){box.value='';grow(box);saveDraft(lead.Id,'');try{await saveNote(lead,text);sendMentions(lead,text)}catch(e){if(current===lead){box.value=text;grow(box);drawMessages(false)}toast('Could not save note: '+e.message)}return}
  if(!convId(lead)){toast(isIg(lead)?'No linked Instagram conversation':'No linked WhatsApp conversation');return}
  const quote=replyTarget?{who:replyTarget.who,snippet:replyTarget.snippet}:null;
  if(V2&&sigOn()){const me=agentsList().find(a=>a.email===meEmail);if(me?.name)text=text+`\n\n— ${me.name}`}
@@ -1528,7 +1531,7 @@ function renderInfo(){
  const p=$('infoPanel'),l=current;if(!p||!l||p.classList.contains('hidden'))return;
  const rec=l._rec||{},v=k=>rec[k]??l[k]??'',sum=summaries[String(l.Id)];
  const field=(k,label,type='text')=>`<label class="fld"><span>${esc(label)}</span><input type="${type}" value="${esc(v(k))}" data-k="${esc(k)}" onchange="saveField(this)"></label>`;
- let notes=[];try{notes=JSON.parse(l.NotesList||'[]')}catch{}
+ const notes=notesOf(l);
  const attrs=INFO_FIELDS.filter(([k])=>String(rec[k]??'').trim()).map(([k,label])=>field(k,label)).join('');
  const created=rec.CreatedAt||rec.Date||rec.created_at;
  p.innerHTML=`<div class="info-head"><h4>Contact</h4><button class="info-x" id="infoClose" title="Close" aria-label="Close contact details" onclick="toggleInfo(false)">✕</button></div>${field('Name','Name')}${field('Phone','Phone','tel')}${field('Email','Email','email')}
@@ -1544,7 +1547,7 @@ function renderInfo(){
   <div id="fuInfo"></div>
   <h4>AI summary</h4>${sum?`<div class="sum">${sum.loading?'✨ Summarising…':esc(sum.text)}</div>`:''}<button class="row-btn" onclick="summarise()">✨ ${sum&&!sum.loading?'Summarise again':'Summarise this chat'}</button>
   <h4>Macros</h4>${(boot2?.macros||[]).map(m=>`<button class="row-btn" title="${esc(m.ops.map(macroLabel).join(' → '))}" onclick="runMacro(${m.id})">▶ ${esc(m.name)}</button>`).join('')}<button class="row-btn" onclick="newMacro(this)">＋ New macro</button>
-  <h4>Notes about this contact</h4>${notes.slice(-8).reverse().map(n=>`<div class="nt">${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}${n.ts?' · '+esc(ago(n.ts)):''}</small>`:''}</div>`).join('')||'<div class="kv" style="color:var(--muted)">No notes yet</div>'}
+  <h4>Notes about this contact</h4>${notes.slice(-8).reverse().map(n=>`<div class="nt">${esc(n.text||n.content||'')}${n.author||n.ts?`<small>${esc([n.author_name||(n.author?agentName(n.author):''),n.ts?ago(n.ts):''].filter(Boolean).join(' · '))}</small>`:''}</div>`).join('')||'<div class="kv" style="color:var(--muted)">No notes yet</div>'}
   <div class="add-note"><input id="infoNote" placeholder="Add a note" onkeydown="if(event.key==='Enter')addInfoNote()"><button class="row-btn" style="margin:0" onclick="addInfoNote()">Add</button></div>
   <h4>Other conversations</h4><div id="prevConvs"><div class="kv" style="color:var(--muted)">Looking…</div></div>
   <button class="row-btn" onclick="goLead()">Open full lead in CRM →</button>`;
@@ -1579,7 +1582,28 @@ async function skipFollowup(leadId,step){
  try{fuCache[String(leadId)]=await FollowupStatus.skip(WORKER,sessionToken,leadId,step);if(current&&String(current.Id)===String(leadId))paintFollowup(current);toast('Follow-up skipped')}catch(e){toast('Could not skip: '+e.message)}
 }
 async function saveField(inp){const l=current,k=inp.dataset.k,val=inp.value.trim();if(!l)return;try{await patchLead(l,{[k]:val});if(l._rec)l._rec[k]=val;if(k==='Name'||k==='Phone'){if(l._v2)l._v2[k==='Name'?'name':'phone']=val;renderContacts();const n=document.querySelector('.chat-name');if(n&&k==='Name')n.textContent=val||l.Phone}toast('Saved')}catch(e){toast('Could not save: '+e.message)}}
-async function addInfoNote(){const i=$('infoNote'),text=(i?.value||'').trim(),l=current;if(!text||!l)return;let n=[];try{n=JSON.parse(l.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(l,{NotesList:JSON.stringify(n)});renderInfo();drawMessages(false);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}}
+async function addInfoNote(){const i=$('infoNote'),text=(i?.value||'').trim(),l=current;if(!text||!l)return;if(i)i.value='';try{await saveNote(l,text);sendMentions(l,text);toast('Note added')}catch(e){if(i)i.value=text;toast('Could not save note: '+e.message)}}
+// ── 📝 Internal notes (LEADS.NotesList — the same notes the CRM lead card shows) ──
+// Saved through the Worker (/chats/v2/note), which adds the note to the stored list and tells every
+// open page, so a teammate's note is never overwritten and shows for everyone at once. The note
+// shows straight away ("saving…") and is taken back out, with the text restored, if it fails.
+// Notes are read fresh each time a chat opens, and sorted by time (the CRM writes newest first).
+function notesOf(l){let list=[];try{list=JSON.parse(l?.NotesList||'[]')}catch{}if(!Array.isArray(list))return[];return list.map((n,i)=>({...(typeof n==='object'&&n?n:{text:String(n)}),_i:i})).sort((a,b)=>String(a.ts||'').localeCompare(String(b.ts||''))||b._i-a._i)}
+const noteKey=n=>`${n.ts||''}|${lc(n.author)}|${n.text||''}`;
+function setNotes(l,list){l._notesFresh=true;const sorted=[...list].sort((a,b)=>String(a.ts||'').localeCompare(String(b.ts||'')));l.NotesList=JSON.stringify(sorted.reverse().map(({_i,_saving,...n})=>n))}
+function repaintNotes(l){if(current&&String(current.Id)===String(l.Id)){drawMessages(false);renderInfo()}}
+async function saveNote(l,text){
+ const temp={text,author:meEmail||'Team',author_name:agentName(meEmail),ts:new Date().toISOString(),_saving:true};
+ const before=l.NotesList;setNotes(l,[...notesOf(l),temp]);repaintNotes(l);
+ try{
+  if(V2){const d=await apiJson(WORKER+'/chats/v2/note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:Number(l.Id),text})});setNotes(l,d.notes||[])}
+  else{let n=[];try{n=JSON.parse(before||'[]')}catch{}n.unshift({text,author:meEmail||'Team',ts:temp.ts});await patchLead(l,{NotesList:JSON.stringify(n)})}
+ }catch(e){l.NotesList=before;repaintNotes(l);throw e}
+ repaintNotes(l);
+}
+async function loadNotes(l){if(!V2||!l)return;try{const d=await apiJson(`${WORKER}/chats/v2/notes?lead_id=${encodeURIComponent(l.Id)}`);const was=l.NotesList;setNotes(l,d.notes||[]);if(l.NotesList!==was)repaintNotes(l)}catch{}}
+// A teammate's note (worker broadcast type:'note'): add it if this page holds that chat's notes.
+function onNoteEvent(m){const l=leads.find(x=>String(x.Id)===String(m.lead_id));if(!l||l.NotesList===undefined||!m.note)return;const list=notesOf(l);if(list.some(n=>noteKey(n)===noteKey(m.note)))return;setNotes(l,[...list.filter(n=>!(n._saving&&n.text===m.note.text&&lc(n.author)===lc(m.note.author))),m.note]);repaintNotes(l)}
 const prevCache={};
 async function loadPrevConvs(l){
  const box=()=>$('prevConvs');const digits=String(l.Phone||'').replace(/\D/g,'').slice(-10);
