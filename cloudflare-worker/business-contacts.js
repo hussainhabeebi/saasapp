@@ -249,3 +249,24 @@ export function bcLogoForPages(data,c){
 export function bcLogoForPdf(data,c){
   return data?.identity?.logo_print_url||String(c?.quote_logo_url||'').trim();
 }
+
+// ── Contact requests (answered from settings, not by the AI) ────────────────────────────────
+// "Contact number", "give me a staff member contact", "talk to human", "നമ്പർ തരൂ"… — a customer
+// asking how to reach a person. A message that carries a phone number is the customer sharing
+// their own, not asking for ours.
+const ASK_RE=[
+  /\b(?:contact|phone|mobile|cell|whats ?app|telephone|tel)\s*(?:no\.?|number|num|details?|info)?\b/i,
+  /\b(?:number|no\.)\s*(?:pls|please|plz|share|send|give)\b|\b(?:give|send|share|need|want|get)\b[^.?!]{0,30}\b(?:number|contact|phone|email|mail id)\b/i,
+  /\b(?:talk|speak|chat|connect|call)\s+(?:to|with)\s+(?:a\s+|an\s+|your\s+|the\s+|some\s+)?(?:human|person|staff|agent|someone|somebody|team|manager|representative|executive|advisor|real person)\b/i,
+  /\b(?:human|staff member|staff|agent|representative|customer care|helpline|office number|executive)\b/i,
+  /(?:നമ്പർ|നമ്പര്|നംബർ|ബന്ധപ്പെട|കോൺടാക്ട|കോണ്ടാക്ട|വിളിക്ക|സ്റ്റാഫ്|ആളുമായി)/u,
+  /(?:رقم|اتصال|تواصل|موظف|الهاتف)/u,
+  /(?:नंबर|नम्बर|संपर्क|कॉन्टैक्ट|फोन|स्टाफ)/u,
+];
+const NOT_ASK_RE=/\b(?:i(?:'ll| will)\s+(?:contact|call)|will call you|contact you|call you back|contact lens|my (?:number|phone|mobile|contact|whatsapp)(?:\s+(?:no\.?|number))?\s+is)\b/i;
+export function bcIsContactRequest(text){
+  const t=String(text||'').trim();
+  if(!t||t.length>300) return false;
+  if(bcPhonesIn(t).length||NOT_ASK_RE.test(t)) return false;
+  return ASK_RE.some(re=>re.test(t));
+}

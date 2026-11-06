@@ -133,7 +133,7 @@
         <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px"><input type="checkbox" id="pcGuard"${d.guard!==false?' checked':''}${dis}>
           <span>Check every bot reply: a phone number or email that isn't here, in the prompt or knowledge base, or from the customer is rewritten, then removed. Recommended.</span></label>
         <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-top:8px"><input type="checkbox" id="pcHandover"${d.handover_contact!==false?' checked':''}${dis}>
-          <span>When the bot hands a chat to the team, also send the matching department's contact (or the default) as a fixed message — copied from here, never written by the AI.</span></label>
+          <span>Send the matching department's contact (or the default) as a fixed message when a customer asks for a contact number or a staff member, and when the bot hands a chat to the team — copied from here, never written by the AI.</span></label>
       </div></div>
 
       <div class="card" style="margin-bottom:14px"><div class="settings-section" style="margin-bottom:0">
