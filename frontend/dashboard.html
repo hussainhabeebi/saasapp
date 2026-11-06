@@ -6446,6 +6446,37 @@ function _rerenderVisibleLeads(){
   if(_leadsViewMode==='pipeline') renderKanban();
   else if(_leadsViewMode==='list'){ if(_leadsTableView) renderLeadsTable(); else renderLeadsList(); }
 }
+/* Recent lead edits made on this page (Status Board, pipeline, inline pickers — every PATCH to the
+   Leads table goes through ncPatch). A leads fetch that started before the save finished returns the
+   old values; each list that replaces allLeads passes through _applyLeadEdits, which keeps this
+   page's newer value over any copy read before the save finished (at most 2 minutes). A copy read
+   after it is the truth — a teammate or the bot may have changed the lead since. */
+const _leadEdits=new Map(); // Id -> {at, fields:{name:value}}
+const LEAD_EDIT_HOLD_MS=120000;
+function _noteLeadEdits(body){
+  const at=Date.now(), rows=[].concat(body||[]).filter(x=>x&&x.Id!=null);
+  for(const x of rows){ const {Id,ConvHistory,...f}=x; const e=_leadEdits.get(Number(Id))||{at,fields:{}}; e.at=at; e.doneAt=0; Object.assign(e.fields,f); _leadEdits.set(Number(Id),e); }
+  return rows.map(x=>Number(x.Id));
+}
+function _doneLeadEdits(body){ const t=Date.now(); for(const x of [].concat(body||[])){ const e=x&&_leadEdits.get(Number(x.Id)); if(e) e.doneAt=t; } }
+function _dropLeadEdits(body){ for(const x of [].concat(body||[])) if(x&&x.Id!=null) _leadEdits.delete(Number(x.Id)); }
+function _applyLeadEdits(list, readAt=0){
+  if(!_leadEdits.size||!Array.isArray(list)) return list;
+  const now=Date.now();
+  for(const [id,e] of _leadEdits){
+    if(now-e.at>LEAD_EDIT_HOLD_MS||(e.doneAt&&readAt>e.doneAt)){ _leadEdits.delete(id); continue; }
+    const l=list.find(x=>Number(x.Id)===id); if(!l) continue;
+    let pending=false;
+    for(const [k,v] of Object.entries(e.fields)){
+      if(String(l[k]??'')===String(v??'')) continue;
+      l[k]=v; pending=true;
+    }
+    if(!pending) _leadEdits.delete(id);
+  }
+  return list;
+}
+let _cacheLeadsT=null;
+function _cacheLeadsSoon(){ clearTimeout(_cacheLeadsT); _cacheLeadsT=setTimeout(()=>{ try{ _cacheLeads(allLeads.concat(_personalLeads)); }catch(e){} }, 400); }
 function _cacheLeads(list){
   // Transcripts are left out: they're what used to push this past sessionStorage's ~5MB quota.
   try{ sessionStorage.setItem(_CACHE_KEY(),JSON.stringify({ts:Date.now(),list:list.map(({ConvHistory,...rest})=>rest)})); }
@@ -6519,13 +6550,18 @@ async function loadAll(silent=false, force=false){
     if(cached){
       const {ts,list}=JSON.parse(cached);
       if(list&&list.length){
-        allLeads=_splitPersonal(_carryConvHistory(list));
-        loadEcomOrderPhones();
-        mtgLoadLeadStates();
-        renderHome();
-        pdTryRestore(); // restore power dialer if Android killed the tab during a call
-        if(!hadLeads) _rerenderVisibleLeads();
-        if(!silent) $id('hUpdated').textContent='Cached · '+new Date(ts).toLocaleTimeString();
+        // Only a cold start paints from the cache. Once leads are on screen, the in-memory copy is
+        // the newest one this page has (a status just changed on the Status Board, a live update),
+        // so repainting from the cache would put old values back for a moment — or for minutes.
+        if(!hadLeads){
+          allLeads=_splitPersonal(_applyLeadEdits(_carryConvHistory(list), ts));
+          loadEcomOrderPhones();
+          mtgLoadLeadStates();
+          renderHome();
+          pdTryRestore(); // restore power dialer if Android killed the tab during a call
+          _rerenderVisibleLeads();
+          if(!silent) $id('hUpdated').textContent='Cached · '+new Date(ts).toLocaleTimeString();
+        }
         // If cache is fresh enough, skip network fetch — unless force is set (a live-update event
         // just told us something genuinely changed, so a 5-minute-old cache isn't good enough here
         // even though it normally would be for the plain 60s poll).
@@ -6534,6 +6570,7 @@ async function loadAll(silent=false, force=false){
     }
   }catch(e){}
   // 2. Fetch fresh data in background — newest page first, then the rest without transcripts
+  const fetchStartedAt=Date.now();
   try{
     const first=await ncGet(_leadsListUrl(`limit=${LEADS_FIRST_PAGE}`));
     if(gen!==_leadsLoadGen) return;
@@ -6544,7 +6581,7 @@ async function loadAll(silent=false, force=false){
       // already on screen (cache or an earlier load) the partial slice is skipped, so totals
       // never visibly drop to 100 and climb back.
       if(!allLeads.length){
-        allLeads=_splitPersonal(head);
+        allLeads=_splitPersonal(_applyLeadEdits(head, fetchStartedAt));
         renderHome();
         _rerenderVisibleLeads();
         if(!silent) $id('hUpdated').textContent='Loading leads…';
@@ -6559,7 +6596,8 @@ async function loadAll(silent=false, force=false){
       list=head.concat((rest.list||[]).filter(l=>!seen.has(l.Id)));
     }
     // The cache keeps personal/staff contacts too, so the next cached paint still knows them.
-    allLeads=_splitPersonal(_carryConvHistory(list));
+    // A save made while this fetch was on the way is put back over the (older) server copy.
+    allLeads=_splitPersonal(_applyLeadEdits(_carryConvHistory(list), fetchStartedAt));
     _cacheLeads(allLeads.concat(_personalLeads));
     loadEcomOrderPhones();
     mtgLoadLeadStates();
@@ -6730,16 +6768,20 @@ async function onLiveNewLeadEvent(msg){
   window.csNewLeadAlert?.(lead||{Id:msg.lead_id, Name:msg.lead_name, Date:msg.at}, 'new');
 }
 // A teammate changed a lead's fields (worker.js broadcasts type:'lead_updated' after a Service
-// Category save is confirmed stored). Re-read just those fields for those leads and update them in
+// Category save is confirmed stored, and after any Status Board / pipeline field save — LEAD_LIVE_FIELDS). Re-read just those fields for those leads and update them in
 // place — the Leads list, chips, Home and Reports follow without a full reload or a scroll jump.
 async function onLiveLeadUpdatedEvent(msg){
   const ids=(msg.lead_ids||[]).map(Number).filter(Boolean).slice(0,100);
   const fields=(msg.fields||[]).filter(f=>/^[A-Za-z]+$/.test(f));
   if(!ids.length||!fields.length) return;
   let changed=false;
-  for(const id of ids){
+  // Read side by side (a bulk change names many leads). A lead with a save of this page's own still
+  // on the way keeps the value this page set.
+  await Promise.all(ids.map(async id=>{
     const lead=allLeads.find(l=>l.Id===id);
-    if(!lead) continue;
+    if(!lead) return;
+    const mine=_leadEdits.get(id);
+    if(mine&&!mine.doneAt) return;
     try{
       const row=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${id}?fields=Id,${fields.join(',')}`);
       for(const f of fields){
@@ -6753,10 +6795,15 @@ async function onLiveLeadUpdatedEvent(msg){
         if(document.activeElement!==sel) sel.value=v;
       });
     }catch(e){}
-  }
+  }));
   if(!changed) return;
-  _cacheLeads(allLeads);
+  _cacheLeads(allLeads.concat(_personalLeads));
   if(typeof tsRefreshCategoryViews==='function') tsRefreshCategoryViews();
+  // A teammate's Status Board / pipeline change shows here without a refresh (unless this person
+  // is mid-edit on the board, same rule as renderHome).
+  try{ if(typeof tsUpdateBadge==='function') tsUpdateBadge(); }catch(e){}
+  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !($id('tsBody')?.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))) renderTravelStatus(); }catch(e){}
+  try{ if(fields.some(f=>f!=='ServiceCategory') && !$id('pageLeads')?.classList.contains('hidden') && !document.querySelector('#pageLeads select:focus, #pageLeads input:focus')) renderLeadsCurrentView(); }catch(e){}
   if(_reportsPage==='category'&&!$id('pageReports')?.classList.contains('hidden')) renderReportsCategory();
 }
 // Hot / not-called / unanswered auto-reassign and unassigned auto-assign (worker.js
@@ -6844,7 +6891,7 @@ function renderHome(){
   // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
   try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
   // 📌 Status Board (travel-status.js) — refresh with new leads unless someone is mid-edit on it.
-  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !$id('tsBody')?.contains(document.activeElement)) renderTravelStatus(); }catch(e){}
+  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !($id('tsBody')?.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))) renderTravelStatus(); }catch(e){}
 }
 function renderHomeScoped(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
@@ -7151,6 +7198,10 @@ function stageLabel(id){
 }
 
 function renderKanban(){
+  // Travel: the pipeline is the 📌 Status Board's own stages (travel-status.js), so a card moves the
+  // same way here as on the board.
+  if(clientRecord?.industry==='travel' && typeof tsRenderLeadsKanban==='function') return tsRenderLeadsKanban($id('kanbanWrap'));
+  $id('kanbanWrap')?.classList.remove('tsk-host');
   const flow=getFlow();
   const stages=['new',...Object.keys(flow.stages||{}).filter(k=>k!=='new'),'human_handover'];
   const wrap=$id('kanbanWrap');
@@ -12614,11 +12665,18 @@ async function ensureLeadCreatedVia(ids, via){
   }
   console.warn('[leads] CreatedVia could not be saved for', ids);
 }
+// The Leads table's column list is read once per page (not once per field per save — a Status
+// Board change used to wait on five of these before its PATCH even started). A column a lead
+// already carries exists, so no request at all is needed for it.
+let _leadsColsP=null;
 async function ensureLeadsField(name, uidt='SingleLineText'){
   try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`);
-    const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/columns`,{column_name:name,title:name,uidt}).catch(()=>{});
+    if(!_leadsColsP) _leadsColsP=ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`).then(info=>new Set((info.columns||[]).map(c=>c.title))).catch(e=>{ _leadsColsP=null; throw e; });
+    const cols=await _leadsColsP;
+    if(!cols.has(name)){
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/columns`,{column_name:name,title:name,uidt}).catch(()=>{});
+      cols.add(name);
+    }
   }catch(e){}
 }
 // Hides nav tabs a restricted teammate isn't allowed into. Only ever additionally hides — never
@@ -14848,8 +14906,14 @@ async function freshConvHistory(lead){
     try{return JSON.parse(lead.ConvHistory||'[]');}catch(e2){return [];}
   }
 }
+const _isLeadsRecordsUrl=url=>typeof CONFIG!=='undefined'&&String(url).split('?')[0].endsWith(`/tables/${CONFIG.LEADS_TABLE_ID}/records`);
 async function ncPatch(url,body,opts){
-  const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body),signal:ncTimeoutSignal(opts)});
+  const leadsEdit=_isLeadsRecordsUrl(url);
+  if(leadsEdit) _noteLeadEdits(body);
+  let r;
+  try{ r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body),signal:ncTimeoutSignal(opts)}); }
+  catch(e){ if(leadsEdit) _dropLeadEdits(body); throw e; }
+  if(leadsEdit){ if(r.ok){ _doneLeadEdits(body); _cacheLeadsSoon(); } else _dropLeadEdits(body); }
   if(!r.ok){
     const data=await r.json().catch(()=>({}));
     if(data.code==='SESSION_IDENTITY_REQUIRED'){
@@ -24411,7 +24475,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=5"></script>
+<script src="travel-status.js?v=8"></script>
 <script src="travel-view.js?v=7"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>
