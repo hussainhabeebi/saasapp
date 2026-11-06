@@ -4861,6 +4861,7 @@ const ROLES = {
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="fEmail" type="email" placeholder="lead@example.com" /></div>
     <div class="form-group"><label class="form-label">Stage</label><select class="form-input" id="fStage"></select></div>
     <div class="form-group"><label class="form-label">Owner</label><select class="form-input" id="fOwner"><option value="">Unassigned</option></select></div>
+    <div class="form-group hidden" id="fSharedWrap"><label class="form-label">👥 Shared with <span style="font-weight:400;color:var(--muted)">— full access to the lead and its chat, alongside the owner</span></label><div id="fSharedWith" style="display:flex;flex-wrap:wrap;gap:6px 14px"></div><div id="fSharedHint" class="hidden" style="font-size:12px;color:var(--muted);margin-top:4px">Only the lead's owner or an admin can change this.</div></div>
     <div class="form-group"><label class="form-label">Score</label>
       <select class="form-input" id="fScore"><option value="Cold">Cold</option><option value="Warm">Warm</option><option value="Hot">Hot</option></select>
     </div>
@@ -6631,6 +6632,7 @@ function connectLiveUpdates(){
     else if(msg?.type==='new_lead') onLiveNewLeadEvent(msg);
     else if(msg?.type==='lead_reassigned') onLiveReassignEvent(msg);
     else if(msg?.type==='lead_updated') onLiveLeadUpdatedEvent(msg);
+    else if(msg?.type==='lead_shared') onLiveSharedEvent(msg);
   };
   // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
   // app is still actually open — checked at fire time, not just at schedule time, so a logout in
@@ -6771,6 +6773,15 @@ async function onLiveReassignEvent(msg){
     if(typeof showToast==='function') showToast(`👤 ${msg.lead_name||'A lead'} was assigned to you${msg.by_name?' by '+msg.by_name:''}`);
   }
   window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, msg.reason==='unassigned'||msg.reason==='manual'?'assigned':msg.reason?'reassigned-idle':'reassigned');
+}
+// A lead was shared with someone (Edit Lead → 👥 Shared with, Chats → 👥 Share): refresh, and tell
+// the teammate it was shared with (🔔 bell + toast).
+async function onLiveSharedEvent(msg){
+  await liveRefresh();
+  if(!myEmail || !sameEmail(msg.to,myEmail)) return;
+  _liveAssignNotifs=[{id:'shr_'+msg.lead_id+'_'+(msg.at||''),icon:'👥',text:`Shared with you${msg.by_name?' by '+msg.by_name:''}: ${msg.lead_name||'Lead #'+msg.lead_id}`,time:String(msg.at||'').slice(0,19).replace('T',' '),lead_id:msg.lead_id},..._liveAssignNotifs].slice(0,20);
+  pollNotifications();
+  if(typeof showToast==='function') showToast(`👥 ${msg.lead_name||'A lead'} was shared with you${msg.by_name?' by '+msg.by_name:''}`);
 }
 function notifyNewLead(msg){
   // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
@@ -9803,6 +9814,7 @@ function openAddLead(){
   $id('fSource').value=''; $id('fBrand').value='';
   if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
   populateFormSelects('');
+  renderLeadSharedField(null);
   populateSourceBrandDatalists();
   $id('fStage').value='new'; $id('fScore').value='Cold';
   openModal('modalLead');
@@ -9832,9 +9844,40 @@ function openEditLead(lead){
     $id('fPaxAdults').value=paxMatch?paxMatch[1]:'';
   }
   populateFormSelects(lead.Owner||'');
+  renderLeadSharedField(lead);
   $id('fStage').value=lead.Stage||'new'; $id('fScore').value=lead.Score||'Cold';
   openModal('modalLead');
 }
+/* ── Lead shared access ── LEADS.SharedWith (",a@x.com,b@x.com,") lists teammates who work a lead
+   alongside its Owner with the same access: they see it here and in Chats and can reply. Set by the
+   account owner, admins / GMs or the lead's own Owner (the Worker enforces the same rule). */
+function leadSharedList(l){ return String(l?.SharedWith||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean); }
+function leadSharedWithMe(l){ return !!myEmail && leadSharedList(l).includes(String(myEmail).trim().toLowerCase()); }
+function canChangeLeadSharing(l){ return seesAllLeads() || (!!l && sameEmail(l.Owner,myEmail)); }
+function renderLeadSharedField(lead){
+  const wrap=$id('fSharedWrap'); if(!wrap) return;
+  // Existing leads only: a new lead is shared once it has an owner and is saved.
+  wrap.classList.toggle('hidden', !lead);
+  if(!lead){ $id('fSharedWith').innerHTML=''; return; }
+  const cur=leadSharedList(lead), can=canChangeLeadSharing(lead);
+  const owner=String(lead.Owner||'').trim().toLowerCase();
+  $id('fSharedWith').innerHTML=getTeamMembers().filter(m=>String(m.email).toLowerCase()!==owner).map(m=>{
+    const e=String(m.email).toLowerCase();
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:${can?'pointer':'default'}"><input type="checkbox" class="f-shared" value="${esc(e)}"${cur.includes(e)?' checked':''}${can?'':' disabled'}> ${esc(m.name)}${sameEmail(e,myEmail)?' (you)':''}</label>`;
+  }).join('')||'<span style="font-size:12px;color:var(--muted)">Add teammates in Settings → User Management to share leads.</span>';
+  $id('fSharedHint').classList.toggle('hidden', can);
+}
+// The ticked teammates as the stored value, or null when nothing changed (so a save by someone who
+// can't change sharing never sends it).
+function leadSharedFormValue(original){
+  if(!original || $id('fSharedWrap')?.classList.contains('hidden')) return null;
+  const owner=String($id('fOwner').value||'').trim().toLowerCase();
+  const next=[...document.querySelectorAll('#fSharedWith .f-shared:checked')].map(x=>x.value).filter(e=>e&&e!==owner);
+  const cur=leadSharedList(original).filter(e=>e!==owner);
+  if(next.length===cur.length && next.every(e=>cur.includes(e))) return null;
+  return next.length?','+next.join(',')+',':'';
+}
+function leadSharedNames(l){ return leadSharedList(l).map(e=>teamMemberName(e)).join(', '); }
 
 function populateFormSelects(currentOwner){
   const flow=getFlow();
@@ -9969,6 +10012,8 @@ async function saveLeadNow(){
   }
   if(id){
     body.Id=parseInt(id);
+    const shared=leadSharedFormValue(original);
+    if(shared!==null) body.SharedWith=shared;
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
     reportLeadQualityChange(body.Id, original, body);
   }else{
@@ -10002,7 +10047,7 @@ function openDetail(id){
   recordLeadOpened(lead.Id);
   $id('detailName').innerHTML=esc(leadDisplayName(lead)||'Unknown')+leadOriginBadge(lead);
   $id('detailOrigin').textContent=leadOriginLine(lead);
-  $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(isIgLead(lead)?'Instagram':(lead.Phone||''))+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
+  $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(isIgLead(lead)?'Instagram':(lead.Phone||''))+(lead.Owner?' · '+lead.Owner:'')+(leadSharedList(lead).length?' · 👥 '+leadSharedNames(lead):'')+' · '+( lead.Stage||'new');
 
   // actions
   const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
@@ -12315,14 +12360,15 @@ function leadVisibilityFilter(){
   if(seesAllLeads()) return ()=>true;
   const routed=!!getLeadRouting().enabled;
   const full=new Set(Object.entries(myChannelAccess()).filter(([,v])=>v==='full').map(([k])=>String(k)));
-  return l=>(full.size&&full.has(String(l?.InboxId||'')))||(l?.Owner ? sameEmail(l.Owner,myEmail) : !routed);
+  // A lead shared with me (👥 Shared with) is mine to work too.
+  return l=>(full.size&&full.has(String(l?.InboxId||'')))||leadSharedWithMe(l)||(l?.Owner ? sameEmail(l.Owner,myEmail) : !routed);
 }
 function leadVisibleToMe(l){ return leadVisibilityFilter()(l); }
 // The Leads list for the current My leads / All toggle. "mine" = assigned to me only. "all" = every
 // lead for full-access users; for staff it adds just the unassigned pool (routing off) — never a
 // teammate's lead (leadVisibilityFilter).
 function leadsInScope(list){
-  if(_leadsOwnerScope==='mine') return list.filter(l=>sameEmail(l.Owner,myEmail));
+  if(_leadsOwnerScope==='mine') return list.filter(l=>sameEmail(l.Owner,myEmail)||leadSharedWithMe(l));
   return list.filter(leadVisibilityFilter());
 }
 function leadsScopeToggleAvailable(){ return seesAllLeads()||!getLeadRouting().enabled; }

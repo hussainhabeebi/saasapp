@@ -2035,7 +2035,40 @@ export function seesAllChannelLeads(c, email){
 }
 // NocoDB where-clause hiding leads from channels assigned to someone other than `email`: shows a
 // lead whose InboxId is blank (older / unassigned leads) or not one of those channels. '' = no filter.
-export function channelVisibilityClause(assignments, email){
+/* ── Lead shared access (Leads → Edit Lead "Shared with", Chats → 👥 Share) ─────────────────────
+   LEADS.SharedWith lists extra teammates who work a lead alongside its Owner, with the same access:
+   they see it in Leads and Chats (whatever its channel or category), read the full chat, reply and
+   add notes. The Owner stays the one person for reports, routing, auto-reassign and orders.
+   Stored ",a@x.com,b@x.com," so a NocoDB like filter matches a whole email; '' = not shared, which
+   is every lead until someone shares it. ── */
+export function leadSharedList(v){
+  return [...new Set((Array.isArray(v)?v:String(v||'').split(',')).map(e=>String(e||'').trim().toLowerCase()).filter(e=>e.includes('@')))];
+}
+export function leadSharedValue(v){ const l=leadSharedList(v); return l.length?','+l.join(',')+',':''; }
+export function leadSharedWithMe(lead, email){
+  const me=String(email||'').trim().toLowerCase();
+  return !!me && leadSharedList(lead?.SharedWith).includes(me);
+}
+// NocoDB where-clause piece: leads shared with `email` (already URL-encoded for a raw query string).
+export function leadSharedClause(email){
+  const me=String(email||'').trim().toLowerCase();
+  return me?`(SharedWith,like,${encodeURIComponent('%,'+me+',%')})`:'';
+}
+// The SharedWith column, created on first use. Resolves true once it exists; a failure is retried
+// on the next call, and until then nothing filters on it (so a table without it works as before).
+let _leadsSharedReady=null;
+export function leadsSharedWithReady(env){
+  if(!_leadsSharedReady) _leadsSharedReady=(async()=>{
+    await ensureLeadsColumns(env, ['SharedWith']);
+    const {names}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
+    if(!names.includes('SharedWith')) throw new Error('SharedWith column missing');
+    return true;
+  })().catch(()=>{ _leadsSharedReady=null; return false; });
+  return _leadsSharedReady;
+}
+export function _resetLeadsSharedReady(){ _leadsSharedReady=null; }
+
+export function channelVisibilityClause(assignments, email, {shared=false}={}){
   const me=String(email||'').trim().toLowerCase();
   const others=[...new Set((assignments||[])
     .filter(a=>a.assigned_email && String(a.assigned_email).trim().toLowerCase()!==me)
@@ -2044,7 +2077,7 @@ export function channelVisibilityClause(assignments, email){
   // ~and for "not in list"; wrap in parens only when several conditions need grouping.
   const neqParts=others.map(id=>`(InboxId,neq,${id})`).join('~and');
   // A lead assigned to this user always stays visible, even from someone else's channel.
-  return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}${me?`~or(Owner,like,${encodeURIComponent(me)})`:''}`;
+  return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}${me?`~or(Owner,like,${encodeURIComponent(me)})`:''}${me&&shared?`~or${leadSharedClause(me)}`:''}`;
 }
 
 let _leadsServiceCategoryReady=false;
@@ -2180,9 +2213,11 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
       if(Array.isArray(mine?.leadCategories)){
         const categories=mine.leadCategories.filter(Boolean);
         // …plus any lead assigned to them, whatever its category.
+        // …and any lead shared with them (once the SharedWith column exists).
+        const sharedOr=await leadsSharedWithReady(env)?`~or${leadSharedClause(requesterEmail)}`:'';
         const clause='('+(categories.length
           ? '('+categories.map(cat=>`(ServiceCategory,eq,${encodeURIComponent(cat)})`).join('~or')+')'
-          : '(Id,eq,-1)')+`~or(Owner,like,${encodeURIComponent(requesterEmail)}))`;
+          : '(Id,eq,-1)')+`~or(Owner,like,${encodeURIComponent(requesterEmail)})${sharedOr})`;
         qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
       }
     }
@@ -2204,7 +2239,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
         ).bind(payload.cid).all();
         // User Management → channel access: Full un-hides a channel's leads, No access hides them.
         const hiddenIds=tmApplyChannelPerms(channelHiddenAssignments(c, asgns.results||[], requesterEmail).map(a=>String(Number(a.inbox_id))), tmChannelPerms(c, requesterEmail));
-        const clause=channelVisibilityClause(hiddenIds.map(id=>({inbox_id:id, assigned_email:'\u0000other'})), requesterEmail);
+        const clause=channelVisibilityClause(hiddenIds.map(id=>({inbox_id:id, assigned_email:'\u0000other'})), requesterEmail, {shared:hiddenIds.length?await leadsSharedWithReady(env):false});
         if(clause) qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
       }catch(e){}
     }
@@ -2217,6 +2252,42 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
   if(!_leadsServiceCategoryReady && (method==='PATCH'||method==='POST') && body
      && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body.includes('"ServiceCategory"')){
     try{ await ensureLeadsColumns(env, ['ServiceCategory']); _leadsServiceCategoryReady=true; }catch(e){}
+  }
+
+  // Shared access set from the Leads tab (Edit Lead → Shared with): only the account owner, admins /
+  // GMs or the lead's own Owner may change it; the list is cleaned to current teammates (minus the
+  // Owner) before it is saved, and the teammates newly added are told once the write lands.
+  let shareAdds=null;
+  if(method==='PATCH' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"SharedWith"')){
+    let parsed=null; try{ parsed=JSON.parse(body); }catch(e){}
+    const rows=(Array.isArray(parsed)?parsed:[parsed]).filter(x=>x&&typeof x==='object'&&'SharedWith' in x);
+    if(rows.length){
+      if(!payload.email) return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
+      if(rows.length>50 || rows.some(x=>!Number(x.Id))) return json({error:'Sharing can be changed for up to 50 saved leads at a time.'}, 400);
+      if(!await leadsSharedWithReady(env)) return json({error:'Sharing isn\'t available yet — please try again in a minute.'}, 503);
+      const sc=await getClientById(env, payload.cid);
+      const me=String(payload.email).trim().toLowerCase();
+      const admin=seesAllChannelLeads(sc, me);
+      const team=presentStaffEmails(sc);
+      shareAdds=[];
+      for(const x of rows){
+        const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(x.Id)}?fields=Id,ClientId,Owner,Name,SharedWith`).catch(()=>null);
+        const prev=pr?.ok?await pr.json().catch(()=>null):null;
+        if(!prev||String(prev.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+        const prevOwner=String(prev.Owner||'').trim().toLowerCase();
+        const owner=String(('Owner' in x?x.Owner:prev.Owner)||'').trim().toLowerCase();
+        const before=leadSharedList(prev.SharedWith);
+        const keep=e=>team.has(e)&&e!==owner;
+        const next=leadSharedList(x.SharedWith).filter(keep).slice(0,20);
+        const kept=before.filter(keep);
+        const changed=next.length!==kept.length||next.some(e=>!kept.includes(e));
+        // Unchanged (an Edit Lead save by a shared teammate carries the same list): nothing to check.
+        if(changed && !admin && prevOwner!==me) return json({error:'Only the lead\'s owner or an admin can change who it is shared with.'}, 403);
+        x.SharedWith=leadSharedValue(next);
+        for(const to of next) if(!before.includes(to)) shareAdds.push({lead_id:Number(x.Id), lead_name:String(prev.Name||''), to});
+      }
+      body=JSON.stringify(parsed);
+    }
   }
 
   // A lead given to a teammate by hand (Leads tab, Edit Lead, bulk assign): note who owned it
@@ -2251,6 +2322,10 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
   let data=await r.text();
   if(r.ok && ownerChanges?.length){
     const p=getClientById(env, payload.cid).then(cl=>notifyLeadsAssigned(env, cl, payload.cid, ownerChanges, payload.email)).catch(()=>{});
+    if(ctx?.waitUntil) ctx.waitUntil(p); else await p;
+  }
+  if(r.ok && shareAdds?.length){
+    const p=getClientById(env, payload.cid).then(cl=>notifyLeadsShared(env, cl, payload.cid, shareAdds, payload.email)).catch(()=>{});
     if(ctx?.waitUntil) ctx.waitUntil(p); else await p;
   }
 
@@ -2486,6 +2561,8 @@ export function chatSendRefusal(acc, lead){
   // A lead assigned to you is yours to work, whichever channel it came in on and whatever its
   // category: the channel / category limits never lock its owner out.
   if(acc?.me&&String(lead.Owner||'').trim().toLowerCase()===acc.me) return '';
+  // Shared with you: the same access as its owner.
+  if(leadSharedWithMe(lead, acc?.me)) return '';
   if(acc?.categories&&!acc.categories.includes(String(lead.ServiceCategory||'').trim())) return 'This chat is in a category you don\'t have access to.';
   if(acc?.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
   if(!acc?.staff) return '';
@@ -2504,9 +2581,10 @@ async function chatSendCheckAndClaim(env, c, payload, {leadId, convId}){
     id=Number(row?.lead_id)||0;
   }
   if(!id) return {ok:true};
-  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId,ServiceCategory`);
-  // ServiceCategory only exists once a travel client has used it — without it NocoDB refuses the list.
-  if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId`);
+  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId,ServiceCategory,SharedWith`);
+  // ServiceCategory / SharedWith only exist once used — without one NocoDB refuses the field list,
+  // and the full row is a superset.
+  if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}`);
   const lead=r.ok?await r.json().catch(()=>null):null;
   if(!lead||String(lead.ClientId)!==String(payload.cid)) return {ok:true};
   const refusal=chatSendRefusal(acc, lead);
@@ -18465,6 +18543,31 @@ export async function notifyLeadsAssigned(env, c, cid, items, byEmail){
     const who=by?esc(nameOf(by)):'Your team';
     await coldReallocEmail(env, to, leadNames.length===1?`👤 Lead assigned to you: ${leadNames[0]}`:`👤 ${leadNames.length} leads assigned to you`,
       `<p>${who} assigned ${leadNames.length===1?'a lead':'these leads'} to you. You can now see ${leadNames.length===1?'it':'them'} in Leads and reply in Chats, whichever channel ${leadNames.length===1?'it':'they'} came in on.</p><ul>${leadNames.slice(0,50).map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>`);
+  }
+}
+
+// Teammates just given shared access to leads (Leads → Edit Lead, Chats → 👥 Share): a live alert
+// on their open dashboards (lead_shared) and one email per person. Never sent to whoever shared.
+// items: [{lead_id, lead_name, to}]
+export async function notifyLeadsShared(env, c, cid, items, byEmail){
+  const lower=v=>String(v||'').trim().toLowerCase();
+  const by=lower(byEmail), at=new Date().toISOString();
+  let names={}; try{ names=JSON.parse(c?.team_names||'{}')||{}; }catch(e){}
+  const nameOf=e=>names[e]||Object.entries(names).find(([k])=>lower(k)===e)?.[1]||String(e||'').split('@')[0];
+  const groups={};
+  for(const it of items||[]){
+    const to=lower(it?.to);
+    if(!to||to===by||!Number(it.lead_id)) continue;
+    (groups[to]=groups[to]||[]).push(it);
+  }
+  for(const [to, list] of Object.entries(groups)){
+    for(const it of list.slice(0,20)){
+      try{ await engineBroadcastUpdate(env, cid, {type:'lead_shared', lead_id:Number(it.lead_id), lead_name:String(it.lead_name||''), to, by, by_name:by?nameOf(by):'', at}); }catch(e){}
+    }
+    const leadNames=list.map(x=>String(x.lead_name||'').trim()||`Lead #${x.lead_id}`);
+    const who=by?esc(nameOf(by)):'Your team';
+    await coldReallocEmail(env, to, leadNames.length===1?`👥 Lead shared with you: ${leadNames[0]}`:`👥 ${leadNames.length} leads shared with you`,
+      `<p>${who} shared ${leadNames.length===1?'a lead':'these leads'} with you. You can see the full chat in Leads and Chats and reply to the customer, alongside the lead's owner.</p><ul>${leadNames.slice(0,50).map(n=>`<li><strong>${esc(n)}</strong></li>`).join('')}</ul>`);
   }
 }
 
@@ -36934,6 +37037,9 @@ const CHATS_V2_DEPS={
   // engine webhook is subscribed to message_updated.
   cwMessages:(env, c, convId)=>chatwootRecentMessages(c, convId),
   onAssigned:(env, c, cid, items, by)=>notifyLeadsAssigned(env, c, cid, items, by),
+  // Shared access (Chats → 👥 Share): the SharedWith column, and telling the teammates just added.
+  sharedReady:env=>leadsSharedWithReady(env),
+  onShared:(env, c, cid, items, by)=>notifyLeadsShared(env, c, cid, items, by),
   // Inbox tabs in Chats: connected inboxes with their name and WhatsApp number.
   inboxes:(env, c)=>chatsInboxDirectory(c),
   syncWebhook:(env, c)=>engineSyncChatwootWebhook(env, c),
