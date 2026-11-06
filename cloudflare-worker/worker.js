@@ -10738,6 +10738,14 @@ async function bcLoad(env,cid){
   return data?{...data,updated_at:row.updated_at}:null;
 }
 // The saved contacts for a client, or null. Never throws: a D1 hiccup must not stop a reply.
+// People & Contacts in BOT REPLIES (the contacts block in the AI prompt, the invented phone/email
+// check, contact-request answers and the hand-over contact card) is paused: replies degraded right
+// after it went live (6 Nov 2026). The settings page and the logo on pages/PDFs keep working.
+// Set the worker variable BC_BOT_REPLIES=on to switch the bot-side behaviour back on.
+export async function bcForBot(env,c){
+  if(String(env?.BC_BOT_REPLIES||'').toLowerCase()!=='on') return null;
+  return bcForClient(env,c);
+}
 export async function bcForClient(env,c){
   if(!c||!c.Id) return null;
   if(_bcCache.has(c)) return _bcCache.get(c);
@@ -22119,7 +22127,7 @@ export async function tfRunCore(env,c,st,text,{packages=[],history=[],lang='en',
     if(pkg){try{packageText=taPackageItineraryText(pkg,null);}catch(e){packageText=pkg.name;}}
     const p=tfBuildAiPrompt(st,{text,agency:c.client_name||'',mainPrompt:c.main_prompt||'',kb:engineSelectKb(c.kb_summary||'','QUESTION'),packageText,history,lang,
       langName:ENGINE_LANG_NAMES[lang]||lang,replyStyle:engineReplyStyleRules(c),today});
-    const tfContacts=await bcForClient(env,c);
+    const tfContacts=await bcForBot(env,c);
     const tfSystem=engineWithContacts(p.system,tfContacts);
     const raw=await engineGeminiGenerateWithFallback(env,c,tfSystem,p.user,{json:true,maxOutputTokens:800,temperature:0.3,caller:'travel_flow'}).catch(()=>null);
     ai=tfParseAiReply(raw);
@@ -23966,9 +23974,9 @@ export function enginePriceGuardOpts(c, systemPrompt, userText, replyLang){
 async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks, priceGuard){
   // People & Contacts: the official details go AFTER the bot prompt, and (unless the owner turned
   // the check off) any phone number or email the reply invents is regenerated away, then removed.
-  const contacts=await bcForClient(env, c);
+  const contacts=await bcForBot(env, c);
   systemPrompt=engineWithContacts(systemPrompt, contacts);
-  const contactSource=contacts?.guard===false ? null : engineContactSource(c, contacts, systemPrompt, userText);
+  const contactSource=!contacts||contacts.guard===false ? null : engineContactSource(c, contacts, systemPrompt, userText);
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
   if(!reply || reply==='One moment 🙏') return reply;
   const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
@@ -24005,7 +24013,7 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
 async function engineContactRequestReply(env, c, userText, replyLang){
   try{
     if(!bcIsContactRequest(userText)) return '';
-    const card=bcContactCard(await bcForClient(env, c), userText);
+    const card=bcContactCard(await bcForBot(env, c), userText);
     if(!card) return '';
     let lead='Sure! Here is who to contact:';
     if(replyLang && replyLang!=='en'){
@@ -24021,7 +24029,7 @@ async function engineContactRequestReply(env, c, userText, replyLang){
 // kept out of ConvHistory, so the hand-over loop checks still see the hand-over text unchanged.
 async function engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx){
   try{
-    const card=bcContactCard(await bcForClient(env, c), userText);
+    const card=bcContactCard(await bcForBot(env, c), userText);
     if(!card) return false;
     let lead='You can also reach the right person directly:';
     if(replyLang && replyLang!=='en'){
@@ -24050,8 +24058,8 @@ async function engineCallLlmCustomer(env, c, systemPrompt, userText, maxTokens){
 // invented contact from finished text.
 async function engineGuardContacts(env, c, text, systemPrompt, userText){
   if(!text) return text;
-  const contacts=await bcForClient(env, c);
-  if(contacts?.guard===false) return text;
+  const contacts=await bcForBot(env, c);
+  if(!contacts||contacts.guard===false) return text;
   const src=engineContactSource(c, contacts, systemPrompt, userText);
   if(!bcFindInventedContact(text, src)) return text;
   await reportOpsError(env, 'Bot reply invented a phone number or email; line removed', new Error(String(bcFindInventedContact(text, src))), {clientId:c?.Id}).catch(()=>{});
