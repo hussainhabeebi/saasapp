@@ -16,7 +16,7 @@ const LEADS = [
 ];
 const client = { authentik_email: 'owner@couplo.test', lead_routing: JSON.stringify({ enabled: true, modes: ['roundrobin'] }) };
 
-async function open(page, email, clientRec = client, { failOwnerQuery = false } = {}) {
+async function open(page, email, clientRec = client, { failOwnerQuery = false, leads = LEADS } = {}) {
   const listQueries = [];
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
@@ -26,7 +26,7 @@ async function open(page, email, clientRec = client, { failOwnerQuery = false } 
       const where = url.searchParams.get('where') || '';
       listQueries.push(where);
       if (failOwnerQuery && where.includes('Owner')) return route.fulfill({ status: 422, json: { msg: 'bad filter' } });
-      return route.fulfill({ json: { list: LEADS } });
+      return route.fulfill({ json: { list: leads } });
     }
     return route.abort();
   });
@@ -50,7 +50,14 @@ test('the account owner sees every chat', async ({ page }) => {
 test('with routing off (leads assigned by hand), a teammate sees their own + unassigned, never another teammate\'s', async ({ page }) => {
   const queries = await open(page, 'vinaya@couplo.test', { ...client, lead_routing: '{}' });
   await expect(page.locator('#list .contact .name')).toHaveText(['Binu', 'Chitra']);
-  expect(queries[0]).toContain('((Owner,like,vinaya@couplo.test)~or(Owner,blank))');
+  expect(queries[0]).toContain('((Owner,like,vinaya@couplo.test)~or(Owner,blank)~or(SharedWith,like,%,vinaya@couplo.test,%))');
+});
+
+test('a chat shared with a teammate (👥 Shared with) shows for them alongside their own', async ({ page }) => {
+  const shared = { ...LEADS[0], SharedWith: ',vinaya@couplo.test,' };
+  const queries = await open(page, 'vinaya@couplo.test', client, { leads: [shared, LEADS[1], LEADS[2]] });
+  await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Binu']);
+  expect(queries[0]).toContain('(SharedWith,like,%,vinaya@couplo.test,%)');
 });
 
 test('a teammate with the Admin or General Manager role sees every chat, like the owner', async ({ page }) => {

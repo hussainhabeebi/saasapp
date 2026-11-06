@@ -345,7 +345,9 @@ function getTeamPermissions(){try{return JSON.parse(clientRecord.team_permission
 function getLeadRouting(){try{return JSON.parse(clientRecord.lead_routing||'{}')}catch{return{}}}
 function myRole(){if(!clientRecord||!myEmail||isAccountOwner())return null;return getTeamPermissions()[myEmail]?.role||null}
 function seesAllLeads(){return isAccountOwner()||LEADS_FULL_ACCESS_ROLES.includes(myRole())}
-function leadVisibilityFilter(){if(seesAllLeads())return()=>true;const routed=!!getLeadRouting().enabled;return l=>l?.Owner?sameEmail(l.Owner,myEmail):!routed}
+// 👥 Shared with (LEADS.SharedWith ",a@x.com,b@x.com,"): a lead shared with me is mine to work too.
+function leadSharedWithMe(l){const me=String(myEmail||'').trim().toLowerCase();return !!me&&String(l?.SharedWith||'').split(',').map(e=>e.trim().toLowerCase()).includes(me)}
+function leadVisibilityFilter(){if(seesAllLeads())return()=>true;const routed=!!getLeadRouting().enabled;return l=>leadSharedWithMe(l)||(l?.Owner?sameEmail(l.Owner,myEmail):!routed)}
 function getTeamMembers(){
  const owner=(clientRecord?.authentik_email||'').trim();
  const teamEmails=(clientRecord?.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
@@ -439,7 +441,7 @@ const isUnanswered=l=>isOpenLead(l)&&(NO_ANSWER.has(lastCall(l)?.outcome)||Strin
 const isNotCalled=l=>isOpenLead(l)&&!leadCalls(l);
 const followDue=l=>!!l.ReminderDate&&String(l.ReminderDate).slice(0,10)<=new Date().toISOString().slice(0,10)&&isOpenLead(l);
 const LEAD_FILTERS=[['all','All'],['mine','Mine'],['new','🆕 Not called'],['unans','📵 Unanswered'],['hot','🔥 Hot'],['due','⏰ Follow-up due'],['won','✅ Won']];
-function leadMatch(f){return l=>f==='mine'?sameEmail(l.Owner,myEmail):f==='new'?isNotCalled(l):f==='unans'?isUnanswered(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
+function leadMatch(f){return l=>f==='mine'?(sameEmail(l.Owner,myEmail)||leadSharedWithMe(l)):f==='new'?isNotCalled(l):f==='unans'?isUnanswered(l):f==='hot'?l.Score==='Hot'&&isOpenLead(l):f==='due'?followDue(l):f==='won'?isWonLead(l):true}
 function setLeadFilter(f){leadFilter=f;leadShown=LEAD_PAGE;$id('leadList').scrollTop=0;renderLeads()}
 function leadRefId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0}
 const leadTag=l=>isWonLead(l)?'<span class="tagl won">Won</span>':isLostLead(l)?'<span class="tagl">Lost</span>':followDue(l)?'<span class="tagl due">⏰ Follow-up</span>':!leadCalls(l)?'<span class="tagl new">🆕 New</span>':isUnanswered(l)?'<span class="tagl hot">📵 No answer</span>':l.Stage?`<span class="tagl st">${esc(String(l.Stage).replace(/_/g,' '))}</span>`:'';

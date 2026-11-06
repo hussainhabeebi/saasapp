@@ -16,7 +16,7 @@ import {tmChannelPerms,tmApplyChannelPerms,tmInboxesAt} from './team-admin.js';
 // This file imports nothing from worker.js; worker.js passes helpers in as `deps` (CHATS_V2_DEPS):
 //   { json, requireSession, getClientById, ncFetch, leadsTable, broadcast(env,cid,obj),
 //     handover(env,payload,leadId,takeover)→fields, ensureLeadsColumns(env,cols),
-//     seedLead(env,cid,leadId)→lead|null, backfillMedia(env,c,cid,lead) }
+//     seedLead(env,cid,leadId)→lead|null, backfillMedia(env,c,cid,lead), importHistory(env,c,cid,lead,ctx) }
 
 export const CHATS_V2_SCHEMA=[
   `CREATE TABLE IF NOT EXISTS conversations (
@@ -127,6 +127,9 @@ export const CHATS_V2_CONV_COLUMNS=[
   `ALTER TABLE conversations ADD COLUMN created_via TEXT NOT NULL DEFAULT ''`,
   // The latest message's delivery status, for the chat list's tick.
   `ALTER TABLE conversations ADD COLUMN last_message_status TEXT NOT NULL DEFAULT ''`,
+  // Shared access: teammates who work the chat alongside its assignee (LEADS.SharedWith), stored
+  // ",a@x.com,b@x.com," so one instr() matches a whole email. '' = not shared (every existing chat).
+  `ALTER TABLE conversations ADD COLUMN shared_with TEXT NOT NULL DEFAULT ''`,
 ];
 // Indexes on the additive columns above — only valid once those columns exist.
 export const CHATS_V2_COLUMN_INDEXES=[
@@ -220,6 +223,14 @@ export function chatsV2LabelsKey(labels){
   return ','+[...new Set(list)].join(',')+(list.length?',':'');
 }
 function labelsOf(s){ return [...new Set(String(s||'').split(',').map(x=>x.trim()).filter(Boolean))]; }
+// LEADS.SharedWith → the stored key (",a@x.com,b@x.com,", or '' when nobody is added). Same format
+// worker.js leadSharedValue writes to NocoDB.
+export function chatsV2SharedKey(v){
+  const list=[...new Set((Array.isArray(v)?v:String(v||'').split(',')).map(lc).filter(e=>e.includes('@')))];
+  return list.length?','+list.join(',')+',':'';
+}
+export function chatsV2SharedList(v){ return String(v||'').split(',').map(lc).filter(Boolean); }
+function sharedWithMe(acc, row){ return !!acc?.me&&String(row?.shared_with||'').includes(','+acc.me+','); }
 
 // NocoDB lead → the conversation columns it owns. Status: NocoDB only knows resolved or not, so a
 // D1-only state (snoozed/pending) survives a reconcile unless NocoDB says resolved.
@@ -243,6 +254,8 @@ export function chatsV2FieldsFromLead(lead, existing){
     created_via:chatsV2CreatedVia(lead),
     status,
   };
+  // Only when the lead row carried the column — an older table without it leaves the chat as is.
+  if('SharedWith' in lead) out.shared_with=chatsV2SharedKey(lead.SharedWith);
   if(status!=='snoozed') out.snoozed_until=null;
   const lca=lead.LastCustomerMsgAt?String(lead.LastCustomerMsgAt):'';
   if(lca&&(!existing?.last_customer_at||lca>existing.last_customer_at)) out.last_customer_at=lca;
@@ -372,6 +385,7 @@ export async function chatsV2ApplyLeadPatch(env, leadId, patch, {broadcast}={}){
   if('Phone' in patch) put('phone', String(patch.Phone||'').slice(0,40));
   if('Channel' in patch) put('channel', String(patch.Channel||'whatsapp')==='instagram'?'instagram':'whatsapp');
   if('Owner' in patch) put('assignee_email', lc(patch.Owner));
+  if('SharedWith' in patch) put('shared_with', chatsV2SharedKey(patch.SharedWith));
   if('Handover' in patch) put('handover', patch.Handover==='Yes'?'Yes':'No');
   if('HandoverBy' in patch) put('handover_by', String(patch.HandoverBy||'').slice(0,140));
   if('Pinned' in patch) put('pinned', patch.Pinned==='Yes'?1:0);
@@ -406,6 +420,8 @@ const RECONCILE_MS=120*1000;
 const LIST_FIELDS='Id,Name,Phone,Channel,Owner,Handover,HandoverBy,ConvResolved,Pinned,Tags,LastMsgAt,LastCustomerMsgAt,ConversationID,InboxId,ServiceCategory,CreatedVia';
 
 async function ncList(env, deps, where, {fields=LIST_FIELDS, limit=200, offset=0}={}){
+  // Shared access column: asked for only once it exists, so a table without it keeps the narrow list.
+  if(fields&&deps.sharedReady&&await deps.sharedReady(env).catch(()=>false)) fields+=',SharedWith';
   const base=`api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(where)}&limit=${limit}&offset=${offset}&sort=-LastMsgAt`;
   let r=await deps.ncFetch(env, fields?`${base}&fields=${fields}`:base);
   // A self-healing column (Pinned, ConvResolved, HandoverBy) that doesn't exist yet on this table
@@ -451,14 +467,14 @@ export async function chatsV2Backfill(env, deps, cid, {maxPages=20}={}){
       const ts=String(lastD1?.ts||lead.LastMsgAt||now);
       const f=chatsV2FieldsFromLead(lead, null);
       stmts.push(env.DB.prepare(`INSERT INTO conversations (lead_id, client_id, channel, name, phone, conv_id, inbox_id, status, handover, handover_by, assignee_email, labels, labels_key, pinned,
-          unread_count, last_read_at, last_message_id, last_message_at, last_message_preview, last_message_dir, last_sender, last_customer_at, synced, updated_at, service_category, created_via)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1,?,?,?)
+          unread_count, last_read_at, last_message_id, last_message_at, last_message_preview, last_message_dir, last_sender, last_customer_at, synced, updated_at, service_category, created_via, shared_with)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1,?,?,?,?)
         ON CONFLICT(lead_id) DO UPDATE SET channel=excluded.channel, name=excluded.name, phone=excluded.phone, conv_id=excluded.conv_id, inbox_id=excluded.inbox_id,
           handover=excluded.handover, handover_by=excluded.handover_by, assignee_email=excluded.assignee_email, labels=excluded.labels, labels_key=excluded.labels_key,
-          pinned=excluded.pinned, service_category=excluded.service_category, created_via=excluded.created_via, status=CASE WHEN excluded.status='resolved' THEN 'resolved' WHEN conversations.status='resolved' THEN 'open' ELSE conversations.status END,
+          pinned=excluded.pinned, service_category=excluded.service_category, created_via=excluded.created_via, shared_with=excluded.shared_with, status=CASE WHEN excluded.status='resolved' THEN 'resolved' WHEN conversations.status='resolved' THEN 'open' ELSE conversations.status END,
           synced=1, updated_at=excluded.updated_at`)
         .bind(Number(lead.Id), Number(cid), f.channel, f.name, f.phone, f.conv_id, f.inbox_id, f.status, f.handover, f.handover_by, f.assignee_email, f.labels, f.labels_key, f.pinned,
-          ts, lastD1?.id||null, ts, chatsV2Preview(last), last.role==='user'?'in':'out', chatsV2SenderOf(last), f.last_customer_at||null, now, f.service_category, f.created_via));
+          ts, lastD1?.id||null, ts, chatsV2Preview(last), last.role==='user'?'in':'out', chatsV2SenderOf(last), f.last_customer_at||null, now, f.service_category, f.created_via, f.shared_with??''));
     }
     for(let i=0;i<stmts.length;i+=50) await env.DB.batch(stmts.slice(i, i+50));
     count+=stmts.length;
@@ -590,24 +606,28 @@ export async function chatsV2HiddenInboxes(env, cid, email, {fullAccess=false}={
   }
   return (results||[]).filter(r=>lc(r.assigned_email)!==me&&(!fullAccess||Number(r.strict)===1)).map(r=>String(r.inbox_id));
 }
+// "Assigned to me or shared with me" — a shared teammate gets exactly the assignee's access.
+const MINE_SQL='(assignee_email=? OR instr(shared_with, ?)>0)';
+function mineVals(acc){ return [acc.me, acc.me?','+acc.me+',':'\u0000']; }
 function scopeSql(acc){
   let sql='', vals=[];
-  // Category and channel limits never hide a chat assigned to this user.
+  // Category and channel limits never hide a chat assigned to (or shared with) this user.
   if(acc.categories){
-    if(!acc.categories.length){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
-    else { sql+=` AND (service_category IN (${acc.categories.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.categories, acc.me); }
+    if(!acc.categories.length){ sql+=` AND ${MINE_SQL}`; vals.push(...mineVals(acc)); }
+    else { sql+=` AND (service_category IN (${acc.categories.map(()=>'?').join(',')}) OR ${MINE_SQL})`; vals.push(...acc.categories, ...mineVals(acc)); }
   }
-  if(acc.hidden?.length){ sql+=` AND (inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')}) OR assignee_email=?)`; vals.push(...acc.hidden, acc.me); }
+  if(acc.hidden?.length){ sql+=` AND (inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')}) OR ${MINE_SQL})`; vals.push(...acc.hidden, ...mineVals(acc)); }
   if(!acc.staff) return {sql, vals};
   // Full access to a channel: every chat on it, whoever it is assigned to.
   const full=acc.fullInboxes||[];
   const fullSql=full.length?` OR inbox_id IN (${full.map(()=>'?').join(',')})`:'';
-  if(acc.locked){ sql+=` AND (assignee_email=?${fullSql})`; vals.push(acc.me, ...full); }
-  else { sql+=` AND (assignee_email IN (?, '')${fullSql})`; vals.push(acc.me, ...full); }
+  if(acc.locked){ sql+=` AND (${MINE_SQL}${fullSql})`; vals.push(...mineVals(acc), ...full); }
+  else { sql+=` AND (assignee_email='' OR ${MINE_SQL}${fullSql})`; vals.push(...mineVals(acc), ...full); }
   return {sql, vals};
 }
 function canSee(acc, row){
   if(acc.me&&lc(row.assignee_email)===acc.me) return true;
+  if(sharedWithMe(acc, row)) return true;
   if(acc.categories&&!acc.categories.includes(String(row.service_category||''))) return false;
   if(acc.hidden?.includes(String(row.inbox_id||''))) return false;
   if(!acc.staff) return true;
@@ -627,7 +647,7 @@ const VIEWS={
   all:{sql:` AND status<>'snoozed'`, vals:()=>[]},
   unread:{sql:` AND unread_count>0 AND status<>'snoozed'`, vals:()=>[]},
   needs:{sql:` AND handover='Yes' AND status NOT IN ('resolved','snoozed')`, vals:()=>[]},
-  mine:{sql:` AND assignee_email=? AND status<>'snoozed'`, vals:acc=>[acc.me]},
+  mine:{sql:` AND ${MINE_SQL} AND status<>'snoozed'`, vals:acc=>mineVals(acc)},
   unassigned:{sql:` AND assignee_email='' AND status NOT IN ('resolved','snoozed')`, vals:()=>[]},
   pending:{sql:` AND status='pending'`, vals:()=>[]},
   snoozed:{sql:` AND status='snoozed'`, vals:()=>[]},
@@ -729,14 +749,14 @@ export async function chatsV2Counts(env, cid, acc){
       SUM(CASE WHEN status<>'snoozed' THEN 1 ELSE 0 END) AS all_n,
       SUM(CASE WHEN unread_count>0 AND status<>'snoozed' THEN 1 ELSE 0 END) AS unread,
       SUM(CASE WHEN handover='Yes' AND status NOT IN ('resolved','snoozed') THEN 1 ELSE 0 END) AS needs,
-      SUM(CASE WHEN assignee_email=? AND status<>'snoozed' THEN 1 ELSE 0 END) AS mine,
+      SUM(CASE WHEN ${MINE_SQL} AND status<>'snoozed' THEN 1 ELSE 0 END) AS mine,
       SUM(CASE WHEN assignee_email='' AND status NOT IN ('resolved','snoozed') THEN 1 ELSE 0 END) AS unassigned,
       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
       SUM(CASE WHEN status='snoozed' THEN 1 ELSE 0 END) AS snoozed,
       SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) AS resolved,
       SUM(CASE WHEN channel='whatsapp' AND unread_count>0 AND status<>'snoozed' THEN 1 ELSE 0 END) AS unread_whatsapp,
       SUM(CASE WHEN channel='instagram' AND unread_count>0 AND status<>'snoozed' THEN 1 ELSE 0 END) AS unread_instagram
-    FROM conversations WHERE client_id=?${s.sql}`).bind(acc.me, Number(cid), ...s.vals).first();
+    FROM conversations WHERE client_id=?${s.sql}`).bind(...mineVals(acc), Number(cid), ...s.vals).first();
   const n=k=>Number(row?.[k])||0;
   // Open chats per travel category, for the inbox category chips ('' = no category set). Empty for
   // businesses that never set one, so their inbox shows no chips.
@@ -831,7 +851,7 @@ async function ncPatchLeads(env, deps, patches){
   if(!r.ok) throw new Error('Could not update the lead ('+r.status+')');
 }
 
-const ACT_OPS=['mark_read','mark_unread','resolve','reopen','snooze','pending','assign','handler','pin','labels','label_add','label_remove','priority'];
+const ACT_OPS=['mark_read','mark_unread','resolve','reopen','snooze','pending','assign','handler','pin','labels','label_add','label_remove','priority','share'];
 
 export async function chatsV2Act(env, deps, payload, c, acc, body){
   const op=String(body.op||'');
@@ -852,6 +872,7 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   const events=[];
   const d1=[]; // [sql, vals] per row
   const nc=[];
+  const shareAdds=[];
   for(const row of rows){
     const id=Number(row.lead_id);
     const set={};
@@ -874,6 +895,22 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
         if(acc.staff&&to&&to!==acc.me) throw Object.assign(new Error('Only an admin can assign chats to someone else'), {status:403});
         set.assignee_email=to; nc.push({Id:id, Owner:to});
         ev=[to?`Assigned to ${nameOf(to)} by ${actor.name}`:`Unassigned by ${actor.name}`, {type:'assigned', to}]; break;
+      }
+      case 'share': {
+        // Shared access: the full list of teammates who work this chat alongside its assignee.
+        // Set by the account owner / admins / GMs, or by the chat's own assignee.
+        if(acc.staff&&lc(row.assignee_email)!==acc.me) throw Object.assign(new Error('Only the chat\'s owner or an admin can change who it is shared with'), {status:403});
+        const given=[...new Set((Array.isArray(a.emails)?a.emails:[]).map(lc).filter(Boolean))];
+        const bad=given.find(e=>!agents.some(x=>x.email===e));
+        if(bad) throw Object.assign(new Error('Not a teammate on this account'), {status:400});
+        const next=given.filter(e=>e!==lc(row.assignee_email)).slice(0,20);
+        const cur=chatsV2SharedList(row.shared_with);
+        const added=next.filter(e=>!cur.includes(e)), removed=cur.filter(e=>!next.includes(e));
+        if(!added.length&&!removed.length) break;
+        set.shared_with=chatsV2SharedKey(next); nc.push({Id:id, SharedWith:set.shared_with});
+        ev=[[added.length?`Shared with ${added.map(nameOf).join(', ')}`:'', removed.length?`Stopped sharing with ${removed.map(nameOf).join(', ')}`:''].filter(Boolean).join(' · ')+` by ${actor.name}`, {type:'shared', added, removed}];
+        if(added.length) shareAdds.push(...added.map(to=>({lead_id:id, lead_name:row.name||'', to})));
+        break;
       }
       case 'pin': set.pinned=a.pinned?1:0; nc.push({Id:id, Pinned:a.pinned?'Yes':'No'}); break;
       case 'priority': set.priority=Math.max(0, Math.min(4, Number(a.value)||0)); break;
@@ -901,6 +938,8 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
     // Pinned/ConvResolved are self-healing Leads columns (see worker.js handleChatPinLead).
     const used=[...new Set(nc.flatMap(p=>Object.keys(p)).filter(k=>k==='Pinned'||k==='ConvResolved'))];
     if(used.length&&deps.ensureLeadsColumns) await deps.ensureLeadsColumns(env, used);
+    if(nc.some(p=>'SharedWith' in p)&&!(deps.sharedReady&&await deps.sharedReady(env).catch(()=>false)))
+      throw Object.assign(new Error('Sharing isn\'t available yet — please try again in a minute'), {status:503});
     await ncPatchLeads(env, deps, nc);
     if(deps.afterLeadPatches) await deps.afterLeadPatches(env, cid, nc.filter(p=>'Tags' in p));
   }
@@ -919,6 +958,8 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
     const given=rows.filter(r=>lc(r.assignee_email)!==to).map(r=>({lead_id:Number(r.lead_id), lead_name:r.name||'', to, from:lc(r.assignee_email)}));
     if(given.length) try{ await deps.onAssigned(env, c, cid, given, acc.me); }catch(e){}
   }
+  // Teammates just added to a chat hear about it (live alert + email).
+  if(shareAdds.length&&deps.onShared) try{ await deps.onShared(env, c, cid, shareAdds, acc.me); }catch(e){}
   return {rows:fresh, events:evOut};
 }
 
@@ -1155,7 +1196,13 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
         row=await convRow(env, leadId);
       }
       if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
-      if(!row.media_backfilled&&!qp.before&&!qp.after&&deps.backfillMedia){
+      // First page: bring in the customer's older Chatwoot history once (all their conversations),
+      // waiting a few seconds so it shows in this very load. It covers photos/files too.
+      if(!qp.before&&!qp.after&&deps.importHistory){
+        try{ await deps.importHistory(env, c, cid, {Id:leadId, ConversationID:row.conv_id, Phone:row.phone}, ctx); }catch(e){}
+        if(!row.media_backfilled) await env.DB.prepare('UPDATE conversations SET media_backfilled=1 WHERE lead_id=?').bind(leadId).run();
+      }
+      else if(!row.media_backfilled&&!qp.before&&!qp.after&&deps.backfillMedia){
         await env.DB.prepare('UPDATE conversations SET media_backfilled=1 WHERE lead_id=?').bind(leadId).run();
         const p=deps.backfillMedia(env, c, cid, {Id:leadId, ConversationID:row.conv_id}).catch(()=>{});
         if(ctx?.waitUntil) ctx.waitUntil(p);
