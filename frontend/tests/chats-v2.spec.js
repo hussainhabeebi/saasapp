@@ -28,6 +28,7 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       conv(3, { name: 'Chitra', status: 'resolved' }),
     ],
     updated: [],
+    notes: [{ text: 'Prefers calls after 6pm', author: SHAFNA, ts: minsAgo(300) }],
   };
   const messages = thread.messages || [
     { id: 11, role: 'user', content: 'Hi', ts: minsAgo(40), sender_type: 'customer' },
@@ -105,6 +106,15 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       });
       return route.fulfill({ json: { ok: true, rows: out, events: {} } });
     }
+    if (p.endsWith('/chats/v2/notes')) return route.fulfill({ json: { notes: state.notes } });
+    if (p.endsWith('/chats/v2/note')) {
+      const b = req.postDataJSON();
+      calls.note = (calls.note || []).concat([b]);
+      if (state.failNote) return route.fulfill({ status: 502, json: { error: 'The note could not be saved — please try again.' } });
+      const n = { text: b.text, author: ME, author_name: 'Boss', ts: new Date().toISOString() };
+      state.notes = [...state.notes, n];
+      return route.fulfill({ json: { ok: true, note: n, notes: state.notes } });
+    }
     if (p.endsWith('/chats/v2/canned')) { calls.canned.push(req.postDataJSON()); return route.fulfill({ json: { ok: true } }); }
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(p)) { calls.nocodbList++; return route.fulfill({ json: { list: [] } }); }
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records\/\d+$/.test(p)) return route.fulfill({ json: { NotesList: JSON.stringify([{ text: 'Prefers calls after 6pm', author: 'Shafna' }]), Email: 'asha@example.com', Destination: 'Dubai', Budget: '50000', Source: 'Instagram ad' } });
@@ -141,7 +151,8 @@ test('tabs and the bot/human filter are server views', async ({ page }) => {
   await expect(page.locator('#list .contact .name')).toHaveText(['Chitra']);
   await expect.poll(() => calls.list.at(-1).view).toBe('resolved');
   await page.locator('#filters .pill', { hasText: 'All' }).click();
-  await page.locator('#segRow .pill', { hasText: 'Human' }).click();
+  await page.locator('#fltBtn').click();
+  await page.locator('#flt-handler').selectOption('human');
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
   await expect.poll(() => calls.list.at(-1)).toMatchObject({ view: 'all', handler: 'human' });
 });
@@ -170,7 +181,7 @@ test('the thread shows who sent each reply, activity events and an unread divide
   await expect(page.locator('#list .contact', { hasText: 'Asha' }).locator('.badge')).toHaveCount(0);
 });
 
-test('header: take over from the bot, assign, and snooze from Resolve ▾', async ({ page }) => {
+test('header: take over from the bot, assign, and snooze from the ⋮ menu', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
   await expect(page.locator('#botPill')).toContainText('Bot active');
@@ -184,7 +195,8 @@ test('header: take over from the bot, assign, and snooze from Resolve ▾', asyn
   await expect(page.locator('#assignBtn')).toContainText('Shafna');
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'assign', args: { email: SHAFNA } });
 
-  await page.locator('.split button').nth(1).click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuSnooze').click();
   await page.locator('#ddMenu button', { hasText: '1 hour' }).click();
   await expect.poll(() => calls.act.at(-1)?.op).toBe('snooze');
   const snooze = calls.act.at(-1);
@@ -245,18 +257,22 @@ test('if the v2 API is unavailable, Chats falls back to the v1 lead list', async
 test('labels: pick or create from the header; filter the list by label', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
-  await page.locator('#labelBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuLabels').click();
   await page.locator('#lblQ').fill('Payment due');
   await page.locator('#ddMenu button', { hasText: 'Create' }).click();
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'label_add', ids: [2], args: { label: 'Payment due' } });
-  await expect(page.locator('#labelBtn')).toContainText('Payment due');
+  await page.locator('#menuBtn').click();
+  await expect(page.locator('#menuLabels')).toContainText('Payment due');
+  await page.locator('#menuBtn').click();
   await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.lbl')).toHaveText(['Payment due']);
-  await page.locator('#prioBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuPrio').click();
   await page.locator('#ddMenu button', { hasText: 'Urgent' }).click();
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'priority', args: { value: 4 } });
   await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.prio.p4')).toBeVisible();
-  await page.locator('#labelFilterBtn').click();
-  await page.locator('#ddMenu button', { hasText: 'Hot' }).click();
+  await page.locator('#fltBtn').click();
+  await page.locator('#fltPanel .flt-labels label', { hasText: 'Hot' }).locator('input').check();
   await expect.poll(() => calls.list.at(-1).labels).toBe('Hot');
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
 });
@@ -293,7 +309,8 @@ test('send & resolve, clickable phone numbers and emails, and the 24-hour countd
 test('search in conversation highlights matches and steps through them', async ({ page }) => {
   await open(page);
   await page.locator('#list .contact', { hasText: 'Asha' }).click();
-  await page.locator('[title="Search in conversation"]').first().click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#chatMenu button', { hasText: 'Search in conversation' }).click();
   await page.locator('#threadSearchInput').fill('help');
   await expect(page.locator('#thread mark')).toHaveCount(2);
   await expect(page.locator('#tsCount')).toHaveText('2/2');
@@ -345,7 +362,8 @@ test('no AI suggestions for a chat the bot is handling', async ({ page }) => {
 test('contact sidebar: edit fields, see details and notes, summarise, add a note', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Asha' }).click();
-  await page.locator('#infoBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuInfo').click();
   const panel = page.locator('#infoPanel');
   await expect(panel.locator('input[data-k="Email"]')).toHaveValue('asha@example.com');
   await expect(panel.locator('input[data-k="Destination"]')).toHaveValue('Dubai');
@@ -358,7 +376,9 @@ test('contact sidebar: edit fields, see details and notes, summarise, add a note
   await expect(panel.locator('.sum')).toContainText('Asha wants a price');
   await panel.locator('#infoNote').fill('VIP — offer free upgrade');
   await panel.locator('#infoNote').press('Enter');
-  await expect.poll(() => (calls.patch || []).at(-1)?.NotesList || '').toContain('VIP — offer free upgrade');
+  await expect.poll(() => calls.note?.at(-1)).toEqual({ lead_id: 1, text: 'VIP — offer free upgrade' });
+  await expect(panel).toContainText('VIP — offer free upgrade');
+  expect((calls.patch || []).some(x => 'NotesList' in x)).toBe(false); // never a whole list from this browser
 });
 
 test('location and contact cards; a failed send says why', async ({ page }) => {
@@ -378,13 +398,16 @@ test('location and contact cards; a failed send says why', async ({ page }) => {
 test('All channels shows a channel badge; saved views and the filter builder query the server', async ({ page }) => {
   const { calls } = await open(page, { rows: [conv(1, { name: 'Asha', labels: 'Hot', labels_key: ',hot,' }), conv(2, { name: 'Insta Ian', channel: 'instagram' })] });
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
-  await page.locator('#allChannelPill').click();
+  await page.locator('#fltBtn').click();
+  await page.locator('#flt-channel').selectOption('all');
+  await page.locator('#fltPanel .done').click();
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Insta Ian']);
   await expect(page.locator('#list .contact', { hasText: 'Insta Ian' }).locator('.ch-badge')).toHaveText('📸');
   await page.locator('#filters .view-pill', { hasText: 'Hot leads' }).click();
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
   expect(calls.filter).toEqual({ all: [{ f: 'label', op: 'has', v: 'Hot' }] });
   await page.locator('#filters .view-pill', { hasText: 'Hot leads' }).click();
+  await page.locator('#fltBtn').click();
   await page.locator('#filterBtn').click();
   await page.locator('#ddMenu button', { hasText: 'Apply' }).click();
   await expect.poll(() => calls.filter?.all?.[0]?.f).toBe('label');
@@ -392,7 +415,9 @@ test('All channels shows a channel badge; saved views and the filter builder que
 
 test('an Instagram chat from Chatwoot replies through its conversation like WhatsApp', async ({ page }) => {
   const { calls } = await open(page, { rows: [conv(1, { name: 'Asha' }), conv(4, { name: '', channel: 'instagram', phone: 'ig:1784001', conv_id: '604' })] });
-  await page.locator('.channel-row .pill[data-channel="instagram"]').click();
+  await page.locator('#fltBtn').click();
+  await page.locator('#flt-channel').selectOption('instagram');
+  await page.locator('#fltPanel .done').click();
   await expect(page.locator('#list .contact .name')).toHaveText(['Instagram user']);
   await page.locator('#list .contact', { hasText: 'Instagram user' }).click();
   await expect(page.locator('.chat-sub')).toContainText('Instagram');
@@ -404,27 +429,33 @@ test('an Instagram chat from Chatwoot replies through its conversation like What
 
 test('travel inbox: category chips with counts filter the list on the server', async ({ page }) => {
   const { calls } = await open(page, { rows: [conv(1, { name: 'Asha', service_category: 'Visa' }), conv(2, { name: 'Binu', service_category: 'Air Ticket' }), conv(3, { name: 'Chitra' })] });
-  await expect(page.locator('#catRow')).toBeHidden();
+  await page.locator('#fltBtn').click();
+  await expect(page.locator('#flt-cat')).toHaveCount(0);
   await page.route('**/chats/v2/counts', (route) => route.fulfill({ json: { all: 3, unread: 0, needs: 0, mine: 0, unassigned: 3, pending: 0, snoozed: 0, resolved: 0,
     unread_by_channel: { whatsapp: 0, instagram: 0 }, by_category: { 'Visa': { whatsapp: 1, instagram: 0 }, 'Air Ticket': { whatsapp: 1, instagram: 0 }, '': { whatsapp: 1, instagram: 0 } } } }));
   await page.evaluate(() => window.loadCounts());
-  await expect(page.locator('#catRow .pill')).toHaveText(['All categories', 'Air Ticket1', 'Visa1', 'No category1']);
-  await page.locator('#catRow .pill', { hasText: 'Visa' }).click();
+  await expect(page.locator('#flt-cat option')).toHaveText(['All categories', 'Air Ticket (1)', 'Visa (1)', 'No category (1)']);
+  await page.locator('#flt-cat').selectOption('Visa');
   await expect.poll(() => calls.list.at(-1)?.category).toBe('Visa');
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
-  await page.locator('#catRow .pill', { hasText: 'All categories' }).click();
+  // The filter shows as a chip; its ✕ takes it off.
+  await expect(page.locator('#fltActive .flt-chip')).toHaveText(['🗂 Visa✕']);
+  await expect(page.locator('#fltCount')).toHaveText('1');
+  await page.locator('#fltPanel .done').click();
+  await page.locator('#fltActive .flt-chip', { hasText: 'Visa' }).click();
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Binu', 'Chitra']);
 });
 
 test('inbox source chips: Auto vs Manual chats, filtered on the server', async ({ page }) => {
   const { calls } = await open(page, { rows: [conv(1, { name: 'Asha', created_via: 'chatwoot' }), conv(2, { name: 'Binu', created_via: 'manual' }), conv(3, { name: 'Chitra', created_via: 'chatwoot' })] });
-  await expect(page.locator('#srcRow')).toBeHidden();
+  await page.locator('#fltBtn').click();
+  await expect(page.locator('#flt-src')).toHaveCount(0);
   await page.route('**/chats/v2/counts', (route) => route.fulfill({ json: { all: 3, unread: 0, needs: 0, mine: 0, unassigned: 3, pending: 0, snoozed: 0, resolved: 0,
     unread_by_channel: { whatsapp: 0, instagram: 0 }, by_category: {}, by_source: { chatwoot: { whatsapp: 2, instagram: 0 }, manual: { whatsapp: 1, instagram: 0 } } } }));
   await page.evaluate(() => window.loadCounts());
-  await expect(page.locator('#srcRow .pill')).toHaveText(['All sources', '🤖 Auto2', '✍️ Manual1']);
-  await expect(page.locator('#catRow')).toBeHidden();
-  await page.locator('#srcRow .pill', { hasText: 'Manual' }).click();
+  await expect(page.locator('#flt-src option')).toHaveText(['All sources', '🤖 Auto (2)', '✍️ Manual (1)']);
+  await expect(page.locator('#flt-cat')).toHaveCount(0);
+  await page.locator('#flt-src').selectOption('manual');
   await expect.poll(() => calls.list.at(-1)?.source).toBe('manual');
   await expect(page.locator('#list .contact .name')).toHaveText(['Binu']);
 });
@@ -432,10 +463,12 @@ test('inbox source chips: Auto vs Manual chats, filtered on the server', async (
 test('macros run their steps in order; schedule, forward and create a task', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
-  await page.locator('#infoBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuInfo').click();
   await page.locator('#infoPanel button', { hasText: 'Mark as Hot lead' }).click();
   await expect.poll(() => calls.act.slice(-2).map(a => a.op)).toEqual(['label_add', 'assign']);
-  await page.locator('#infoBtn').click();
+  await page.locator('#infoClose').click();
+  await expect(page.locator('#infoPanel')).toBeHidden();
   await page.locator('#msg').fill('Reminder: your visa appointment is tomorrow');
   await page.locator('#sendMore').click();
   await page.locator('#ddMenu button', { hasText: 'Schedule' }).last().click();
@@ -538,7 +571,8 @@ test('travel inbox: set or clear the service category from the header and the co
   await page.locator('#ddMenu button', { hasText: 'Clear category' }).click();
   await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: '' });
   // Contact panel picker
-  await page.locator('#infoBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('#menuInfo').click();
   await page.locator('#infoPanel label.fld', { hasText: 'Service category' }).locator('select').selectOption('Hotel');
   await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: 'Hotel' });
   await expect(page.locator('#catBtn')).toContainText('Hotel');
@@ -573,13 +607,12 @@ test('one tab per WhatsApp number shows its phone and narrows the list to that c
     inboxes: [{ id: '9', name: 'Aii academy', channel_type: 'Channel::Whatsapp', phone_number: '+919876543210' }, { id: '12', name: 'Onshope', channel_type: 'Channel::Whatsapp', phone_number: '971501234567' }],
     byInbox: { 9: { whatsapp: 1, instagram: 0 }, 12: { whatsapp: 2, instagram: 0 } },
   });
-  const row = page.locator('#inboxRow');
+  await page.locator('#fltBtn').click();
+  const row = page.locator('#flt-inbox');
   await expect(row).toBeVisible();
-  await expect(row.getByRole('button', { name: /All numbers/ })).toHaveClass(/active/);
-  const onshope = row.getByRole('button', { name: /Onshope/ });
-  await expect(onshope).toContainText('+971501234567');
-  await expect(onshope).toContainText('2');
-  await onshope.click();
+  await expect(row).toHaveValue('');
+  await expect(row.locator('option', { hasText: 'Onshope' })).toHaveText('Onshope · +971501234567 (2)');
+  await row.selectOption('12');
   await expect(page.locator('#list')).toContainText('Binu');
   await expect(page.locator('#list')).not.toContainText('Asha');
   expect(calls.list.some(q => q.inbox === '12')).toBe(true);
@@ -590,14 +623,15 @@ test('owners get a tab per teammate, plus Unassigned, that narrows the list', as
     rows: [conv(1, { name: 'Asha', assignee_email: SHAFNA }), conv(2, { name: 'Binu' }), conv(4, { name: 'Dev', assignee_email: ME })],
     byAssignee: { [SHAFNA]: { whatsapp: 1, instagram: 0 }, [ME]: { whatsapp: 1, instagram: 0 }, '': { whatsapp: 1, instagram: 0 } },
   });
-  const row = page.locator('#agentRow');
+  await page.locator('#fltBtn').click();
+  const row = page.locator('#flt-assignee');
   await expect(row).toBeVisible();
-  await expect(row.getByRole('button', { name: /Boss \(you\)/ })).toBeVisible();
-  await row.getByRole('button', { name: /Shafna/ }).click();
+  await expect(row.locator('option', { hasText: 'Boss (you)' })).toHaveCount(1);
+  await row.selectOption(SHAFNA);
   await expect(page.locator('#list')).toContainText('Asha');
   await expect(page.locator('#list')).not.toContainText('Binu');
   expect(calls.list.some(q => q.assignee === SHAFNA)).toBe(true);
-  await row.getByRole('button', { name: /Unassigned/ }).click();
+  await row.selectOption('__none');
   await expect(page.locator('#list')).toContainText('Binu');
   await expect(page.locator('#list')).not.toContainText('Asha');
 });
@@ -605,5 +639,71 @@ test('owners get a tab per teammate, plus Unassigned, that narrows the list', as
 test('a single connected number shows no inbox tabs', async ({ page }) => {
   await open(page, { inboxes: [{ id: '9', name: 'Aii academy', channel_type: 'Channel::Whatsapp', phone_number: '+919876543210' }], byInbox: { 9: { whatsapp: 3, instagram: 0 } } });
   await expect(page.locator('#list')).toContainText('Asha');
-  await expect(page.locator('#inboxRow')).toBeHidden();
+  await page.locator('#fltBtn').click();
+  await expect(page.locator('#flt-inbox')).toHaveCount(0);
+});
+
+test('after a reload a chat opens at once from this device, then new messages land behind it', async ({ page }) => {
+  await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#thread')).toContainText('Price please');
+  // The thread is kept on this device (saved a moment after it loads).
+  await expect.poll(() => page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('lv_chats_threads_48') || '{}').threads || {}))).toContain('1');
+  // After the reload the thread API is slow — the kept copy shows while it answers.
+  let release;
+  const gate = new Promise(r => { release = r; });
+  await page.route('**/chats/v2/thread*', async (route) => {
+    await gate;
+    return route.fulfill({ json: { messages: [
+      { id: 15, role: 'user', content: 'Price please', ts: minsAgo(10) },
+      { id: 17, role: 'user', content: 'Are you there?', ts: minsAgo(1) },
+    ], has_more: false, before: null } });
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#thread')).toContainText('And delivery?');
+  await expect(page.locator('#thread .spinner')).toHaveCount(0);
+  release();
+  await expect(page.locator('#thread')).toContainText('Are you there?');
+});
+
+test('the chat header keeps six things; resolve, labels, priority, share and details are in ⋮', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#hdrCtl > *')).toHaveCount(2); // Bot / Human + assignee (category only on travel)
+  await expect(page.locator('#botPill')).toBeVisible();
+  await expect(page.locator('#assignBtn')).toBeVisible();
+  await expect(page.locator('.chat-actions > button, .chat-actions > a')).toHaveCount(2); // 📞 + ⋮
+  await expect(page.locator('#resolveBtn, #labelBtn, #prioBtn, #shareBtn, #infoBtn')).toHaveCount(0);
+  // The reply-window timer sits in the name / number line.
+  await expect(page.locator('.chat-sub #winTimer')).toBeVisible();
+  await page.locator('#menuBtn').click();
+  await expect(page.locator('#chatMenu #menuResolve')).toContainText('Resolve conversation');
+  await expect(page.locator('#chatMenu button', { hasText: 'Resolve conversation' })).toHaveCount(1);
+  await page.locator('#menuResolve').click();
+  await expect.poll(() => calls.act.at(-1)?.op).toBe('resolve');
+  await expect(page.locator('.chat-sub .sub-done')).toContainText('Resolved');
+});
+
+test('internal notes: saved through the server, shown to everyone, and kept on failure', async ({ page }) => {
+  const { calls, state } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  // Read fresh when the chat opens.
+  await expect(page.locator('#thread .note')).toContainText(['Prefers calls after 6pm']);
+  await page.locator('#modeRow button', { hasText: 'Internal note' }).click();
+  await page.locator('#msg').fill('Customer wants a window seat');
+  await page.locator('#msg').press('Enter');
+  await expect.poll(() => calls.note?.at(-1)?.text).toBe('Customer wants a window seat');
+  await expect(page.locator('#thread .note').last()).toContainText('Customer wants a window seat');
+  await expect(page.locator('#thread .note.saving')).toHaveCount(0);
+  // A teammate's note arrives live (worker broadcast type:'note').
+  await page.evaluate((SHAFNA) => onNoteEvent({ type: 'note', lead_id: 1, note: { text: 'Called her — will pay today', author: SHAFNA, author_name: 'Shafna', ts: new Date(Date.now() + 1000).toISOString() } }), SHAFNA);
+  await expect(page.locator('#thread .note').last()).toContainText('Called her — will pay today');
+  await expect(page.locator('#thread .note').last()).toContainText('Shafna');
+  // A save that fails: the note comes back out and the text is back in the box.
+  state.failNote = true;
+  await page.locator('#msg').fill('This one fails');
+  await page.locator('#msg').press('Enter');
+  await expect(page.locator('#msg')).toHaveValue('This one fails');
+  await expect(page.locator('#thread .note', { hasText: 'This one fails' })).toHaveCount(0);
 });

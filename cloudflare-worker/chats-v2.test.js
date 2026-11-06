@@ -10,7 +10,7 @@ import {
   toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access, chatsV2CreatedVia,
   chatsV2Ready, chatsV2AfterInsert, chatsV2ApplyLeadPatch, chatsV2List, chatsV2Counts, chatsV2Thread,
   chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai, chatsV2CompileFilter, chatsV2RunScheduled,
-  chatsV2NextStatus, chatsV2MessageStatus, chatsV2PollStatuses,
+  chatsV2NextStatus, chatsV2MessageStatus, chatsV2PollStatuses, chatsV2NotesSorted,
 } from './chats-v2.js';
 
 function d1(db){
@@ -442,6 +442,41 @@ describe('sync and routes', ()=>{
     assert.deepEqual(sent[0], {type:'conv', lead_ids:[21]});
     assert.equal(await chatsV2Reconcile(env, deps(), CID), 0);
   });
+  test('thread answers with D1 messages at once; the Chatwoot history import runs behind it', async()=>{
+    await insertMsg(41, {role:'user', content:'old hello', ts:T('09:00')});
+    let release, imported=false;
+    const gate=new Promise(r=>{ release=r; });
+    const waits=[];
+    const ctx={waitUntil:p=>{ waits.push(p); }};
+    const d={...deps(), historyWaitMs:50, importHistory:async(env, c, cid, lead, cx, opts)=>{
+      assert.equal(opts?.wait, 0);
+      await gate;
+      db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, ts) VALUES (41, ?, 'user', 'from chatwoot', ?)`).run(CID, T('08:00'));
+      imported=true; return {added:1};
+    }};
+    sent=[];
+    const req=new Request('https://w/chats/v2/thread?lead_id=41', {headers:{Authorization:'Bearer owner'}});
+    const t0=Date.now();
+    const r=await chatsV2HandleRoute(req, env, d, new URL(req.url), ctx);
+    const data=await r.json();
+    assert.ok(Date.now()-t0<1000, 'did not wait for the import');
+    assert.equal(imported, false);
+    assert.deepEqual(data.messages.map(m=>m.content), ['old hello']);
+    release(); await Promise.all(waits);
+    assert.equal(imported, true);
+    assert.deepEqual(sent.at(-1), {type:'conv', lead_ids:[41]});
+  });
+  test('a thread with nothing in D1 yet waits a little for the history import', async()=>{
+    db.prepare(`INSERT INTO conversations (lead_id, client_id, status, synced, last_message_at, updated_at) VALUES (42, ?, 'open', 1, ?, ?)`).run(CID, T('08:00'), T('08:00'));
+    const ctx={waitUntil:()=>{}};
+    const d={...deps(), historyWaitMs:2000, importHistory:async()=>{
+      db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, ts) VALUES (42, ?, 'user', 'first ever', ?)`).run(CID, T('08:00'));
+      return {added:1};
+    }};
+    const req=new Request('https://w/chats/v2/thread?lead_id=42', {headers:{Authorization:'Bearer owner'}});
+    const data=await (await chatsV2HandleRoute(req, env, d, new URL(req.url), ctx)).json();
+    assert.deepEqual(data.messages.map(m=>m.content), ['first ever']);
+  });
   test('routes: auth, bootstrap version, list, thread scoping, canned', async()=>{
     ncLeads=[];
     const call=async(path, {method='GET', who='owner', body}={})=>{
@@ -583,5 +618,63 @@ describe('advanced filters, scheduling, block, transcript, macros', ()=>{
     assert.equal((await call(d, '/chats/v2/email-transcript', {method:'POST', body:{lead_id:1, to:'nope'}})).status, 400);
     assert.equal((await call(d, '/chats/v2/email-transcript', {method:'POST', body:{lead_id:1, to:'boss@acme.com'}})).status, 200);
     assert.match(blocked.at(-1)[2], /spam/);
+  });
+});
+
+describe('internal notes', ()=>{
+  beforeEach(()=>fresh());
+  // A NocoDB stand-in holding one lead record, changed by PATCH like the real table.
+  function notesDeps(lead){
+    const store={...lead};
+    return {store, deps:{...deps(), ncFetch:async(env, path, opts={})=>{
+      if(opts.method==='PATCH'){ for(const x of [].concat(opts.body)) if(Number(x.Id)===Number(store.Id)) Object.assign(store, x); ncPatches.push(...[].concat(opts.body)); return new Response('{}'); }
+      if(new RegExp(`/records/${store.Id}(\\?|$)`).test(path)) return new Response(JSON.stringify(store));
+      return new Response('{}', {status:404});
+    }}};
+  }
+  const call=async(d, path, {method='GET', who='owner', body}={})=>{
+    const req=new Request('https://w'+path, {method, headers:{Authorization:'Bearer '+who, 'Content-Type':'application/json'}, body:body?JSON.stringify(body):undefined});
+    const r=await chatsV2HandleRoute(req, env, d, new URL(req.url));
+    return {status:r.status, data:await r.json()};
+  };
+  test('a note is added to the stored list (a teammate\'s newer note is kept) and pushed to open pages', async()=>{
+    const {store, deps:d}=notesDeps({Id:51, ClientId:String(CID), Owner:'', NotesList:'[]'});
+    // Since this browser loaded the chat, a teammate added a note from the CRM.
+    store.NotesList=JSON.stringify([{text:'Prefers calls after 6pm', ts:'2026-11-06T09:00:00.000Z', author:SHAFNA}]);
+    sent=[];
+    const r=await call(d, '/chats/v2/note', {method:'POST', body:{lead_id:51, text:'Quoted AED 3,200 for Baku'}});
+    assert.equal(r.status, 200);
+    const saved=JSON.parse(store.NotesList);
+    assert.deepEqual(saved.map(n=>n.text), ['Quoted AED 3,200 for Baku', 'Prefers calls after 6pm']);
+    assert.equal(saved[0].author, OWNER);
+    assert.deepEqual(r.data.notes.map(n=>n.text), ['Prefers calls after 6pm', 'Quoted AED 3,200 for Baku']); // oldest → newest
+    assert.equal(sent.at(-1).type, 'note');
+    assert.equal(sent.at(-1).lead_id, 51);
+    assert.equal(sent.at(-1).note.text, 'Quoted AED 3,200 for Baku');
+    const g=await call(d, '/chats/v2/notes?lead_id=51');
+    assert.equal(g.data.notes.length, 2);
+  });
+  test('a staff member can add a note to a chat they can see, not to someone else\'s', async()=>{
+    const mine=notesDeps({Id:52, ClientId:String(CID), Owner:RAHUL, NotesList:''});
+    assert.equal((await call(mine.deps, '/chats/v2/note', {method:'POST', who:'rahul', body:{lead_id:52, text:'Called, no answer'}})).status, 200);
+    assert.equal(JSON.parse(mine.store.NotesList)[0].author, RAHUL);
+    const theirs=notesDeps({Id:53, ClientId:String(CID), Owner:SHAFNA, NotesList:''});
+    assert.equal((await call(theirs.deps, '/chats/v2/note', {method:'POST', who:'rahul', body:{lead_id:53, text:'x'}})).status, 404);
+    assert.equal((await call(theirs.deps, '/chats/v2/notes?lead_id=53', {who:'rahul'})).status, 404);
+    const other=notesDeps({Id:54, ClientId:'999', Owner:'', NotesList:''});
+    assert.equal((await call(other.deps, '/chats/v2/note', {method:'POST', body:{lead_id:54, text:'x'}})).status, 404);
+  });
+  test('a note that does not stick is reported, and an empty note is refused', async()=>{
+    const {deps:d}=notesDeps({Id:55, ClientId:String(CID), Owner:'', NotesList:'[]'});
+    const broken={...d, ncFetch:async(env, path, opts={})=>opts.method==='PATCH'?new Response('{}'):d.ncFetch(env, path, opts)};
+    const r=await call(broken, '/chats/v2/note', {method:'POST', body:{lead_id:55, text:'lost?'}});
+    assert.equal(r.status, 502);
+    assert.match(r.data.error, /could not be saved/);
+    assert.equal((await call(d, '/chats/v2/note', {method:'POST', body:{lead_id:55, text:'   '}})).status, 400);
+  });
+  test('notes written newest-first (CRM) or oldest-first (old Chats) read back in time order', ()=>{
+    const mixed=JSON.stringify([{text:'c', ts:'2026-11-03'}, {text:'a', ts:'2026-11-01'}, 'plain old note', {text:'b', ts:'2026-11-02'}]);
+    assert.deepEqual(chatsV2NotesSorted(mixed).map(n=>n.text), ['plain old note', 'a', 'b', 'c']);
+    assert.deepEqual(chatsV2NotesSorted('not json'), []);
   });
 });
