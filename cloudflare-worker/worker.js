@@ -23902,10 +23902,27 @@ export function engineReplyEchoesCustomer(reply, customerLines){
     return n.length>=4 && (n===r || (r.length<=n.length+12 && engineTextSimilarity(r, n)>=0.85));
   });
 }
+/* A message that is only thanks / ok / an emoji ("Thank you so much 👍😊", "ok thanks", "🙏").
+   The natural answer often repeats it ("Thank you so much! 😊"), which the echo check above threw
+   away twice, so the customer got "I'm not sure I got that…" for a plain thank-you (6 Nov 2026).
+   Such a reply is never treated as an echo, and when no AI reply comes back the customer gets a
+   friendly "you're welcome" instead of the "not sure I got that" / hand-over fallback. */
+const ENGINE_PLEASANTRY_CORE=/^(?:thanks?|thank|thankyou|thanku|tq|ty|thx|tnx|thnx|thanx|shukran|shukriya|nanni|nandi|dhanyavad|dhanyawad|jazakallah|jazak|ok+|okay|okey|k+|noted|great|perfect|done|cool|alright|fine|sure|super|nice|good|ശരി|നന്ദി)$/i;
+const ENGINE_PLEASANTRY_FILLER=/^(?:you|u|so|very|much|a|lot|lots|many|got|it|welcome|dear|sir|madam|mam|maam|bro|brother|please|pls|again|for|the|info|information|help|details|allah|khair)$/i;
+export function engineIsPleasantry(text){
+  const raw=String(text||'').trim();
+  if(!raw) return false;
+  const t=raw.toLowerCase().replace(/[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u200d\ufe0f]/gu,' ').replace(/[^\p{L}\p{M}\p{N}\s]/gu,' ').trim();
+  const words=t.split(/\s+/).filter(Boolean);
+  if(!words.length) return raw.length<=16 && /\p{Extended_Pictographic}/u.test(raw); // emoji only: 👍 🙏 😊
+  if(words.length>8) return false;
+  return words.some(w=>ENGINE_PLEASANTRY_CORE.test(w)) && words.every(w=>ENGINE_PLEASANTRY_CORE.test(w)||ENGINE_PLEASANTRY_FILLER.test(w));
+}
+export const ENGINE_PLEASANTRY_REPLY="You're most welcome! 😊 Let me know if there's anything else I can help you with.";
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   const reply=await engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens);
   const customer=engineCustomerLinesFromPrompt(systemPrompt, userText);
-  if(!reply || reply==='One moment 🙏' || !engineReplyEchoesCustomer(reply, customer)) return reply;
+  if(!reply || reply==='One moment 🙏' || engineIsPleasantry(userText) || !engineReplyEchoesCustomer(reply, customer)) return reply;
   botTrace(c,'check_echo',{result:'reply repeated the customer\'s message — regenerating',draft:reply});
   await reportOpsError(env, 'engineCallLlm — reply repeated the customer\'s own message; regenerated', new Error(String(reply).slice(0,200)), {clientId:c?.Id}).catch(()=>{});
   const retry=await engineCallLlmOnce(env, c, systemPrompt+`\n\nIMPORTANT: your draft reply was the customer's own message copied back to them ("${String(reply).slice(0,200)}"). Never repeat or quote the customer's words. Reply AS THE BUSINESS and answer their latest message ("${String(userText||'').slice(0,200)}") directly from the business prompt.`, userText, maxTokens);
@@ -29771,9 +29788,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(!reply||reply.trim()==='One moment 🙏'){
         let fallbackMsg;
         if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
+        else if(engineIsPleasantry(userText)) fallbackMsg=ENGINE_PLEASANTRY_REPLY;
         else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
         else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
-        botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
+        botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:fallbackMsg===ENGINE_PLEASANTRY_REPLY?'not used — the customer only said thanks/ok, so a "you\'re welcome" reply was sent':c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
         reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
       }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
@@ -29937,9 +29955,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(!reply||reply.trim()==='One moment 🙏'){
         let fallbackMsg;
         if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
+        else if(engineIsPleasantry(userText)) fallbackMsg=ENGINE_PLEASANTRY_REPLY;
         else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
         else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
-        botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
+        botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:fallbackMsg===ENGINE_PLEASANTRY_REPLY?'not used — the customer only said thanks/ok, so a "you\'re welcome" reply was sent':c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
         reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
       }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
