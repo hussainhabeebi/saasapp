@@ -223,7 +223,7 @@ function tsMore(){ _tsShown+=TS_PAGE_SIZE; renderTravelStatus(); }
 
 async function tsEnsureFields(){
   if(_tsFieldsReady) return;
-  for(const f of TS_FIELDS) await (Array.isArray(f)?ensureLeadsField(f[0],f[1]):ensureLeadsField(f));
+  await Promise.all(TS_FIELDS.map(f=>Array.isArray(f)?ensureLeadsField(f[0],f[1]):ensureLeadsField(f)));
   _tsFieldsReady=true;
 }
 function tsParseLog(raw){
@@ -240,17 +240,21 @@ async function tsSave(id,patch){
   const before={}; Object.keys(full).concat('TravelStatusLog').forEach(k=>{ before[k]=lead[k]; });
   const from=tsStatusOf(lead).key;
   Object.assign(lead,full);
+  // Held over any leads reload that lands before the save does (dashboard.html _applyLeadEdits),
+  // so the board never flicks back to the old status.
+  if(typeof _noteLeadEdits==='function') _noteLeadEdits({Id:id,...full});
   tsRefreshViews();
   try{
-    await tsEnsureFields();
+    // Column check and the stored history are read side by side, not one after the other.
+    const [,freshLog]=await Promise.all([
+      tsEnsureFields(),
+      statusChanged?ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${id}?fields=TravelStatusLog`).catch(()=>null):null,
+    ]);
     if(statusChanged){
       // Append to the history; start from the stored copy so a teammate's change made since this
       // page loaded isn't lost (same approach as appendCallLog).
       let log=tsParseLog(before.TravelStatusLog);
-      try{
-        const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${id}?fields=TravelStatusLog`);
-        log=tsParseLog(fresh?.TravelStatusLog);
-      }catch(e){}
+      if(freshLog) log=tsParseLog(freshLog.TravelStatusLog);
       const entry={at:now, by:myEmail||'', from, to:patch.TravelStatus};
       if(full.TravelFollowUpAt) entry.fu=full.TravelFollowUpAt;
       full.TravelStatusLog=JSON.stringify([entry,...log].slice(0,TS_LOG_MAX));
@@ -261,6 +265,7 @@ async function tsSave(id,patch){
     if(stage && !$id('pageLeads')?.classList.contains('hidden') && typeof renderLeadsCurrentView==='function') renderLeadsCurrentView();
     if(typeof showToast==='function') showToast(stage?`Status saved — lead moved to ${typeof stageLabel==='function'?stageLabel(stage):stage}`:'Status saved');
   }catch(e){
+    if(typeof _dropLeadEdits==='function') _dropLeadEdits({Id:id});
     Object.assign(lead,before);
     tsRefreshViews(true);
     if(typeof showToast==='function') showToast('Could not save status — '+e.message,'err');

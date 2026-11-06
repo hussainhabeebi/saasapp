@@ -442,6 +442,41 @@ describe('sync and routes', ()=>{
     assert.deepEqual(sent[0], {type:'conv', lead_ids:[21]});
     assert.equal(await chatsV2Reconcile(env, deps(), CID), 0);
   });
+  test('thread answers with D1 messages at once; the Chatwoot history import runs behind it', async()=>{
+    await insertMsg(41, {role:'user', content:'old hello', ts:T('09:00')});
+    let release, imported=false;
+    const gate=new Promise(r=>{ release=r; });
+    const waits=[];
+    const ctx={waitUntil:p=>{ waits.push(p); }};
+    const d={...deps(), historyWaitMs:50, importHistory:async(env, c, cid, lead, cx, opts)=>{
+      assert.equal(opts?.wait, 0);
+      await gate;
+      db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, ts) VALUES (41, ?, 'user', 'from chatwoot', ?)`).run(CID, T('08:00'));
+      imported=true; return {added:1};
+    }};
+    sent=[];
+    const req=new Request('https://w/chats/v2/thread?lead_id=41', {headers:{Authorization:'Bearer owner'}});
+    const t0=Date.now();
+    const r=await chatsV2HandleRoute(req, env, d, new URL(req.url), ctx);
+    const data=await r.json();
+    assert.ok(Date.now()-t0<1000, 'did not wait for the import');
+    assert.equal(imported, false);
+    assert.deepEqual(data.messages.map(m=>m.content), ['old hello']);
+    release(); await Promise.all(waits);
+    assert.equal(imported, true);
+    assert.deepEqual(sent.at(-1), {type:'conv', lead_ids:[41]});
+  });
+  test('a thread with nothing in D1 yet waits a little for the history import', async()=>{
+    db.prepare(`INSERT INTO conversations (lead_id, client_id, status, synced, last_message_at, updated_at) VALUES (42, ?, 'open', 1, ?, ?)`).run(CID, T('08:00'), T('08:00'));
+    const ctx={waitUntil:()=>{}};
+    const d={...deps(), historyWaitMs:2000, importHistory:async()=>{
+      db.prepare(`INSERT INTO lead_messages (lead_id, client_id, role, content, ts) VALUES (42, ?, 'user', 'first ever', ?)`).run(CID, T('08:00'));
+      return {added:1};
+    }};
+    const req=new Request('https://w/chats/v2/thread?lead_id=42', {headers:{Authorization:'Bearer owner'}});
+    const data=await (await chatsV2HandleRoute(req, env, d, new URL(req.url), ctx)).json();
+    assert.deepEqual(data.messages.map(m=>m.content), ['first ever']);
+  });
   test('routes: auth, bootstrap version, list, thread scoping, canned', async()=>{
     ncLeads=[];
     const call=async(path, {method='GET', who='owner', body}={})=>{

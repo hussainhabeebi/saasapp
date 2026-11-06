@@ -1196,10 +1196,15 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
         row=await convRow(env, leadId);
       }
       if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
-      // First page: bring in the customer's older Chatwoot history once (all their conversations),
-      // waiting a few seconds so it shows in this very load. It covers photos/files too.
+      // First page: answer with what D1 already has straight away (old messages show at once), and
+      // bring in the customer's older Chatwoot history (once, all their conversations, photos and
+      // files too) behind it. When that adds anything, open pages are told to re-read the thread.
+      // Only a thread with nothing to show yet waits a few seconds for it, as before.
+      let historyP=null;
       if(!qp.before&&!qp.after&&deps.importHistory){
-        try{ await deps.importHistory(env, c, cid, {Id:leadId, ConversationID:row.conv_id, Phone:row.phone}, ctx); }catch(e){}
+        historyP=Promise.resolve().then(()=>deps.importHistory(env, c, cid, {Id:leadId, ConversationID:row.conv_id, Phone:row.phone}, ctx, {wait:0}))
+          .then(out=>out?.added>0&&deps.broadcast?deps.broadcast(env, cid, {type:'conv', lead_ids:[leadId]}).then(()=>out):out).catch(()=>null);
+        if(ctx?.waitUntil) ctx.waitUntil(historyP); else await historyP;
         if(!row.media_backfilled) await env.DB.prepare('UPDATE conversations SET media_backfilled=1 WHERE lead_id=?').bind(leadId).run();
       }
       else if(!row.media_backfilled&&!qp.before&&!qp.after&&deps.backfillMedia){
@@ -1208,11 +1213,16 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
         if(ctx?.waitUntil) ctx.waitUntil(p);
       }
       if(!qp.before){
-        // Bounded so a slow Chatwoot never holds up the thread.
-        await Promise.race([chatsV2PollStatuses(env, deps, c, cid, row).catch(()=>0), new Promise(r=>setTimeout(r, 2500))]);
-        row=await convRow(env, leadId)||row;
+        // Delivery ticks Chatwoot's webhook may have missed: read behind the response, never ahead
+        // of it; a tick that changed tells open pages to re-read the thread.
+        const ticksP=chatsV2PollStatuses(env, deps, c, cid, row).then(n=>n>0&&deps.broadcast?deps.broadcast(env, cid, {type:'conv', lead_ids:[leadId]}):null).catch(()=>null);
+        if(ctx?.waitUntil) ctx.waitUntil(ticksP); else await ticksP;
       }
-      const out=await chatsV2Thread(env, leadId, qp);
+      let out=await chatsV2Thread(env, leadId, qp);
+      if(historyP&&ctx?.waitUntil&&!qp.before&&!(out.messages||[]).length){
+        await Promise.race([historyP, new Promise(r=>setTimeout(r, deps.historyWaitMs??4000))]);
+        out=await chatsV2Thread(env, leadId, qp);
+      }
       return json({...out, conversation:row, ms:Date.now()-t0});
     }
     if(path==='/chats/v2/act'&&method==='POST'){

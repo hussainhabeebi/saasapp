@@ -307,3 +307,53 @@ test('a teammate\'s category change shows on an open dashboard without a reload,
   const cached = await page.evaluate(() => JSON.parse(sessionStorage.getItem(_CACHE_KEY())).list.find(l => l.Id === 2).ServiceCategory);
   expect(cached).toBe('Umrah and Hajj');
 });
+
+test('a changed status does not flip back when the 60s refresh repaints from the cache', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  // A cache written before the change (what the 60s poll used to repaint from for up to 5 minutes).
+  await page.evaluate(() => {
+    // @ts-ignore
+    sessionStorage.setItem(_CACHE_KEY(), JSON.stringify({ ts: Date.now(), list: allLeads.map(l => ({ ...l })) }));
+  });
+  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('quote_sent');
+  await expect.poll(() => patches.length).toBe(1);
+  // @ts-ignore
+  await page.evaluate(() => loadAll());
+  await expect(tileCount(page, 'Quote sent')).toHaveText('1');
+  await expect(page.locator('tr[data-lead="1"] select.ts-sel')).toHaveValue('quote_sent');
+  // The cache itself now carries the new status, so a reload shows it too.
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore
+    return JSON.parse(sessionStorage.getItem(_CACHE_KEY())).list.find(l => l.Id === 1).TravelStatus;
+  })).toBe('quote_sent');
+});
+
+test('a leads reload that started before the save does not undo it', async ({ page }) => {
+  await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('negotiating');
+  // The server copy read before the save landed: still no status.
+  const out = await page.evaluate(() => {
+    // @ts-ignore
+    const stale = allLeads.map(l => ({ ...l, TravelStatus: l.Id === 1 ? '' : l.TravelStatus }));
+    // @ts-ignore
+    return _applyLeadEdits(stale, Date.now() - 60000).find(l => l.Id === 1).TravelStatus;
+  });
+  expect(out).toBe('negotiating');
+});
+
+test("a teammate's status change shows on an open Status Board without a reload", async ({ page }) => {
+  await boot(page);
+  await page.route(WORKER + '/nocodb/api/v2/tables/*/records/1?*', (route) =>
+    route.fulfill({ json: { Id: 1, TravelStatus: 'payment_pending', TravelStatusBy: STAFF } }));
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await expect(tileCount(page, 'Payment pending')).toHaveText('0');
+  // @ts-ignore
+  await page.evaluate((STAFF) => onLiveLeadUpdatedEvent({ type: 'lead_updated', lead_ids: [1], fields: ['TravelStatus', 'TravelStatusBy'], by: STAFF }), STAFF);
+  await expect(tileCount(page, 'Payment pending')).toHaveText('1');
+  await expect(page.locator('tr[data-lead="1"] select.ts-sel')).toHaveValue('payment_pending');
+});

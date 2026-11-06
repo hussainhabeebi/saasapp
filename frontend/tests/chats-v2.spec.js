@@ -607,3 +607,27 @@ test('a single connected number shows no inbox tabs', async ({ page }) => {
   await expect(page.locator('#list')).toContainText('Asha');
   await expect(page.locator('#inboxRow')).toBeHidden();
 });
+
+test('after a reload a chat opens at once from this device, then new messages land behind it', async ({ page }) => {
+  await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#thread')).toContainText('Price please');
+  // The thread is kept on this device (saved a moment after it loads).
+  await expect.poll(() => page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('lv_chats_threads_48') || '{}').threads || {}))).toContain('1');
+  // After the reload the thread API is slow — the kept copy shows while it answers.
+  let release;
+  const gate = new Promise(r => { release = r; });
+  await page.route('**/chats/v2/thread*', async (route) => {
+    await gate;
+    return route.fulfill({ json: { messages: [
+      { id: 15, role: 'user', content: 'Price please', ts: minsAgo(10) },
+      { id: 17, role: 'user', content: 'Are you there?', ts: minsAgo(1) },
+    ], has_more: false, before: null } });
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#thread')).toContainText('And delivery?');
+  await expect(page.locator('#thread .spinner')).toHaveCount(0);
+  release();
+  await expect(page.locator('#thread')).toContainText('Are you there?');
+});

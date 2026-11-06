@@ -2416,6 +2416,20 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
     if(rows.length) await engineBroadcastUpdate(env, payload.cid, {type:'lead_updated', lead_ids:rows.map(x=>Number(x.Id)), fields:['ServiceCategory'], by:String(payload.email||''), at:new Date().toISOString()});
   }
 
+  // Status Board / pipeline edits (travel status, follow-up date, stage, tags, deal value) reach
+  // every other open dashboard on the account at once, instead of after the next 60s poll / 5-min
+  // cache — sent behind the response so the save itself is not slowed down.
+  if(r.ok && method==='PATCH' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body){
+    try{
+      const sent=[].concat(JSON.parse(body)).filter(x=>x&&Number(x.Id));
+      const fields=[...new Set(sent.flatMap(x=>Object.keys(x)).filter(k=>LEAD_LIVE_FIELDS.includes(k)))];
+      if(sent.length && fields.length){
+        const p=engineBroadcastUpdate(env, payload.cid, {type:'lead_updated', lead_ids:sent.map(x=>Number(x.Id)).slice(0,100), fields, by:String(payload.email||''), at:new Date().toISOString()}).catch(()=>{});
+        if(ctx?.waitUntil) ctx.waitUntil(p); else await p;
+      }
+    }catch(e){}
+  }
+
   // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
   // browser after unrelated saves. Only the dedicated /voice/settings endpoint exposes a boolean.
   if(r.ok && method==='GET' && singleClientRecord){
@@ -3095,10 +3109,15 @@ export async function chatsImportChatwootHistory(env, c, clientId, lead, {force=
 // The thread waits this long for the import on a chat's first open, then shows what it has; the
 // rest finishes in the background.
 export const CW_HISTORY_WAIT_MS=4000;
-async function chatsImportHistoryBounded(env, c, clientId, lead, ctx){
+// Lead fields whose dashboard edits are pushed live to the account's other open dashboards
+// (lead_updated, see the NocoDB passthrough). ServiceCategory has its own verified broadcast.
+export const LEAD_LIVE_FIELDS=['TravelStatus','TravelStatusLog','TravelFollowUpAt','TravelStatusAt','TravelStatusBy','Stage','Tags','DealValue','DealCurrency','Owner','Priority','FollowUpDate','NextFollowUp'];
+async function chatsImportHistoryBounded(env, c, clientId, lead, ctx, {wait=CW_HISTORY_WAIT_MS}={}){
   const p=chatsImportChatwootHistory(env, c, clientId, lead).catch(()=>null);
   if(ctx?.waitUntil) ctx.waitUntil(p);
-  await Promise.race([p, new Promise(r=>setTimeout(r, CW_HISTORY_WAIT_MS))]);
+  // wait 0: the caller carries on and handles the result itself (Chats v2 thread, in the background).
+  if(!(wait>0)) return p;
+  return Promise.race([p, new Promise(r=>setTimeout(()=>r(null), wait))]);
 }
 
 // POST /chats/history-import {lead_id} — Chats → "Load full history": read every Chatwoot
@@ -37607,7 +37626,7 @@ const CHATS_V2_DEPS={
   },
   backfillMedia:chatsBackfillChatwootMedia,
   // Every older Chatwoot conversation of the customer, on a chat's first open (chatsImportChatwootHistory).
-  importHistory:(env, c, cid, lead, ctx)=>chatsImportHistoryBounded(env, c, cid, lead, ctx),
+  importHistory:(env, c, cid, lead, ctx, opts)=>chatsImportHistoryBounded(env, c, cid, lead, ctx, opts),
   // First open of a chat Chats v2 has never seen: ownership check + ConvHistory → D1 (as
   // /chat/messages does), which also creates its conversations row.
   seedLead:async(env, cid, leadId)=>{

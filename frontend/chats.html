@@ -350,6 +350,21 @@ async function loadBootstrap(){
 const snapKey=()=>`lv_chats_snap_${clientId}`;
 function saveSnapshot(){if(filter!=='all'||inboxFilter||assigneeFilter||handlerFilter||sortMode!=='newest'||labelFilter.length||customView||channel!=='whatsapp')return;try{const rows=v2Visible().slice(0,60).map(l=>l._v2);localStorage.setItem(snapKey(),JSON.stringify({me:meEmail,channel,rows,counts:counts2}))}catch{}}
 function loadSnapshot(){try{const s=JSON.parse(localStorage.getItem(snapKey())||'null');if(!s||s.me!==meEmail||!Array.isArray(s.rows))return false;mergeRows(s.rows);counts2=s.counts||null;const st=views2[viewKey()]={ids:new Set(s.rows.map(r=>String(r.lead_id))),cursor:null,done:false,floor:s.rows.filter(r=>!r.pinned).slice(-1)[0]?.last_message_at||'',loading:false,loaded:true};return s.rows.length>0}catch{return false}}
+// Recently opened threads stay on this device (newest 40 messages each, 30 chats), so after a
+// reload a chat opens at once with what was there before and the new messages land behind it —
+// the same way the list paints from its snapshot. In-flight / failed sends are never stored.
+const THREAD_SNAP_MAX=30,THREAD_SNAP_MSGS=40,threadSnapKey=()=>`lv_chats_threads_${clientId}`;
+let threadSnapAt={},threadSnapT=null;
+function loadThreadSnaps(){try{const s=JSON.parse(localStorage.getItem(threadSnapKey())||'null');if(!s||s.me!==meEmail||!s.threads)return;for(const [k,t] of Object.entries(s.threads)){if(!Array.isArray(t.m)||!t.m.length||histCache[k])continue;histCache[k]=t.m;threadMeta[k]={before:t.b||null,has_more:!!t.h,loading:false};threadSnapAt[k]=t.at||0}}catch{}}
+function saveThreadSnapSoon(k){threadSnapAt[String(k)]=Date.now();clearTimeout(threadSnapT);threadSnapT=setTimeout(saveThreadSnaps,1500)}
+function saveThreadSnaps(){
+ const keys=Object.keys(threadSnapAt).filter(k=>(histCache[k]||[]).length).sort((a,b)=>threadSnapAt[b]-threadSnapAt[a]).slice(0,THREAD_SNAP_MAX);
+ const build=n=>{const threads={};for(const k of keys.slice(0,n)){const all=histCache[k].filter(m=>!m._status&&m.id),m=all.slice(-THREAD_SNAP_MSGS);if(!m.length)continue;const cut=all.length>m.length,meta=threadMeta[k]||{};
+  threads[k]={at:threadSnapAt[k],m,h:cut||!!meta.has_more,b:cut?btoa(JSON.stringify([m[0].ts,m[0].id])):(meta.before||null)}}return JSON.stringify({me:meEmail,threads})};
+ // Too big for this browser's storage: keep fewer chats rather than none.
+ for(let n=keys.length;n>0;n=Math.floor(n/2)){try{localStorage.setItem(threadSnapKey(),build(n));return}catch{}}
+ try{localStorage.removeItem(threadSnapKey())}catch{}
+}
 // A delta names chats that changed; fetch just those rows (scoped by the server to what this
 // person may see), refresh the counts, and the open thread if it's one of them.
 function queueSync(ids=[]){ids.forEach(i=>syncIds.add(String(i)));clearTimeout(syncTimer);syncTimer=setTimeout(runSync,250)}
@@ -449,6 +464,7 @@ async function boot(){
  const show=()=>{$('loading').classList.add('hidden');$('app').classList.remove('hidden')};
  // v2: paint the last-seen list from this browser at once, then bootstrap + list + counts in
  // parallel. Any failure in that first round drops back to v1, as if v2 didn't exist.
+ loadThreadSnaps();
  const warm=loadSnapshot();
  if(warm){V2=true;show();renderContacts()}
  try{
@@ -671,12 +687,16 @@ let hoverT=null;
 // Touch screens have no hover: once the list is up, the top chats' threads are fetched in the
 // background (a few, one after another) so tapping one opens instantly from memory.
 let warmDone=false;
+// A thread kept from an earlier visit counts as warm only if nothing newer has arrived since.
+function threadFresh(l){const k=String(l.Id),h=histCache[k];if(!h||!h.length)return false;if(Date.now()-(threadSnapAt[k]||0)<30000)return true;const last=h[h.length-1]?.ts||'',at=l._v2?.last_message_at||'';return !at||last>=at}
 function warmTopThreads(){
  if(warmDone||!V2||!listItems.length)return;warmDone=true;
- const go=async()=>{for(const l of listItems.slice(0,6)){if(histCache[String(l.Id)])continue;try{await fetchThread(l)}catch{break}}};
- (window.requestIdleCallback||(f=>setTimeout(f,800)))(()=>go());
+ // Two at a time, top 10: the chats someone is most likely to tap next.
+ const queue=listItems.slice(0,10).filter(l=>!threadFresh(l));
+ const worker=async()=>{while(queue.length){const l=queue.shift();if(threadFresh(l))continue;try{await fetchThread(l)}catch{queue.length=0}}};
+ (window.requestIdleCallback||(f=>setTimeout(f,800)))(()=>{worker();worker()});
 }
-function hoverPrefetch(id){clearTimeout(hoverT);if(!V2||!id||histCache[String(id)])return;hoverT=setTimeout(()=>{const l=leads.find(x=>String(x.Id)===String(id));if(l&&!histCache[String(id)])fetchThread(l).catch(()=>{})},150)}
+function hoverPrefetch(id){clearTimeout(hoverT);if(!V2||!id)return;const l0=leads.find(x=>String(x.Id)===String(id));if(!l0||threadFresh(l0))return;hoverT=setTimeout(()=>{const l=leads.find(x=>String(x.Id)===String(id));if(l&&!threadFresh(l))fetchThread(l).catch(()=>{})},120)}
 
 // ── Conversation shell ───────────────────────────────────────────────────────────────────────
 // User Management → channel access "Read only": the chat is visible but replies are blocked (the
@@ -722,6 +742,7 @@ async function fetchThread(lead,opts={}){
  const older=first?prev.filter(m=>m.id&&(m.ts<first.ts||(m.ts===first.ts&&m.id<first.id))):[];
  histCache[k]=[...older,...d.messages,...prev.filter(m=>m._status)];
  threadMeta[k]=older.length&&threadMeta[k]?threadMeta[k]:{before:d.before,has_more:d.has_more,loading:false};
+ saveThreadSnapSoon(k);
  return d;
 }
 async function loadOlder(){
