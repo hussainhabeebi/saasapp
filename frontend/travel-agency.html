@@ -2158,6 +2158,18 @@ function renderItinDays() {
         <span style="font-size:11.5px;color:var(--muted)">Meals:</span>
         ${ITIN_MEALS.map(([k,label])=>`<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" ${(d.meals||[]).includes(k)?'checked':''} onchange="toggleItinMeal(${di},'${k}',this.checked)">${label}</label>`).join('')}
       </div>
+      <div style="margin-bottom:10px">
+        <div style="font-size:11.5px;color:var(--muted);margin-bottom:4px">📷 Day photos (Google Drive links)</div>
+        ${itinDayImageLinks(d).map((u,li)=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <a href="${esc(u)}" target="_blank" rel="noopener" style="flex:1;min-width:0;font-size:12px;color:var(--accent-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u)}</a>
+          <button title="Remove link" onclick="removeItinImageLink(${di},${li})" style="${iconBtn}">✕</button>
+        </div>`).join('')}
+        <div style="display:flex;gap:6px">
+          <input class="form-input" id="itinImgLink${di}" type="url" style="flex:1;min-width:180px;padding:6px 10px;font-size:12.5px" placeholder="Paste a Google Drive link, e.g. https://drive.google.com/…" onkeydown="if(event.key==='Enter'){event.preventDefault();addItinImageLink(${di});}">
+          <button onclick="addItinImageLink(${di})" style="${iconBtn};padding:3px 12px">+ Add link</button>
+        </div>
+        <div id="itinImgLinkMsg${di}" style="font-size:11px;color:var(--red,#c0392b);margin-top:3px"></div>
+      </div>
       ${(d.items||[]).map((item,ii)=>{
         const meta=itinTypeMeta(item.type);
         return `
@@ -2186,7 +2198,7 @@ function renderItinDays() {
 }
 
 function itinRenumberDays(){ _itinDays.forEach((d,j)=>d.day_no=j+1); renderItinDays(); }
-function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',description:'',overnight:'',meals:[],items:[]});renderItinDays();}
+function addItinDay(){_itinDays.push({day_no:_itinDays.length+1,title:'',description:'',overnight:'',meals:[],image_links:[],items:[]});renderItinDays();}
 function removeItinDay(i){_itinDays.splice(i,1);itinRenumberDays();}
 function moveItinDay(i,dir){
   const j=i+dir; if(j<0||j>=_itinDays.length) return;
@@ -2198,6 +2210,20 @@ function toggleItinMeal(di,k,on){
   if(on) m.add(k); else m.delete(k);
   _itinDays[di].meals=ITIN_MEALS.map(([x])=>x).filter(x=>m.has(x));
 }
+// Per-day photo links (manual builder only) — Google Drive share links kept on the day as
+// `image_links`, so a whole album can be shared without bloating the `days` JSON with images.
+function itinDayImageLinks(d){ return (Array.isArray(d&&d.image_links)?d.image_links:[]).map(u=>String(u||'').trim()).filter(u=>/^https?:\/\/\S+$/i.test(u)); }
+function addItinImageLink(di){
+  const inp=$id('itinImgLink'+di),msg=$id('itinImgLinkMsg'+di);
+  const u=(inp.value||'').trim();
+  if(!u) return;
+  if(!/^https?:\/\/\S+$/i.test(u)){ msg.textContent='Enter a full link starting with https://'; return; }
+  if(!/^https:\/\/(drive|docs|photos)\.google\.com\//i.test(u)&&!confirm('This doesn\'t look like a Google Drive link. Add it anyway?')) return;
+  const d=_itinDays[di]; d.image_links=itinDayImageLinks(d);
+  if(!d.image_links.includes(u)) d.image_links.push(u);
+  renderItinDays();
+}
+function removeItinImageLink(di,li){ const d=_itinDays[di]; d.image_links=itinDayImageLinks(d); d.image_links.splice(li,1); renderItinDays(); }
 function addItinItem(di){_itinDays[di].items.push({type:'activity',time:'',description:'',image:''});renderItinDays();}
 function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
 
@@ -2766,6 +2792,23 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       ensureSpace(18);
       doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
       doc.text(doc.splitTextToSize(dayFacts,contentW-8)[0],marginX+4,y+4);
+      doc.setTextColor(0);
+      y+=16;
+    }
+    const photoLinks=itinDayImageLinks(d);
+    if(photoLinks.length){
+      ensureSpace(16);
+      doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
+      doc.text('Photos:',marginX+4,y+4);
+      let lx=marginX+4+doc.getTextWidth('Photos: ');
+      doc.setFont('helvetica','normal');doc.setTextColor(13,110,253);
+      photoLinks.forEach((u,li)=>{
+        const label=photoLinks.length>1?`View photos ${li+1}`:'View photos';
+        const w=doc.getTextWidth(label);
+        if(lx+w>marginX+contentW){ y+=12; ensureSpace(14); lx=marginX+4; }
+        doc.textWithLink(label,lx,y+4,{url:u});
+        lx+=w+doc.getTextWidth('   ');
+      });
       doc.setTextColor(0);
       y+=16;
     }
@@ -4193,6 +4236,8 @@ async function printItinerary(id){
     body+='</ul>';
     const dayFacts=[itinMealsText(d.meals)?'Meals: '+itinMealsText(d.meals):'',d.overnight?'Overnight: '+d.overnight:''].filter(Boolean);
     if(dayFacts.length) body+=`<p class="facts">${dayFacts.map(esc).join(' &middot; ')}</p>`;
+    const photoLinks=itinDayImageLinks(d);
+    if(photoLinks.length) body+=`<p class="facts">Photos: ${photoLinks.map((u,li)=>`<a href="${esc(u)}" target="_blank" rel="noopener">${photoLinks.length>1?'View photos '+(li+1):'View photos'}</a>`).join(' &middot; ')}</p>`;
   });
   const inc=taList(it.inclusions),exc=taList(it.exclusions);
   if(inc.length) body+=`<h2>Inclusions</h2><ul>${inc.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
@@ -4221,6 +4266,7 @@ function itinWaText(it){
     (d.items||[]).forEach(i=>{body+=`• ${i.time?i.time+' ':''}${i.description||''}\n`;});
     if(itinMealsText(d.meals)) body+=`🍽️ ${itinMealsText(d.meals)}\n`;
     if(d.overnight) body+=`🌙 Overnight: ${d.overnight}\n`;
+    itinDayImageLinks(d).forEach(u=>{body+=`📷 Photos: ${u}\n`;});
     body+='\n';
   });
   const inc=taList(it.inclusions),exc=taList(it.exclusions);
