@@ -56,9 +56,34 @@ test('full itinerary PDF renders the detailed trip with its price table', async 
       adults: 2, children: 1, currency: 'INR', adult_price: 15000, child_price: 9000,
       inclusions: '["Hotel","Breakfast"]', exclusions: '["Entry tickets"]',
       days: [{ day_no: 1, title: 'Arrival', description: 'Reach Hyderabad.', meals: ['B'], overnight: 'Hotel Sitara',
+        image_links: ['https://drive.google.com/drive/folders/abc123'],
         items: [{ type: 'activity', time: '16:00', description: 'Charminar' }] }],
     };
-    return itinBuildFullPdfDoc({ Name: 'Test' }, it, 'ITN-0001').getNumberOfPages();
+    const doc = itinBuildFullPdfDoc({ Name: 'Test' }, it, 'ITN-0001');
+    return { n: doc.getNumberOfPages(), out: doc.output() };
   });
-  expect(pages).toBeGreaterThan(0);
+  expect(pages.n).toBeGreaterThan(0);
+  expect(pages.out).toContain('drive.google.com/drive/folders/abc123');
+});
+
+test('manual builder keeps per-day Google Drive photo links and shares them', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => openItinModal(null, {
+    title: 'Hyderabad Bus Package', from_date: '2026-11-14', currency: 'INR',
+    days: [{ day_no: 1, title: 'Arrival', items: [] }, { day_no: 2, title: 'City tour', items: [] }],
+  }));
+  const link = 'https://drive.google.com/drive/folders/abc123';
+  await page.locator('#itinImgLink1').fill(link);
+  await page.locator('#itinImgLink1').press('Enter');
+  await expect(page.locator('#itinDaysList a[href="' + link + '"]')).toHaveCount(1);
+  await page.locator('#itinImgLink0').fill('not a link');
+  await page.locator('#itinDaysList button:has-text("+ Add link")').first().click();
+  await expect(page.locator('#itinImgLinkMsg0')).toContainText('https://');
+  const days = await page.evaluate(() => _itinDays);
+  expect(days[0].image_links || []).toEqual([]);
+  expect(days[1].image_links).toEqual([link]);
+  const wa = await page.evaluate(() => itinWaText({ title: 'T', days: _itinDays }));
+  expect(wa).toContain('📷 Photos: ' + link);
+  await page.getByTitle('Remove link').click();
+  expect(await page.evaluate(() => _itinDays[1].image_links)).toEqual([]);
 });
