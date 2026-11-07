@@ -232,3 +232,64 @@ test('Send Quotation: "Chatted in 24h" selects every chat-linked lead who wrote 
   });
   expect(r).toEqual({ shown: ['Recent', 'Yesterday-ish'], selected: ['1', '2'], count: '2 of 4 leads match', threeDays: ['Recent', 'Yesterday-ish', 'Old', 'NoChat'] });
 });
+
+// Wikipedia search results keyed by query word, served to the browser-side photo finder.
+async function mockWiki(page, png) {
+  await page.route('**/*', (route) => {
+    const u = route.request().url();
+    if (u.startsWith('file://')) return route.continue();
+    if (u.startsWith('https://en.wikipedia.org/w/api.php')) {
+      const q = decodeURIComponent(new URL(u).searchParams.get('gsrsearch')).toLowerCase();
+      const title = q.includes('charminar') ? 'Charminar' : q.includes('golconda') ? 'Golconda Fort' : q.includes('hyderabad') ? 'Hyderabad' : 'Unrelated Page';
+      return route.fulfill({ json: { query: { pages: [{ index: 1, title, thumbnail: { source: `https://upload.wikimedia.org/${title.replace(' ', '_')}.png` } }] } } });
+    }
+    if (u.startsWith('https://upload.wikimedia.org/')) {
+      const img = u.includes('Hyderabad') ? PNG_B : png; // distinct pixels so jsPDF keeps them as separate images
+      return route.fulfill({ body: Buffer.from(img.split(',')[1], 'base64'), contentType: 'image/png' });
+    }
+    return route.abort();
+  });
+}
+const PNG_B = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4IWcDAALUASNyYth2AAAAAElFTkSuQmCC';
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+test('📷 Find photos fills every day without one from Wikipedia, then the city photo', async ({ page }) => {
+  await mockWiki(page, PNG);
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof openItinModal === 'function');
+  await page.evaluate(() => openItinModal(null, { title: 'Hyderabad', destination: 'Hyderabad', days: [
+    { day_no: 1, title: 'Arrival', overnight: 'Hyderabad', items: [{ type: 'activity', description: 'Visit Charminar', image: '' }] },
+    { day_no: 2, title: 'Fort', items: [{ type: 'activity', description: 'Explore the historic Golconda Fort', image: '' }] },
+    { day_no: 3, title: 'Shopping', overnight: 'Hyderabad', items: [{ type: 'activity', description: 'Laad Bazaar shopping', image: '' }] },
+    { day_no: 4, title: 'Departure', items: [] },
+  ] }));
+  await page.locator('#itinFindPhotosBtn').click();
+  await expect(page.locator('#itinFindPhotosMsg')).toHaveText('Added 3 photos.');
+  const imgs = await page.evaluate(() => _itinDays.map((d) => (d.items[0] || {}).image || ''));
+  expect(imgs).toEqual(['https://upload.wikimedia.org/Charminar.png', 'https://upload.wikimedia.org/Golconda_Fort.png', 'https://upload.wikimedia.org/Hyderabad.png', '']);
+  await expect(page.locator('#itinDaysList img[src="https://upload.wikimedia.org/Charminar.png"]')).toHaveCount(1);
+});
+
+test('PDF format is saved per itinerary and drives the PDF: cover + day photo, compact has none', async ({ page }) => {
+  await mockWiki(page, PNG);
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof openItinModal === 'function');
+  const r = await page.evaluate(async () => {
+    clientRecord = { client_name: 'Test Travels' };
+    await loadJsPdf();
+    openItinModal(null, { title: 'Hyderabad', destination: 'Hyderabad', days: [{ day_no: 1, title: 'Arrival', items: [{ type: 'activity', description: 'Charminar', image: 'https://upload.wikimedia.org/Charminar.png' }] }] });
+    itinSetFormat('layout', 'photo'); itinSetFormat('color', '#aa3366');
+    await itinAutoCover();
+    const rec = itinFormRecord();
+    const images = async (layout) => {
+      const it = { ...rec, days: JSON.parse(rec.days), pdf_format: JSON.stringify({ ...JSON.parse(rec.pdf_format), layout }) };
+      const out = itinBuildFullPdfDoc({ Name: 'T' }, await itinWithAutoImages(it), 'ITN-1').output();
+      return (out.match(/\/Subtype \/Image/g) || []).length;
+    };
+    return { format: JSON.parse(rec.pdf_format), photo: await images('photo'), classic: await images('classic'), compact: await images('compact') };
+  });
+  expect(r.format).toEqual({ layout: 'photo', color: '#aa3366', cover: 'https://upload.wikimedia.org/Hyderabad.png' });
+  expect(r.photo).toBeGreaterThanOrEqual(2);
+  expect(r.classic).toBeGreaterThanOrEqual(2);
+  expect(r.compact).toBe(0);
+});
