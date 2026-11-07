@@ -21763,6 +21763,20 @@ async function handleTravelDriveImage(request,env){
   let bin='';for(let i=0;i<buf.length;i+=0x8000)bin+=String.fromCharCode(...buf.subarray(i,i+0x8000));
   return json({data_url:`data:${type};base64,${btoa(bin)}`});
 }
+// Shared Gemini call that keeps the failure reason (engineGeminiGenerate only returns null).
+async function taAiGeminiCall(env,system,user,opts){
+  try{
+    const model=ENGINE_GEMINI_MODEL;
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,{
+      method:'POST',headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(opts.timeoutMs||90000),
+      body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:[{role:'user',parts:[{text:user}]}],generationConfig:engineGeminiGenerationConfig(model,opts)})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)return {error:`HTTP ${r.status} ${String(data?.error?.message||'').slice(0,160)}`.trim()};
+    const cand=data?.candidates?.[0];
+    const text=(cand?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+    return text?{text}:{error:`empty reply (${cand?.finishReason||data?.promptFeedback?.blockReason||'unknown reason'})`};
+  }catch(e){return {error:e.name==='TimeoutError'?'timed out':String(e.message||e).slice(0,160)};}
+}
 // POST /travel/ai-itinerary {package} → {days}. Agency → Packages → "✨ AI Itinerary": a draft
 // day-by-day plan (with place photos) that opens in the itinerary builder for the agent to review
 // and save — nothing is stored here. Uses the account's own AI provider, else shared Gemini.
@@ -21773,9 +21787,23 @@ async function handleTravelAiItinerary(request,env){
   const pkg=body?.package&&typeof body.package==='object'?body.package:null;
   if(!pkg)return json({error:'Missing package'},400);
   const c=await getClientById(env,payload.cid).catch(()=>null);
-  const generate=(system,user)=>engineGeminiGenerateWithFallback(env,c,system,user,{json:true,temperature:0.4,maxOutputTokens:6000,caller:'ta-ai-itinerary'});
+  // A whole trip is a long answer: allow far more time and tokens than a WhatsApp reply.
+  const opts={json:true,temperature:0.4,maxOutputTokens:8192,timeoutMs:90000,caller:'ta-ai-itinerary'};
+  const generate=async(system,user)=>{
+    const own=c?await aiClientGenerate(env,c,system,user,opts).catch(e=>({text:null,fallback:true,error:e.message})):null;
+    if(own?.text)return own.text;
+    if(own&&!own.fallback)return {error:`your AI provider failed (${own.error||'no reply'}) and shared AI fallback is off`};
+    if(!env.GEMINI_API_KEY)return {error:own?`your AI provider failed (${own.error||'no reply'})`:'no AI is configured on this server'};
+    const shared=await taAiGeminiCall(env,system,user,opts);
+    if(shared.text)return shared.text;
+    return {error:(own?`your AI provider failed (${own.error||'no reply'}); `:'')+`shared Gemini: ${shared.error}`};
+  };
   const out=await taAiItinerary(pkg,generate);
-  return out.error?json(out,422):json(out);
+  if(out.error){
+    await reportOpsError(env,'travel/ai-itinerary — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
+    return json({error:out.error},422);
+  }
+  return json(out);
 }
 export async function ltMenuLoad(env,clientId){
   await ltMenuEnsureSchema(env);
