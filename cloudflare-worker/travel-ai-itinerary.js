@@ -23,7 +23,7 @@ export function taAiDayCount(pkg){
 export function taAiItineraryPrompt(pkg){
   const days=taAiDayCount(pkg);
   const system=`You are a senior travel consultant writing a customer-facing, day-by-day tour itinerary for a travel agency. Write in clear, friendly English. Respond with ONLY compact JSON, no commentary, in exactly this shape:
-{"days":[{"title":"short day title, max 8 words","description":"2-3 sentences describing the day","overnight":"city or hotel for the night, or empty string on the last day","meals":["B","L","D" — only the meals included that day],"items":[{"type":"one of: ${TYPES.join(', ')}","time":"HH:MM 24h or empty string","description":"one line, max 15 words","place":"name of the landmark/attraction for a photo search, or empty string"}]}]}
+{"days":[{"title":"short day title, max 8 words","description":"1-2 short sentences describing the day","overnight":"city or hotel for the night, or empty string on the last day","meals":["B","L","D" — only the meals included that day],"items":[{"type":"one of: ${TYPES.join(', ')}","time":"HH:MM 24h or empty string","description":"one line, max 15 words","place":"name of the landmark/attraction for a photo search, or empty string"}]}]}
 Rules:
 - Exactly ${days} days (${days-1} nights). Day 1 is arrival, the last day is departure.
 - If the agency's notes already describe the days, follow them exactly — same order, same places — and only tidy the wording.
@@ -45,11 +45,29 @@ function hhmm(v){
   const h=Number(m[1]),mi=Number(m[2]);
   return h<24&&mi<60?`${String(h).padStart(2,'0')}:${String(mi).padStart(2,'0')}`:'';
 }
+// The complete {...} day objects in a reply cut off mid-way (output token limit): everything up to
+// the last day that closed properly is kept, so a long trip isn't thrown away for one broken day.
+function salvageDays(text){
+  const start=text.search(/"days"\s*:\s*\[/);
+  let i=start<0?text.indexOf('['):text.indexOf('[',start);
+  if(i<0)return null;
+  const out=[];let depth=0,from=-1,inStr=false,escp=false;
+  for(i=i+1;i<text.length;i++){
+    const ch=text[i];
+    if(inStr){ if(escp)escp=false; else if(ch==='\\')escp=true; else if(ch==='"')inStr=false; continue; }
+    if(ch==='"'){inStr=true;continue;}
+    if(ch==='{'){ if(depth===0)from=i; depth++; }
+    else if(ch==='}'){ depth--; if(depth===0&&from>=0){ try{out.push(JSON.parse(text.slice(from,i+1)));}catch(e){} from=-1; } }
+    else if(ch===']'&&depth===0)break;
+  }
+  return out.length?out:null;
+}
 // Model reply → the builder's day shape, exactly the package's day count (missing days are blank).
 export function taAiItineraryParse(raw,pkg){
+  const text=String(raw||'').replace(/```json|```/gi,'');
   let data=null;
-  try{data=JSON.parse((String(raw||'').replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[''])[0]);}catch(e){}
-  const src=Array.isArray(data?.days)?data.days:Array.isArray(data)?data:null;
+  try{data=JSON.parse((text.match(/\{[\s\S]*\}|\[[\s\S]*\]/)||[''])[0]);}catch(e){}
+  const src=Array.isArray(data?.days)?data.days:Array.isArray(data)?data:salvageDays(text);
   if(!src||!src.length)return null;
   const count=taAiDayCount(pkg);
   const out=[];
@@ -110,12 +128,22 @@ export async function taAiItineraryPhotos(days,pkg,{fetchImpl=globalThis.fetch,t
   return days;
 }
 
-// Whole flow with an injected text generator: (system,user) → model text or null.
+// Whole flow with an injected text generator: (system,user) → model text, or null / {error} when
+// the AI gave no reply (the error is passed on so the agent sees why).
 export async function taAiItinerary(pkg,generate,opts={}){
   if(!str(pkg?.name,200)&&!str(pkg?.destination,200))return {error:'Add a package name or destination first.'};
   const {system,user}=taAiItineraryPrompt(pkg);
-  let days=taAiItineraryParse(await generate(system,user),pkg);
-  if(!days)days=taAiItineraryParse(await generate(system+'\nYour previous reply was not valid JSON. Reply with the JSON object only.',user),pkg);
-  if(!days)return {error:'The AI could not draft this itinerary. Please try again.'};
+  const why=[];
+  const ask=async sys=>{
+    const r=await generate(sys,user);
+    const text=typeof r==='string'?r:r?.text;
+    if(!text){why.push(str((r&&r.error)||'no reply from the AI',200));return null;}
+    const days=taAiItineraryParse(text,pkg);
+    if(!days)why.push(`reply was not a readable itinerary (${str(text,80)}…)`);
+    return days;
+  };
+  let days=await ask(system);
+  if(!days)days=await ask(system+'\nYour previous reply was not valid JSON. Reply with the JSON object only, and keep every description short.');
+  if(!days)return {error:`The AI could not draft this itinerary: ${why[why.length-1]||'unknown error'}. Please try again.`,reasons:why};
   return {days:await taAiItineraryPhotos(days,pkg,opts)};
 }

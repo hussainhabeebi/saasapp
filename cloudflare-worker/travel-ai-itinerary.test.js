@@ -60,3 +60,13 @@ test('retries once on a non-JSON reply, then reports an error', async ()=>{
   assert.match(bad.error,/could not draft/);
   assert.match((await taAiItinerary({},async()=>reply)).error,/package name/);
 });
+
+test('a reply cut off mid-way keeps the days that closed; the AI error reason is passed on', async ()=>{
+  const cut=reply.slice(0,reply.indexOf('"title":"Golconda Fort"')+20);
+  const days=taAiItineraryParse(cut,pkg);
+  assert.equal(days.length,3);
+  assert.equal(days[0].title,'Arrival & Charminar');
+  assert.equal(days[1].title,'');
+  const bad=await taAiItinerary(pkg,async()=>({error:'shared Gemini: HTTP 429 quota'}),{fetchImpl:fakeFetch([])});
+  assert.match(bad.error,/HTTP 429 quota/);
+});
