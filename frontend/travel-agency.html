@@ -396,11 +396,17 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
           <div id="itinLogoWrap"></div>
         </div>
       </div>
-      <div class="sec-hd">Day-by-Day Plan</div>
+      <div class="sec-hd">🎨 PDF Format</div>
+      <div id="itinFormatWrap" style="margin-bottom:14px"></div>
+      <div class="sec-hd" style="display:flex;align-items:center;gap:10px">Day-by-Day Plan
+        <button type="button" id="itinFindPhotosBtn" onclick="itinFindPhotosClick()" style="margin-left:auto;background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;color:var(--accent-ink);font-size:12px;font-weight:600;text-transform:none;letter-spacing:0">📷 Find photos</button>
+      </div>
+      <div id="itinFindPhotosMsg" style="font-size:12px;color:var(--muted);margin:-4px 0 8px"></div>
       <div id="itinDaysList"></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-primary" id="saveItinBtn" onclick="saveItin()">Save Itinerary</button>
+      <button class="btn btn-secondary" id="itinPreviewBtn" onclick="itinPreviewPdf()">📄 Preview PDF</button>
       <span class="save-msg" id="saveItinMsg"></span>
       <button class="btn btn-secondary" onclick="closeModal('modalItin')">Cancel</button>
     </div>
@@ -1167,6 +1173,8 @@ const TA_ADDED_COLUMNS={
     {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},
     {title:'infant_price',uidt:'Decimal'},
     {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},
+    // JSON {layout, color, cover} — this itinerary's own PDF format (itinPdfFormat).
+    {title:'pdf_format',uidt:'LongText'},
   ],
 };
 const _taColumnsChecked=new Set();
@@ -2069,6 +2077,8 @@ function openItinModal(id, prefill) {
   _itinLogoUrl=it.logo_url||''; _itinLogoDims=null;
   if(_itinLogoUrl) itinLoadLogoDims(_itinLogoUrl);
   itinRenderLogoWrap();
+  _itinFormat=itinPdfFormat(it); itinRenderFormat();
+  $id('itinFindPhotosMsg').textContent='';
   renderItinDays(); openModal('modalItin');
 }
 
@@ -2107,7 +2117,12 @@ async function pkgAiItinerary(id,btn){
     const r=await fetch(`${CONFIG.WORKER_BASE}/travel/ai-itinerary`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({package:pkg})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||!Array.isArray(d.days)) throw new Error(d.error||('HTTP '+r.status));
-    openItinModal(null,{...pkgToItinPrefill(p),days:d.days});
+    // Photos the worker couldn't find are looked up from the browser, plus a destination cover;
+    // AI drafts default to the Photo layout so those photos show large on the PDF.
+    if(btn) btn.textContent='📷 Adding photos…';
+    const dest=String(p.destination||p.name||'').trim();
+    const [,cover]=await Promise.all([itinFindPhotos(d.days,dest).catch(()=>0),dest?itinWikiThumb(dest,'',1000).catch(()=>''):'']);
+    openItinModal(null,{...pkgToItinPrefill(p),days:d.days,pdf_format:{layout:'photo',color:'',cover:cover||''}});
   }catch(e){ alert('AI Itinerary failed: '+e.message); }
   finally{ if(btn){ btn.disabled=false; btn.textContent=label; } }
 }
@@ -2116,7 +2131,9 @@ async function pkgAiItinerary(id,btn){
 // when a PDF is built. A photo that can't be loaded is simply left out of the PDF.
 const _itinUrlImgCache=new Map();
 function itinUrlImage(url){
-  if(!/^https:\/\/upload\.wikimedia\.org\//i.test(url)) return Promise.resolve('');
+  if(!/^https:\/\//i.test(url||'')) return Promise.resolve('');
+  const driveId=propDriveId(url);
+  if(driveId) return itinDriveImage(driveId).then(d=>d?itinShrinkImage(d):'');
   if(!_itinUrlImgCache.has(url)){
     _itinUrlImgCache.set(url,fetch(url).then(r=>r.ok?r.blob():null).then(b=>b?new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=()=>res('');fr.readAsDataURL(b);}):'')
       .then(d=>d?itinShrinkImage(d):'').catch(()=>''));
@@ -2184,6 +2201,138 @@ function specialFareToItinPrefill(s){
 function specialFareCreateItin(id){
   const s=_taSpecialFares.find(x=>String(x.Id)===String(id));
   if(s) openItinModal(null,specialFareToItinPrefill(s));
+}
+
+/* ── Per-itinerary PDF format ──
+   Stored on the itinerary as pdf_format JSON. layout: classic (photo beside each item), photo (a
+   large photo per day + cover), compact (text only). color: theme colour for this itinerary's PDF
+   (else the account's quote colour). cover: an image link (Wikimedia / Drive file / any https
+   image) or a small uploaded data URL shown as a banner under the title. */
+const ITIN_LAYOUTS=[['classic','📋 Classic','Photo beside each item'],['photo','🖼️ Photo','Cover + a large photo for each day'],['compact','📄 Compact','Text only, no photos']];
+let _itinFormat={layout:'classic',color:'',cover:''};
+function itinPdfFormat(it){
+  const f=typeof it?.pdf_format==='object'&&it.pdf_format?it.pdf_format:safeJson(it?.pdf_format,{});
+  return {layout:ITIN_LAYOUTS.some(([k])=>k===f.layout)?f.layout:'classic',
+    color:/^#[0-9a-f]{6}$/i.test(f.color||'')?f.color:'', cover:typeof f.cover==='string'?f.cover:''};
+}
+function itinCoverPreviewSrc(u){
+  const id=propDriveId(u);
+  return id?`https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w400`:u;
+}
+function itinRenderFormat(){
+  const wrap=$id('itinFormatWrap'); if(!wrap) return;
+  const f=_itinFormat;
+  const pill=(k,label,title)=>`<button type="button" title="${esc(title)}" onclick="itinSetFormat('layout','${k}')" style="padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${f.layout===k?'var(--accent)':'var(--line)'};background:${f.layout===k?'var(--accent)':'none'};color:${f.layout===k?'#fff':'var(--ink,#334155)'}">${label}</button>`;
+  wrap.innerHTML=`
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="font-size:12px;color:var(--muted);min-width:58px">Layout</span>
+      ${ITIN_LAYOUTS.map(([k,l,t])=>pill(k,l,t)).join('')}
+      <span style="font-size:11.5px;color:var(--muted)">${esc((ITIN_LAYOUTS.find(([k])=>k===f.layout)||[])[2]||'')}</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="font-size:12px;color:var(--muted);min-width:58px">Colour</span>
+      <input type="color" id="itinFmtColor" value="${esc(f.color||clientRecord?.quote_accent_color||'#0D9C93')}" onchange="itinSetFormat('color',this.value)" style="width:42px;height:30px;border:1px solid var(--line);border-radius:6px;padding:2px;background:none;cursor:pointer">
+      <span style="font-size:11.5px;color:var(--muted)">${f.color?'This itinerary\'s own colour':'Using your account\'s quote colour'}</span>
+      ${f.color?`<button type="button" onclick="itinSetFormat('color','')" style="background:none;border:none;cursor:pointer;color:var(--accent-ink);font-size:11.5px">Reset</button>`:''}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <span style="font-size:12px;color:var(--muted);min-width:58px">Cover</span>
+      ${f.cover?`<img src="${esc(itinCoverPreviewSrc(f.cover))}" alt="" style="width:96px;height:54px;object-fit:cover;border-radius:6px;border:1px solid var(--line)" onerror="this.style.opacity=.3">`:''}
+      <input class="form-input" id="itinFmtCoverUrl" placeholder="Cover photo link (Google Drive file or image link)" value="${f.cover&&!f.cover.startsWith('data:')?esc(f.cover):''}" onchange="itinSetFormat('cover',this.value.trim())" style="flex:1;min-width:200px;padding:6px 10px;font-size:12.5px">
+      <label style="font-size:12px;color:var(--accent-ink);cursor:pointer;white-space:nowrap">Upload<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="itinHandleCoverFile(this.files[0])"></label>
+      <button type="button" onclick="itinAutoCover()" style="background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;color:var(--accent-ink);font-size:12px;white-space:nowrap">✨ Auto (destination photo)</button>
+      ${f.cover?`<button type="button" onclick="itinSetFormat('cover','')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:12px">Remove</button>`:''}
+    </div>
+    <div id="itinFmtMsg" style="font-size:11.5px;color:var(--muted);margin-top:4px"></div>`;
+}
+function itinSetFormat(k,v){
+  if(k==='cover'&&v&&!/^(https:\/\/|data:image\/)/i.test(v)){ alert('Paste a full link starting with https://'); itinRenderFormat(); return; }
+  _itinFormat={..._itinFormat,[k]:v}; itinRenderFormat();
+}
+async function itinHandleCoverFile(file){
+  if(!file) return;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)){ alert('Please choose a PNG, JPG, or WEBP image.'); return; }
+  if(file.size>10*1024*1024){ alert('Image must be under 10MB.'); return; }
+  const raw=await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
+  const small=await itinShrinkImage(raw,640);
+  if(!small){ alert('Could not read that image. Please try another one.'); return; }
+  itinSetFormat('cover',small);
+}
+async function itinAutoCover(){
+  const dest=$id('itinDest').value.trim()||$id('itinTitle').value.trim();
+  const msg=$id('itinFmtMsg');
+  if(!dest){ if(msg) msg.textContent='Enter a destination first.'; return; }
+  if(msg) msg.textContent='Finding a photo of '+dest+'…';
+  const u=await itinWikiThumb(dest,'',1000);
+  if(u){ itinSetFormat('cover',u); } else if($id('itinFmtMsg')) $id('itinFmtMsg').textContent='No photo found for "'+dest+'" — paste a link or upload one.';
+}
+
+/* ── Place photos looked up from the browser (Wikipedia / Wikimedia Commons) ──
+   The dashboard asks Wikipedia directly (CORS via origin=*), so photos don't depend on the
+   worker's own lookup. A result is kept only when the article title shares a real word with the
+   place, so a vague query never pulls an unrelated photo. */
+const _itinWikiCache=new Map();
+const itinWords=s=>String(s||'').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,' ').trim().split(' ').filter(w=>w.length>2&&!['the','and','visit','explore','tour','city','day','with','from','for','discover','historic','famous'].includes(w));
+function itinWikiThumb(place,dest,size=640){
+  const pw=itinWords(place); if(!pw.length) return Promise.resolve('');
+  const q=dest&&!pw.some(w=>itinWords(dest).includes(w))?`${place} ${dest}`:place;
+  const key=q.toLowerCase()+'|'+size;
+  if(!_itinWikiCache.has(key)){
+    const url=`https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&origin=*&generator=search&gsrlimit=3&gsrsearch=${encodeURIComponent(q)}&prop=pageimages&piprop=thumbnail&pithumbsize=${size}&redirects=1`;
+    _itinWikiCache.set(key,fetch(url).then(r=>r.ok?r.json():null).then(d=>{
+      const pages=(d?.query?.pages||[]).slice().sort((a,b)=>(a.index||0)-(b.index||0));
+      for(const pg of pages){
+        const src=pg?.thumbnail?.source||'';
+        const title=new Set(itinWords(pg.title));
+        if(src&&/\.(jpe?g|png)$/i.test(src)&&pw.some(w=>title.has(w))) return src;
+      }
+      return '';
+    }).catch(()=>''));
+  }
+  return _itinWikiCache.get(key);
+}
+// Fills a photo for every day that has none: up to 3 of its activities in turn, then the night's
+// city or the destination. Photos aren't repeated across days. Returns how many were added.
+async function itinFindPhotos(days,dest){
+  const used=new Set(days.flatMap(d=>(d.items||[]).map(i=>i.image).filter(Boolean)));
+  let added=0;
+  await Promise.all(days.map(async d=>{
+    if((d.items||[]).some(i=>i.image)) return;
+    const acts=(d.items||[]).filter(i=>(i.type==='activity'||i.type==='hotel')&&(i.description||'').trim()).slice(0,3);
+    for(const it of acts){
+      const u=await itinWikiThumb(it.description.replace(/^(visit|explore|discover|tour of|see)\s+(the\s+)?/i,''),dest);
+      if(u&&!used.has(u)){ it.image=u; used.add(u); added++; return; }
+    }
+  }));
+  for(const d of days){
+    if(!(d.items||[]).length||d.items.some(i=>i.image)) continue;
+    for(const place of [d.overnight,dest].filter(Boolean)){
+      const u=await itinWikiThumb(place,'');
+      if(u&&!used.has(u)){ (d.items.find(i=>i.type==='activity')||d.items[0]).image=u; used.add(u); added++; break; }
+    }
+  }
+  return added;
+}
+async function itinFindPhotosClick(){
+  const btn=$id('itinFindPhotosBtn'),msg=$id('itinFindPhotosMsg');
+  btn.disabled=true; msg.textContent='Looking for photos…';
+  try{
+    const n=await itinFindPhotos(_itinDays,$id('itinDest').value.trim());
+    renderItinDays();
+    const missing=_itinDays.filter(d=>(d.items||[]).length&&!d.items.some(i=>i.image)).length;
+    msg.textContent=(n?`Added ${n} photo${n>1?'s':''}.`:'No new photos found.')+(missing?` ${missing} day(s) still without a photo — add one with "+ Add location photo".`:'');
+  }finally{ btn.disabled=false; }
+}
+async function itinPreviewPdf(){
+  const btn=$id('itinPreviewBtn'),msg=$id('saveItinMsg');
+  btn.disabled=true; msg.textContent='Building PDF…'; msg.className='save-msg';
+  try{
+    const rec={...itinFormRecord(),days:JSON.parse(JSON.stringify(_itinDays))};
+    const doc=await itinBuildSharePdf(rec,{Name:'Sample Customer',Phone:'971500000000'},'ITN-0000 (preview)');
+    msg.textContent='';
+    window.open(doc.output('bloburl'),'_blank');
+  }catch(e){ msg.textContent='Preview failed: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; }
 }
 
 function itinRenderLogoWrap(){
@@ -2321,9 +2470,8 @@ async function itinHandleItemImage(di,ii,file){
 }
 function itinRemoveItemImage(di,ii){ _itinDays[di].items[ii].image=''; renderItinDays(); }
 
-async function saveItin() {
-  const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
-  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+// The itinerary as the form currently shows it (used by Save and by Preview PDF).
+function itinFormRecord(){
   const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
   const num=id=>parseFloat($id(id).value)||0;
   const lines=id=>JSON.stringify($id(id).value.split('\n').map(x=>x.trim()).filter(Boolean));
@@ -2333,7 +2481,13 @@ async function saveItin() {
     departure_city:$id('itinDepCity').value.trim(),hotel_category:$id('itinHotelCat').value,meal_plan:$id('itinMealPlan').value,transport:$id('itinTransport').value.trim(),
     adults:parseInt($id('itinAdults').value)||0,children:parseInt($id('itinChildren').value)||0,children_nobed:parseInt($id('itinChildrenNoBed').value)||0,infants:parseInt($id('itinInfants').value)||0,
     currency:$id('itinCurrency').value,adult_price:num('itinAdultPrice'),child_price:num('itinChildPrice'),child_nobed_price:num('itinChildNoBedPrice'),infant_price:num('itinInfantPrice'),
-    inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions')};
+    inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions'),pdf_format:JSON.stringify(_itinFormat)};
+  return it;
+}
+async function saveItin() {
+  const btn=$id('saveItinBtn'),msg=$id('saveItinMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  const it=itinFormRecord();
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     await taEnsureColumns('itineraries');
@@ -2761,10 +2915,27 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   const pageH=doc.internal.pageSize.getHeight();
   const contentW=pageW-marginX*2;
 
-  const customHex=(clientRecord.quote_accent_color||'').trim();
+  // This itinerary's own PDF format (layout / colour / cover) — see itinPdfFormat.
+  const fmt=itinPdfFormat(it);
+  const customHex=(fmt.color||clientRecord.quote_accent_color||'').trim();
   const accent=customHex?sqHexToRgb(customHex):sqAccentRgb('--accent','#0D9C93');
   const accentInk=customHex?sqShade(accent,-0.35):sqAccentRgb('--accent-ink','#1E3A6E');
   const accentSoft=customHex?sqShade(accent,0.85):sqAccentRgb('--accent-soft','#DFF6F3');
+  const isDataImg=u=>/^data:image\/(png|jpe?g|webp)/i.test(String(u||''));
+  const imgFmt=u=>({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[(/^data:image\/(png|jpe?g|webp)/i.exec(u)||[])[1]?.toLowerCase()]||'JPEG');
+  // A photo filling a w×h box (cropped to it, centred), on a soft background if it can't be drawn.
+  const drawFill=(data,x,yy,w,h)=>{
+    doc.setFillColor(...accentSoft); doc.roundedRect(x,yy,w,h,6,6,'F');
+    try{
+      const pr=doc.getImageProperties(data);
+      const k=Math.max(w/pr.width,h/pr.height),iw=pr.width*k,ih=pr.height*k;
+      doc.saveGraphicsState();
+      doc.roundedRect(x,yy,w,h,6,6,null); doc.clip(); doc.discardPath();
+      doc.addImage(data,imgFmt(data),x+(w-iw)/2,yy+(h-ih)/2,iw,ih,undefined,'FAST');
+      doc.restoreGraphicsState();
+      return true;
+    }catch(e){ try{doc.restoreGraphicsState();}catch(e2){} return false; }
+  };
 
   let y=44;
   let logoBottomY=y;
@@ -2805,6 +2976,9 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   doc.text(quoteNumber||'',pageW-marginX,y,{align:'right'});
   doc.setTextColor(0);
   y+=22;
+  if(fmt.layout!=='compact'&&isDataImg(it._cover)){
+    if(drawFill(it._cover,marginX,y-8,contentW,180)) y+=196;
+  }
 
   // Meta grid — trip basics on the left, document identity on the right. Same layout/type sizes
   // as the Quotation PDF's own meta grid (sqBuildPdfDoc), just itinerary-specific fields, so a
@@ -2885,10 +3059,19 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       y+=6;
     }
 
+    // Photo layout: the day's first photo (an item's, else a Drive day photo) as a wide banner.
+    let heroUrl='';
+    if(fmt.layout==='photo'){
+      const heroItem=(d.items||[]).find(i=>isDataImg(i.image));
+      const heroDay=(d.photo_images||[]).find(x=>x&&isDataImg(x.data));
+      const hero=heroItem?heroItem.image:heroDay?heroDay.data:'';
+      if(hero){ ensureSpace(170); if(drawFill(hero,marginX,y,contentW,160)){ y+=168; heroUrl=heroDay&&!heroItem?heroDay.url:''; } }
+    }
+
     (d.items||[]).forEach(item=>{
       const meta=itinTypeMeta(item.type);
       const typeRgb=sqHexToRgb(meta.hex);
-      const hasImg=!!item.image;
+      const hasImg=fmt.layout==='classic'&&isDataImg(item.image);
       const imgSize=70;
       // innerLeft clears the 4pt color bar + padding; text starts under the type pill, not
       // beside it, so long descriptions wrap under the label rather than fighting it for width.
@@ -2942,7 +3125,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
     }
     // Day photos: the images themselves (each clickable to the Drive file), then a plain link for
     // anything that couldn't be drawn (a Drive folder, a non-Drive link, a private file).
-    const drawn=(d.photo_images||[]).filter(x=>x&&x.data);
+    const drawn=fmt.layout==='compact'?[]:(d.photo_images||[]).filter(x=>x&&isDataImg(x.data)&&x.url!==heroUrl);
     if(drawn.length){
       const gap=8,cellW=(contentW-gap*(ITIN_DAY_PHOTOS_MAX-1))/ITIN_DAY_PHOTOS_MAX,cellH=Math.round(cellW*0.66);
       ensureSpace(cellH+10);
@@ -2960,7 +3143,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       });
       y+=cellH+10;
     }
-    const drawnUrls=new Set(drawn.map(x=>x.url));
+    const drawnUrls=new Set([...drawn.map(x=>x.url),heroUrl].filter(Boolean));
     const photoLinks=itinDayImageLinks(d).filter(u=>!drawnUrls.has(u));
     if(photoLinks.length){
       ensureSpace(16);
@@ -4341,6 +4524,9 @@ async function itinWithDayPhotos(it){
 async function itinWithAutoImages(it){
   if(!it) return it;
   it=await itinWithDayPhotos(await itinWithUrlImages(it));
+  // The format's cover photo, as image data for the PDF.
+  const cover=itinPdfFormat(it).cover;
+  if(cover&&itinPdfFormat(it).layout!=='compact') it={...it,_cover:cover.startsWith('data:')?cover:await itinUrlImage(cover)};
   if(!_taTravelSettings.itin_auto_images) return it;
   const key=v=>String(v||'').trim().toLowerCase();
   const library=new Map();
