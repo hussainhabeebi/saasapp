@@ -905,7 +905,15 @@ function showMsg(id,msg,duration){ const el=$id(id); if(!el)return; el.textConte
 /* ═══════════════ NOCODB API (via the Cloudflare Worker proxy) ═══════════════ */
 function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
 async function ncGet(url){ const r=await fetch(url,{headers:ncAuthHeaders()}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
-async function ncPatch(url,body){ const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function ncPatch(url,body){ const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}); if(!r.ok) throw new Error(await ncErrorText(r)); return r.json(); }
+// "HTTP 422: <NocoDB's message>" so a rejected save says why; a 404 stays bare "HTTP 404"
+// because taWithRepair matches on it to re-check the table ids.
+async function ncErrorText(r){
+  if(r.status===404) return 'HTTP 404';
+  const d=await r.json().catch(()=>null);
+  const msg=String(d?.msg||d?.message||d?.error||'').slice(0,200);
+  return 'HTTP '+r.status+(msg?': '+msg:'');
+}
 async function patchClient(fields){
   const MAX=3; let lastErr=null;
   for(let attempt=1; attempt<=MAX; attempt++){
@@ -2087,13 +2095,27 @@ async function pkgAiItinerary(id,btn){
     const r=await fetch(`${CONFIG.WORKER_BASE}/travel/ai-itinerary`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({package:pkg})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||!Array.isArray(d.days)) throw new Error(d.error||('HTTP '+r.status));
-    for(const day of d.days) for(const item of (day.items||[])) if(item.image) item.image=await itinShrinkImage(item.image);
     openItinModal(null,{...pkgToItinPrefill(p),days:d.days});
   }catch(e){ alert('AI Itinerary failed: '+e.message); }
   finally{ if(btn){ btn.disabled=false; btn.textContent=label; } }
 }
-// Photos are stored inside the itinerary's `days` JSON, so keep each one small (≤640px JPEG,
-// same 250KB cap as a hand-uploaded photo); one that can't be shrunk is left out.
+// Place photos the AI added are saved as image links (keeps the `days` column small); jsPDF needs
+// the bytes, so they're fetched (Wikimedia allows it from the browser) and shrunk to ≤640px JPEG
+// when a PDF is built. A photo that can't be loaded is simply left out of the PDF.
+const _itinUrlImgCache=new Map();
+function itinUrlImage(url){
+  if(!/^https:\/\/upload\.wikimedia\.org\//i.test(url)) return Promise.resolve('');
+  if(!_itinUrlImgCache.has(url)){
+    _itinUrlImgCache.set(url,fetch(url).then(r=>r.ok?r.blob():null).then(b=>b?new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=()=>res('');fr.readAsDataURL(b);}):'')
+      .then(d=>d?itinShrinkImage(d):'').catch(()=>''));
+  }
+  return _itinUrlImgCache.get(url);
+}
+async function itinWithUrlImages(it){
+  if(!it||!(it.days||[]).some(d=>(d.items||[]).some(i=>/^https?:/i.test(i.image||'')))) return it;
+  const days=await Promise.all((it.days||[]).map(async d=>({...d,items:await Promise.all((d.items||[]).map(async i=>/^https?:/i.test(i.image||'')?{...i,image:await itinUrlImage(i.image)}:i))})));
+  return {...it,days};
+}
 function itinShrinkImage(dataUrl,max=640){
   return new Promise(resolve=>{
     const img=new Image();
@@ -2273,13 +2295,15 @@ function addItinItem(di){_itinDays[di].items.push({type:'activity',time:'',descr
 function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
 
 // Stored as a base64 data URL directly on the item, same pattern as CLIENTS.quote_logo_url — no
-// R2/object storage in this app. Capped tighter than the logo (250KB vs 500KB) since an itinerary
-// can have many items, all landing in the same LongText `days` JSON column on ta_itineraries.
+// R2/object storage in this app. Every photo lands in the same LongText `days` JSON column on
+// ta_itineraries, so it's shrunk to a ≤480px JPEG (tens of KB) — large photos are fine to pick.
 async function itinHandleItemImage(di,ii,file){
   if(!file) return;
   if(!['image/png','image/jpeg','image/webp'].includes(file.type)){ alert('Please choose a PNG, JPG, or WEBP image.'); return; }
-  if(file.size>250*1024){ alert('Image must be under 250KB.'); return; }
-  const dataUrl=await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+  if(file.size>10*1024*1024){ alert('Image must be under 10MB.'); return; }
+  const raw=await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+  const dataUrl=await itinShrinkImage(raw,480);
+  if(!dataUrl){ alert('Could not read that image. Please try another one.'); return; }
   _itinDays[di].items[ii].image=dataUrl;
   renderItinDays();
 }
@@ -4240,7 +4264,7 @@ async function itinWithDayPhotos(it){
 }
 async function itinWithAutoImages(it){
   if(!it) return it;
-  it=await itinWithDayPhotos(it);
+  it=await itinWithDayPhotos(await itinWithUrlImages(it));
   if(!_taTravelSettings.itin_auto_images) return it;
   const key=v=>String(v||'').trim().toLowerCase();
   const library=new Map();
@@ -4538,7 +4562,7 @@ async function freshConvHistory(lead){
 }
 async function ncPost(url,body){
   const r=await fetch(url,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
-  if(!r.ok)throw new Error('HTTP '+r.status);
+  if(!r.ok)throw new Error(await ncErrorText(r));
   return r.json();
 }
 async function ncDelete(url,body){

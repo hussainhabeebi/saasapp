@@ -2,7 +2,7 @@
 // the agent to review in the itinerary builder (nothing is saved here, and the WhatsApp bot's own
 // itinerary flow in travel-itinerary.js is not involved). The model writes the plan as JSON; this
 // module builds the prompt, cleans the reply into the builder's day shape, and finds one place
-// photo per day on Wikipedia (Wikimedia Commons), returned as a data URL the PDF can embed.
+// photo per day on Wikipedia (Wikimedia Commons), returned as its image link.
 
 const TYPES=['flight','hotel','activity','transfer','meal','note'];
 const MEALS=['B','L','D'];
@@ -104,22 +104,15 @@ async function wikiThumb(place,dest,fetchImpl,timeoutMs){
   const title=new Set(words(page.title));
   return words(place).some(w=>title.has(w))?page.thumbnail.source:'';
 }
-async function imageDataUrl(url,fetchImpl,timeoutMs){
-  const r=await timed(fetchImpl,url,timeoutMs);
-  const type=(r?.headers?.get('content-type')||'').split(';')[0].trim().toLowerCase();
-  if(!r?.ok||!/^image\/(png|jpe?g)$/.test(type))return '';
-  const buf=new Uint8Array(await r.arrayBuffer());
-  if(!buf.length||buf.length>900*1024)return '';
-  let bin='';for(let i=0;i<buf.length;i+=0x8000)bin+=String.fromCharCode(...buf.subarray(i,i+0x8000));
-  return `data:${type};base64,${btoa(bin)}`;
-}
 export async function taAiItineraryPhotos(days,pkg,{fetchImpl=globalThis.fetch,timeoutMs=5000}={}){
   const dest=str(pkg?.destination,120);
   await Promise.all(days.map(async d=>{
     const item=d.items.find(it=>it.type==='activity'&&it.place);
     if(!item)return;
+    // Stored as the Wikimedia thumbnail link (a few dozen bytes), not image data: the itinerary's
+    // `days` column can't hold several embedded photos. The PDF fetches the image when it's built.
     const thumb=await wikiThumb(item.place,dest,fetchImpl,timeoutMs);
-    if(thumb)item.image=await imageDataUrl(thumb,fetchImpl,timeoutMs);
+    if(/^https:\/\/upload\.wikimedia\.org\/.+\.(?:jpe?g|png)$/i.test(thumb))item.image=thumb;
   }));
   // The package's own photos (Drive links) go on day 1, where the PDF draws them as images.
   const own=['image_url','image_url_2','image_url_3'].map(f=>str(pkg?.[f],500)).filter(u=>/^https?:\/\//i.test(u));
