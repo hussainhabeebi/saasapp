@@ -111,6 +111,7 @@ test('day photo links (Drive files) are drawn as images in the itinerary PDF; fo
     const u = route.request().url();
     if (u.startsWith('file://')) return route.continue();
     if (u.includes('/travel/drive-image')) { asked.push(new URL(u).searchParams.get('id')); return route.fulfill({ json: { data_url: png } }); }
+    if (u.startsWith('https://upload.wikimedia.org/')) return route.fulfill({ body: Buffer.from(png.split(',')[1], 'base64'), contentType: 'image/png' });
     return route.abort();
   });
   await page.goto(pageUrl);
@@ -118,9 +119,11 @@ test('day photo links (Drive files) are drawn as images in the itinerary PDF; fo
   const r = await page.evaluate(async () => {
     clientRecord = { client_name: 'Test Travels' };
     await loadJsPdf();
-    const it = await itinWithAutoImages({ title: 'T', from_date: '2026-11-14', days: [{ day_no: 1, title: 'Arrival', items: [],
+    const it = await itinWithAutoImages({ title: 'T', from_date: '2026-11-14', days: [{ day_no: 1, title: 'Arrival',
+      items: [{ type: 'activity', description: 'Charminar', image: 'https://upload.wikimedia.org/charminar.png' }],
       image_links: ['https://drive.google.com/file/d/FILEID12345/view?usp=sharing', 'https://drive.google.com/drive/folders/FOLDER12345'] }] });
     const out = itinBuildFullPdfDoc({ Name: 'Test' }, it, 'ITN-0001').output();
+    if (!/^data:image\/jpeg;base64,/.test(it.days[0].items[0].image)) return 'linked place photo was not fetched for the PDF';
     return { photos: it.days[0].photo_images.map((p) => p.url), hasImage: /\/Subtype \/Image/.test(out), folderLink: out.includes('FOLDER12345'), fileLink: out.includes('FILEID12345') };
   });
   expect(asked).toEqual(['FILEID12345']);
@@ -137,7 +140,7 @@ test('✨ AI Itinerary on a package opens the builder with the drafted days and 
       sent = JSON.parse(r.postData());
       return route.fulfill({ json: { days: [
         { day_no: 1, title: 'Arrival & Charminar', description: 'Reach Hyderabad.', overnight: 'Hyderabad', meals: ['D'], image_links: ['https://drive.google.com/file/d/PKG1/view'],
-          items: [{ type: 'activity', time: '16:00', description: 'Visit Charminar', image: png }] },
+          items: [{ type: 'activity', time: '16:00', description: 'Visit Charminar', image: 'https://upload.wikimedia.org/charminar.png' }] },
         { day_no: 2, title: 'Departure', description: '', overnight: '', meals: ['B'], image_links: [], items: [] },
       ] } });
     }
@@ -155,8 +158,27 @@ test('✨ AI Itinerary on a package opens the builder with the drafted days and 
   expect(sent.package).toMatchObject({ name: 'Hyderabad Bus Package', destination: 'Hyderabad', nights: 1 });
   const days = await page.evaluate(() => _itinDays);
   expect(days.map((d) => d.title)).toEqual(['Arrival & Charminar', 'Departure']);
-  expect(days[0].items[0].image).toMatch(/^data:image\/jpeg;base64,/);
+  expect(days[0].items[0].image).toBe('https://upload.wikimedia.org/charminar.png');
   expect(days[0].image_links).toEqual(['https://drive.google.com/file/d/PKG1/view']);
   await expect(page.locator('#itinDaysList input[placeholder^="e.g. flight"]').first()).toHaveValue('Visit Charminar');
   await expect(page.locator('#cardHost button:has-text("AI Itinerary")')).toBeEnabled();
+});
+
+test('a rejected itinerary save shows NocoDB\'s reason, not just the status', async ({ page }) => {
+  await page.route('**/*', (route) => {
+    const r = route.request(); const u = r.url();
+    if (u.startsWith('file://')) return route.continue();
+    if (u.includes('/meta/tables/')) return route.fulfill({ json: { columns: [] } });
+    if (r.method() === 'POST' && u.includes('/columns')) return route.fulfill({ json: {} });
+    if (r.method() === 'POST') return route.fulfill({ status: 422, json: { msg: 'Data too long for column days' } });
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof openItinModal === 'function');
+  await page.evaluate(() => {
+    clientRecord = { ta_table_ids: JSON.stringify({ packages: 'p', bookings: 'b', cases: 'c', itineraries: 'i', umrah_groups: 'u' }) };
+    openItinModal(null, { title: 'T', days: [{ day_no: 1, title: 'A', items: [] }] });
+  });
+  await page.evaluate(() => saveItin());
+  await expect(page.locator('#saveItinMsg')).toHaveText('Error: HTTP 422: Data too long for column days');
 });

@@ -45,7 +45,7 @@ test('reply is cleaned into the builder day shape, padded to the day count', ()=
 test('adds one Wikipedia photo per day where the title matches, and package photos on day 1', async ()=>{
   const calls=[];
   const out=await taAiItinerary(pkg,async()=>reply,{fetchImpl:fakeFetch(calls)});
-  assert.equal(out.days[0].items[1].image,'data:image/jpeg;base64,'+btoa(String.fromCharCode(...jpg)));
+  assert.equal(out.days[0].items[1].image,'https://upload.wikimedia.org/Charminar.jpg');
   assert.equal(out.days[0].items[0].image,'');
   assert.equal(out.days[1].items[0].image,'', 'Golconda search returned an unrelated title, so no photo');
   assert.deepEqual(out.days[0].image_links,['https://drive.google.com/file/d/PKGPHOTO1/view']);
