@@ -87,3 +87,19 @@ test('manual builder keeps per-day Google Drive photo links and shares them', as
   await page.getByTitle('Remove link').click();
   expect(await page.evaluate(() => _itinDays[1].image_links)).toEqual([]);
 });
+
+test('package editor waits for the fresh copy so a stale snapshot cannot blank saved photos', async ({ page }) => {
+  await open(page);
+  const photo = await page.evaluate(async () => {
+    _taPackages = [{ Id: 5, name: 'Old', image_url: '' }];
+    _taFresh = false;
+    let done;
+    _taFreshPromise = new Promise((r) => { done = r; });
+    openPkgModal(5);
+    const before = $id('pkgImage1').value;
+    _taPackages = [{ Id: 5, name: 'Old', image_url: 'https://drive.google.com/file/d/1AbC/view' }];
+    _taFresh = true; done(); await _taFreshPromise; await new Promise((r) => setTimeout(r, 0));
+    return { before, after: $id('pkgImage1').value };
+  });
+  expect(photo).toEqual({ before: '', after: 'https://drive.google.com/file/d/1AbC/view' });
+});

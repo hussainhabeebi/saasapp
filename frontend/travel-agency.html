@@ -1827,6 +1827,10 @@ function pkgMediaUrlError(label,url){
   return '';
 }
 function openPkgModal(id){
+  // Same as openItinModal: the quick-load snapshot can predate a photo/brochure link saved since
+  // (another device, a teammate), and saving from it would PATCH those fields back to blank —
+  // wait for the fresh copy before filling the form.
+  if(id&&!_taFresh&&_taFreshPromise){ _taFreshPromise.then(()=>openPkgModal(id)).catch(()=>{}); return; }
   _editPkgId=id||null;
   const p=id?(_taPackages.find(x=>String(x.Id)===String(id))||{}):{};
   $id('pkgModalTitle').textContent=id?'Edit Package':'New Package';
