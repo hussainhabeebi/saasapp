@@ -47,7 +47,8 @@ test('adds one Wikipedia photo per day where the title matches, and package phot
   const out=await taAiItinerary(pkg,async()=>reply,{fetchImpl:fakeFetch(calls)});
   assert.equal(out.days[0].items[1].image,'https://upload.wikimedia.org/Charminar.jpg');
   assert.equal(out.days[0].items[0].image,'');
-  assert.equal(out.days[1].items[0].image,'', 'Golconda search returned an unrelated title, so no photo');
+  assert.equal(out.days[1].items[0].image,'https://upload.wikimedia.org/Hyderabad.jpg', 'no Golconda match, so the overnight city photo');
+  assert.deepEqual(out.days[2].items,[], 'an empty day gets nothing');
   assert.deepEqual(out.days[0].image_links,['https://drive.google.com/file/d/PKGPHOTO1/view']);
   assert.ok(out.days.every(d=>d.items.every(it=>!('place' in it))));
 });

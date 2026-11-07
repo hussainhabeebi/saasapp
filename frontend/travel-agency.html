@@ -933,13 +933,19 @@ async function patchLead(leadId,fields){ await ncPatch(`${CONFIG.NOCODB_BASE}/ap
 const TA_LEAD_FIELDS=['Id','Name','Phone','Email','Stage','Date','Owner','Tags','Score','HotMoment','LastMsgAt',
   'Destination','TravelDates','TripType','PaxCount','ServiceCategory','BookingTime','QuoteSentAt','QuoteSentTotal',
   'ConversationID','ConversationId'];
+const TA_LEAD_EXTRA_FIELDS=['Channel','CreatedVia'];
 async function loadLeads(){
   const base=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`;
   let data;
   // NocoDB rejects a fields list naming a column this account's Leads table doesn't have — fall
   // back to the full rows rather than failing the page.
-  try{ data=await ncGet(`${base}&fields=${encodeURIComponent(TA_LEAD_FIELDS.join(','))}`); }
-  catch(e){ data=await ncGet(base); }
+  // Channel / CreatedVia (Send Quotation filters) only exist once the worker has added them, so
+  // ask with them first, then without, before falling back to the full rows.
+  try{ data=await ncGet(`${base}&fields=${encodeURIComponent([...TA_LEAD_FIELDS,...TA_LEAD_EXTRA_FIELDS].join(','))}`); }
+  catch(e){
+    try{ data=await ncGet(`${base}&fields=${encodeURIComponent(TA_LEAD_FIELDS.join(','))}`); }
+    catch(e2){ data=await ncGet(base); }
+  }
   allLeads=data.list||[];
 }
 // dashboard.html (same tab, same origin) keeps its leads in sessionStorage for 5 minutes, without
@@ -2499,6 +2505,8 @@ function renderItinSendQuote(){
       <select class="form-input" id="sqStageFilter" onchange="sqFilterLeads()" style="flex:0 0 140px">
         <option value="">All stages</option>
       </select>
+      ${SQ_LEAD_FILTERS.map(f=>`<select class="form-input" id="${f.id}" onchange="sqFilterLeads()" title="${f.all}" style="flex:0 0 150px"><option value="">${f.all}</option></select>`).join('')}
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer"><input type="checkbox" id="sqChatOnly" onchange="sqFilterLeads()">Chat linked only</label>
       <button class="btn btn-secondary btn-sm" onclick="sqSelectAll()">Select all</button>
       <button class="btn btn-ghost btn-sm" onclick="sqSelectNoneBtn()">Clear</button>
     </div>
@@ -2509,7 +2517,7 @@ function renderItinSendQuote(){
       <table class="leads-tbl">
         <thead><tr>
           <th style="width:34px"><input type="checkbox" id="sqChkAll" onchange="sqToggleAll(this)"></th>
-          <th>Name</th><th>Phone</th><th>Stage</th><th>Chat linked</th>
+          <th>Name</th><th>Phone</th><th>Channel</th><th>Source</th><th>Stage</th><th>Chat linked</th>
         </tr></thead>
         <tbody id="sqLeadsTbody"></tbody>
       </table>
@@ -2528,16 +2536,51 @@ function renderItinSendQuote(){
   </div>`;
 }
 
+// Send Quotation lead filters beyond stage: which chat channel the lead came in on, how it was
+// created (same origins as the dashboard's Source chips), its service category and owner.
+const SQ_CHANNELS={whatsapp:'💬 WhatsApp',instagram:'📷 Instagram',facebook:'📘 Messenger',email:'✉️ Email',web:'🌐 Website',none:'— No chat'};
+const SQ_SOURCES={chatwoot:'🤖 Auto (chat)',manual:'✍️ Manual',import:'📥 Imported',lead_ad:'📋 Lead form',web:'🌐 Website',partner:'🤝 Partner',calendar:'📅 Calendar',unknown:'❔ Older lead'};
+function sqLeadChannel(l){
+  const ch=String(l?.Channel||'').trim().toLowerCase();
+  if(ch==='instagram'||String(l?.Phone||'').startsWith('ig:')) return 'instagram';
+  if(ch==='messenger') return 'facebook';
+  if(ch) return ch;
+  return leadConvId(l)?'whatsapp':'none';
+}
+function sqLeadSource(l){
+  const via=String(l?.CreatedVia||'').trim().toLowerCase();
+  if(via) return via;
+  return leadConvId(l)?'chatwoot':'unknown';
+}
+const sqLabel=(map,k)=>map[k]||(k?k.charAt(0).toUpperCase()+k.slice(1):'—');
+const SQ_LEAD_FILTERS=[
+  {id:'sqChannelFilter',all:'All channels',key:sqLeadChannel,label:k=>sqLabel(SQ_CHANNELS,k)},
+  {id:'sqSourceFilter',all:'All sources',key:sqLeadSource,label:k=>sqLabel(SQ_SOURCES,k)},
+  {id:'sqCategoryFilter',all:'All categories',key:l=>String(l.ServiceCategory||'').trim(),label:k=>k},
+  {id:'sqOwnerFilter',all:'All owners',key:l=>String(l.Owner||'').trim().toLowerCase(),label:k=>k},
+];
 function sqFilterLeads(){
   const q=($id('sqLeadSearch')?.value||'').toLowerCase();
   const sf=$id('sqStageFilter')?.value||'';
   const stageSet=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))];
   const sfEl=$id('sqStageFilter');
   if(sfEl) sfEl.innerHTML='<option value="">All stages</option>'+stageSet.map(s=>`<option value="${esc(s)}"${sf===s?' selected':''}>${esc(s)}</option>`).join('');
+  // Each filter lists only the values these leads actually have; one with a single value or none is hidden.
+  const picked={};
+  SQ_LEAD_FILTERS.forEach(f=>{
+    const el=$id(f.id); if(!el) return;
+    const cur=el.value||'';
+    const vals=[...new Set(allLeads.map(f.key).filter(Boolean))].sort();
+    el.innerHTML=`<option value="">${f.all}</option>`+vals.map(v=>`<option value="${esc(v)}"${cur===v?' selected':''}>${esc(f.label(v))}</option>`).join('');
+    el.style.display=vals.length>1||cur?'':'none';
+    picked[f.id]=vals.includes(cur)?cur:'';
+  });
+  const chatOnly=!!$id('sqChatOnly')?.checked;
   _sqFilteredLeads=allLeads.filter(l=>{
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     if(sf&&l.Stage!==sf) return false;
-    return true;
+    if(chatOnly&&!leadConvId(l)) return false;
+    return SQ_LEAD_FILTERS.every(f=>!picked[f.id]||f.key(l)===picked[f.id]);
   });
   sqRenderLeadRows();
 }
@@ -2546,7 +2589,7 @@ function sqRenderLeadRows(){
   const tbody=$id('sqLeadsTbody');
   if(!tbody) return;
   if(!_sqFilteredLeads.length){
-    tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px">No leads match.</td></tr>';
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No leads match.</td></tr>';
     sqUpdateSelBar();
     return;
   }
@@ -2557,6 +2600,8 @@ function sqRenderLeadRows(){
       <td><input type="checkbox" data-id="${l.Id}" ${chk?'checked':''} onchange="sqToggleLead(this)"></td>
       <td>${esc(l.Name||'Unknown')}</td>
       <td style="font-family:var(--mono);font-size:12px">${esc(maskPhone(l.Phone))}</td>
+      <td style="font-size:12px;white-space:nowrap">${esc(sqLabel(SQ_CHANNELS,sqLeadChannel(l)))}</td>
+      <td style="font-size:12px;white-space:nowrap">${esc(sqLabel(SQ_SOURCES,sqLeadSource(l)))}</td>
       <td>${esc(l.Stage||'new')}</td>
       <td>${hasConv?'<span style="color:#166534">✓</span>':'<span style="color:var(--muted)">—</span>'}</td>
     </tr>`;
