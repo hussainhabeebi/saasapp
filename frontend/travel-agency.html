@@ -1787,7 +1787,8 @@ function renderPkgCard(p) {
   <div class="pkg-card" style="--pkg-accent:${color};--pkg-accent-soft:${color}1a" onclick="openPkgModal('${p.Id}')">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
       <span style="display:flex;gap:4px;flex-wrap:wrap"><span class="pkg-type-badge">${esc(p.type||'tour')}</span>${pkgRegion(p)?`<span class="pkg-type-badge" style="background:#EEF3F5;color:#334155;text-transform:none">${PKG_REGIONS[pkgRegion(p)].emoji} ${PKG_REGIONS[pkgRegion(p)].label}</span>`:''}</span>
-      <div style="display:flex;gap:2px">
+      <div style="display:flex;gap:2px;flex-shrink:0;align-items:center">
+        <button onclick="event.stopPropagation();pkgAiItinerary('${p.Id}',this)" style="background:none;border:1px solid var(--line);border-radius:6px;cursor:pointer;color:var(--accent-ink);font-size:11px;font-weight:600;padding:1px 6px;margin-right:2px;white-space:nowrap" title="AI Itinerary — draft the day-by-day plan with photos, then review and save">✨ AI Itinerary</button>
         <button onclick="event.stopPropagation();pkgCreateItin('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Create Itinerary">🗺️</button>
         <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
       </div>
@@ -2070,6 +2071,45 @@ function pkgToItinPrefill(p){
 function pkgCreateItin(id){
   const p=_taPackages.find(x=>String(x.Id)===String(id));
   if(p) openItinModal(null,pkgToItinPrefill(p));
+}
+
+// "✨ AI Itinerary" (Packages only): the worker drafts the day-by-day plan from the package and
+// adds one place photo per day plus the package's own photos; it opens in the itinerary builder
+// as a new, unsaved itinerary for the agent to review and save.
+async function pkgAiItinerary(id,btn){
+  const p=_taPackages.find(x=>String(x.Id)===String(id));
+  if(!p) return;
+  const label=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Drafting…'; }
+  try{
+    const pkg={name:p.name,type:p.type,destination:p.destination,nights:p.nights,inclusions:p.inclusions,exclusions:p.exclusions,notes:p.notes,
+      image_url:p.image_url,image_url_2:p.image_url_2,image_url_3:p.image_url_3};
+    const r=await fetch(`${CONFIG.WORKER_BASE}/travel/ai-itinerary`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({package:pkg})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||!Array.isArray(d.days)) throw new Error(d.error||('HTTP '+r.status));
+    for(const day of d.days) for(const item of (day.items||[])) if(item.image) item.image=await itinShrinkImage(item.image);
+    openItinModal(null,{...pkgToItinPrefill(p),days:d.days});
+  }catch(e){ alert('AI Itinerary failed: '+e.message); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent=label; } }
+}
+// Photos are stored inside the itinerary's `days` JSON, so keep each one small (≤640px JPEG,
+// same 250KB cap as a hand-uploaded photo); one that can't be shrunk is left out.
+function itinShrinkImage(dataUrl,max=640){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const k=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+        const c=document.createElement('canvas');
+        c.width=Math.max(1,Math.round(img.naturalWidth*k)); c.height=Math.max(1,Math.round(img.naturalHeight*k));
+        const ctx=c.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,c.width,c.height); ctx.drawImage(img,0,0,c.width,c.height);
+        const out=c.toDataURL('image/jpeg',0.78);
+        resolve(out.length<=250*1024*1.37?out:'');
+      }catch(e){ resolve(''); }
+    };
+    img.onerror=()=>resolve('');
+    img.src=dataUrl;
+  });
 }
 
 function groupFareToItinPrefill(g){

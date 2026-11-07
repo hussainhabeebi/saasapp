@@ -126,3 +126,37 @@ test('day photo links (Drive files) are drawn as images in the itinerary PDF; fo
   expect(asked).toEqual(['FILEID12345']);
   expect(r).toEqual({ photos: ['https://drive.google.com/file/d/FILEID12345/view?usp=sharing'], hasImage: true, folderLink: true, fileLink: true });
 });
+
+test('✨ AI Itinerary on a package opens the builder with the drafted days and shrunk photos', async ({ page }) => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  let sent = null;
+  await page.route('**/*', (route) => {
+    const r = route.request(); const u = r.url();
+    if (u.startsWith('file://')) return route.continue();
+    if (u.includes('/travel/ai-itinerary')) {
+      sent = JSON.parse(r.postData());
+      return route.fulfill({ json: { days: [
+        { day_no: 1, title: 'Arrival & Charminar', description: 'Reach Hyderabad.', overnight: 'Hyderabad', meals: ['D'], image_links: ['https://drive.google.com/file/d/PKG1/view'],
+          items: [{ type: 'activity', time: '16:00', description: 'Visit Charminar', image: png }] },
+        { day_no: 2, title: 'Departure', description: '', overnight: '', meals: ['B'], image_links: [], items: [] },
+      ] } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof pkgAiItinerary === 'function');
+  await page.evaluate(() => {
+    _taPackages = [{ Id: 9, name: 'Hyderabad Bus Package', destination: 'Hyderabad', nights: 1, sell_price: 15000, currency: 'INR', image_url: 'https://drive.google.com/file/d/PKG1/view' }];
+    document.body.insertAdjacentHTML('beforeend', `<div id="cardHost">${renderPkgCard(_taPackages[0])}</div>`);
+  });
+  await page.locator('#cardHost button:has-text("AI Itinerary")').click();
+  await expect(page.locator('#itinModalTitle')).toHaveText('New Itinerary');
+  await expect(page.locator('#itinTitle')).toHaveValue('Hyderabad Bus Package');
+  expect(sent.package).toMatchObject({ name: 'Hyderabad Bus Package', destination: 'Hyderabad', nights: 1 });
+  const days = await page.evaluate(() => _itinDays);
+  expect(days.map((d) => d.title)).toEqual(['Arrival & Charminar', 'Departure']);
+  expect(days[0].items[0].image).toMatch(/^data:image\/jpeg;base64,/);
+  expect(days[0].image_links).toEqual(['https://drive.google.com/file/d/PKG1/view']);
+  await expect(page.locator('#itinDaysList input[placeholder^="e.g. flight"]').first()).toHaveValue('Visit Charminar');
+  await expect(page.locator('#cardHost button:has-text("AI Itinerary")')).toBeEnabled();
+});
