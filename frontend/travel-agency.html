@@ -2163,8 +2163,9 @@ function renderItinDays() {
         ${ITIN_MEALS.map(([k,label])=>`<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" ${(d.meals||[]).includes(k)?'checked':''} onchange="toggleItinMeal(${di},'${k}',this.checked)">${label}</label>`).join('')}
       </div>
       <div style="margin-bottom:10px">
-        <div style="font-size:11.5px;color:var(--muted);margin-bottom:4px">📷 Day photos (Google Drive links)</div>
+        <div style="font-size:11.5px;color:var(--muted);margin-bottom:4px">📷 Day photos (Google Drive links) — use a file link (Share → Anyone with the link) to show the photo in the PDF; up to ${ITIN_DAY_PHOTOS_MAX} per day. A folder link is shown as a link.</div>
         ${itinDayImageLinks(d).map((u,li)=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          ${propDriveId(u)?`<img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(propDriveId(u))}&sz=w200" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid var(--line);flex-shrink:0" onerror="this.style.display='none'">`:''}
           <a href="${esc(u)}" target="_blank" rel="noopener" style="flex:1;min-width:0;font-size:12px;color:var(--accent-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u)}</a>
           <button title="Remove link" onclick="removeItinImageLink(${di},${li})" style="${iconBtn}">✕</button>
         </div>`).join('')}
@@ -2799,7 +2800,28 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
       doc.setTextColor(0);
       y+=16;
     }
-    const photoLinks=itinDayImageLinks(d);
+    // Day photos: the images themselves (each clickable to the Drive file), then a plain link for
+    // anything that couldn't be drawn (a Drive folder, a non-Drive link, a private file).
+    const drawn=(d.photo_images||[]).filter(x=>x&&x.data);
+    if(drawn.length){
+      const gap=8,cellW=(contentW-gap*(ITIN_DAY_PHOTOS_MAX-1))/ITIN_DAY_PHOTOS_MAX,cellH=Math.round(cellW*0.66);
+      ensureSpace(cellH+10);
+      drawn.forEach((ph,pi)=>{
+        const x=marginX+pi*(cellW+gap);
+        try{
+          const mime=/data:image\/(png|jpe?g|webp)/.exec(ph.data);
+          const fmt=mime?({png:'PNG',jpg:'JPEG',jpeg:'JPEG',webp:'WEBP'}[mime[1]]):'JPEG';
+          const prop=doc.getImageProperties(ph.data);
+          const scale=Math.min(cellW/prop.width,cellH/prop.height);
+          const w=prop.width*scale,h=prop.height*scale;
+          doc.addImage(ph.data,fmt,x+(cellW-w)/2,y+(cellH-h)/2,w,h,undefined,'FAST');
+          doc.link(x+(cellW-w)/2,y+(cellH-h)/2,w,h,{url:ph.url});
+        }catch(e){}
+      });
+      y+=cellH+10;
+    }
+    const drawnUrls=new Set(drawn.map(x=>x.url));
+    const photoLinks=itinDayImageLinks(d).filter(u=>!drawnUrls.has(u));
     if(photoLinks.length){
       ensureSpace(16);
       doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...accentInk);
@@ -4150,8 +4172,8 @@ function taLoadTravelSettings(){
 
 // Property photos are Drive links; jsPDF needs the bytes, which the worker fetches (no CORS on Drive).
 const _itinPropImgCache=new Map();
-function itinPropertyImage(p){
-  const id=propDriveId(p.image_url||p.image_url_2||p.image_url_3);
+function itinPropertyImage(p){ return itinDriveImage(propDriveId(p.image_url||p.image_url_2||p.image_url_3)); }
+function itinDriveImage(id){
   if(!id) return Promise.resolve('');
   if(!_itinPropImgCache.has(id)){
     _itinPropImgCache.set(id,fetch(`${CONFIG.WORKER_BASE}/travel/drive-image?id=${encodeURIComponent(id)}`,{headers:ncAuthHeaders()})
@@ -4163,8 +4185,23 @@ function itinPropertyImage(p){
 // untouched): first the photo already used for the same item text in another itinerary, then a
 // Property whose name appears in the item (or, for a hotel item, the day's overnight stay).
 // At most one added photo per day keeps the PDF small enough for WhatsApp.
+// Day photo links (Google Drive file links) as images for the PDF, kept on a copy of the day as
+// `photo_images` — up to 3 per day. Folder links can't be drawn and stay as plain links.
+const ITIN_DAY_PHOTOS_MAX=3;
+async function itinWithDayPhotos(it){
+  if(!it||!(it.days||[]).some(d=>itinDayImageLinks(d).length)) return it;
+  const days=await Promise.all((it.days||[]).map(async d=>{
+    const links=itinDayImageLinks(d).filter(u=>propDriveId(u)).slice(0,ITIN_DAY_PHOTOS_MAX);
+    if(!links.length) return d;
+    const photos=await Promise.all(links.map(async url=>({url,data:await itinDriveImage(propDriveId(url))})));
+    return {...d,photo_images:photos.filter(x=>x.data)};
+  }));
+  return {...it,days};
+}
 async function itinWithAutoImages(it){
-  if(!_taTravelSettings.itin_auto_images||!it) return it;
+  if(!it) return it;
+  it=await itinWithDayPhotos(it);
+  if(!_taTravelSettings.itin_auto_images) return it;
   const key=v=>String(v||'').trim().toLowerCase();
   const library=new Map();
   _taItineraries.forEach(x=>(x.days||[]).forEach(d=>(d.items||[]).forEach(i=>{ if(i.image&&key(i.description)&&!library.has(key(i.description))) library.set(key(i.description),i.image); })));
@@ -4241,6 +4278,8 @@ async function printItinerary(id){
     const dayFacts=[itinMealsText(d.meals)?'Meals: '+itinMealsText(d.meals):'',d.overnight?'Overnight: '+d.overnight:''].filter(Boolean);
     if(dayFacts.length) body+=`<p class="facts">${dayFacts.map(esc).join(' &middot; ')}</p>`;
     const photoLinks=itinDayImageLinks(d);
+    const thumbs=photoLinks.filter(u=>propDriveId(u)).slice(0,ITIN_DAY_PHOTOS_MAX);
+    if(thumbs.length) body+=`<div class="photos">${thumbs.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(propDriveId(u))}&sz=w600" alt=""></a>`).join('')}</div>`;
     if(photoLinks.length) body+=`<p class="facts">Photos: ${photoLinks.map((u,li)=>`<a href="${esc(u)}" target="_blank" rel="noopener">${photoLinks.length>1?'View photos '+(li+1):'View photos'}</a>`).join(' &middot; ')}</p>`;
   });
   const inc=taList(it.inclusions),exc=taList(it.exclusions);
@@ -4250,7 +4289,7 @@ async function printItinerary(id){
   const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
   if(priced.length) body+=`<h2>Package Price</h2><table>${priced.map(t=>`<tr><td>${t.label}</td><td>${esc(cur)} ${parseFloat(it[t.price]).toLocaleString()} per person</td></tr>`).join('')}</table>`;
   if(it.notes)body+=`<p><em>${esc(it.notes)}</em></p>`;
-  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}h2 small{font-size:12px;color:#666;font-weight:normal}ul{margin:8px 0 0 18px}li{margin-bottom:4px}.facts{font-size:13px;color:#555}td{padding:4px 16px 4px 0}</style></head><body>${body}</body></html>`);
+  w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}h2 small{font-size:12px;color:#666;font-weight:normal}ul{margin:8px 0 0 18px}li{margin-bottom:4px}.facts{font-size:13px;color:#555}.photos{display:flex;gap:8px;margin:8px 0}.photos img{width:200px;height:132px;object-fit:cover;border-radius:6px}td{padding:4px 16px 4px 0}</style></head><body>${body}</body></html>`);
   w.document.close();
   w.print();
 }

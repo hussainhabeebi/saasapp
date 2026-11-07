@@ -103,3 +103,26 @@ test('package editor waits for the fresh copy so a stale snapshot cannot blank s
   });
   expect(photo).toEqual({ before: '', after: 'https://drive.google.com/file/d/1AbC/view' });
 });
+
+test('day photo links (Drive files) are drawn as images in the itinerary PDF; folders stay links', async ({ page }) => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const asked = [];
+  await page.route('**/*', (route) => {
+    const u = route.request().url();
+    if (u.startsWith('file://')) return route.continue();
+    if (u.includes('/travel/drive-image')) { asked.push(new URL(u).searchParams.get('id')); return route.fulfill({ json: { data_url: png } }); }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof openItinModal === 'function');
+  const r = await page.evaluate(async () => {
+    clientRecord = { client_name: 'Test Travels' };
+    await loadJsPdf();
+    const it = await itinWithAutoImages({ title: 'T', from_date: '2026-11-14', days: [{ day_no: 1, title: 'Arrival', items: [],
+      image_links: ['https://drive.google.com/file/d/FILEID12345/view?usp=sharing', 'https://drive.google.com/drive/folders/FOLDER12345'] }] });
+    const out = itinBuildFullPdfDoc({ Name: 'Test' }, it, 'ITN-0001').output();
+    return { photos: it.days[0].photo_images.map((p) => p.url), hasImage: /\/Subtype \/Image/.test(out), folderLink: out.includes('FOLDER12345'), fileLink: out.includes('FILEID12345') };
+  });
+  expect(asked).toEqual(['FILEID12345']);
+  expect(r).toEqual({ photos: ['https://drive.google.com/file/d/FILEID12345/view?usp=sharing'], hasImage: true, folderLink: true, fileLink: true });
+});
