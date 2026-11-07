@@ -87,3 +87,76 @@ test('manual builder keeps per-day Google Drive photo links and shares them', as
   await page.getByTitle('Remove link').click();
   expect(await page.evaluate(() => _itinDays[1].image_links)).toEqual([]);
 });
+
+test('package editor waits for the fresh copy so a stale snapshot cannot blank saved photos', async ({ page }) => {
+  await open(page);
+  const photo = await page.evaluate(async () => {
+    _taPackages = [{ Id: 5, name: 'Old', image_url: '' }];
+    _taFresh = false;
+    let done;
+    _taFreshPromise = new Promise((r) => { done = r; });
+    openPkgModal(5);
+    const before = $id('pkgImage1').value;
+    _taPackages = [{ Id: 5, name: 'Old', image_url: 'https://drive.google.com/file/d/1AbC/view' }];
+    _taFresh = true; done(); await _taFreshPromise; await new Promise((r) => setTimeout(r, 0));
+    return { before, after: $id('pkgImage1').value };
+  });
+  expect(photo).toEqual({ before: '', after: 'https://drive.google.com/file/d/1AbC/view' });
+});
+
+test('day photo links (Drive files) are drawn as images in the itinerary PDF; folders stay links', async ({ page }) => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const asked = [];
+  await page.route('**/*', (route) => {
+    const u = route.request().url();
+    if (u.startsWith('file://')) return route.continue();
+    if (u.includes('/travel/drive-image')) { asked.push(new URL(u).searchParams.get('id')); return route.fulfill({ json: { data_url: png } }); }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof openItinModal === 'function');
+  const r = await page.evaluate(async () => {
+    clientRecord = { client_name: 'Test Travels' };
+    await loadJsPdf();
+    const it = await itinWithAutoImages({ title: 'T', from_date: '2026-11-14', days: [{ day_no: 1, title: 'Arrival', items: [],
+      image_links: ['https://drive.google.com/file/d/FILEID12345/view?usp=sharing', 'https://drive.google.com/drive/folders/FOLDER12345'] }] });
+    const out = itinBuildFullPdfDoc({ Name: 'Test' }, it, 'ITN-0001').output();
+    return { photos: it.days[0].photo_images.map((p) => p.url), hasImage: /\/Subtype \/Image/.test(out), folderLink: out.includes('FOLDER12345'), fileLink: out.includes('FILEID12345') };
+  });
+  expect(asked).toEqual(['FILEID12345']);
+  expect(r).toEqual({ photos: ['https://drive.google.com/file/d/FILEID12345/view?usp=sharing'], hasImage: true, folderLink: true, fileLink: true });
+});
+
+test('✨ AI Itinerary on a package opens the builder with the drafted days and shrunk photos', async ({ page }) => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  let sent = null;
+  await page.route('**/*', (route) => {
+    const r = route.request(); const u = r.url();
+    if (u.startsWith('file://')) return route.continue();
+    if (u.includes('/travel/ai-itinerary')) {
+      sent = JSON.parse(r.postData());
+      return route.fulfill({ json: { days: [
+        { day_no: 1, title: 'Arrival & Charminar', description: 'Reach Hyderabad.', overnight: 'Hyderabad', meals: ['D'], image_links: ['https://drive.google.com/file/d/PKG1/view'],
+          items: [{ type: 'activity', time: '16:00', description: 'Visit Charminar', image: png }] },
+        { day_no: 2, title: 'Departure', description: '', overnight: '', meals: ['B'], image_links: [], items: [] },
+      ] } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.waitForFunction(() => typeof pkgAiItinerary === 'function');
+  await page.evaluate(() => {
+    _taPackages = [{ Id: 9, name: 'Hyderabad Bus Package', destination: 'Hyderabad', nights: 1, sell_price: 15000, currency: 'INR', image_url: 'https://drive.google.com/file/d/PKG1/view' }];
+    document.body.insertAdjacentHTML('beforeend', `<div id="cardHost">${renderPkgCard(_taPackages[0])}</div>`);
+  });
+  await page.locator('#cardHost button:has-text("AI Itinerary")').click();
+  await expect(page.locator('#itinModalTitle')).toHaveText('New Itinerary');
+  await expect(page.locator('#itinTitle')).toHaveValue('Hyderabad Bus Package');
+  expect(sent.package).toMatchObject({ name: 'Hyderabad Bus Package', destination: 'Hyderabad', nights: 1 });
+  const days = await page.evaluate(() => _itinDays);
+  expect(days.map((d) => d.title)).toEqual(['Arrival & Charminar', 'Departure']);
+  expect(days[0].items[0].image).toMatch(/^data:image\/jpeg;base64,/);
+  expect(days[0].image_links).toEqual(['https://drive.google.com/file/d/PKG1/view']);
+  await expect(page.locator('#itinDaysList input[placeholder^="e.g. flight"]').first()).toHaveValue('Visit Charminar');
+  await expect(page.locator('#cardHost button:has-text("AI Itinerary")')).toBeEnabled();
+});

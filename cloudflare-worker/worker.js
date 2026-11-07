@@ -18,6 +18,7 @@ import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFI
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
+import {taAiItinerary} from './travel-ai-itinerary.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -21762,6 +21763,20 @@ async function handleTravelDriveImage(request,env){
   let bin='';for(let i=0;i<buf.length;i+=0x8000)bin+=String.fromCharCode(...buf.subarray(i,i+0x8000));
   return json({data_url:`data:${type};base64,${btoa(bin)}`});
 }
+// POST /travel/ai-itinerary {package} → {days}. Agency → Packages → "✨ AI Itinerary": a draft
+// day-by-day plan (with place photos) that opens in the itinerary builder for the agent to review
+// and save — nothing is stored here. Uses the account's own AI provider, else shared Gemini.
+async function handleTravelAiItinerary(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const pkg=body?.package&&typeof body.package==='object'?body.package:null;
+  if(!pkg)return json({error:'Missing package'},400);
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  const generate=(system,user)=>engineGeminiGenerateWithFallback(env,c,system,user,{json:true,temperature:0.4,maxOutputTokens:6000,caller:'ta-ai-itinerary'});
+  const out=await taAiItinerary(pkg,generate);
+  return out.error?json(out,422):json(out);
+}
 export async function ltMenuLoad(env,clientId){
   await ltMenuEnsureSchema(env);
   const row=await env.DB.prepare(`SELECT menu_json FROM live_travel_wa_menu WHERE client_id=?`).bind(Number(clientId)).first();
@@ -41653,6 +41668,7 @@ export default {
       else if(url.pathname==='/live-travel/flows' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlows(request,env); }
       else if(/^\/live-travel\/flows\/(save|delete|preview)$/.test(url.pathname) && request.method==='POST'){ res=await handleLtTravelFlows(request,env,url.pathname.split('/').pop()); }
       else if(url.pathname==='/travel/drive-image' && request.method==='GET'){ res=await handleTravelDriveImage(request,env); }
+      else if(url.pathname==='/travel/ai-itinerary' && request.method==='POST'){ res=await handleTravelAiItinerary(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
