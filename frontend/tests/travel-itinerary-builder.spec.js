@@ -209,3 +209,26 @@ test('Send Quotation lead list filters by channel, source, category and chat-lin
     channelOptions: ['All channels', '📷 Instagram', '— No chat', '💬 WhatsApp'],
   });
 });
+
+test('Send Quotation: "Chatted in 24h" selects every chat-linked lead who wrote in the last day', async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(() => {
+    const ago = (h) => new Date(Date.now() - h * 3600000).toISOString();
+    _taPackages = [{ Id: 1, name: 'Hyderabad', sell_price: 100 }];
+    allLeads = [
+      { Id: 1, Name: 'Recent', Phone: '9715001', ConversationID: '11', LastCustomerMsgAt: ago(2), Stage: 'new' },
+      { Id: 2, Name: 'Yesterday-ish', Phone: '9715002', ConversationID: '12', LastMsgAt: ago(20), Stage: 'quoted' },
+      { Id: 3, Name: 'Old', Phone: '9715003', ConversationID: '13', LastCustomerMsgAt: ago(50), Stage: 'new' },
+      { Id: 4, Name: 'NoChat', Phone: '9715004', LastCustomerMsgAt: ago(1), Stage: 'new' },
+    ];
+    document.body.insertAdjacentHTML('beforeend', `<div id="host">${renderItinSendQuote()}</div>`);
+    sqFilterLeads();
+    $id('sqStageFilter').value = 'quoted'; sqFilterLeads();
+    sqSelectChatted24h();
+    const out = { shown: _sqFilteredLeads.map((l) => l.Name), selected: [..._sqSelectedIds].sort(), count: $id('sqMatchCount').textContent };
+    $id('sqRecentFilter').value = '72'; $id('sqChatOnly').checked = false; sqFilterLeads();
+    out.threeDays = _sqFilteredLeads.map((l) => l.Name);
+    return out;
+  });
+  expect(r).toEqual({ shown: ['Recent', 'Yesterday-ish'], selected: ['1', '2'], count: '2 of 4 leads match', threeDays: ['Recent', 'Yesterday-ish', 'Old', 'NoChat'] });
+});
