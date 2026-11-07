@@ -933,15 +933,21 @@ async function patchLead(leadId,fields){ await ncPatch(`${CONFIG.NOCODB_BASE}/ap
 const TA_LEAD_FIELDS=['Id','Name','Phone','Email','Stage','Date','Owner','Tags','Score','HotMoment','LastMsgAt',
   'Destination','TravelDates','TripType','PaxCount','ServiceCategory','BookingTime','QuoteSentAt','QuoteSentTotal',
   'ConversationID','ConversationId'];
-const TA_LEAD_EXTRA_FIELDS=['Channel','CreatedVia'];
+const TA_LEAD_EXTRA_FIELDS=['Channel','CreatedVia','LastCustomerMsgAt'];
 async function loadLeads(){
   const base=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`;
   let data;
   // NocoDB rejects a fields list naming a column this account's Leads table doesn't have — fall
   // back to the full rows rather than failing the page.
-  // Channel / CreatedVia (Send Quotation filters) only exist once the worker has added them, so
-  // ask with them first, then without, before falling back to the full rows.
-  try{ data=await ncGet(`${base}&fields=${encodeURIComponent([...TA_LEAD_FIELDS,...TA_LEAD_EXTRA_FIELDS].join(','))}`); }
+  // Channel / CreatedVia / LastCustomerMsgAt (Send Quotation filters) only exist once the worker
+  // has added them, so ask for the ones this table has, then without them, then the full rows.
+  let extra=TA_LEAD_EXTRA_FIELDS;
+  try{
+    const meta=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`);
+    const have=new Set((meta.columns||[]).map(c=>c.title));
+    if(have.size) extra=TA_LEAD_EXTRA_FIELDS.filter(f=>have.has(f));
+  }catch(e){}
+  try{ data=await ncGet(`${base}&fields=${encodeURIComponent([...TA_LEAD_FIELDS,...extra].join(','))}`); }
   catch(e){
     try{ data=await ncGet(`${base}&fields=${encodeURIComponent(TA_LEAD_FIELDS.join(','))}`); }
     catch(e2){ data=await ncGet(base); }
@@ -2506,10 +2512,15 @@ function renderItinSendQuote(){
         <option value="">All stages</option>
       </select>
       ${SQ_LEAD_FILTERS.map(f=>`<select class="form-input" id="${f.id}" onchange="sqFilterLeads()" title="${f.all}" style="flex:0 0 150px"><option value="">${f.all}</option></select>`).join('')}
+      <select class="form-input" id="sqRecentFilter" onchange="sqFilterLeads()" title="When the customer last messaged" style="flex:0 0 170px">
+        ${SQ_RECENT.map(([h,label])=>`<option value="${h}">${label}</option>`).join('')}
+      </select>
       <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer"><input type="checkbox" id="sqChatOnly" onchange="sqFilterLeads()">Chat linked only</label>
+      <button class="btn btn-secondary btn-sm" onclick="sqSelectChatted24h()" title="Select every lead with a linked chat who messaged in the last 24 hours (WhatsApp's free reply window)">💬 Chatted in 24h</button>
       <button class="btn btn-secondary btn-sm" onclick="sqSelectAll()">Select all</button>
       <button class="btn btn-ghost btn-sm" onclick="sqSelectNoneBtn()">Clear</button>
     </div>
+ <div id="sqMatchCount" style="font-size:12px;color:var(--muted);margin:-6px 0 8px"></div>
     <div id="sqSelBar" style="display:none;align-items:center;gap:8px;background:var(--accent-soft);color:var(--accent-ink);padding:8px 12px;border-radius:8px;font-size:12.5px;font-weight:600;margin-bottom:8px">
       <span id="sqSelCount">0 selected</span>
     </div>
@@ -2517,7 +2528,7 @@ function renderItinSendQuote(){
       <table class="leads-tbl">
         <thead><tr>
           <th style="width:34px"><input type="checkbox" id="sqChkAll" onchange="sqToggleAll(this)"></th>
-          <th>Name</th><th>Phone</th><th>Channel</th><th>Source</th><th>Stage</th><th>Chat linked</th>
+          <th>Name</th><th>Phone</th><th>Channel</th><th>Source</th><th>Stage</th><th>Last message</th><th>Chat linked</th>
         </tr></thead>
         <tbody id="sqLeadsTbody"></tbody>
       </table>
@@ -2552,6 +2563,21 @@ function sqLeadSource(l){
   if(via) return via;
   return leadConvId(l)?'chatwoot':'unknown';
 }
+// When the customer last wrote (LastCustomerMsgAt, else the last message either way).
+const SQ_RECENT=[['','Any time'],['24','Messaged in last 24h'],['72','Messaged in last 3 days'],['168','Messaged in last 7 days'],['720','Messaged in last 30 days']];
+function sqLastMsgMs(l){ const t=Date.parse(l?.LastCustomerMsgAt||l?.LastMsgAt||''); return isNaN(t)?0:t; }
+function sqAgo(ms){
+  if(!ms) return '—';
+  const m=Math.max(0,Math.round((Date.now()-ms)/60000));
+  if(m<60) return m+'m ago'; if(m<1440) return Math.round(m/60)+'h ago';
+  const d=Math.round(m/1440); return d<60?d+'d ago':new Date(ms).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+}
+// One click: everyone with a linked chat who wrote in the last 24 hours (other filters cleared).
+function sqSelectChatted24h(){
+  ['sqLeadSearch','sqStageFilter',...SQ_LEAD_FILTERS.map(f=>f.id)].forEach(id=>{ const el=$id(id); if(el) el.value=''; });
+  $id('sqRecentFilter').value='24'; $id('sqChatOnly').checked=true;
+  sqFilterLeads(); sqSelectAll();
+}
 const sqLabel=(map,k)=>map[k]||(k?k.charAt(0).toUpperCase()+k.slice(1):'—');
 const SQ_LEAD_FILTERS=[
   {id:'sqChannelFilter',all:'All channels',key:sqLeadChannel,label:k=>sqLabel(SQ_CHANNELS,k)},
@@ -2576,10 +2602,12 @@ function sqFilterLeads(){
     picked[f.id]=vals.includes(cur)?cur:'';
   });
   const chatOnly=!!$id('sqChatOnly')?.checked;
+  const recentH=parseInt($id('sqRecentFilter')?.value)||0, since=recentH?Date.now()-recentH*3600000:0;
   _sqFilteredLeads=allLeads.filter(l=>{
     if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
     if(sf&&l.Stage!==sf) return false;
     if(chatOnly&&!leadConvId(l)) return false;
+    if(since&&sqLastMsgMs(l)<since) return false;
     return SQ_LEAD_FILTERS.every(f=>!picked[f.id]||f.key(l)===picked[f.id]);
   });
   sqRenderLeadRows();
@@ -2589,7 +2617,7 @@ function sqRenderLeadRows(){
   const tbody=$id('sqLeadsTbody');
   if(!tbody) return;
   if(!_sqFilteredLeads.length){
-    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No leads match.</td></tr>';
+    tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">No leads match.</td></tr>';
     sqUpdateSelBar();
     return;
   }
@@ -2603,6 +2631,7 @@ function sqRenderLeadRows(){
       <td style="font-size:12px;white-space:nowrap">${esc(sqLabel(SQ_CHANNELS,sqLeadChannel(l)))}</td>
       <td style="font-size:12px;white-space:nowrap">${esc(sqLabel(SQ_SOURCES,sqLeadSource(l)))}</td>
       <td>${esc(l.Stage||'new')}</td>
+      <td style="font-size:12px;white-space:nowrap;color:var(--muted)">${esc(sqAgo(sqLastMsgMs(l)))}</td>
       <td>${hasConv?'<span style="color:#166534">✓</span>':'<span style="color:var(--muted)">—</span>'}</td>
     </tr>`;
   }).join('');
@@ -2621,6 +2650,8 @@ function sqToggleAll(el){
 function sqSelectAll(){ _sqFilteredLeads.forEach(l=>_sqSelectedIds.add(String(l.Id))); sqRenderLeadRows(); }
 function sqSelectNoneBtn(){ _sqSelectedIds.clear(); sqRenderLeadRows(); }
 function sqUpdateSelBar(){
+  const mc=$id('sqMatchCount');
+  if(mc) mc.textContent=`${_sqFilteredLeads.length} of ${allLeads.length} leads match${_sqFilteredLeads.length>200?' — showing the first 200; Select all still selects every match':''}`;
   const bar=$id('sqSelBar'); if(!bar) return;
   const n=_sqSelectedIds.size;
   bar.style.display=n?'flex':'none';
