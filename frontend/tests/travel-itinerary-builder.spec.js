@@ -182,3 +182,30 @@ test('a rejected itinerary save shows NocoDB\'s reason, not just the status', as
   await page.evaluate(() => saveItin());
   await expect(page.locator('#saveItinMsg')).toHaveText('Error: HTTP 422: Data too long for column days');
 });
+
+test('Send Quotation lead list filters by channel, source, category and chat-linked', async ({ page }) => {
+  await open(page);
+  const names = await page.evaluate(() => {
+    _taPackages = [{ Id: 1, name: 'Hyderabad', sell_price: 100 }];
+    allLeads = [
+      { Id: 1, Name: 'Asha', Phone: '971500000001', ConversationID: '11', CreatedVia: 'chatwoot', ServiceCategory: 'Packages', Stage: 'new' },
+      { Id: 2, Name: 'Insta', Phone: 'ig:123', Channel: 'instagram', ConversationID: '12', ServiceCategory: 'Visa', Stage: 'new' },
+      { Id: 3, Name: 'Walkin', Phone: '971500000003', CreatedVia: 'manual', ServiceCategory: 'Packages', Stage: 'new' },
+    ];
+    document.body.insertAdjacentHTML('beforeend', `<div id="host">${renderItinSendQuote()}</div>`);
+    sqFilterLeads();
+    const rows = () => _sqFilteredLeads.map((l) => l.Name);
+    const set = (id, v) => { $id(id).value = v; sqFilterLeads(); };
+    const out = { all: rows() };
+    set('sqChannelFilter', 'instagram'); out.instagram = rows(); set('sqChannelFilter', '');
+    set('sqSourceFilter', 'manual'); out.manual = rows(); set('sqSourceFilter', '');
+    set('sqCategoryFilter', 'Packages'); out.packages = rows(); set('sqCategoryFilter', '');
+    $id('sqChatOnly').checked = true; sqFilterLeads(); out.chat = rows();
+    out.channelOptions = [...$id('sqChannelFilter').options].map((o) => o.textContent);
+    return out;
+  });
+  expect(names).toEqual({
+    all: ['Asha', 'Insta', 'Walkin'], instagram: ['Insta'], manual: ['Walkin'], packages: ['Asha', 'Walkin'], chat: ['Asha', 'Insta'],
+    channelOptions: ['All channels', '📷 Instagram', '— No chat', '💬 WhatsApp'],
+  });
+});

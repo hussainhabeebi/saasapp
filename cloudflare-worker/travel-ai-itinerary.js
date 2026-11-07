@@ -30,7 +30,7 @@ Rules:
 - Otherwise plan realistic, well-known sightseeing for the destination at a comfortable pace (2-4 items a day).
 - Use only facts from the package for hotels, flights, transport and meals; never invent hotel names, flight numbers, prices or phone numbers. Use the city name for "overnight" unless a hotel is given.
 - Meals: follow the package's inclusions / meal plan; if unknown, use breakfast from day 2.
-- "place" is set only for "activity" items that are a real, named attraction.`;
+- "place" is set for every "activity" item that is a real, named attraction or area (e.g. "Golconda Fort", "Calangute Beach"), using its well-known English name — it is used to find a photo.`;
   const facts=[
     ['Package',str(pkg?.name,200)],['Type',str(pkg?.type,40)],['Destination',str(pkg?.destination,200)],
     ['Nights',String(days-1)],['Inclusions',list(pkg?.inclusions).join('; ')],['Exclusions',list(pkg?.exclusions).join('; ')],
@@ -106,14 +106,27 @@ async function wikiThumb(place,dest,fetchImpl,timeoutMs){
 }
 export async function taAiItineraryPhotos(days,pkg,{fetchImpl=globalThis.fetch,timeoutMs=5000}={}){
   const dest=str(pkg?.destination,120);
+  // Stored as the Wikimedia thumbnail link (a few dozen bytes), not image data: the itinerary's
+  // `days` column can't hold several embedded photos. The PDF fetches the image when it's built.
+  const usable=u=>/^https:\/\/upload\.wikimedia\.org\/.+\.(?:jpe?g|png)$/i.test(u)?u:'';
+  const used=new Set();
   await Promise.all(days.map(async d=>{
-    const item=d.items.find(it=>it.type==='activity'&&it.place);
-    if(!item)return;
-    // Stored as the Wikimedia thumbnail link (a few dozen bytes), not image data: the itinerary's
-    // `days` column can't hold several embedded photos. The PDF fetches the image when it's built.
-    const thumb=await wikiThumb(item.place,dest,fetchImpl,timeoutMs);
-    if(/^https:\/\/upload\.wikimedia\.org\/.+\.(?:jpe?g|png)$/i.test(thumb))item.image=thumb;
+    // Each named place of the day in turn (up to 3 lookups) until one has a matching photo…
+    const candidates=d.items.filter(it=>it.type==='activity'&&(it.place||it.description)).slice(0,3);
+    for(const it of candidates){
+      const thumb=usable(await wikiThumb(it.place||it.description,dest,fetchImpl,timeoutMs));
+      if(thumb){ it.image=thumb; used.add(thumb); return; }
+    }
   }));
+  // …and a day still without one gets a photo of its overnight city or the destination, on its
+  // first activity / item, without repeating a photo another day already shows.
+  for(const d of days){
+    if(d.items.some(it=>it.image)||!d.items.length)continue;
+    for(const place of [d.overnight,dest].filter(Boolean)){
+      const thumb=usable(await wikiThumb(place,'',fetchImpl,timeoutMs));
+      if(thumb&&!used.has(thumb)){ (d.items.find(it=>it.type==='activity')||d.items[0]).image=thumb; used.add(thumb); break; }
+    }
+  }
   // The package's own photos (Drive links) go on day 1, where the PDF draws them as images.
   const own=['image_url','image_url_2','image_url_3'].map(f=>str(pkg?.[f],500)).filter(u=>/^https?:\/\//i.test(u));
   if(days[0]&&own.length)days[0].image_links=own;
