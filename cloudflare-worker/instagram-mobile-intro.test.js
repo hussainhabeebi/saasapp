@@ -92,3 +92,33 @@ test('custom intro and thank-you texts', () => withFetch(async () => {
   const s2 = { channel: 'instagram', leadId: 5, lead: { Id: 5, MobileAskedAt: 'x' }, activeHistory: [] };
   assert.equal((await engineInstagramMobileTurn(env, c, s2, '9876543210', 'text', {})).text, 'Got 9876543210!');
 }));
+
+test('name + number in answer to the intro saves both and is thanked', () => withFetch(async (sent) => {
+  const { engineNameWithMobile } = await import('./worker.js');
+  for (const [t, n] of [['Rahul, 9876543210', 'Rahul'], ['rahul kumar 9876543210', 'Rahul Kumar'], ['Name: Asha\nMobile: +91 98765 43210', 'Asha']])
+    assert.equal(engineNameWithMobile(t, engineExtractMobileNumber(t)), n, t);
+  for (const t of ['Rahul 9876543210 what is the Bali package price?', 'Rahul 9876543210 two adults going to Bali in December'])
+    assert.equal(engineNameWithMobile(t, engineExtractMobileNumber(t)), '', t);
+  const c = { client_name: 'Fly Indo Holidays', bot_config: JSON.stringify({ instagram_mobile_intro: { enabled: true, thanks_text: 'Thanks {{customer_name}}! Saved {{mobile}}.' } }) };
+  const state = { channel: 'instagram', leadId: 5, name: 'insta_user', lead: { Id: 5, MobileAskedAt: 'x' }, activeHistory: [] };
+  const turn = await engineInstagramMobileTurn(env, c, state, 'Rahul Kumar, 9876543210', 'text', {});
+  assert.equal(turn.route, 'instagram_mobile_saved');
+  assert.equal(turn.text, 'Thanks Rahul Kumar! Saved 9876543210.');
+  assert.equal(patchesWith(sent, 'Name')[0].body.Name, 'Rahul Kumar');
+  assert.equal(state.name, 'Rahul Kumar');
+}));
+
+test('only Instagram conversations are parsed as Instagram', async () => {
+  const { engineParseChatwootPayload } = await import('./worker.js');
+  const msg = (conversation) => ({ message_type: 'incoming', content: 'Hi', conversation });
+  assert.equal(engineParseChatwootPayload(msg({ id: 1, channel: 'Channel::Whatsapp', meta: { sender: { phone_number: '+919876543210' } } })).channel, 'whatsapp');
+  assert.equal(engineParseChatwootPayload(msg({ id: 2, channel: 'Channel::Api', meta: { sender: { phone_number: '+971501234567' } } })).channel, 'whatsapp');
+  assert.equal(engineParseChatwootPayload(msg({ id: 3, channel: 'Channel::Instagram', contact_inbox: { source_id: '1784' }, meta: { sender: { name: 'B' } } })).channel, 'instagram');
+  // A WhatsApp chat never gets the Instagram intro, even for a brand-new lead.
+  await withFetch(async (sent) => {
+    const state = { channel: 'whatsapp', leadId: 5, lead: { Id: 5 }, activeHistory: [] };
+    assert.equal(await engineInstagramMobileTurn(env, ON, state, 'Hi', 'text', { isNewLead: true }), null);
+    assert.equal(await engineInstagramMobileTurn(env, ON, state, '9876543210', 'text', {}), null);
+    assert.equal(sent.length, 0);
+  });
+});
