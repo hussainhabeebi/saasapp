@@ -147,3 +147,31 @@ test('catalog token: kept in KV when the column drops it, and used by Link', asy
   const bad = await h.call('/ecom/wa-shop/config', { catalog_token: 'my token' }, env);
   assert.equal(bad.s, 400);
 });
+
+test('Couplo (Nov 2026): link OK but commerce settings POST says "(#1) unknown error" — link still saved, manual steps returned', async () => {
+  const h = harness({ meta: {
+    'WABA/product_catalogs': { method: 'GET', body: { data: [{ id: '1484032813531427', name: 'Couplo' }] } },
+    'PH/whatsapp_commerce_settings': { method: 'POST', status: 500, body: { error: { message: 'An unknown error has occurred.', code: 1 } } },
+    '1484032813531427?fields=name,product_count': { body: { name: 'Couplo', product_count: 0 } },
+  } });
+  const r = await h.call('/ecom/wa-shop/connect', { catalog_id: '1484032813531427' });
+  assert.equal(r.s, 200, JSON.stringify(r.d));
+  assert.equal(r.d.shown_on_number, false);
+  assert.match(r.d.show_error, /unknown error/);
+  assert.match(r.d.manual_steps, /Enable cart/);
+  const posts = h.graph.filter(g => g.u.includes('PH/whatsapp_commerce_settings?') && g.method === 'POST');
+  assert.equal(posts.length, 4, 'both tokens, retried once');
+  const cfg = waShopConfig({ wa_shop_config: JSON.stringify(h.saved()) });
+  assert.equal(cfg.catalog_id, '1484032813531427');
+  assert.ok(cfg.linked_at);
+});
+
+test('catalog icon and cart already on in Meta: no POST at all', async () => {
+  const h = harness({ meta: {
+    'WABA/product_catalogs': { method: 'GET', body: { data: [{ id: '555', name: 'Shop' }] } },
+    'PH/whatsapp_commerce_settings': { method: 'GET', body: { data: [{ is_catalog_visible: true, is_cart_enabled: true, id: 'x' }] } },
+  } });
+  const r = await h.call('/ecom/wa-shop/connect', { catalog_id: '555' });
+  assert.equal(r.d.shown_on_number, true);
+  assert.ok(!h.graph.some(g => g.u.includes('whatsapp_commerce_settings') && g.method === 'POST'));
+});
