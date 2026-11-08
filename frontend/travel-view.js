@@ -374,7 +374,15 @@ function tvFmtCur(m){
 function tvLeadTravelFrom(l){ return tvDay(String(l.TravelDates||'').split('→')[0].trim()); }
 function tvLeadTravelTo(l){ const p=String(l.TravelDates||'').split('→'); return tvDay((p[1]||'').trim()); }
 function tvIsClosedLead(l){ return ['won','converted','lost'].includes(l.Stage); }
-function tvBookingLive(b){ return (b.status||'quoted')!=='cancelled'; }
+// A trip that is going ahead (quoted or later). New requests from the WhatsApp bot (requested /
+// contacted) have no price and no confirmed date yet, so departures, quotes and sales leave them out.
+function tvBookingLive(b){ const s=b.status||'quoted'; return s!=='cancelled'&&s!=='requested'&&s!=='contacted'; }
+function tvIsTripRequest(b){ return ['requested','contacted'].includes(b.status); }
+function tvRequestWaitingMin(b){
+  if(b.status!=='requested') return null;
+  const t=Date.parse(b.requested_at||b.status_changed_at||b.CreatedAt||'');
+  return Number.isFinite(t)?Math.max(0,(Date.now()-t)/60000):null;
+}
 function tvBookings(){ return (typeof _taBookings!=='undefined'?_taBookings:[]).filter(Boolean); }
 function tvUmrah(){ return (typeof _taUmrahGroups!=='undefined'?_taUmrahGroups:[]).filter(Boolean); }
 function tvCarBookings(){ return (typeof _taCarBookings!=='undefined'?_taCarBookings:[]).filter(Boolean); }
@@ -453,6 +461,9 @@ function renderTravelHomeScoped(){
   const newToday=leads.filter(l=>tvDay(l.Date)===today);
   const waiting=leads.filter(l=>!tvIsClosedLead(l)&&(l.Stage==='human_handover'||l.Handover==='Yes'));
   const quoted=live.filter(b=>(b.status||'quoted')==='quoted');
+  const requests=bks.filter(b=>b.status==='requested');
+  const slaMin=parseInt(clientRecord?.sla_minutes)||15;
+  const lateRequests=requests.filter(b=>{ const w=tvRequestWaitingMin(b); return w!==null&&w>slaMin; });
   const due=live.filter(b=>b.status!=='completed'&&tvNum(b.sell_price)-tvNum(b.deposit)>0.5)
     .sort((a,b)=>(tvDay(a.departure_date)||'9999').localeCompare(tvDay(b.departure_date)||'9999'));
   const dueSoon=due.filter(b=>{ const d=tvDay(b.departure_date); return d&&d<=in14; });
@@ -464,9 +475,9 @@ function renderTravelHomeScoped(){
 
   // Funnel over the last 30 days: inquiries → quotes → booked → travelled.
   const fInq=leads.filter(l=>tvDay(l.Date)>=ago30).length;
-  const recentBks=bks.filter(b=>tvCreated(b)>=ago30);
+  const recentBks=bks.filter(b=>tvCreated(b)>=ago30&&tvBookingLive(b)||tvCreated(b)>=ago30&&b.status==='cancelled'&&tvNum(b.sell_price)>0);
   const fQuoted=recentBks.length;
-  const fBooked=recentBks.filter(b=>['confirmed','completed'].includes(b.status)).length;
+  const fBooked=recentBks.filter(b=>['advance_paid','confirmed','completed'].includes(b.status)).length;
   const fTravelled=recentBks.filter(b=>b.status==='completed').length;
   const fMax=Math.max(fInq,fQuoted,1);
 
@@ -507,6 +518,7 @@ function renderTravelHomeScoped(){
       ${kpi('Departures today',depToday.length,`${depWeek.length+umrahWeek.length} in the next 7 days`,"navigate('departures')")}
       ${kpi('New inquiries',newToday.length,'today',"navigate('leads')")}
       ${kpi('Waiting for agent',waiting.length,'handed over by the bot',"navigate('humandeals')",waiting.length>0)}
+      ${agency?kpi('New trip requests',requests.length,lateRequests.length?`⏰ ${lateRequests.length} waiting > ${slaMin} min`:'from the WhatsApp bot',"navigate('tvtrips')",lateRequests.length>0):''}
       ${agency?kpi('Open quotes',quoted.length,tvFmtCur(tvSumByCur(quoted,b=>tvNum(b.sell_price))),"navigate('tvtrips')"):''}
       ${agency?kpi('Balance due ≤14d',dueSoon.length,tvFmtCur(tvSumByCur(dueSoon,b=>tvNum(b.sell_price)-tvNum(b.deposit))),"navigate('tvfinance')",dueSoon.length>0):''}
       ${agency?kpi('Sales this month',tvFmtCur(revenue),`margin ${tvFmtCur(margin)}`,"navigate('tvfinance')"):''}

@@ -248,6 +248,26 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .booking-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
 .booking-row:hover{background:var(--bg)}
 .booking-row:last-child{border-bottom:none}
+.booking-row.late{box-shadow:inset 3px 0 0 #DC2626}
+.ta-trip-pipe{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:12px}
+.ta-trip-stage{border-radius:var(--r-sm);padding:10px 12px;cursor:pointer;border:2px solid transparent}
+.ta-trip-stage.on{border-color:var(--ink,#111)}
+.ta-trip-alert{background:#FEE2E2;color:#991B1B;border-radius:var(--r-sm);padding:9px 12px;font-size:12.5px;margin-bottom:10px;cursor:pointer}
+.ta-trip-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.ta-trip-chip{border:1px solid var(--line);background:var(--surface,#fff);color:inherit;border-radius:20px;padding:5px 11px;font-size:12px;cursor:pointer}
+.ta-trip-chip.on{background:var(--accent-soft);color:var(--accent-ink);border-color:transparent}
+.ta-tbs,.ta-tas{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.ta-tb{font-size:10.5px;padding:2px 7px;border-radius:10px;background:var(--bg,#F1F5F9);color:var(--muted)}
+.ta-tb-bot{background:#EEF2FF;color:#3730A3}
+.ta-tb-wait{background:#ECFDF5;color:#065F46}
+.ta-tb-late{background:#FEE2E2;color:#991B1B;font-weight:700}
+.ta-tb-inc{background:#FEF3C7;color:#92400E}
+.ta-tb-dup{background:#FCE7F3;color:#9D174D}
+.ta-ta{font-size:11.5px;padding:4px 9px;border-radius:8px;border:1px solid var(--line);background:var(--surface,#fff);color:inherit;cursor:pointer}
+.ta-ta:hover{background:var(--bg)}
+.ta-req-box{background:var(--bg,#F8FAFC);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;font-size:12.5px}
+.ta-req-box>div:not(:first-child){display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.ta-req-box span{color:var(--muted)}
 .payment-bar-wrap{height:6px;background:var(--bg);border-radius:4px;flex:1;overflow:hidden;margin:0 8px}
 .payment-bar-fill{height:100%;background:var(--accent);border-radius:4px}
 .ledger-credit{color:#166534;font-family:var(--mono);font-weight:700}
@@ -625,8 +645,11 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Cost Price (total)</label><input class="form-input" type="number" id="bookingCostPrice" placeholder="0"></div>
         <div class="form-group"><label class="form-label">Sell Price (total)</label><input class="form-input" type="number" id="bookingSellPrice" placeholder="0"></div>
         <div class="form-group"><label class="form-label">Deposit Received</label><input class="form-input" type="number" id="bookingDeposit" placeholder="0"></div>
-        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="bookingStatus"><option value="quoted">Quoted</option><option value="confirmed">Confirmed</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select></div>
-        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="bookingNotes" rows="2"></textarea></div>
+        <div class="form-group"><label class="form-label">Status</label><select class="form-input" id="bookingStatus" onchange="bookingStatusChanged()"><option value="requested">New request</option><option value="contacted">Contacted</option><option value="quoted">Quoted</option><option value="advance_paid">Advance paid</option><option value="confirmed">Confirmed</option><option value="completed">Travelled</option><option value="cancelled">Lost / Cancelled</option></select></div>
+        <div class="form-group"><label class="form-label">Assigned to</label><select class="form-input" id="bookingAssigned"></select></div>
+        <div class="form-group" id="bookingLostWrap" style="display:none"><label class="form-label">Lost reason</label><select class="form-input" id="bookingLostReason"><option value="">—</option><option>Price too high</option><option>Booked elsewhere</option><option>Trip postponed</option><option>Trip cancelled</option><option>No response</option><option>Dates not available</option><option>Just enquiring</option><option>Other</option></select></div>
+        <div class="form-group" id="bookingReqInfo" style="grid-column:1/-1;display:none"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Notes</label><textarea class="form-input" id="bookingNotes" rows="4"></textarea></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1150,6 +1173,11 @@ async function taUpdate(key,rowId,record){
 // accounts whose tables already exist get them from taEnsureColumns() on the first save, the
 // same check-then-add the clients table uses for its newer fields.
 const TA_ADDED_COLUMNS={
+  // Trip requests: the WhatsApp booking bot files what it collected as a `requested` trip
+  // (worker: trip-requests.js / tripRequestSync, which adds the same columns on its side).
+  bookings:['lead_id','source','destination','travel_month','adults','children','children_ages','departure_city',
+    'assigned_to','requested_at','status_changed_at','missing_info','lost_reason','duplicate_of','created_at','alerted_at']
+    .map(title=>({title,uidt:'SingleLineText'})),
   packages:[
     {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},{title:'infant_price',uidt:'Decimal'},
     {title:'image_url',uidt:'LongText'},{title:'image_url_2',uidt:'LongText'},{title:'image_url_3',uidt:'LongText'},
@@ -1667,7 +1695,7 @@ function renderTaDashboard() {
   const pendingCases = _taCases.filter(c => c.status !== 'closed').length;
   const totalRevenue = _taBookings.filter(b => b.status !== 'cancelled').reduce((s, b) => s + (parseFloat(b.sell_price) || 0), 0);
   const recentBookings = [..._taBookings].sort((a,b) => (b.created_at||'').localeCompare(a.created_at||'')).slice(0,5);
-  const upcomingDeps = [..._taBookings].filter(b => b.departure_date && b.departure_date >= TODAY && b.status !== 'cancelled').sort((a,b) => a.departure_date.localeCompare(b.departure_date)).slice(0,5);
+  const upcomingDeps = [..._taBookings].filter(b => b.departure_date && b.departure_date >= TODAY && b.status !== 'cancelled' && !taTripIsRequest(b)).sort((a,b) => a.departure_date.localeCompare(b.departure_date)).slice(0,5);
   const revK = totalRevenue >= 1000 ? (totalRevenue/1000).toFixed(1)+'k' : totalRevenue.toFixed(0);
   return `
   <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
@@ -1685,7 +1713,7 @@ function renderTaDashboard() {
             <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
             <div style="font-size:11px;color:var(--muted)">${esc(b.package_name||'Custom')} · ${esc(b.departure_date||'TBD')}</div>
           </div>
-          <span class="stage-pill ${b.status==='confirmed'||b.status==='completed'?'stage-done':b.status==='cancelled'?'stage-blocked':'stage-pending'}">${esc(b.status||'quoted')}</span>
+          <span class="stage-pill ${b.status==='confirmed'||b.status==='completed'?'stage-done':b.status==='cancelled'?'stage-blocked':'stage-pending'}">${esc(taTripLabel(b.status||'quoted'))}</span>
         </div>`).join('') : '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No bookings yet</div>'}
     </div>
     <div class="ta-card">
@@ -4096,27 +4124,98 @@ async function savePilgrim(){
   finally{btn.disabled=false;}
 }
 
-/* ── TA: BOOKINGS ── */
+/* ── TA: BOOKINGS (Trips) ──
+   One pipeline for trips: requests the WhatsApp booking bot files on its own (status `requested`,
+   source whatsapp_bot, linked to the lead — worker trip-requests.js) and trips the team adds by hand.
+   Status order below; quoted / confirmed / completed / cancelled are the values Trips always had. */
 let _editBookingId=null;
-
+const TA_TRIP_STATUSES=[
+  ['requested','New request','#E0E7FF','#3730A3'],
+  ['contacted','Contacted','#E0F2FE','#075985'],
+  ['quoted','Quoted','#FEF3C7','#92400E'],
+  ['advance_paid','Advance paid','#FCE7F3','#9D174D'],
+  ['confirmed','Confirmed','#DCFCE7','#166534'],
+  ['completed','Travelled','var(--accent-soft)','var(--accent-ink)'],
+  ['cancelled','Lost / Cancelled','#FEE2E2','#991B1B'],
+];
+const TA_TRIP_OPEN=['requested','contacted','quoted','advance_paid','confirmed'];
+// Trip status → the lead's Stage, so Inquiries, reports and the Today funnel follow the trip.
+const TA_TRIP_LEAD_STAGE={advance_paid:'won',confirmed:'won',completed:'won',cancelled:'lost'};
+let _taTripFilter='open';
+function taTripStatus(b){ return b.status||'quoted'; }
+function taTripLabel(st){ return (TA_TRIP_STATUSES.find(x=>x[0]===st)||[st,st])[1]; }
+function taTripIsRequest(b){ return ['requested','contacted'].includes(taTripStatus(b)); }
+function taSlaMinutes(){ return parseInt(clientRecord?.sla_minutes)||15; }
+// The signed-in user's email, from the session token (only used for the "Mine" filter).
+function taMyEmail(){
+  try{ return String(JSON.parse(atob(sessionToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))).email||'').toLowerCase(); }catch(e){ return ''; }
+}
+function taTeamEmails(){
+  const out=[String(clientRecord?.authentik_email||'').trim().toLowerCase(),...String(clientRecord?.team_emails||'').split(',').map(e=>e.trim().toLowerCase())];
+  return [...new Set(out.filter(Boolean))];
+}
+// Minutes a new request has waited for its first contact (null once someone has picked it up).
+function taTripWaitingMin(b){
+  if(taTripStatus(b)!=='requested') return null;
+  const t=Date.parse(b.requested_at||b.status_changed_at||b.CreatedAt||'');
+  return Number.isFinite(t)?Math.max(0,Math.round((Date.now()-t)/60000)):null;
+}
+function taAgo(min){
+  if(min<60) return min+'m';
+  if(min<48*60) return Math.round(min/60)+'h';
+  return Math.round(min/1440)+'d';
+}
+function taShortEmail(e){ return String(e||'').split('@')[0]; }
+function taTripDateText(b){
+  if(b.departure_date) return String(b.departure_date).slice(0,10);
+  if(b.travel_month){ const [y,m]=String(b.travel_month).split('-'); const d=new Date(Date.UTC(+y,+m-1,1)); return isNaN(d)?b.travel_month:d.toLocaleString(undefined,{month:'short',year:'numeric',timeZone:'UTC'}); }
+  return 'TBD';
+}
+function taTripPaxText(b){
+  if(b.adults){ const c=parseInt(b.children)||0; return `${b.adults}A${c?` + ${c}C`:''}`; }
+  return `${b.pax||1} pax`;
+}
+const TA_TRIP_FILTERS=[
+  ['open','All open',b=>TA_TRIP_OPEN.includes(taTripStatus(b))],
+  ['mine','Mine',b=>TA_TRIP_OPEN.includes(taTripStatus(b))&&String(b.assigned_to||'').toLowerCase()===taMyEmail()],
+  ['overdue','⏰ Waiting too long',b=>{ const w=taTripWaitingMin(b); return w!==null&&w>taSlaMinutes(); }],
+  ['incomplete','Incomplete',b=>taTripIsRequest(b)&&!!String(b.missing_info||'').trim()],
+  ['bot','🤖 From bot',b=>b.source==='whatsapp_bot'],
+  ['all','All',()=>true],
+];
+function taSetTripFilter(f){ _taTripFilter=f; renderAgencySubPage('bookings'); }
 function renderTaBookings(){
-  const byStatus={quoted:0,confirmed:0,completed:0,cancelled:0};
-  _taBookings.forEach(b=>{if(byStatus[b.status]!==undefined)byStatus[b.status]++;});
+  const byStatus={};
+  _taBookings.forEach(b=>{ const st=taTripStatus(b); byStatus[st]=(byStatus[st]||0)+1; });
+  const me=taMyEmail();
+  const filt=TA_TRIP_FILTERS.find(f=>f[0]===_taTripFilter)||(TA_TRIP_STATUSES.some(s=>s[0]===_taTripFilter)?[_taTripFilter,'',b=>taTripStatus(b)===_taTripFilter]:TA_TRIP_FILTERS[0]);
+  // New requests first (oldest wait on top), then everything else newest first.
+  const list=_taBookings.filter(filt[2]).sort((a,b)=>{
+    const wa=taTripWaitingMin(a), wb=taTripWaitingMin(b);
+    if(wa!==null||wb!==null) return (wb??-1)-(wa??-1);
+    return 0;
+  });
+  const overdue=_taBookings.filter(TA_TRIP_FILTERS[2][2]).length;
+  const chip=(k,l,n)=>`<button class="ta-trip-chip${_taTripFilter===k?' on':''}" onclick="taSetTripFilter('${k}')">${esc(l)}${n!=null?` <b>${n}</b>`:''}</button>`;
   return `
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎫 Bookings & Quotes</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px;flex-wrap:wrap">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎫 Trips</div>
     <button class="btn btn-primary btn-sm" onclick="openBookingModal()">+ New Quote</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
-    ${[['quoted','Quoted','#FEF3C7','#92400E'],['confirmed','Confirmed','#DCFCE7','#166534'],['completed','Completed','var(--accent-soft)','var(--accent-ink)'],['cancelled','Cancelled','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
-      <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
+  <div class="ta-trip-pipe">
+    ${TA_TRIP_STATUSES.map(([s,l,bg,col])=>`
+      <div class="ta-trip-stage${_taTripFilter===s?' on':''}" style="background:${bg}" onclick="taSetTripFilter('${s}')">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
         <div style="font-family:var(--disp);font-size:22px;font-weight:700;color:${col}">${byStatus[s]||0}</div>
       </div>`).join('')}
   </div>
+  ${overdue?`<div class="ta-trip-alert" onclick="taSetTripFilter('overdue')">⏰ <b>${overdue}</b> new request${overdue===1?' has':'s have'} waited more than ${taSlaMinutes()} min for a first contact.</div>`:''}
+  <div class="ta-trip-chips">
+    ${TA_TRIP_FILTERS.filter(f=>f[0]!=='mine'||me).map(([k,l,fn])=>chip(k,l,_taBookings.filter(fn).length)).join('')}
+  </div>
   <div class="ta-card" style="padding:0;overflow:hidden">
     <div id="bookingList">
-      ${_taBookings.length?_taBookings.map((b)=>renderBookingRow(b)).join(''):'<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">No bookings yet</div>'}
+      ${list.length?list.map(b=>renderBookingRow(b)).join(''):`<div style="text-align:center;padding:40px;color:var(--muted);font-size:13px">${_taBookings.length?'No trips in this view':'No trips yet. Requests from the WhatsApp booking bot appear here on their own.'}</div>`}
     </div>
   </div>`;
 }
@@ -4124,45 +4223,122 @@ function renderTaBookings(){
 function renderBookingRow(b){
   const paid=parseFloat(b.deposit)||0,total=parseFloat(b.sell_price)||0;
   const pct=total?Math.round((paid/total)*100):0;
+  const st=taTripStatus(b), stDef=TA_TRIP_STATUSES.find(x=>x[0]===st)||['', st, '#F1F5F9', '#475569'];
+  const wait=taTripWaitingMin(b), late=wait!==null&&wait>taSlaMinutes();
+  const id=escAttr(String(b.Id));
+  const badges=[
+    b.source==='whatsapp_bot'?'<span class="ta-tb ta-tb-bot">🤖 Bot</span>':'',
+    wait!==null?`<span class="ta-tb ${late?'ta-tb-late':'ta-tb-wait'}">${late?'⏰ ':''}${taAgo(wait)}</span>`:'',
+    taTripIsRequest(b)&&b.missing_info?`<span class="ta-tb ta-tb-inc" title="Still to ask">Incomplete: ${esc(b.missing_info)}</span>`:'',
+    b.duplicate_of?`<span class="ta-tb ta-tb-dup" title="Same phone and destination as trip #${esc(b.duplicate_of)}">Possible duplicate</span>`:'',
+    b.assigned_to?`<span class="ta-tb">👤 ${esc(taShortEmail(b.assigned_to))}</span>`:(taTripIsRequest(b)?'<span class="ta-tb ta-tb-late">Unassigned</span>':''),
+    st==='cancelled'&&b.lost_reason?`<span class="ta-tb">${esc(b.lost_reason)}</span>`:'',
+  ].filter(Boolean).join('');
+  const actions=[
+    b.lead_id?`<button class="ta-ta" onclick="event.stopPropagation();taOpenTripChat('${id}')">💬 Chat</button>`:'',
+    st==='requested'?`<button class="ta-ta" onclick="event.stopPropagation();taSetTripStatus('${id}','contacted')">✓ Contacted</button>`:'',
+    taTripIsRequest(b)?`<button class="ta-ta" onclick="event.stopPropagation();taBuildTripItinerary('${id}')">🗺️ Itinerary</button>`:'',
+    taTripIsRequest(b)?`<button class="ta-ta" onclick="event.stopPropagation();openBookingModal('${id}','quote')">💰 Quote</button>`:'',
+  ].filter(Boolean).join('');
   return `
-  <div class="booking-row" onclick="openBookingModal('${b.Id}')">
-    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🎫</div>
+  <div class="booking-row${late?' late':''}" onclick="openBookingModal('${id}')">
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">${b.source==='whatsapp_bot'?'🤖':'🎫'}</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
-      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(b.package_name||'Custom')} · ${esc(b.departure_date||'TBD')} · ${b.pax||1} pax</div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(b.package_name||b.destination||'Custom')} · ${esc(taTripDateText(b))} · ${esc(taTripPaxText(b))}</div>
+      ${badges?`<div class="ta-tbs">${badges}</div>`:''}
+      ${taTripIsRequest(b)?'':`<div style="display:flex;align-items:center;gap:6px;margin-top:5px">
         <div class="payment-bar-wrap"><div class="payment-bar-fill" style="width:${pct}%"></div></div>
         <span style="font-size:10px;color:var(--muted);white-space:nowrap">${pct}% paid</span>
-      </div>
+      </div>`}
+      ${actions?`<div class="ta-tas">${actions}</div>`:''}
     </div>
     <div style="text-align:right;flex-shrink:0">
-      <div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(b.currency||'AED')} ${total.toLocaleString()}</div>
-      <span class="stage-pill ${b.status==='confirmed'||b.status==='completed'?'stage-done':b.status==='cancelled'?'stage-blocked':'stage-pending'}" style="margin-top:4px">${esc(b.status||'quoted')}</span>
+      ${total?`<div style="font-family:var(--disp);font-size:14px;font-weight:700">${esc(b.currency||'AED')} ${total.toLocaleString()}</div>`:''}
+      <span class="stage-pill" style="margin-top:4px;background:${stDef[2]};color:${stDef[3]}">${esc(stDef[1])}</span>
     </div>
   </div>`;
 }
 
-function openBookingModal(id){
+// 💬 — the trip's chat, in the dashboard's lead panel.
+function taOpenTripChat(id){
+  const b=_taBookings.find(x=>String(x.Id)===String(id));
+  if(!b?.lead_id) return;
+  if(isEmbedded) window.parent.postMessage({type:'ta:openLead', leadId:Number(b.lead_id)}, location.origin);
+  else alert('Open this trip from the dashboard to see its chat.');
+}
+// 🗺️ — a new itinerary prefilled from the request.
+function taBuildTripItinerary(id){
+  const b=_taBookings.find(x=>String(x.Id)===String(id));
+  if(!b) return;
+  // Travel workspace: its own nav moves to Quotes & Itineraries (and sends ta:goto back here).
+  if(isTravelShell) window.parent.postMessage({type:'ta:navigate', page:'tvquotes'}, location.origin);
+  else renderAgencySubPage('itineraries');
+  openItinModal(null,{title:`${b.destination||b.package_name||'Trip'} – ${b.client_name||''}`.trim(),destination:b.destination||b.package_name||'',
+    from_date:b.departure_date?String(b.departure_date).slice(0,10):'',adults:parseInt(b.adults)||parseInt(b.pax)||1,children:parseInt(b.children)||0,
+    departure_city:b.departure_city||'',notes:b.children_ages?`Children's ages: ${b.children_ages}`:''});
+}
+// Writes a trip's status and keeps its lead's Stage in step (TA_TRIP_LEAD_STAGE).
+async function taApplyTripStatus(b,status,extra={}){
+  const body={...extra,status};
+  if(taTripStatus(b)!==status) body.status_changed_at=new Date().toISOString();
+  await taEnsureColumns('bookings');
+  await taUpdate('bookings',b.Id,body);
+  const stage=TA_TRIP_LEAD_STAGE[status];
+  if(b.lead_id&&stage&&taTripStatus(b)!==status) await patchLead(b.lead_id,{Stage:stage}).catch(()=>{});
+}
+async function taSetTripStatus(id,status){
+  const b=_taBookings.find(x=>String(x.Id)===String(id));
+  if(!b) return;
+  try{
+    const me=taMyEmail();
+    await taApplyTripStatus(b,status,!b.assigned_to&&me?{assigned_to:me}:{});
+    _taLoaded=false; await taLoad(['bookings']); renderAgencySubPage('bookings');
+  }catch(e){ alert('Could not update the trip: '+e.message); }
+}
+function bookingStatusChanged(){
+  $id('bookingLostWrap').style.display=$id('bookingStatus').value==='cancelled'?'':'none';
+}
+
+function openBookingModal(id,focus){
   _editBookingId=id||null;
   const b=id?(_taBookings.find(x=>String(x.Id)===String(id))||{}):{};
-  $id('bookingModalTitle').textContent=id?'Edit Booking':'New Quote / Booking';
+  $id('bookingModalTitle').textContent=id?(taTripIsRequest(b)?'Trip request':'Edit Booking'):'New Quote / Booking';
   $id('bookingClientName').value=b.client_name||''; $id('bookingClientPhone').value=b.client_phone||'';
-  $id('bookingPackage').value=b.package_name||''; $id('bookingDep').value=b.departure_date||'';
+  $id('bookingPackage').value=b.package_name||''; $id('bookingDep').value=b.departure_date?String(b.departure_date).slice(0,10):'';
   $id('bookingPax').value=b.pax||1; $id('bookingCurrency').value=b.currency||'AED';
   $id('bookingCostPrice').value=b.cost_price||''; $id('bookingSellPrice').value=b.sell_price||'';
-  $id('bookingDeposit').value=b.deposit||''; $id('bookingStatus').value=b.status||'quoted';
+  $id('bookingDeposit').value=b.deposit||'';
+  // 💰 Quote on a request: the form opens on Quoted, ready for the price.
+  $id('bookingStatus').value=focus==='quote'?'quoted':(b.status||(id?'quoted':'quoted'));
+  const team=taTeamEmails(), cur=String(b.assigned_to||'').toLowerCase();
+  $id('bookingAssigned').innerHTML=`<option value="">— Unassigned —</option>`+[...new Set([...team,...(cur?[cur]:[])])].map(e=>`<option value="${escAttr(e)}"${e===cur?' selected':''}>${esc(e)}</option>`).join('');
+  $id('bookingLostReason').value=b.lost_reason||'';
+  bookingStatusChanged();
+  const info=$id('bookingReqInfo');
+  if(b.source==='whatsapp_bot'||b.destination){
+    const rows=[['Destination',b.destination],['Travel',b.departure_date?String(b.departure_date).slice(0,10):b.travel_month],['Adults',b.adults],['Children',b.children],["Children's ages",b.children_ages],['From',b.departure_city],['Still to ask',b.missing_info],['Requested',b.requested_at?new Date(b.requested_at).toLocaleString():'']].filter(r=>r[1]);
+    info.innerHTML=`<div class="ta-req-box"><div style="font-weight:700;margin-bottom:6px">${b.source==='whatsapp_bot'?'🤖 Collected by the WhatsApp bot':'Trip details'}</div>${rows.map(([k,v])=>`<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}
+      ${b.lead_id&&isEmbedded?`<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="taOpenTripChat('${escAttr(String(b.Id))}')">💬 Open chat</button>`:''}</div>`;
+    info.style.display='';
+  }else{ info.innerHTML=''; info.style.display='none'; }
   $id('bookingNotes').value=b.notes||'';
   openModal('modalBooking');
+  if(focus==='quote') setTimeout(()=>$id('bookingSellPrice')?.focus(),50);
 }
 
 async function saveBooking(){
   const btn=$id('saveBookingBtn'),msg=$id('saveBookingMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const existing=_editBookingId?(_taBookings.find(x=>String(x.Id)===String(_editBookingId))||{}):{};
-  const b={client_name:$id('bookingClientName').value.trim(),client_phone:$id('bookingClientPhone').value.trim(),package_name:$id('bookingPackage').value.trim(),departure_date:$id('bookingDep').value,pax:parseInt($id('bookingPax').value)||1,currency:$id('bookingCurrency').value,cost_price:parseFloat($id('bookingCostPrice').value)||0,sell_price:parseFloat($id('bookingSellPrice').value)||0,deposit:parseFloat($id('bookingDeposit').value)||0,status:$id('bookingStatus').value,notes:$id('bookingNotes').value.trim(),created_at:existing.created_at||new Date().toISOString().slice(0,10)};
+  const b={client_name:$id('bookingClientName').value.trim(),client_phone:$id('bookingClientPhone').value.trim(),package_name:$id('bookingPackage').value.trim(),departure_date:$id('bookingDep').value,pax:parseInt($id('bookingPax').value)||1,currency:$id('bookingCurrency').value,cost_price:parseFloat($id('bookingCostPrice').value)||0,sell_price:parseFloat($id('bookingSellPrice').value)||0,deposit:parseFloat($id('bookingDeposit').value)||0,notes:$id('bookingNotes').value.trim(),created_at:existing.created_at||new Date().toISOString().slice(0,10),
+    assigned_to:$id('bookingAssigned').value,lost_reason:$id('bookingStatus').value==='cancelled'?$id('bookingLostReason').value:''};
+  const status=$id('bookingStatus').value;
   if(!b.client_name){msg.textContent='Client name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
-    if(_editBookingId) await taUpdate('bookings',_editBookingId,b); else await taCreate('bookings',b);
+    await taEnsureColumns('bookings');
+    if(_editBookingId) await taApplyTripStatus(existing,status,b);
+    else await taCreate('bookings',{...b,status,status_changed_at:new Date().toISOString()});
     msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalBooking');await taLoad(['bookings']);renderAgencySubPage('bookings');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
