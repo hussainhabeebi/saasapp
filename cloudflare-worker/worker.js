@@ -4600,8 +4600,8 @@ async function runDailyHealthCheckForAllClients(env){
    of the last written rows (gsheet_sync_hash) skips the write entirely when nothing changed. ── */
 const GSHEET_CLIENT_COLUMNS=['gsheet_url','gsheet_cols','gsheet_last_sync_at','gsheet_last_sync_status','gsheet_sync_hash'];
 const GSHEET_DEFAULT_COLS=['Phone','Name','Stage','Score','Date','AssignedTo'];
-const GSHEET_ALLOWED_COLS=['Phone','Name','Stage','Score','AssignedTo','Language','Date','LastMsgAt','Handover','HotMoment','QualScore','BookingTime','QualAnswers'];
-const GSHEET_COL_LABELS={AssignedTo:'Assigned To',LastMsgAt:'Last Message',HotMoment:'Hot Moment',QualScore:'Qual Score',BookingTime:'Booking Time',QualAnswers:'Qual Answers'};
+const GSHEET_ALLOWED_COLS=['Phone','Name','Stage','Score','AssignedTo','Language','Date','LastMsgAt','Handover','HotMoment','QualScore','BookingTime','QualAnswers','CtwaClid','AdId'];
+const GSHEET_COL_LABELS={AssignedTo:'Assigned To',LastMsgAt:'Last Message',HotMoment:'Hot Moment',QualScore:'Qual Score',BookingTime:'Booking Time',QualAnswers:'Qual Answers',CtwaClid:'CTWA Click ID',AdId:'Ad ID'};
 const GSHEET_MAX_LEADS=20000;
 
 export function gsheetParseUrl(sheetUrl){
