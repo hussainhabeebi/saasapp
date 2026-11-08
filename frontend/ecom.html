@@ -952,6 +952,61 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
     </div>
   </div>
 
+  <!-- Optional extras (Nov 2026) — all off until switched on. -->
+  <div class="ws-step" id="wsStep6">
+    <div class="ws-num">✨</div>
+    <div class="ws-body">
+      <div class="ws-h">Optional extras <span class="ws-done" id="wsDone6"></span></div>
+      <div class="ws-p">Switch on only what you want — each one is off until you turn it on.</div>
+
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
+        <div class="toggle-text"><strong>Send the catalog with the first reply to a new customer</strong><small>Someone messaging you for the first time gets the tappable catalog together with the assistant’s first reply.</small></div>
+        <div class="toggle-wrap"><input type="checkbox" id="wsFirstCatalog" onchange="wsSaveConfig({first_catalog:this.checked}, 'wsMsg6')"><span class="toggle-slider"></span></div>
+      </label>
+
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
+        <div class="toggle-text"><strong>Ads open on the right product</strong><small>A chat that starts from one of your Click-to-WhatsApp ads gets that ad’s product card (or category) straight away, with Add to cart.</small></div>
+        <div class="toggle-wrap"><input type="checkbox" id="wsAdsOn" onchange="wsToggleAds(this.checked)"><span class="toggle-slider"></span></div>
+      </label>
+      <div id="wsAdsPanel" style="display:none;margin:0 0 14px">
+        <div class="ws-p">Pick an ad and what it should open. Ads come from Reports → Ads ROI; you can also type an Ad ID (Ads Manager → the ad → ID).</div>
+        <div id="wsAdRows"></div>
+        <div class="s-row">
+          <input class="s-input" id="wsAdPick" list="wsAdList" placeholder="Ad name or Ad ID" style="max-width:260px">
+          <datalist id="wsAdList"></datalist>
+          <select class="s-input" id="wsAdKind" style="max-width:130px" onchange="wsAdTargets()"><option value="product">Product</option><option value="category">Category</option></select>
+          <select class="s-input" id="wsAdTarget" style="max-width:240px"></select>
+          <button class="save-btn" onclick="wsAddAd(this)">Add</button>
+        </div>
+      </div>
+
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px">
+        <div class="toggle-text"><strong>Catalog broadcasts</strong><small>Send your product cards to past customers any time — even after 24 hours — with a Meta-approved “catalog template” (“New arrivals 🍼 — tap to shop”).</small></div>
+        <div class="toggle-wrap"><input type="checkbox" id="wsBcOn" onchange="wsToggleBc(this.checked)"><span class="toggle-slider"></span></div>
+      </label>
+      <div id="wsBcPanel" style="display:none">
+        <div class="ws-p"><b>1. Catalog templates</b> — Meta approves each one (usually minutes to a few hours).</div>
+        <div id="wsBcTemplates" class="ws-p">Loading…</div>
+        <details style="margin:4px 0 12px"><summary class="ws-p" style="cursor:pointer"><b>+ New catalog template</b></summary>
+          <div class="s-row"><input class="s-input" id="wsBcName" placeholder="Name, e.g. new_arrivals_nov" style="max-width:240px">
+            <select class="s-input" id="wsBcLang" style="max-width:140px"><option value="en">English</option><option value="en_US">English (US)</option><option value="hi">Hindi</option><option value="ml">Malayalam</option><option value="ta">Tamil</option></select></div>
+          <div class="s-row"><input class="s-input" id="wsBcHeader" maxlength="60" placeholder="Title, e.g. New arrivals 🍼" style="max-width:420px"></div>
+          <div class="s-row"><textarea class="s-input" id="wsBcBody" rows="3" maxlength="1024" placeholder="Message, e.g. Our new baby sets are here! Tap View items to see them and order in the chat." style="max-width:520px"></textarea></div>
+          <div class="s-row"><button class="save-btn" onclick="wsBcCreate(this)">Submit to Meta</button></div>
+        </details>
+        <div class="ws-p"><b>2. Send</b></div>
+        <div class="s-row">
+          <select class="s-input" id="wsBcTpl" style="max-width:220px"></select>
+          <select class="s-input" id="wsBcAudience" style="max-width:220px"><option value="customers">Past customers (orders)</option><option value="leads">All WhatsApp leads</option></select>
+          <select class="s-input" id="wsBcCat" style="max-width:200px"><option value="">Whole catalog</option></select>
+          <button class="save-btn" onclick="wsBcSend(this)">Send broadcast</button>
+        </div>
+        <div class="ws-p" style="font-size:12px">Opted-out contacts are always left out. Each message is a paid Meta marketing conversation.</div>
+      </div>
+      <span class="save-msg" id="wsMsg6"></span>
+    </div>
+  </div>
+
   <div class="card" id="wsRecentCard" style="display:none">
     <div class="card-title">Recent WhatsApp carts</div>
     <div class="tbl-wrap"><table><thead><tr><th>When</th><th>Order</th><th>Customer</th><th>Total</th></tr></thead><tbody id="wsRecent"></tbody></table></div>
@@ -4636,9 +4691,102 @@ function renderWaShop() {
   document.getElementById('wsSendInChat').checked = cfg.send_in_chat !== false;
   const cats = [...new Set((allProducts || []).map(p => p.category).filter(Boolean))].sort();
   document.getElementById('wsSendCat').innerHTML = '<option value="">Whole catalog</option>' + cats.map(c => `<option>${esc(c)}</option>`).join('');
+  renderWsExtras(cfg, s.stats, cats);
   const recent = s.stats.recent || [];
   document.getElementById('wsRecentCard').style.display = recent.length ? '' : 'none';
   document.getElementById('wsRecent').innerHTML = recent.map(r => `<tr><td>${esc(new Date(r.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }))}</td><td><b>${esc(r.order_ref || '')}</b></td><td>${esc(r.phone || '')}</td><td>${esc(cur + Number(r.total || 0).toLocaleString('en-IN'))}</td></tr>`).join('');
+}
+// ── Optional extras ──
+let wsAdsData = null, wsBcTemplatesList = [];
+function renderWsExtras(cfg, stats, cats) {
+  document.getElementById('wsFirstCatalog').checked = !!cfg.first_catalog;
+  document.getElementById('wsAdsOn').checked = !!cfg.ads_on;
+  document.getElementById('wsBcOn').checked = !!cfg.broadcast_on;
+  document.getElementById('wsAdsPanel').style.display = cfg.ads_on ? '' : 'none';
+  document.getElementById('wsBcPanel').style.display = cfg.broadcast_on ? '' : 'none';
+  const parts = [];
+  if (cfg.first_catalog) parts.push(`${stats.first_catalog || 0} first-reply catalogs`);
+  if (cfg.ads_on) parts.push(`${stats.ad_sends || 0} ad product cards`);
+  if (cfg.broadcast_on) parts.push(`${stats.broadcast || 0} broadcast messages`);
+  document.getElementById('wsDone6').textContent = parts.length ? '· last 30 days: ' + parts.join(' · ') : '';
+  document.getElementById('wsBcCat').innerHTML = '<option value="">Whole catalog</option>' + (cats || []).map(c => `<option>${esc(c)}</option>`).join('');
+  wsRenderAdRows();
+  if (cfg.ads_on && !wsAdsData) wsLoadAds();
+  if (cfg.broadcast_on) wsBcLoadTemplates();
+}
+function wsToggleAds(on) { return wsSaveConfig({ ads_on: on }, 'wsMsg6'); }
+function wsToggleBc(on) { return wsSaveConfig({ broadcast_on: on }, 'wsMsg6'); }
+async function wsLoadAds() {
+  try { wsAdsData = await wsCall('ads'); } catch (e) { wsSetMsg('wsMsg6', '⚠ ' + e.message, 'err'); return; }
+  document.getElementById('wsAdList').innerHTML = (wsAdsData.ads || []).map(a => `<option value="${esc(a.ad_id)}">${esc(a.ad_name || a.ad_id)}${a.campaign ? ' — ' + esc(a.campaign) : ''}${a.active ? '' : ' (paused)'}</option>`).join('');
+  wsAdTargets(); wsRenderAdRows();
+}
+function wsAdTargets() {
+  const kind = document.getElementById('wsAdKind').value, d = wsAdsData || { products: [], categories: [] };
+  document.getElementById('wsAdTarget').innerHTML = kind === 'category'
+    ? d.categories.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')
+    : d.products.map(p => `<option value="${esc(p.rid)}">${esc(p.name)}${p.category ? ' · ' + esc(p.category) : ''}</option>`).join('');
+}
+function wsAdName(id) { const a = (wsAdsData?.ads || []).find(x => x.ad_id === id); return a ? a.ad_name : ''; }
+function wsRenderAdRows() {
+  const map = wsStatus?.config?.ad_map || [];
+  document.getElementById('wsAdRows').innerHTML = map.length ? map.map((m, i) =>
+    `<div class="s-row" style="align-items:center"><span class="ws-p" style="margin:0">📣 <b>${esc(m.ad_name || wsAdName(m.ad_id) || 'Ad ' + m.ad_id)}</b> → ${m.kind === 'category' ? 'category' : 'product'} <b>${esc(m.label || m.target)}</b></span>
+      <button class="save-btn" style="background:#fff;color:#B91C1C;border:1px solid #FCA5A5" onclick="wsRemoveAd(${i})">Remove</button></div>`).join('')
+    : '<div class="ws-p" style="font-size:12px">No ads mapped yet.</div>';
+}
+function wsAddAd(btn) {
+  const raw = document.getElementById('wsAdPick').value.trim();
+  const ad = (wsAdsData?.ads || []).find(a => a.ad_id === raw || a.ad_name.toLowerCase() === raw.toLowerCase());
+  const adId = ad ? ad.ad_id : raw.replace(/\D/g, '');
+  if (!adId) { wsSetMsg('wsMsg6', '⚠ Pick an ad or type its Ad ID.', 'err'); return; }
+  const sel = document.getElementById('wsAdTarget'), kind = document.getElementById('wsAdKind').value;
+  if (!sel.value) { wsSetMsg('wsMsg6', '⚠ Pick what the ad should open.', 'err'); return; }
+  const label = sel.options[sel.selectedIndex].text.split(' · ')[0];
+  const map = [...(wsStatus.config.ad_map || []).filter(m => m.ad_id !== adId), { ad_id: adId, ad_name: ad ? ad.ad_name : '', kind, target: sel.value, label }];
+  document.getElementById('wsAdPick').value = '';
+  return wsRun(btn, 'wsMsg6', () => wsCall('config', { ad_map: map }), '✓ Ad saved');
+}
+function wsRemoveAd(i) {
+  const map = (wsStatus.config.ad_map || []).filter((_, j) => j !== i);
+  return wsRun(null, 'wsMsg6', () => wsCall('config', { ad_map: map }), '✓ Removed');
+}
+async function wsBcLoadTemplates() {
+  const box = document.getElementById('wsBcTemplates');
+  try { wsBcTemplatesList = (await wsCall('bc/templates')).templates || []; } catch (e) { box.textContent = '⚠ ' + e.message; return; }
+  const tone = st => st === 'APPROVED' ? '#047857' : st === 'REJECTED' ? '#B91C1C' : '#B45309';
+  box.innerHTML = wsBcTemplatesList.length ? wsBcTemplatesList.map(t =>
+    `<div>• <b>${esc(t.name)}</b> (${esc(t.language)}) — <span style="color:${tone(t.status)}">${esc(t.status)}</span>${t.rejected_reason && t.rejected_reason !== 'NONE' ? ' · ' + esc(t.rejected_reason) : ''}<br><small>${esc(t.header)} — ${esc(t.body)}</small></div>`).join('')
+    : 'No catalog templates yet — create one below.';
+  const ok = wsBcTemplatesList.filter(t => t.status === 'APPROVED');
+  document.getElementById('wsBcTpl').innerHTML = ok.length ? ok.map(t => `<option value="${esc(t.name)}|${esc(t.language)}">${esc(t.name)} (${esc(t.language)})</option>`).join('') : '<option value="">No approved template yet</option>';
+}
+function wsBcCreate(btn) {
+  const body = { name: document.getElementById('wsBcName').value, language: document.getElementById('wsBcLang').value,
+    header: document.getElementById('wsBcHeader').value, body: document.getElementById('wsBcBody').value };
+  return wsRun(btn, 'wsMsg6', async () => { const d = await wsCall('bc/templates', body); await wsBcLoadTemplates(); return d; },
+    d => `✓ “${d.name}” sent to Meta for approval (${d.status}). It appears under Send once approved.`, 'Submitting to Meta…');
+}
+async function wsBcSend(btn) {
+  const [template, language] = (document.getElementById('wsBcTpl').value || '').split('|');
+  if (!template) { wsSetMsg('wsMsg6', '⚠ Wait until a catalog template is approved.', 'err'); return; }
+  const audience = document.getElementById('wsBcAudience').value, category = document.getElementById('wsBcCat').value;
+  btn.disabled = true;
+  try {
+    wsSetMsg('wsMsg6', 'Counting recipients…');
+    const a = await wsCall('bc/audience', { audience });
+    if (!a.count) { wsSetMsg('wsMsg6', '⚠ No one to send to in this list.', 'err'); return; }
+    if (!confirm(`Send “${template}” with ${category || 'your whole catalog'} to ${a.count} ${audience === 'leads' ? 'WhatsApp leads' : 'past customers'}?\n\nEach message is a paid Meta marketing conversation.`)) { wsSetMsg('wsMsg6', 'Cancelled.'); return; }
+    const runId = 'r' + Date.now();
+    let sent = 0; const failed = [];
+    for (let i = 0; i < a.phones.length; i += 25) {
+      wsSetMsg('wsMsg6', `Sending… ${Math.min(i, a.phones.length)} / ${a.phones.length}`);
+      const d = await wsCall('bc/send', { template, language, category, run_id: runId, phones: a.phones.slice(i, i + 25) });
+      sent += d.sent; failed.push(...(d.failed || []));
+    }
+    wsSetMsg('wsMsg6', `✓ Sent to ${sent} of ${a.phones.length}` + (failed.length ? ` · ${failed.length} failed (e.g. ${failed[0].error})` : ''), failed.length ? 'err' : 'ok');
+  } catch (e) { wsSetMsg('wsMsg6', '⚠ ' + e.message, 'err'); }
+  finally { btn.disabled = false; }
 }
 function wsPayChanged() {
   const v = document.querySelector('input[name="wsPay"]:checked')?.value;

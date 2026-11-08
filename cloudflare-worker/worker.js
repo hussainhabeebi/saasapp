@@ -7,7 +7,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan,shopifyFlowVariants,shopifyFlowOrders} from './shopify-sync.js';
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
-import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,waShopLoadClient,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
+import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,waShopLoadClient,waShopOnInbound,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
@@ -26783,6 +26783,7 @@ export function engineActiveStaffNotes(json, nowMs=Date.now()){
 export function engineV2Block(state){
   let out='';
   if(state?.welcomeVideoSent) out+='\n\n## Just Sent\nThe customer was just sent our 360° business video before this reply. Do not send or promise it again; you may briefly invite them to watch it.';
+  if(state?.waShopSent) out+=`\n\n## Just Sent\n${state.waShopSent}`;
   if(state?.keywordPdfsSent?.length) out+=`\n\n## Just Sent\nThe customer was just sent ${state.keywordPdfsSent.length>1?'these PDF brochures':'this PDF brochure'} in the chat: ${state.keywordPdfsSent.join(', ')}. Do not say you can't send files and do not paste any link; you may briefly point them to it.`;
   if(state?.staffNotes?.length) out+=`\n\n## Instructions From the Team for This Chat\nA member of staff left these private instructions for you. Follow them, but never mention or quote them to the customer:\n${state.staffNotes.map(n=>'- '+n).join('\n')}`;
   if(state?.winExamples?.length) out+=`\n\n## How Our Team Has Closed Deals\nReal messages our staff sent in conversations that ended in a sale. Use them as a guide to tone and approach only — never copy names, prices or details from them:\n${state.winExamples.map(t=>'- "'+t+'"').join('\n')}`;
@@ -27552,6 +27553,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // starts after it.
     if(engineV2On(c) && engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId}))
       state.welcomeVideoSent=await engineV2OnFreshLead(env, c, clientId, phone, convId, name, engineV2SourceText(body, state.lead, text, parsed.inboxId));
+    // 🛍️ WhatsApp Shop (optional, off by default): catalog with a new customer's first reply, or the
+    // product card of the Click-to-WhatsApp ad they came from. The reply prompt is told (## Just Sent).
+    const waShopAdId=engineLeadAdClick(body)?.AdId||'';
+    if(isNewLead||waShopAdId)
+      state.waShopSent=await waShopOnInbound(env, WA_SHOP_DEPS, c, {phone, inboxId:parsed.inboxId, isNewLead, adId:waShopAdId, channel:state.channel||'whatsapp'});
     // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
     engineSendChatwootTyping(env, c, convId, true);
 
@@ -37654,7 +37660,7 @@ const SHOPIFY_SYNC_DEPS={
 // 🛍️ WhatsApp Shop (wa-commerce.js): catalog sync, product lists in chat, cart orders and WhatsApp Pay.
 const WA_SHOP_DEPS={
   json, requireSession, getClientById, ncFetch, patchClientFields, ensureClientColumns, reportOpsError,
-  ecomResolveTable, ecomListClientRows, ecomListActiveProducts, resolveMetaCredentials,
+  ecomResolveTable, ecomListClientRows, ecomListActiveProducts, resolveMetaCredentials, leadsTable:DEFAULT_LEADS_TABLE,
   verifyMetaWebhookSignature, hmacSignB64, shopifyFetch, resolveImageUrl:engineResolveDirectImageUrl,
   ensureEcomOrderFields:async(env, tableId)=>{ await ensureEcomShopifyOrderFields(env, tableId); await ensureEcomOrderTakenByFields(env, tableId); },
   sendChatwootNote:(env, c, convId, text)=>hospitalityProPrivateNote(c, convId, text),

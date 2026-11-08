@@ -54,6 +54,9 @@ export function waShopConfig(c){
     // added in Commerce Manager itself, not by Leadvyne's sync, is used as it is.
     catalog_name:String(cfg.catalog_name||''), catalog_count:cfg.catalog_count===undefined||cfg.catalog_count===null?null:num(cfg.catalog_count),
     meta_items:Array.isArray(cfg.meta_items)?cfg.meta_items:[], meta_items_at:cfg.meta_items_at||'',
+    // Optional growth features (Nov 2026) — all off until the merchant switches them on.
+    first_catalog:cfg.first_catalog===true, ads_on:cfg.ads_on===true, broadcast_on:cfg.broadcast_on===true,
+    ad_map:waShopCleanAdMap(cfg.ad_map),
   };
 }
 // Products to show in WhatsApp: Leadvyne-synced ones, else the Meta catalog's own items.
@@ -125,6 +128,16 @@ export function waShopIsCatalogAsk(text){ return CATALOG_ASK_RE.test(String(text
 
 // WhatsApp multi-product message: ≤10 sections, ≤30 products in total, section titles ≤24 chars.
 export function waShopProductListPayload(to, catalogId, products, {header='Our collection', body='Tap a product to see photos and price, then add it to your cart 🛒', category=''}={}){
+  const sections=waShopSections(products, category);
+  if(!sections.length) return null;
+  return {messaging_product:'whatsapp', recipient_type:'individual', to:digits(to), type:'interactive', interactive:{
+    type:'product_list', header:{type:'text', text:String(header).slice(0,60)}, body:{text:String(body).slice(0,1024)},
+    action:{catalog_id:String(catalogId), sections},
+  }};
+}
+// Up to 10 sections / 30 products, grouped by category — the shape both the product_list message
+// and the catalog (MPM) template button take.
+export function waShopSections(products, category=''){
   const want=String(category||'').trim().toLowerCase();
   const pool=(products||[]).filter(p=>!want||String(p.category||'').trim().toLowerCase()===want);
   const groups=new Map();
@@ -143,11 +156,7 @@ export function waShopProductListPayload(to, catalogId, products, {header='Our c
     sections.push({title:title.slice(0,24), product_items:items});
     total+=items.length;
   }
-  if(!total) return null;
-  return {messaging_product:'whatsapp', recipient_type:'individual', to:digits(to), type:'interactive', interactive:{
-    type:'product_list', header:{type:'text', text:String(header).slice(0,60)}, body:{text:String(body).slice(0,1024)},
-    action:{catalog_id:String(catalogId), sections},
-  }};
+  return total?sections:[];
 }
 
 // Inbound `order` message → the cart.
@@ -348,11 +357,13 @@ async function handleStatus(request, env, deps){
   const cfg=waShopConfig(c), cr=creds(deps, c, cfg);
   let stats={carts:0, paid:0, revenue:0, recent:[]};
   if(await ensureEventsTable(env)){
-    const rows=(await env.DB.prepare(`SELECT kind, order_ref, phone, total, currency, detail, created_at FROM wa_shop_events WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(Number(c.Id)).all().catch(()=>({results:[]})))?.results||[];
+    const rows=(await env.DB.prepare(`SELECT kind, order_ref, phone, total, currency, detail, created_at FROM wa_shop_events WHERE client_id=? ORDER BY created_at DESC LIMIT 5000`).bind(Number(c.Id)).all().catch(()=>({results:[]})))?.results||[];
     const since=new Date(Date.now()-30*86400000).toISOString();
     const recent=rows.filter(r=>r.created_at>=since);
     stats={carts:recent.filter(r=>r.kind==='cart').length, paid:recent.filter(r=>r.kind==='payment').length,
-      revenue:Math.round(recent.filter(r=>r.kind==='cart').reduce((s,r)=>s+num(r.total),0)), recent:rows.filter(r=>r.kind==='cart').slice(0,10)};
+      revenue:Math.round(recent.filter(r=>r.kind==='cart').reduce((s,r)=>s+num(r.total),0)), recent:rows.filter(r=>r.kind==='cart').slice(0,10),
+      first_catalog:recent.filter(r=>r.kind==='first_catalog').length, ad_sends:recent.filter(r=>r.kind==='ad_product'||r.kind==='ad_category').length,
+      broadcast:recent.filter(r=>r.kind==='broadcast').length};
   }
   return deps.json({config:cfg, whatsapp:!!cr?.wa_phone_id, has_catalog_token:!!c[WA_SHOP_TOKEN_FIELD], shopify:!!c.shopify_shop_domain,
     display_phone:cr?.display_phone||c.wa_display_phone||'', chatwoot_target:waShopChatwootTarget(c, cfg, cr), stats});
@@ -369,6 +380,8 @@ async function handleConfig(request, env, deps){
   if('payment_config' in b) patch.payment_config=String(b.payment_config||'').trim().slice(0,100);
   if('send_in_chat' in b) patch.send_in_chat=!!b.send_in_chat;
   if('inbox_id' in b) patch.inbox_id=digits(b.inbox_id);
+  for(const k of ['first_catalog','ads_on','broadcast_on']) if(k in b) patch[k]=b[k]===true;
+  if('ad_map' in b) patch.ad_map=waShopCleanAdMap(b.ad_map);
   if('chatwoot_webhook_url' in b){ const u=String(b.chatwoot_webhook_url||'').trim(); if(u&&!/^https:\/\//.test(u)) return deps.json({error:'The Chatwoot webhook URL must start with https://'}, 400); patch.chatwoot_webhook_url=u; }
   if((patch.payment_mode||waShopConfig(c).payment_mode)==='whatsapp_pay'&&!(patch.payment_config??waShopConfig(c).payment_config))
     return deps.json({error:'Add the payment configuration name from WhatsApp Manager → Payments to use WhatsApp Pay.'}, 400);
@@ -524,15 +537,20 @@ async function handleSend(request, env, deps){
   return r.ok?deps.json({ok:true, count:r.count}):deps.json({error:r.error}, 400);
 }
 
+// The products a catalog message can show: synced Ecom products (with price, photo, stock), else
+// the items already in the Meta catalog.
+async function catalogProducts(env, deps, c, cfg){
+  const skippedIds=new Set(cfg.skipped.map(s=>String(s.id)));
+  return cfg.synced_at
+    ? (await deps.ecomListActiveProducts(env, c.Id)||[]).filter(p=>!skippedIds.has(String(p.nocodb_id??p.Id))&&num(p.price)>0&&p.image_url&&!(p.stock!==null&&p.stock!==''&&p.stock!==undefined&&num(p.stock)<=0))
+    : cfg.meta_items.filter(it=>it.available!==false).map(waShopMetaItemProduct);
+}
 async function sendCatalog(env, deps, c, phone, {category='', inboxId=''}={}){
   const cfg=waShopConfig(c);
   if(!cfg.catalog_id||!waShopHasProducts(cfg)) return {ok:false, error:'Link your catalog (or sync your products to it) first.'};
   const cr=deps.resolveMetaCredentials(c, inboxId?{inbox_id:inboxId}:cfg.inbox_id?{inbox_id:cfg.inbox_id}:{});
   if(!cr?.wa_token||!cr.wa_phone_id) return {ok:false, error:'WhatsApp is not connected for this number.'};
-  const skippedIds=new Set(cfg.skipped.map(s=>String(s.id)));
-  const products=cfg.synced_at
-    ? (await deps.ecomListActiveProducts(env, c.Id)||[]).filter(p=>!skippedIds.has(String(p.nocodb_id??p.Id))&&num(p.price)>0&&p.image_url&&!(p.stock!==null&&p.stock!==''&&p.stock!==undefined&&num(p.stock)<=0))
-    : cfg.meta_items.filter(it=>it.available!==false).map(waShopMetaItemProduct);
+  const products=await catalogProducts(env, deps, c, cfg);
   const payload=waShopProductListPayload(phone, cfg.catalog_id, products, {category, header:category?String(category):'Our collection'});
   if(!payload) return {ok:false, error:category?`No products in “${category}” to show.`:'No products to show yet.'};
   const r=await sendWa(cr, payload);
@@ -568,15 +586,18 @@ async function handleWebhook(request, env, deps, cid, ctx){
   if(!c) return new Response('ok', {status:200});
   const cfg=waShopConfig(c), cr=creds(deps, c, cfg);
   const target=waShopChatwootTarget(c, cfg, cr);
-  let forwarded=!target;
+  // Couplo (Nov 2026): a "Hi" sent with carts on got no reply — the relay counted any answer below
+  // 500 (a 404/401 from a wrong inbox address) as delivered and told Meta "ok", so the message was
+  // lost with no trace. Only a 2xx counts now; anything else is reported and Meta retries.
+  let forwarded=!target, fwdStatus='no target';
   if(target){
     const ctl=new AbortController(); const timer=setTimeout(()=>ctl.abort(), 9000);
     try{
       const headers={'Content-Type':'application/json'};
       const sig=request.headers.get('X-Hub-Signature-256'); if(sig) headers['X-Hub-Signature-256']=sig;
       const r=await fetch(target, {method:'POST', headers, body:raw, signal:ctl.signal});
-      forwarded=r.status<500;
-    }catch(e){ forwarded=false; }
+      forwarded=r.ok; fwdStatus=`HTTP ${r.status}`;
+    }catch(e){ forwarded=false; fwdStatus=e?.name==='AbortError'?'timeout':String(e?.message||e); }
     finally{ clearTimeout(timer); }
   }
   const work=(async()=>{
@@ -586,7 +607,7 @@ async function handleWebhook(request, env, deps, cid, ctx){
   })().catch(e=>deps.reportOpsError(env, 'wa shop webhook', e, {clientId:cid}));
   if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
   // Chatwoot didn't take it → let Meta retry (cart processing is idempotent on the message id).
-  if(!forwarded) await deps.reportOpsError(env, 'wa shop relay → Chatwoot forward failed', new Error(target), {clientId:cid});
+  if(!forwarded) await deps.reportOpsError(env, 'wa shop relay → Chatwoot forward failed', new Error(`${fwdStatus} from ${target}`), {clientId:cid});
   return new Response(forwarded?'ok':'retry', {status:forwarded?200:502});
 }
 
@@ -689,5 +710,185 @@ export async function waShopHandleRoute(request, env, deps, url, ctx){
   if(p==='/ecom/wa-shop/sync'&&m==='POST') return handleSync(request, env, deps);
   if(p==='/ecom/wa-shop/carts'&&m==='POST') return handleCarts(request, env, deps);
   if(p==='/ecom/wa-shop/send'&&m==='POST') return handleSend(request, env, deps);
+  if(p==='/ecom/wa-shop/ads'&&m==='GET') return handleAds(request, env, deps);
+  if(p==='/ecom/wa-shop/bc/templates'&&m==='GET') return handleBcTemplates(request, env, deps);
+  if(p==='/ecom/wa-shop/bc/templates'&&m==='POST') return handleBcTemplateCreate(request, env, deps);
+  if(p==='/ecom/wa-shop/bc/audience'&&m==='POST') return handleBcAudience(request, env, deps);
+  if(p==='/ecom/wa-shop/bc/send'&&m==='POST') return handleBcSend(request, env, deps);
   return null;
+}
+
+/* ── Optional growth features (Nov 2026, Couplo) ─────────────────────────────────────────────────
+   All three are off until switched on in Ecom → 🛍️ WhatsApp Shop; nothing above changes when off.
+   1. first_catalog — a brand-new WhatsApp customer gets the catalog with the bot's first reply.
+   2. ads_on + ad_map — a chat that starts from a mapped Click-to-WhatsApp ad gets that product's
+      card (or that category's catalog) straight away.
+   3. broadcast_on — a "catalog template" (Meta marketing template with a View items button) can
+      be sent to past customers / leads any time, outside the 24-hour window. Sent straight
+      through the Cloud API (Chatwoot can't send this template type), in small batches the page
+      drives, opted-out contacts left out. */
+
+// [{ad_id, ad_name, kind:'product'|'category', target, label}] — cleaned, max 100, one per ad.
+export function waShopCleanAdMap(list){
+  const out=[], seen=new Set();
+  for(const x of Array.isArray(list)?list:[]){
+    const ad=digits(x?.ad_id), kind=x?.kind==='category'?'category':'product', target=String(x?.target||'').trim().slice(0,120);
+    if(!ad||!target||seen.has(ad)) continue;
+    seen.add(ad);
+    out.push({ad_id:ad, ad_name:String(x?.ad_name||'').trim().slice(0,120), kind, target, label:String(x?.label||'').trim().slice(0,120)});
+    if(out.length>=100) break;
+  }
+  return out;
+}
+// A single product card with Add to cart.
+export function waShopProductPayload(to, catalogId, retailerId, body='Tap to see photos and price, then add it to your cart 🛒'){
+  return {messaging_product:'whatsapp', recipient_type:'individual', to:digits(to), type:'interactive', interactive:{
+    type:'product', body:{text:String(body).slice(0,1024)}, action:{catalog_id:String(catalogId), product_retailer_id:String(retailerId)}}};
+}
+// What, if anything, to send on an incoming customer message. Pure — the engine hook below sends it.
+export function waShopInboundPlan(cfg, {isNewLead=false, adId='', channel='whatsapp'}={}){
+  if(String(channel||'whatsapp').toLowerCase()==='instagram') return null;
+  if(!cfg?.catalog_id||!cfg.linked_at||!waShopHasProducts(cfg)) return null;
+  const ad=digits(adId);
+  if(cfg.ads_on&&ad){
+    const hit=(cfg.ad_map||[]).find(x=>x.ad_id===ad);
+    if(hit) return {kind:hit.kind==='category'?'ad_category':'ad_product', target:hit.target, label:hit.label||hit.target, ad_id:ad};
+  }
+  if(cfg.first_catalog&&isNewLead) return {kind:'first_catalog'};
+  return null;
+}
+// Engine hook (worker.js handleEngineWebhook, next to the welcome video): sends the planned
+// catalog / product card before the AI reply. Returns a line for the reply prompt ("## Just Sent"),
+// or '' when nothing was sent. Never throws.
+export async function waShopOnInbound(env, deps, client, {phone, inboxId='', isNewLead=false, adId='', channel='whatsapp'}={}){
+  try{
+    const c=await withCatalogToken(env, client);
+    const cfg=waShopConfig(c);
+    const plan=waShopInboundPlan(cfg, {isNewLead, adId, channel});
+    if(!plan) return '';
+    let r, note='';
+    if(plan.kind==='ad_product'){
+      const cr=deps.resolveMetaCredentials(c, inboxId?{inbox_id:inboxId}:cfg.inbox_id?{inbox_id:cfg.inbox_id}:{});
+      if(!cr?.wa_token||!cr.wa_phone_id) return '';
+      r=await sendWa(cr, waShopProductPayload(phone, cfg.catalog_id, plan.target));
+      note=`The customer came from our ad for "${plan.label}" and was just sent that product's WhatsApp card (photos, price, Add to cart) before this reply. Do not list or describe other products unless asked; welcome them and invite them to tap the card to see it and add it to their cart.`;
+    }else{
+      const category=plan.kind==='ad_category'?plan.target:'';
+      r=await sendCatalog(env, deps, c, phone, {category, inboxId});
+      note=category
+        ? `The customer came from our ad for "${plan.label}" and was just sent our ${category} catalog in WhatsApp (tappable product cards with Add to cart) before this reply. Do not list the products again; invite them to tap "View items".`
+        : `The customer was just sent our product catalog in WhatsApp (tappable product cards with Add to cart) before this reply. Do not list the products again; you may briefly invite them to tap "View items" to browse and order.`;
+    }
+    if(!r?.ok){ await deps.reportOpsError?.(env, `wa shop ${plan.kind}`, new Error(r?.error||'send failed'), {clientId:c.Id}).catch(()=>{}); return ''; }
+    if(await ensureEventsTable(env)) await claimEvent(env, {id:`${plan.kind}:${c.Id}:${digits(phone)}:${Date.now()}`, client_id:c.Id, kind:plan.kind, phone:digits(phone), detail:plan.ad_id||plan.target||''}).catch(()=>{});
+    return note;
+  }catch(e){ await deps.reportOpsError?.(env, 'wa shop inbound catalog', e, {clientId:client?.Id}).catch(()=>{}); return ''; }
+}
+
+// Ads (from Reports → Ads ROI's synced list) and products, for the ad → product picker.
+async function handleAds(request, env, deps){
+  const {c, error}=await session(request, env, deps); if(error) return error;
+  const cfg=waShopConfig(c);
+  let ads=[];
+  if(env.DB){
+    const rows=(await env.DB.prepare(`SELECT ad_id, ad_name, campaign_name, status FROM meta_ads_ads WHERE client_id=? ORDER BY CASE WHEN status='ACTIVE' THEN 0 ELSE 1 END, updated_at DESC LIMIT 300`).bind(Number(c.Id)).all().catch(()=>({results:[]})))?.results||[];
+    ads=rows.map(r=>({ad_id:String(r.ad_id), ad_name:String(r.ad_name||''), campaign:String(r.campaign_name||''), active:r.status==='ACTIVE'}));
+  }
+  const products=(await catalogProducts(env, deps, c, cfg).catch(()=>[])).map(p=>({rid:waShopRetailerId(p), name:String(p.name||p.title||p.sku||''), category:String(p.category||'')}));
+  return deps.json({ads, products, categories:[...new Set(products.map(p=>p.category).filter(Boolean))].sort()});
+}
+
+// Catalog templates = this WhatsApp account's templates with a "View items" (MPM) button.
+export const WA_SHOP_BC_NAME_RE=/^[a-z0-9_]{1,500}$/;
+export function waShopIsCatalogTemplate(t){
+  return (t?.components||[]).some(cm=>String(cm.type).toUpperCase()==='BUTTONS'&&(cm.buttons||[]).some(b=>String(b.type).toUpperCase()==='MPM'));
+}
+export function waShopCatalogTemplateBody({name, language='en', header, body}){
+  return {name, language, category:'MARKETING', components:[
+    {type:'HEADER', format:'TEXT', text:String(header).slice(0,60)},
+    {type:'BODY', text:String(body).slice(0,1024)},
+    {type:'BUTTONS', buttons:[{type:'MPM', text:'View items'}]},
+  ]};
+}
+export function waShopCatalogTemplateSend(to, {name, language='en'}, sections){
+  const first=sections?.[0]?.product_items?.[0]?.product_retailer_id||'';
+  return {messaging_product:'whatsapp', recipient_type:'individual', to:digits(to), type:'template', template:{name, language:{code:language}, components:[
+    {type:'button', sub_type:'mpm', index:0, parameters:[{type:'action', action:{thumbnail_product_retailer_id:first, sections}}]},
+  ]}};
+}
+async function bcContext(request, env, deps){
+  const s=await session(request, env, deps); if(s.error) return s;
+  const cfg=waShopConfig(s.c), cr=creds(deps, s.c, cfg);
+  if(!cfg.broadcast_on) return {error:deps.json({error:'Turn on “Catalog broadcasts” first.'}, 400)};
+  if(!cr?.wa_token||!cr.waba_id||!cr.wa_phone_id) return {error:deps.json({error:'Connect WhatsApp first (Settings → Channels).'}, 400)};
+  return {...s, cfg, cr};
+}
+async function handleBcTemplates(request, env, deps){
+  const {cr, error}=await bcContext(request, env, deps); if(error) return error;
+  const r=await graph(`${cr.waba_id}/message_templates?fields=name,status,language,category,components,rejected_reason&limit=200`, cr.wa_token);
+  if(!r.ok) return deps.json({error:`Meta: ${r.error}`}, 502);
+  const list=(r.data?.data||[]).filter(waShopIsCatalogTemplate).map(t=>{
+    const part=type=>(t.components||[]).find(cm=>String(cm.type).toUpperCase()===type)||{};
+    return {name:t.name, language:t.language, status:t.status, rejected_reason:t.rejected_reason||'', header:part('HEADER').text||'', body:part('BODY').text||''};
+  });
+  return deps.json({templates:list});
+}
+async function handleBcTemplateCreate(request, env, deps){
+  const {cr, error}=await bcContext(request, env, deps); if(error) return error;
+  const b=await request.json().catch(()=>({}));
+  const name=String(b.name||'').trim().toLowerCase().replace(/[\s-]+/g,'_');
+  if(!WA_SHOP_BC_NAME_RE.test(name)) return deps.json({error:'Template name: lowercase letters, numbers and _ only, e.g. new_arrivals_nov'}, 400);
+  const header=String(b.header||'').trim(), body=String(b.body||'').trim();
+  if(!header||!body) return deps.json({error:'Add a title and a message.'}, 400);
+  if(/\{\{\d+\}\}/.test(header+body)) return deps.json({error:'Leave out {{1}}-style placeholders — catalog templates are sent as written.'}, 400);
+  const language=/^[a-z]{2}(_[A-Z]{2})?$/.test(String(b.language||''))?b.language:'en';
+  const r=await graph(`${cr.waba_id}/message_templates`, cr.wa_token, {method:'POST', body:waShopCatalogTemplateBody({name, language, header, body})});
+  if(!r.ok) return deps.json({error:`Meta refused the template: ${r.error}`}, 502);
+  return deps.json({ok:true, name, status:r.data?.status||'PENDING'});
+}
+// Phone numbers to send to: past WhatsApp Shop / Ecom customers, or every WhatsApp lead. Opted-out
+// leads and Instagram-only contacts are always left out.
+async function handleBcAudience(request, env, deps){
+  const {c, error}=await bcContext(request, env, deps); if(error) return error;
+  const b=await request.json().catch(()=>({}));
+  const audience=b.audience==='leads'?'leads':'customers';
+  const leads=[];
+  if(deps.leadsTable) for(let offset=0; offset<50000; offset+=1000){
+    const qs=new URLSearchParams({where:`(ClientId,eq,${c.Id})`, limit:'1000', offset:String(offset), fields:'Phone,OptOut,Channel'});
+    const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?${qs.toString()}`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    leads.push(...list);
+    if(list.length<1000) break;
+  }
+  const optedOut=new Set(leads.filter(l=>String(l.OptOut||'')==='Yes').map(l=>digits(l.Phone)));
+  let phones=[];
+  if(audience==='leads') phones=leads.filter(l=>String(l.Channel||'').toLowerCase()!=='instagram').map(l=>digits(l.Phone));
+  else{
+    const t=await deps.ecomResolveTable(env, c.Id, 'orders');
+    if(t) phones=(await deps.ecomListClientRows(env, t, c.Id, '', 'customer_phone')).map(r=>digits(r.customer_phone));
+  }
+  phones=[...new Set(phones.filter(p=>p.length>=10&&p.length<=15&&!optedOut.has(p)))];
+  return deps.json({audience, phones, count:phones.length, opted_out:optedOut.size});
+}
+// One batch (max 25) — the page sends the list in batches and shows progress.
+async function handleBcSend(request, env, deps){
+  const {c, cfg, cr, error}=await bcContext(request, env, deps); if(error) return error;
+  const b=await request.json().catch(()=>({}));
+  const name=String(b.template||''), language=String(b.language||'en');
+  if(!WA_SHOP_BC_NAME_RE.test(name)) return deps.json({error:'Pick an approved catalog template.'}, 400);
+  const phones=[...new Set((Array.isArray(b.phones)?b.phones:[]).map(digits).filter(p=>p.length>=10))].slice(0,25);
+  if(!phones.length) return deps.json({error:'No numbers in this batch.'}, 400);
+  const sections=waShopSections(await catalogProducts(env, deps, c, cfg), b.category||'');
+  if(!sections.length) return deps.json({error:b.category?`No products in “${b.category}” to show.`:'No products to show yet.'}, 400);
+  const runId=String(b.run_id||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,40)||String(Date.now());
+  const events=await ensureEventsTable(env);
+  let sent=0; const failed=[];
+  for(const to of phones){
+    // A retried batch never messages the same customer twice in one run.
+    if(events&&!await claimEvent(env, {id:`bc:${c.Id}:${runId}:${to}`, client_id:c.Id, kind:'broadcast', phone:to, detail:name})) continue;
+    const r=await sendWa(cr, waShopCatalogTemplateSend(to, {name, language}, sections));
+    if(r.ok) sent++; else failed.push({phone:to, error:r.error});
+  }
+  return deps.json({ok:true, sent, failed});
 }
