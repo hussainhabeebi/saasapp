@@ -548,6 +548,13 @@ function fltInboxes(){
  const ids=[...new Set([...known.map(ib=>String(ib.id)),...Object.keys(by).filter(k=>k&&fltN(by,k)>0)])];
  return ids.map(id=>{const ib=known.find(x=>String(x.id)===id)||(boot2?.inboxes||[]).find(x=>String(x.id)===id)||{name:'Inbox '+id};return {id,name:ib.name,phone:fmtPhone(ib.phone_number),n:fltN(by,id)}});
 }
+// The number filter shows the WhatsApp number itself; the inbox name is only added when it says
+// something more than the number (never the bare "Inbox 76" id).
+function fltInboxLabel(ib){
+ const name=String(ib.name||'').trim(),generic=!name||/^inbox\s*\d+$/i.test(name)||name.replace(/\D/g,'')===String(ib.phone||'').replace(/\D/g,'');
+ if(ib.phone)return generic?ib.phone:`${ib.phone} · ${name}`;
+ return name||'Inbox '+ib.id;
+}
 function fltAgents(){
  if(isStaff()||!V2)return [];
  const by=counts2?.by_assignee||{},agents=agentsList().slice();
@@ -560,7 +567,7 @@ function fltSources(){const by=V2&&counts2?.by_source||{};return Object.keys(SRC
 function fltActive(){
  const out=[];
  if(channel!=='whatsapp')out.push(['channel',channel==='instagram'?'📸 Instagram':'All channels']);
- if(inboxFilter){const ib=fltInboxes().find(x=>x.id===inboxFilter);out.push(['inbox','📞 '+(ib?.name||'Number')])}
+ if(inboxFilter){const ib=fltInboxes().find(x=>x.id===inboxFilter);out.push(['inbox','📞 '+(ib?fltInboxLabel(ib):'Number')])}
  if(assigneeFilter)out.push(['assignee','👤 '+(assigneeFilter==='__none'?'Unassigned':agentName(assigneeFilter))]);
  if(catFilter)out.push(['cat','🗂 '+(catFilter==='__none'?'No category':catFilter)]);
  if(srcFilter)out.push(['src',SRC_LABELS[srcFilter]||srcFilter]);
@@ -601,7 +608,7 @@ function renderFilterPanel(){
  let h='';
  h+=sec('channel','Channel',sel('channel','setChannel',fltOpt('whatsapp','WhatsApp',channel)+fltOpt('instagram','Instagram',channel)+(V2?fltOpt('all','All channels',channel):'')));
  const ibs=fltInboxes();
- if(ibs.length>1||inboxFilter)h+=sec('inbox','WhatsApp number',sel('inbox','setInbox',fltOpt('','All numbers',inboxFilter)+ibs.map(ib=>fltOpt(ib.id,`${ib.name}${ib.phone?' · '+ib.phone:''}${ib.n?' ('+ib.n+')':''}`,inboxFilter)).join('')));
+ if(ibs.length>1||inboxFilter)h+=sec('inbox','WhatsApp number',sel('inbox','setInbox',fltOpt('','All numbers',inboxFilter)+ibs.map(ib=>fltOpt(ib.id,`${fltInboxLabel(ib)}${ib.n?' ('+ib.n+')':''}`,inboxFilter)).join('')));
  const ags=fltAgents();
  if(ags.length>1||assigneeFilter){const un=fltN(counts2?.by_assignee||{},'');h+=sec('assignee','Teammate',sel('assignee','setAssignee',fltOpt('','Everyone',assigneeFilter)+ags.map(a=>fltOpt(a.email,`${a.name}${a.email===meEmail?' (you)':''}${a.n?' ('+a.n+')':''}`,assigneeFilter)).join('')+fltOpt('__none',`Unassigned${un?' ('+un+')':''}`,assigneeFilter)))}
  const {cats,none}=fltCats();

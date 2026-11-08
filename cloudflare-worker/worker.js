@@ -7285,22 +7285,34 @@ async function handleChannelsInboxCreate(request, env){
 // Name + WhatsApp number of each connected Chatwoot inbox, for the Chats inbox tabs. Cached per
 // client for 5 minutes per isolate; no credentials leave this function.
 const _chatsInboxDirCache=new Map();
+// WhatsApp numbers we already store per inbox (connect flow + the legacy single-number fields), so
+// the Chats number filter can show "+91 98xxx" even when Chatwoot is slow or has no phone_number.
+function chatsStoredInboxPhones(c){
+  const phones={};
+  for(const x of metaCredentialSummary(c)) if(x.display_phone) phones[String(x.inbox_id)]=x.display_phone;
+  const legacy=String(c?.chatwoot_inbox_id||'');
+  if(legacy&&!phones[legacy]&&c?.wa_display_phone) phones[legacy]=String(c.wa_display_phone);
+  return phones;
+}
 async function chatsInboxDirectory(c){
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return [];
+  const phones=chatsStoredInboxPhones(c);
+  const stored=()=>Object.entries(phones).map(([id, phone])=>({id, name:'', channel_type:'Channel::Whatsapp', phone_number:phone}));
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return stored();
   const key=String(c.Id||c.id||c.chatwoot_account_id), hit=_chatsInboxDirCache.get(key);
   if(hit&&Date.now()-hit.at<300000) return hit.list;
   const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(), 4000);
   try{
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}, signal:ctl.signal});
-    if(!r.ok) return hit?.list||[];
+    if(!r.ok) return hit?.list||stored();
     const data=await r.json().catch(()=>({}));
     const raw=data?.payload||data?.data?.payload||[];
-    const phones=Object.fromEntries(metaCredentialSummary(c).map(x=>[String(x.inbox_id), x.display_phone]));
     const list=raw.map(ib=>({id:String(ib.id), name:String(ib.name||''), channel_type:String(ib.channel_type||''),
       phone_number:ib.channel_type==='Channel::Whatsapp'?String(phones[String(ib.id)]||ib.phone_number||''):''}));
+    // A number we know about that Chatwoot did not list still gets its phone in the filter.
+    for(const ib of stored()) if(!list.some(x=>x.id===ib.id)) list.push(ib);
     _chatsInboxDirCache.set(key, {at:Date.now(), list});
     return list;
-  }catch(e){ return hit?.list||[]; }
+  }catch(e){ return hit?.list||stored(); }
   finally{ clearTimeout(t); }
 }
 

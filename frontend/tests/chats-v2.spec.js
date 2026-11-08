@@ -604,14 +604,16 @@ test('travel inbox: the category picker lists Marketing Messages and the account
 test('one tab per WhatsApp number shows its phone and narrows the list to that channel', async ({ page }) => {
   const { calls } = await open(page, {
     rows: [conv(1, { name: 'Asha', inbox_id: '9' }), conv(2, { name: 'Binu', inbox_id: '12' }), conv(4, { name: 'Dev', inbox_id: '12' })],
-    inboxes: [{ id: '9', name: 'Aii academy', channel_type: 'Channel::Whatsapp', phone_number: '+919876543210' }, { id: '12', name: 'Onshope', channel_type: 'Channel::Whatsapp', phone_number: '971501234567' }],
-    byInbox: { 9: { whatsapp: 1, instagram: 0 }, 12: { whatsapp: 2, instagram: 0 } },
+    inboxes: [{ id: '9', name: 'Aii academy', channel_type: 'Channel::Whatsapp', phone_number: '+919876543210' }, { id: '12', name: 'Onshope', channel_type: 'Channel::Whatsapp', phone_number: '971501234567' }, { id: '76', name: 'Inbox 76', channel_type: 'Channel::Whatsapp', phone_number: '+919496971950' }],
+    byInbox: { 9: { whatsapp: 1, instagram: 0 }, 12: { whatsapp: 2, instagram: 0 }, 76: { whatsapp: 3, instagram: 0 } },
   });
   await page.locator('#fltBtn').click();
   const row = page.locator('#flt-inbox');
   await expect(row).toBeVisible();
   await expect(row).toHaveValue('');
-  await expect(row.locator('option', { hasText: 'Onshope' })).toHaveText('Onshope · +971501234567 (2)');
+  await expect(row.locator('option', { hasText: 'Onshope' })).toHaveText('+971501234567 · Onshope (2)');
+  // A bare "Inbox 76" name is only the id, so the number alone is shown.
+  await expect(row.locator('option[value="76"]')).toHaveText('+919496971950 (3)');
   await row.selectOption('12');
   await expect(page.locator('#list')).toContainText('Binu');
   await expect(page.locator('#list')).not.toContainText('Asha');
