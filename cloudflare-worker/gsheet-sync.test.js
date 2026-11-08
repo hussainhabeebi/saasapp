@@ -28,3 +28,13 @@ test('gsheetBuildRows writes a labelled header then one row per lead', ()=>{
     ['+912','','','','{"city":"Kochi"}']
   ]);
 });
+
+test('gsheet sync can export the ad attribution columns (ctwa_clid + ad id)', ()=>{
+  assert.deepEqual(gsheetParseCols('{"v":2,"cols":["Phone","CtwaClid","AdId"]}'), ['Phone','CtwaClid','AdId']);
+  const rows=gsheetBuildRows([{Phone:'+911', CtwaClid:'ARAkLk', AdId:'120212345678901'}, {Phone:'+912'}], ['Phone','CtwaClid','AdId']);
+  assert.deepEqual(rows, [
+    ['Phone','CTWA Click ID','Ad ID'],
+    ['+911','ARAkLk','120212345678901'],
+    ['+912','','']
+  ]);
+});
