@@ -394,14 +394,34 @@ async function handleConnect(request, env, deps){
     else return deps.json({error:await diagnoseLink(c, cr, cfg.catalog_id, link)}, 502);
   }
   // 3. Show the catalog and the cart on the number.
-  const show=await graphAny(`${cr.wa_phone_id}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`, waShopTokens(c, cr, 'whatsapp'), {method:'POST'});
-  if(!show.ok) return deps.json({error:`The catalog is connected, but showing it on your WhatsApp number failed: ${show.error}`}, 502);
+  // Couplo (Nov 2026): the link succeeded but this POST came back "(#1) An unknown error has
+  // occurred" and the whole Link failed — nothing saved, so Sync then said "add your catalog ID".
+  // Now: skip the POST when Meta already has both switches on, and a failed POST no longer undoes
+  // the link — it's saved and the merchant gets the two switches to flip in WhatsApp Manager.
+  const shown=await waShopShowOnNumber(cr.wa_phone_id, waShopTokens(c, cr, 'whatsapp'));
   // 4. What's in it, as Meta sees it.
   const info=await fetchCatalogInfo(cfg.catalog_id, tokens);
   await saveConfig(env, deps, c, {catalog_id:cfg.catalog_id, linked_at:new Date().toISOString(),
     ...(info.ok?{catalog_name:info.name, catalog_count:info.count, meta_items:info.items.slice(0,100), meta_items_at:new Date().toISOString()}:{})});
+  if(!shown.ok) await deps.reportOpsError?.(env, 'wa shop commerce settings (catalog icon / cart)', new Error(shown.error), {clientId:c.Id}).catch(()=>{});
   return deps.json({ok:true, already_linked:alreadyLinked, catalog_name:info.ok?info.name:'', product_count:info.ok?info.count:null,
+    shown_on_number:shown.ok, ...(shown.ok?{}:{show_error:shown.error, manual_steps:WA_SHOP_MANUAL_SHOW_STEPS}),
     ...(info.ok?{}:{warning:`Linked, but the catalog's products couldn't be read: ${info.error}`})});
+}
+export const WA_SHOP_MANUAL_SHOW_STEPS='WhatsApp Manager → Account tools → Catalog → (your catalog) → turn on "Show catalog icon in chat header" and "Enable cart"';
+// Turns the catalog icon and the cart on for a number. Reads the current settings first (already on
+// = nothing to do), then POSTs; Meta's (#1) "unknown error" is often transient, so one retry.
+export async function waShopShowOnNumber(phoneId, tokens){
+  const cur=await graphAny(`${phoneId}/whatsapp_commerce_settings`, tokens);
+  const s=(cur.ok&&cur.data?.data?.[0])||{};
+  if(s.is_catalog_visible===true&&s.is_cart_enabled===true) return {ok:true, already:true};
+  const path=`${phoneId}/whatsapp_commerce_settings?is_catalog_visible=true&is_cart_enabled=true`;
+  let r=await graphAny(path, tokens, {method:'POST'});
+  if(!r.ok&&(r.code===1||r.code===2||/unknown error|temporar|try again/i.test(r.error))){
+    await new Promise(res=>setTimeout(res, 1500));
+    r=await graphAny(path, tokens, {method:'POST'});
+  }
+  return r.ok?{ok:true}:{ok:false, error:r.error||'Meta refused the change'};
 }
 // Couplo (Oct 2026): Meta answered "invalid product catalogue ID" for a real catalog, even with a
 // System User token saved — that text also covers "this token can't see it" and "the catalog belongs

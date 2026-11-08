@@ -4656,7 +4656,9 @@ function wsConnect(btn) {
   const id = document.getElementById('wsCatalogId').value.replace(/\D/g, '');
   if (!id) { wsSetMsg('wsMsg1', '⚠ Enter the catalog ID — the long number shown in Commerce Manager.', 'err'); return; }
   return wsRun(btn, 'wsMsg1', () => wsCall('connect', { catalog_id: id }),
-    d => `✓ ${d.already_linked ? 'Catalog was already connected — now' : 'Catalog linked and'} shown on your WhatsApp number with the cart on` +
+    d => (d.shown_on_number === false
+      ? `✓ Catalog ${d.already_linked ? 'was already connected' : 'linked'} to your WhatsApp account. One last switch Meta wouldn't let us flip (${d.show_error}) — do it once by hand: ${d.manual_steps}. You can sync products now.`
+      : `✓ ${d.already_linked ? 'Catalog was already connected — now' : 'Catalog linked and'} shown on your WhatsApp number with the cart on`) +
       (d.catalog_name ? ` · “${d.catalog_name}”` : '') + (d.product_count != null ? ` · ${d.product_count} products` : '') + (d.warning ? ` (${d.warning})` : ''),
     'Linking… checking with Meta');
 }
