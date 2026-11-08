@@ -241,11 +241,41 @@ async function graphAny(path, tokens, opts){
 // PATCH field whose column couldn't be created, silently. The token is now also kept server-side in
 // KV (never returned to the browser) and read from there whenever the column comes back empty.
 const tokenKey=cid=>`wa_shop_catalog_token:${cid}`;
+// Couplo (Nov 2026): the same silent drop hit wa_shop_config — Link said "✓ 24 products" yet the
+// page came back empty and Sync said "Add your Meta catalog ID first". The config is now mirrored
+// in KV too and read from there whenever the column comes back empty.
+const configKey=cid=>`wa_shop_config:${cid}`;
 async function withCatalogToken(env, c){
-  if(!c||String(c[WA_SHOP_TOKEN_FIELD]||'').trim()||!env?.MATRI_CACHE) return c;
-  const t=await env.MATRI_CACHE.get(tokenKey(c.Id)).catch(()=>null);
-  return t?{...c, [WA_SHOP_TOKEN_FIELD]:t}:c;
+  const kv=env?.MATRI_CACHE;
+  if(!c||!kv) return c;
+  let out=c;
+  if(!String(c[WA_SHOP_TOKEN_FIELD]||'').trim()){
+    const t=await kv.get(tokenKey(c.Id)).catch(()=>null);
+    if(t) out={...out, [WA_SHOP_TOKEN_FIELD]:t};
+  }
+  // The newer of the two copies wins (saved_at) — a column that keeps an old value but drops new
+  // writes would otherwise hide every later save.
+  const j=await kv.get(configKey(c.Id)).catch(()=>null);
+  if(j){
+    const at=x=>{ try{ return String(JSON.parse(x||'{}')?.saved_at||''); }catch(e){ return ''; } };
+    if(!String(c[WA_SHOP_CONFIG_FIELD]||'').trim()||at(j)>at(c[WA_SHOP_CONFIG_FIELD])) out={...out, [WA_SHOP_CONFIG_FIELD]:j};
+  }
+  return out;
 }
+// Writes the config to the client row and to KV; throws only if neither kept it.
+async function persistConfig(env, deps, c, next){
+  next={...next, saved_at:new Date().toISOString()};
+  const json=JSON.stringify(next);
+  let inKv=false, dbErr=null;
+  if(env?.MATRI_CACHE) try{ await env.MATRI_CACHE.put(configKey(c.Id), json); inKv=true; }catch(e){}
+  try{
+    await deps.ensureClientColumns(env, [WA_SHOP_CONFIG_FIELD]);
+    await deps.patchClientFields(env, c.Id, {[WA_SHOP_CONFIG_FIELD]:json});
+  }catch(e){ dbErr=e; }
+  if(!inKv&&dbErr) throw dbErr;
+  return next;
+}
+export const waShopLoadClient=withCatalogToken;
 export function waShopTokens(c, cr, prefer='catalog'){
   const cat=String(c?.[WA_SHOP_TOKEN_FIELD]||'').trim(), wa=String(cr?.wa_token||'').trim();
   return [...new Set(prefer==='catalog'?[cat, wa]:[wa, cat])].filter(Boolean);
@@ -266,10 +296,7 @@ async function fetchCatalogInfo(catalogId, tokens){
 async function sendWa(cr, payload){ return graph(`${cr.wa_phone_id}/messages`, cr.wa_token, {method:'POST', body:payload}); }
 function storedConfig(c){ try{ return JSON.parse(c?.[WA_SHOP_CONFIG_FIELD]||'{}')||{}; }catch(e){ return {}; } }
 async function saveConfig(env, deps, c, patch){
-  const next={...storedConfig(c), ...patch};
-  await deps.ensureClientColumns(env, [WA_SHOP_CONFIG_FIELD]);
-  await deps.patchClientFields(env, c.Id, {[WA_SHOP_CONFIG_FIELD]:JSON.stringify(next)});
-  return next;
+  return persistConfig(env, deps, c, {...storedConfig(c), ...patch});
 }
 async function verifyToken(env, deps, cid){ return (await deps.hmacSignB64(env, `wa-shop:${cid}`)).replace(/[^A-Za-z0-9]/g,'').slice(0,40); }
 
@@ -346,15 +373,14 @@ async function handleConfig(request, env, deps){
   if((patch.payment_mode||waShopConfig(c).payment_mode)==='whatsapp_pay'&&!(patch.payment_config??waShopConfig(c).payment_config))
     return deps.json({error:'Add the payment configuration name from WhatsApp Manager → Payments to use WhatsApp Pay.'}, 400);
   const fields={};
-  if(Object.keys(patch).length){ await deps.ensureClientColumns(env, [WA_SHOP_CONFIG_FIELD]); fields[WA_SHOP_CONFIG_FIELD]=JSON.stringify({...storedConfig(c), ...patch}); }
+  if(Object.keys(patch).length) await persistConfig(env, deps, c, {...storedConfig(c), ...patch});
   const hasToken='catalog_token' in b, token=String(b.catalog_token||'').trim();
   if(hasToken){
     if(token&&!/^EA[A-Za-z0-9]{20,}$/.test(token)) return deps.json({error:'That doesn\'t look like a Meta access token — it starts with EAA and has no spaces.'}, 400);
     await deps.ensureClientColumns(env, [WA_SHOP_TOKEN_FIELD]); fields[WA_SHOP_TOKEN_FIELD]=token;
   }
-  if(!Object.keys(fields).length) return deps.json({error:'Nothing to save'}, 400);
+  if(!hasToken) return Object.keys(patch).length?deps.json({ok:true}):deps.json({error:'Nothing to save'}, 400);
   await deps.patchClientFields(env, c.Id, fields);
-  if(!hasToken) return deps.json({ok:true});
   const kv=env?.MATRI_CACHE;
   let inKv=false;
   if(kv) try{ token?await kv.put(tokenKey(c.Id), token):await kv.delete(tokenKey(c.Id)); inKv=true; }catch(e){}
@@ -538,7 +564,7 @@ async function handleWebhookVerify(request, env, deps, cid){
 
 async function handleWebhook(request, env, deps, cid, ctx){
   const raw=await request.text();
-  const c=await deps.getClientById(env, cid);
+  const c=await withCatalogToken(env, await deps.getClientById(env, cid));
   if(!c) return new Response('ok', {status:200});
   const cfg=waShopConfig(c), cr=creds(deps, c, cfg);
   const target=waShopChatwootTarget(c, cfg, cr);
