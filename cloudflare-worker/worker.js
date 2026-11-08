@@ -14,6 +14,7 @@ import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
+import {TRIP_REQUEST_COLUMNS,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
@@ -18245,6 +18246,7 @@ export function hotLeadAlertSettings(c){
     template_lang:String(s.template_lang||'en').trim()||'en',
     notify_owner_too:s.notify_owner_too===true,
     on_hot:s.on_hot!==false, on_hot_moment:s.on_hot_moment!==false, on_lead_ad:s.on_lead_ad!==false,
+    on_trip_request:s.on_trip_request!==false,
     cooldown_hours:Number.isFinite(hours)&&hours>=1 ? Math.min(hours, 168) : 12,
   };
 }
@@ -18278,6 +18280,7 @@ export function hotLeadAlertReasonText(reason, detail){
   if(reason==='hot') return 'is ready to book';
   if(reason==='hot_moment') return detail?`asked: "${d}"`:'is asking about price or availability';
   if(reason==='lead_ad') return detail?`just filled your lead form (${d})`:'just filled your lead form';
+  if(reason==='trip_request') return detail?`sent a trip request: ${d}`:'sent a trip request';
   if(reason==='test') return 'is a test alert, all set';
   return 'needs a call';
 }
@@ -18328,8 +18331,11 @@ export async function engineMaybeSendHotLeadAlert(env, c, clientId, leadId, prev
     const reason=opts.reason || hotLeadAlertReason(prevLead, body, cfg);
     if(!reason) return null;
     if(reason==='lead_ad' && !cfg.on_lead_ad) return null;
+    if(reason==='trip_request' && !cfg.on_trip_request) return null;
     await hotAlertEnsureSchema(env);
-    if(reason!=='test' && env.DB){
+    // A trip request pages once per trip (tripRequestSync's alerted_at), even if the lead had a
+    // hot alert a moment ago.
+    if(reason!=='test' && reason!=='trip_request' && env.DB){
       const since=new Date(Date.now()-cfg.cooldown_hours*3600000).toISOString();
       const recent=await env.DB.prepare(`SELECT 1 AS x FROM hot_lead_alerts WHERE client_id=? AND lead_id=? AND status='sent' AND created_at>? LIMIT 1`)
         .bind(Number(clientId)||0, Number(leadId), since).first().catch(()=>null);
@@ -22278,6 +22284,110 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
     }}};
 }
 
+// ── Trip requests (trip-requests.js): the booking bots' travel details → Trips (ta_bookings). ──
+// Called on every bot turn that carries travel details. Creates the draft trip once there is enough
+// (destination + a date, month or traveller count), keeps it up to date while it is still before
+// its quote, and only adds a note once sales has quoted it. Returns {tripId, created, alert,
+// summary, owner} or null. The customer sees nothing of this.
+const _tripColumnsChecked=new Set();
+async function tripEnsureColumns(env,tableId){
+  if(_tripColumnsChecked.has(tableId)) return;
+  const {names}=await ncTableMeta(env,tableId);
+  if(!names.length) throw new Error('Trips table could not be read');
+  const want=[...TRIP_REQUEST_COLUMNS.map(c=>c.title),'alerted_at'].filter(t=>!names.includes(t));
+  if(want.length){
+    for(const t of want) await ncEnsureField(env,tableId,names,t);
+    // Some NocoDB versions only take the older /columns route (as the dashboard's taEnsureColumns uses).
+    const after=(await ncTableMeta(env,tableId)).names;
+    for(const t of want.filter(t=>!after.includes(t)))
+      await ncFetch(env,`api/v2/meta/tables/${tableId}/columns`,{method:'POST',body:{column_name:t,title:t,uidt:'SingleLineText'}}).catch(()=>null);
+  }
+  _tripColumnsChecked.add(tableId);
+}
+// This customer's trips: by lead, and by phone (last 9 digits, so +91 / spaces don't matter).
+async function tripReadForCustomer(env,tableId,clientId,leadId,phone){
+  const q=async where=>{
+    const r=await ncFetch(env,`api/v2/tables/${tableId}/records?where=${encodeURIComponent(where)}&limit=50&sort=-CreatedAt`);
+    if(!r.ok) return [];
+    const d=await r.json().catch(()=>({}));
+    return d?.list||[];
+  };
+  const tail=String(phone||'').replace(/\D/g,'').slice(-9);
+  const [byLead,byPhone]=await Promise.all([
+    q(`(client_id,eq,${clientId})~and(lead_id,eq,${leadId})`),
+    tail.length>=7?q(`(client_id,eq,${clientId})~and(client_phone,like,%${tail}%)`):Promise.resolve([]),
+  ]);
+  const seen=new Set(), out=[];
+  for(const t of [...byLead,...byPhone]) if(t&&!seen.has(t.Id)){ seen.add(t.Id); out.push(t); }
+  return out;
+}
+export function tripAutoOn(c){ return c?.ta_auto_trips!=='No'; }
+export async function tripRequestSync(env,c,clientId,leadId,state,leadBody,qual,{complete=false}={}){
+  if(!tripAutoOn(c)) return null;
+  const tableId=taResolveTable(c,'bookings');
+  if(!tableId) return null;
+  const f=tripRequestFields(qual);
+  if(!tripRequestEligible(f)) return null;
+  await tripEnsureColumns(env,tableId);
+  const now=new Date();
+  const phone=state.phone||leadBody?.Phone||state.lead?.Phone||'';
+  const trips=await tripReadForCustomer(env,tableId,clientId,leadId,phone);
+  const plan=tripRequestPlan(trips,{leadId,phone,destination:f.destination});
+  const summary=tripSummaryLine(f);
+  const leadOwner=String(leadBody?.Owner||state.lead?.Owner||'').trim().toLowerCase();
+  const write=async(method,body)=>{
+    const r=await ncFetch(env,`api/v2/tables/${tableId}/records`,{method,body:{...body,client_id:String(clientId)}});
+    if(!r.ok) throw new Error(`Trips ${method} HTTP ${r.status}: ${(await r.text().catch(()=>'')).slice(0,200)}`);
+    return r.json().catch(()=>({}));
+  };
+  const appendNote=(trip,lines)=>[String(trip?.notes||'').trim(),...lines.map(l=>tripNoteLine(l,now))].filter(Boolean).join('\n').slice(-8000);
+  let result;
+  if(plan.action==='create'){
+    // Owner: a channel's own user always keeps the lead; otherwise a destination rule in Lead
+    // routing ("Product" rules naming the destination) wins, else whoever already owns the lead.
+    const channelOwner=await engineChannelOwner(env,clientId,state.inboxId);
+    const staff=engineRoutableStaffEmails(c);
+    const routed=channelOwner?'':tripRouteOwner(engineGetLeadRouting(c),f.destination,e=>staff.has(e));
+    const owner=routed||leadOwner;
+    const rec=tripRequestRecord(f,{name:leadBody?.Name||state.lead?.Name||state.name||'',phone,leadId,owner,currency:c.deal_currency||'',now});
+    const lines=[`Request from the WhatsApp bot${complete?'':' (customer has not finished the steps yet)'}: ${summary}`];
+    if(f.children_ages) lines.push(`Children's ages: ${f.children_ages}`);
+    if(plan.duplicateOf){ rec.duplicate_of=plan.duplicateOf; lines.push(`Possible duplicate of trip #${plan.duplicateOf} (same phone and destination)`); }
+    rec.notes=appendNote(null,lines);
+    if(complete) rec.alerted_at=now.toISOString();
+    const made=await write('POST',rec);
+    result={tripId:made?.Id||null,created:true,alert:complete?summary:null,summary,owner};
+    if(routed&&routed!==leadOwner){
+      await engineUpsertLead(env,'PATCH',leadId,{Owner:routed}).catch(()=>{});
+      await engineSyncChatwootAssignee(c,state.convId,routed).catch(()=>{});
+    }
+  }else{
+    const trip=plan.trip;
+    const rec=tripRequestRecord(f,{phone,leadId,now});
+    const {patch,changes}=tripRequestDiff(trip,rec);
+    const body={Id:trip.Id};
+    if(plan.action==='update') Object.assign(body,patch);
+    if(changes.length) body.notes=appendNote(trip,[`Customer ${plan.action==='update'?'updated':'changed in chat (not applied — trip already quoted)'}: ${changes.join('; ')}`]);
+    const alert=complete&&!trip.alerted_at&&plan.action==='update';
+    if(alert){ body.alerted_at=now.toISOString(); if(!changes.length) body.notes=appendNote(trip,[`Customer finished the steps: ${summary}`]); }
+    if(Object.keys(body).length>1) await write('PATCH',body);
+    result={tripId:trip.Id,created:false,alert:alert?summary:null,summary,owner:String(trip.assigned_to||leadOwner)};
+  }
+  // The lead's own travel fields (Inquiries / Today): filled when empty, kept in step with the bot
+  // while they still hold what the bot wrote — a rep's own edit is never overwritten.
+  const prev=plan.trip?tripLeadFields(tripRequestFields({destination:plan.trip.destination,travel_date:String(plan.trip.departure_date||'').slice(0,10),travel_month:plan.trip.travel_month,adults:plan.trip.adults,children:plan.trip.children})):{};
+  const lf=tripLeadFields(f), leadPatch={};
+  for(const [k,v] of Object.entries(lf)){
+    const cur=String(state.lead?.[k]??'').trim();
+    if(cur!==v&&(!cur||cur===String(prev[k]??''))) leadPatch[k]=v;
+  }
+  if(Object.keys(leadPatch).length){
+    await ensureLeadsColumns(env,Object.keys(leadPatch)).catch(()=>{});
+    await engineUpsertLead(env,'PATCH',leadId,leadPatch).catch(()=>{});
+  }
+  return result;
+}
+
 // ── Flyindo chat style (flyindo-flow.js): per-chat progress in D1, 24 h like a WhatsApp session.
 async function flyindoEnsureSchema(env){
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS lt_flyindo_state (client_id INTEGER NOT NULL, phone TEXT NOT NULL, state_json TEXT NOT NULL DEFAULT '{}', expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone))`).run();
@@ -22328,11 +22438,11 @@ export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,use
     qualAnswers:{...(state.qualAnswers||{}),...(fs.destination?flyindoQualAnswers(fs):{})}};
   if(p.done){
     await flyindoClear(env,clientId,phone);
-    return {turn:{...base,route:'human',next:'human_handover',preserveCrmStage:false,intent:'BOOKING',qualAnswers:{...(state.qualAnswers||{}),...flyindoQualAnswers(fs)},text:p.text,
+    return {turn:{...base,route:'human',next:'human_handover',preserveCrmStage:false,intent:'BOOKING',qualAnswers:{...(state.qualAnswers||{}),...flyindoQualAnswers(fs)},text:p.text,tripRequest:{complete:true},
       deliver:async()=>{await engineDeliverReply(env,c,clientId,convId,p.text,{mediaType:'text',langCode:lang});await engineSendHandoverLabel(c,convId);return null;}}};
   }
   await flyindoSave(env,clientId,phone,fs);
-  return {turn:{...base,text:p.text,deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
+  return {turn:{...base,text:p.text,...(fs.destination?{tripRequest:{complete:false}}:{}),deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
 }
 
 // ── Travel flows (travel-flows.js): AI-first booking flows from Travel Settings → 🧩 Flows. ──
@@ -22490,7 +22600,7 @@ export async function engineHandleTravelFlows(env,c,clientId,state,phone,inboxId
   }
   const pkgOf=o=>packages.find(p=>taPkgId(p)===String(o.package_id));
   const historyText=[lead,...outputs.map(o=>o.kind==='package'?tfOutputText(o,pkgOf(o)):null).filter(Boolean),...outTexts,question].filter(Boolean).join('\n\n');
-  const turn={...base,qualAnswers:qual,text:historyText||question||'👍',
+  const turn={...base,qualAnswers:qual,text:historyText||question||'👍',tripRequest:{complete:finished},
     ...(isHandoverEnd?{route:'human',next:'human_handover',preserveCrmStage:false,intent:'BOOKING'}:finished?{intent:'BOOKING'}:{}),
     deliver:async()=>{
       if(lead)await engineDeliverReply(env,c,clientId,convId,lead,{mediaType,langCode:lang});
@@ -23940,7 +24050,13 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
   built.body.LastCustomerMsgAt=new Date(startMs).toISOString();
   const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
-  if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env,c,clientId,resolvedLeadId,state.lead,built.body,{inboxId:state.inboxId});
+  // A booking bot's travel details → a draft trip on Trips (trip-requests.js). Never costs the reply.
+  const trip=resolvedLeadId&&turn.tripRequest
+    ?await tripRequestSync(env,c,clientId,resolvedLeadId,state,built.body,routing.qualAnswers,turn.tripRequest).catch(e=>{reportOpsError(env,'Trip request sync failed',e,{clientId,leadId:resolvedLeadId}).catch(()=>{});return null;})
+    :null;
+  if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env,c,clientId,resolvedLeadId,state.lead,built.body,{inboxId:state.inboxId,...(trip?.alert?{reason:'trip_request',detail:trip.alert}:{})});
+  if(trip?.tripId) await engineBroadcastUpdate(env,clientId,{type:'trip_request',lead_id:resolvedLeadId,trip_id:trip.tripId,created:!!trip.created,complete:!!turn.tripRequest.complete,
+    lead_name:built.body.Name||state.lead?.Name||built.body.Phone||'',summary:trip.summary||'',owner:trip.owner||'',at:new Date().toISOString()}).catch(()=>{});
   if(resolvedLeadId){
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'user',content:userText,ts:new Date(startMs).toISOString()});
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',sender_type:'bot',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});

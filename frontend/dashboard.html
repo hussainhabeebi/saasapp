@@ -6683,6 +6683,7 @@ function connectLiveUpdates(){
     // touches allLeads/loadAll, purely a presence overlay on whatever's already rendered.
     else if(msg?.type==='viewing') onLiveViewingEvent(msg);
     else if(msg?.type==='new_lead') onLiveNewLeadEvent(msg);
+    else if(msg?.type==='trip_request') onLiveTripRequestEvent(msg);
     else if(msg?.type==='lead_reassigned') onLiveReassignEvent(msg);
     else if(msg?.type==='lead_updated') onLiveLeadUpdatedEvent(msg);
     else if(msg?.type==='lead_shared') onLiveSharedEvent(msg);
@@ -6782,6 +6783,28 @@ async function onLiveNewLeadEvent(msg){
   if(lead && !leadVisibleToMe(lead)) return; // routing on: unassigned isn't on staff's list, so no chime
   notifyNewLead(msg);
   window.csNewLeadAlert?.(lead||{Id:msg.lead_id, Name:msg.lead_name, Date:msg.at}, 'new');
+}
+// The WhatsApp booking bot filed or updated a trip request (worker.js tripRequestSync → Trips).
+// Refreshes Trips (the agency frame and Today's copy); a finished request chimes for its owner, or
+// for everyone while nobody owns it.
+let _tripReqReloadTimer=null;
+function onLiveTripRequestEvent(msg){
+  clearTimeout(_tripReqReloadTimer);
+  _tripReqReloadTimer=setTimeout(async()=>{
+    try{ if(typeof taLoad==='function') await taLoad(); }catch(e){}
+    const f=$id('agencyFrame');
+    try{ if(f?.contentWindow?.taLoad&&f.contentWindow.renderAgencySubPage){ await f.contentWindow.taLoad(['bookings']); if(f.contentWindow.document.querySelector('#bookingList')) f.contentWindow.renderAgencySubPage('bookings'); } }catch(e){}
+  },800);
+  if(!msg.complete||!(msg.created||msg.summary)) return;
+  if(msg.owner && myEmail && !sameEmail(msg.owner,myEmail)) return;
+  playChime([[660,0,0.25],[880,0.18,0.25]], 0.18);
+  if(typeof showToast==='function') showToast(`🆕 Trip request: ${msg.lead_name||'Customer'} — ${msg.summary||''}`);
+  if('Notification' in window && Notification.permission==='granted'){
+    try{
+      const n=new Notification(`🆕 Trip request: ${msg.lead_name||'Customer'}`,{body:msg.summary||'Open Trips to pick it up',tag:'lv-trip-'+(msg.trip_id||msg.lead_id)});
+      n.onclick=()=>{ window.focus(); navigate(typeof isTravelView==='function'&&isTravelView()?'tvtrips':'agency'); };
+    }catch(e){}
+  }
 }
 // A teammate changed a lead's fields (worker.js broadcasts type:'lead_updated' after a Service
 // Category save is confirmed stored, and after any Status Board / pipeline field save — LEAD_LIVE_FIELDS). Re-read just those fields for those leads and update them in
@@ -22228,7 +22251,7 @@ async function checkReminders(){
   if(_taLoaded){
     _taCarBookings.filter(b=>b.pickup_date&&b.pickup_date>=today&&b.pickup_date<=in48h&&b.status!=='cancelled')
       .forEach(b=>alerts.push({icon:'🚗',text:`Car pickup: ${b.customer_name} – ${b.car_name} on ${b.pickup_date}`}));
-    _taBookings.filter(b=>b.departure_date&&b.departure_date>=today&&b.departure_date<=in48h&&b.status!=='cancelled')
+    _taBookings.filter(b=>b.departure_date&&b.departure_date>=today&&b.departure_date<=in48h&&!['cancelled','requested','contacted'].includes(b.status))
       .forEach(b=>alerts.push({icon:'✈️',text:`Departure: ${b.client_name||''} – ${b.package_name||'Booking'} on ${b.departure_date}`}));
   }
   allLeads.filter(l=>l.passport_expiry&&l.passport_expiry>=today&&l.passport_expiry<=in30d)
@@ -24547,7 +24570,7 @@ async function deleteHospBooking(id){
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=8"></script>
-<script src="travel-view.js?v=7"></script>
+<script src="travel-view.js?v=8"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>
 <script src="commerce-view.js?v=3"></script>

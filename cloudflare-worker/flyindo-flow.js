@@ -266,5 +266,7 @@ export function flyindoStart(){ return {step:'destination', ages:[]}; }
 // Lead qualification answers saved with the handover so the team sees the request on the lead.
 export function flyindoQualAnswers(s){
   return {destination:s.destination||'', travel_date:s.date||'', adults:String(s.adults??''), children:String(s.children??0),
+    // Month picked but no day yet: kept so a request the customer leaves half-way still says when.
+    ...(!s.date&&s.month?{travel_month:s.month}:{}),
     ...((s.ages||[]).length?{children_ages:s.ages.map(ageTitle).join(', ')}:{})};
 }
