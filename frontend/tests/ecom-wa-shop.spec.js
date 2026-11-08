@@ -39,6 +39,11 @@ async function boot(page, { token = 'tok', status = statusFor(), connect = null,
       if (u.pathname === '/ecom/wa-shop/sync') { current = statusFor({ ...current.config, synced_at: '2026-10-24T10:00:00Z', synced_count: 12, skipped: [{ id: 3, name: 'Dupatta', reason: 'no photo' }] }); return route.fulfill({ json: { ok: true, synced: 12, removed: 1, skipped: [] } }); }
       if (u.pathname === '/ecom/wa-shop/carts') { current = statusFor({ ...current.config, carts: body.enable }); return route.fulfill({ json: { ok: true, carts: body.enable } }); }
       if (u.pathname === '/ecom/wa-shop/send') return route.fulfill({ json: { ok: true, count: 9 } });
+      if (u.pathname === '/ecom/wa-shop/ads') return route.fulfill({ json: { ads: [{ ad_id: '120200001', ad_name: 'Pink set ad', campaign: 'Nov', active: true }], products: [{ rid: 'lv_1', name: 'Pink cord set', category: 'Cord Sets' }], categories: ['Cord Sets'] } });
+      if (u.pathname === '/ecom/wa-shop/bc/templates' && req.method() === 'GET') return route.fulfill({ json: { templates: [{ name: 'new_arrivals', language: 'en', status: 'APPROVED', header: 'New arrivals', body: 'Tap to shop' }] } });
+      if (u.pathname === '/ecom/wa-shop/bc/templates') return route.fulfill({ json: { ok: true, name: body.name, status: 'PENDING' } });
+      if (u.pathname === '/ecom/wa-shop/bc/audience') return route.fulfill({ json: { audience: body.audience, phones: Array.from({ length: 30 }, (_, i) => '9190000000' + String(i).padStart(2, '0')), count: 30 } });
+      if (u.pathname === '/ecom/wa-shop/bc/send') return route.fulfill({ json: { ok: true, sent: body.phones.length, failed: [] } });
       if (u.pathname === '/ecom/wa-shop/config') {
         if (body.payment_mode === 'whatsapp_pay' && !body.payment_config) return route.fulfill({ status: 400, json: { error: 'Add the payment configuration name from WhatsApp Manager → Payments to use WhatsApp Pay.' } });
         current = statusFor({ ...current.config, ...body }); return route.fulfill({ json: { ok: true } });
@@ -152,4 +157,33 @@ test('syncing into a Meta-managed catalog asks first', async ({ page }) => {
   await page.getByRole('button', { name: /Sync products now/ }).click();
   await expect(page.locator('#wsMsg2')).toContainText('5 products sent');
   expect(calls.filter(c => c.path === '/ecom/wa-shop/sync').map(c => c.body)).toEqual([{}, {}, { confirm: true }]);
+});
+
+test('optional extras: all off by default; first-reply catalog, ad → product, catalog broadcast in batches', async ({ page }) => {
+  const calls = await boot(page, { status: statusFor({ catalog_id: '555', linked_at: '2026-11-08T00:00:00Z', synced_at: '2026-11-08T00:00:00Z', synced_count: 13 }) });
+  for (const id of ['#wsFirstCatalog', '#wsAdsOn', '#wsBcOn']) await expect(page.locator(id)).not.toBeChecked();
+  await expect(page.locator('#wsAdsPanel')).toBeHidden();
+  await expect(page.locator('#wsBcPanel')).toBeHidden();
+
+  await page.locator('#wsFirstCatalog').locator('xpath=..').locator('.toggle-slider').click();
+  await expect(page.locator('#wsFirstCatalog')).toBeChecked();
+  expect(calls.find(c => c.path === '/ecom/wa-shop/config' && 'first_catalog' in c.body).body).toEqual({ first_catalog: true });
+
+  await page.locator('#wsAdsOn').locator('xpath=..').locator('.toggle-slider').click();
+  await expect(page.locator('#wsAdsPanel')).toBeVisible();
+  await expect(page.locator('#wsAdTarget')).toContainText('Pink cord set');
+  await page.locator('#wsAdPick').fill('Pink set ad');
+  await page.locator('#wsAdsPanel').getByRole('button', { name: 'Add' }).click();
+  await expect(page.locator('#wsAdRows')).toContainText('Pink set ad');
+  expect(calls.find(c => c.body?.ad_map).body.ad_map).toEqual([{ ad_id: '120200001', ad_name: 'Pink set ad', kind: 'product', target: 'lv_1', label: 'Pink cord set' }]);
+
+  await page.locator('#wsBcOn').locator('xpath=..').locator('.toggle-slider').click();
+  await expect(page.locator('#wsBcTemplates')).toContainText('new_arrivals');
+  page.once('dialog', d => d.accept());
+  await page.getByRole('button', { name: 'Send broadcast' }).click();
+  await expect(page.locator('#wsMsg6')).toHaveText('✓ Sent to 30 of 30');
+  const sends = calls.filter(c => c.path === '/ecom/wa-shop/bc/send');
+  expect(sends.map(c => c.body.phones.length)).toEqual([25, 5]);
+  expect(new Set(sends.map(c => c.body.run_id)).size).toBe(1);
+  expect(sends[0].body.template).toBe('new_arrivals');
 });
