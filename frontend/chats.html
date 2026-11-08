@@ -1534,7 +1534,7 @@ function renderInfo(){
  const notes=notesOf(l);
  const attrs=INFO_FIELDS.filter(([k])=>String(rec[k]??'').trim()).map(([k,label])=>field(k,label)).join('');
  const created=rec.CreatedAt||rec.Date||rec.created_at;
- p.innerHTML=`<div class="info-head"><h4>Contact</h4><button class="info-x" id="infoClose" title="Close" aria-label="Close contact details" onclick="toggleInfo(false)">✕</button></div>${field('Name','Name')}${field('Phone','Phone','tel')}${field('Email','Email','email')}
+ p.innerHTML=`<div class="info-head"><h4>Contact</h4><button class="info-x" id="infoClose" title="Close" aria-label="Close contact details" onclick="toggleInfo(false)">✕</button></div>${field('Name','Name')}${isIg(l)?field('Mobile','Mobile','tel'):field('Phone','Phone','tel')}${field('Email','Email','email')}
   ${isTravelInbox()?`<label class="fld"><span>Service category</span><select onchange="setLeadCategory(this.value)"><option value=""${catOf(l)?(boot2?.me?.categories?' disabled':''):' selected'}>— None —</option>${categoryChoices(catOf(l)).map(c=>`<option value="${esc(c)}"${c===catOf(l)?' selected':''}>${esc(c)}</option>`).join('')}</select></label>`:''}
   ${attrs?`<h4>Details</h4>${attrs}`:''}
   <h4>Conversation</h4>

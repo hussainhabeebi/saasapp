@@ -19745,6 +19745,96 @@ function engineChatwootInstagramId(conv, sender){
   return sender?.id?`cw${sender.id}`:'';
 }
 
+// ── Instagram intro: collect the customer's mobile number ─────────────────────────────────────
+// An Instagram contact has no phone number (its lead key is `ig:<id>`), so a business that wants
+// to follow up on WhatsApp or by call has to ask for one. Settings → 📸 Instagram Intro saves
+// bot_config.instagram_mobile_intro = {enabled, text, thanks_text}. When it is on, a new Instagram
+// lead (or one coming back after 4 h of silence) with no Mobile on its lead record gets this intro
+// instead of the WhatsApp greeting. A number the customer sends is written to the lead's Mobile
+// column; once Mobile is filled — by the bot or by staff in Chats → Contact — the intro and the
+// question never come back for that lead.
+export const ENGINE_IG_MOBILE_INTRO_DEFAULT="Hi {{customer_name}}! 👋 Welcome to {{business_name}}.\n\nTo assist you better and share details on WhatsApp, could you please share your *mobile number* (with country code)?";
+export const ENGINE_IG_MOBILE_THANKS_DEFAULT="Thank you! 🙏 We've saved your number {{mobile}}.\n\nHow can we help you today?";
+export function engineInstagramMobileConfig(c){
+  const cfg=engineParseJsonField(c?.bot_config,{})?.instagram_mobile_intro;
+  if(!cfg||typeof cfg!=='object'||cfg.enabled!==true) return null;
+  return {
+    text:String(cfg.text||'').trim()||ENGINE_IG_MOBILE_INTRO_DEFAULT,
+    thanksText:String(cfg.thanks_text||'').trim()||ENGINE_IG_MOBILE_THANKS_DEFAULT,
+  };
+}
+// The mobile number already on the lead record (bot-saved or typed by staff), digits only.
+export function engineLeadMobile(lead){
+  const d=String(lead?.Mobile||'').replace(/\D/g,'');
+  return d.length>=7?String(lead.Mobile).trim():'';
+}
+// A phone number inside a message: 9–15 digits, optionally written with +/00, spaces, dashes,
+// dots or brackets ("+91 98765 43210", "050-123-4567", "(971) 50 123 4567"). Fewer than 9 digits
+// (prices, quantities, dates such as 10-12-2026) is never treated as a number. Returns the
+// number as "+<digits>" when the customer gave an international prefix, otherwise as typed digits.
+export function engineExtractMobileNumber(text){
+  const t=String(text||'').replace(/[٠-٩]/g,d=>String(d.charCodeAt(0)-0x0660)).replace(/[۰-۹]/g,d=>String(d.charCodeAt(0)-0x06F0));
+  const re=/(?:\+|\b00)?\(?\d[\d\s().-]{6,22}\d/g;
+  let m;
+  while((m=re.exec(t))){
+    const raw=m[0];
+    // A date or time ("2026-11-08", "10.12.2026") is not a phone number.
+    if(/^\d{1,4}[-./]\d{1,2}[-./]\d{2,4}$/.test(raw.trim())) continue;
+    let digits=raw.replace(/\D/g,'');
+    const intl=raw.trim().startsWith('+')||raw.trim().startsWith('00');
+    if(raw.trim().startsWith('00')) digits=digits.slice(2);
+    if(digits.length<9||digits.length>15) continue;
+    return {number:intl?`+${digits}`:digits, raw};
+  }
+  return null;
+}
+// True when the message is just the number (plus a few words such as "my number is", "here",
+// "this is my whatsapp") — the bot thanks the customer instead of sending that to the AI. A
+// number that rides along with a real question is saved too, but the question is still answered.
+export function engineIsMobileOnlyMessage(text, found){
+  if(!found) return false;
+  const rest=String(text||'').replace(found.raw,' ')
+    .replace(/\b(?:my|mobile|phone|cell|contact|whats\s*app|whatsapp|wa|number|no|num|nmbr|is|it'?s|its|this|here|here'?s|you|can|call|me|on|at|and|please|pls|plz|sir|madam|mam|ok|okay|sure|yes|the|hi|hello|hey|thanks?|thank\s*you|ty)\b/gi,' ')
+    .replace(/[\s\p{P}\p{S}]+/gu,'');
+  return rest.length<=3;
+}
+// Did the bot ask this lead for a number already? (MobileAskedAt on the lead record.)
+function engineLeadMobileAsked(lead){ return Boolean(String(lead?.MobileAskedAt||'').trim()); }
+// Instagram leads only, feature switched on, no Mobile yet:
+//  • a number in the message is saved to the lead (when the bot asked, or the message says it is
+//    a phone/mobile/WhatsApp number) — a number-only reply is thanked and the turn ends;
+//  • a new lead, a lead back after 4 h, or a young chat the bot never asked gets the intro —
+//    unless the opener is a real question (that is answered first; the ask comes on a later turn).
+// Returns a turn for enginePersistFirstGreetingTurn, or null to carry on with the normal path.
+export async function engineInstagramMobileTurn(env, c, state, userText, mediaType, {isNewLead=false, isRevisit=false}={}){
+  if(state?.channel!=='instagram') return null;
+  const cfg=engineInstagramMobileConfig(c);
+  if(!cfg || engineLeadMobile(state.lead)) return null;
+  await ensureLeadsColumns(env, ['Mobile','MobileAskedAt']).catch(()=>{});
+  const text=String(userText||'');
+  const lang=engineScriptLang(text)||engineSessionLanguage(state.activeHistory,text,c.language||'en')||c.language||'en';
+  const knownName=state.name||state.lead?.Name;
+  const found=engineExtractMobileNumber(text);
+  const asked=engineLeadMobileAsked(state.lead);
+  if(found && (asked || /\b(?:mobile|phone|cell|contact|whats\s*app|whatsapp|number|call)\b/i.test(text) || engineIsMobileOnlyMessage(text, found))){
+    const now=new Date().toISOString();
+    if(state.leadId) await engineUpsertLead(env, 'PATCH', state.leadId, {Mobile:found.number, ...(asked?{}:{MobileAskedAt:now})}).catch(()=>{});
+    state.lead={...(state.lead||{}), Mobile:found.number};
+    state.mobileSaved=found.number;
+    if(!engineIsMobileOnlyMessage(text, found)) return null;
+    const reply=engineFillIntroTokens(cfg.thanksText, c, knownName).replace(/\{\{\s*(?:mobile|phone|number)\s*\}\}/gi, found.number);
+    return {route:'instagram_mobile_saved', text:await engineLocalizeReply(env, c, reply, lang), next:state.stage||'new', preserveCrmStage:true, lang, buttons:[], mediaUrl:''};
+  }
+  if(mediaType!=='text') return null;
+  const youngChat=!asked && (state.activeHistory||[]).length<6;
+  if(!(isNewLead || isRevisit || youngChat)) return null;
+  if(engineIsSpecificFirstQuestion(text)) return null;
+  if(state.leadId) await engineUpsertLead(env, 'PATCH', state.leadId, {MobileAskedAt:new Date().toISOString()}).catch(()=>{});
+  state.lead={...(state.lead||{}), MobileAskedAt:new Date().toISOString()};
+  const reply=engineFillIntroTokens(cfg.text, c, knownName);
+  return {route:'instagram_mobile_intro', text:await engineLocalizeReply(env, c, reply, lang), next:state.stage||'new', preserveCrmStage:true, lang, buttons:[], mediaUrl:''};
+}
+
 export function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
   if(body.private) return null;
@@ -26254,6 +26344,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
   // purely for engineMaybeSummarizeHistory's call site, which needs to know the true turn count to
   // decide whether/when to regenerate the rolling summary.
+  // Instagram mobile number collected this turn (engineInstagramMobileTurn) — also written here so a
+  // lead row first created by this upsert still gets it.
+  if(state.mobileSaved) body.Mobile=state.mobileSaved;
   return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId, fullHistory:history};
 }
 
@@ -27593,6 +27686,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     botTraceStart(c,{phone,conv_id:parsed.convId!=null?String(parsed.convId):'',user_text:userText||text||`[${mediaType}]`,media:mediaType});
     let introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    // Instagram: collect the customer's mobile number (Settings → 📸 Instagram Intro) — see
+    // engineInstagramMobileTurn. Runs before every menu/flow/AI path; null when it does nothing.
+    if(!introAction && state.channel==='instagram'){
+      const igMobileTurn=await engineInstagramMobileTurn(env,c,state,userText,mediaType,{isNewLead,isRevisit}).catch(e=>{reportOpsError(env,'Instagram mobile intro failed',e,{clientId}).catch(()=>{});return null;});
+      if(igMobileTurn){
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,igMobileTurn,startMs,mediaType,ctx);
+        return json({ok:true,route:igMobileTurn.route,sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
     // Travel Flow switch (saved in D1 by Live Agency / Settings) — read once here so every travel
     // path below (menu, live search, checkout) sees the same value through ltTravelFlowOn(c).
     if(ltLiveAgencyEnabled(c)){

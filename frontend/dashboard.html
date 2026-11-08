@@ -3120,6 +3120,19 @@ const ROLES = {
           <hr class="div">
 
           <div class="settings-section">
+            <div class="s-head">📸 Instagram Intro — Collect Mobile Number</div>
+            <div class="s-note">Instagram chats have no phone number. When on, new Instagram leads get this intro instead of the normal greeting, asking for their mobile number. The number they send is saved to the lead's <b>Mobile</b> field, and once a lead has a Mobile number (saved by the bot or typed by your team in Chats → Contact) they are never asked again. If a lead's first message is a real question, it is answered first and the number is asked on their next message. Use <code>{{customer_name}}</code> and <code>{{business_name}}</code> in the intro, and <code>{{mobile}}</code> in the thank-you.</div>
+            <div style="display:flex;flex-direction:column;gap:10px;max-width:640px">
+              <div><label class="form-label">Instagram intro</label><select class="form-input" id="cfgIgMobileEnabled"><option value="No">Off — Instagram leads get the normal greeting</option><option value="Yes">On — ask Instagram leads for their mobile number</option></select></div>
+              <div><label class="form-label">Intro message</label><textarea class="form-input" id="cfgIgMobileText" rows="4" placeholder="Hi {{customer_name}}! 👋 Welcome to {{business_name}}.&#10;&#10;To assist you better and share details on WhatsApp, could you please share your *mobile number* (with country code)?"></textarea></div>
+              <div><label class="form-label">Thank-you after the number is saved</label><textarea class="form-input" id="cfgIgMobileThanks" rows="3" placeholder="Thank you! 🙏 We've saved your number {{mobile}}.&#10;&#10;How can we help you today?"></textarea></div>
+              <div style="display:flex;gap:10px;align-items:center"><button class="save-btn" id="saveIgMobileIntro">Save</button><span class="save-msg" id="saveIgMobileIntroMsg"></span></div>
+            </div>
+          </div>
+
+          <hr class="div">
+
+          <div class="settings-section">
             <div class="s-head">Greeting Introduction</div>
             <div class="s-note">Send one warm greeting to new leads, with an optional Google Drive image/video/audio attachment and up to three tappable buttons. If disabled, the greeting is generated once from your Main Prompt and cached for future leads to reduce AI token usage.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
@@ -13371,6 +13384,13 @@ function populateSettings(){
   // treated as off when explicitly === false), so an unset key shows as "Yes" here too.
   try{ $id('cfgQuickReplyButtons').value=(JSON.parse(clientRecord.bot_config||'{}').quick_reply_buttons_enabled===false)?'No':'Yes'; }
   catch(e){ $id('cfgQuickReplyButtons').value='Yes'; }
+  // Instagram intro (bot_config.instagram_mobile_intro) — off unless enabled===true, as in worker.js.
+  try{
+    const ig=JSON.parse(clientRecord.bot_config||'{}').instagram_mobile_intro||{};
+    $id('cfgIgMobileEnabled').value=ig.enabled===true?'Yes':'No';
+    $id('cfgIgMobileText').value=ig.text||'';
+    $id('cfgIgMobileThanks').value=ig.thanks_text||'';
+  }catch(e){ $id('cfgIgMobileEnabled').value='No'; }
   let ecomBotConfig={};
   try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   $id('ecomCommunicationStyleCard').style.display=(clientRecord.ecom_enabled==='Yes')?'block':'none';
@@ -14533,6 +14553,16 @@ $id('saveQuickReplyButtons').addEventListener('click',async()=>{
   try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   botConfig.quick_reply_buttons_enabled=$id('cfgQuickReplyButtons').value!=='No';
   await saveField('saveQuickReplyButtons','saveQuickReplyButtonsMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveIgMobileIntro').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  botConfig.instagram_mobile_intro={
+    enabled:$id('cfgIgMobileEnabled').value==='Yes',
+    text:$id('cfgIgMobileText').value.trim(),
+    thanks_text:$id('cfgIgMobileThanks').value.trim(),
+  };
+  await saveField('saveIgMobileIntro','saveIgMobileIntroMsg',{bot_config:JSON.stringify(botConfig)});
 });
 // The guided-chat switch only applies to the Shopify / general store style.
 function renderShopifyFlowRow(){
