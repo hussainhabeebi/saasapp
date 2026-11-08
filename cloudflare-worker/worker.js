@@ -19816,6 +19816,18 @@ export function engineIsMobileOnlyMessage(text, found){
     .replace(/[\s\p{P}\p{S}]+/gu,'');
   return rest.length<=3;
 }
+// The intro may ask for a name too ("Kindly share: 1️⃣ Your name 2️⃣ Mobile number"), so a reply
+// like "Rahul Kumar, 9876543210" or "Name: Rahul\nMobile: +91 98765 43210" is the answer: returns
+// the name (1–3 words of letters, no question), or '' when what is left is not just a name.
+export function engineNameWithMobile(text, found){
+  if(!found || /[?؟]/.test(String(text||''))) return '';
+  const rest=String(text||'').replace(found.raw,' ')
+    .replace(/\b(?:name|i\s*am|i'?m|my|mobile|phone|cell|contact|whats\s*app|whatsapp|wa|number|no|num|nmbr|is|it'?s|its|this|here|here'?s|you|can|call|me|on|at|and|please|pls|plz|sir|madam|mam|ok|okay|sure|yes|the|hi|hello|hey|thanks?|thank\s*you|ty)\b/gi,' ')
+    .replace(/[\d\p{P}\p{S}]+/gu,' ').replace(/\s+/g,' ').trim();
+  const words=rest.split(' ').filter(Boolean);
+  if(!words.length || words.length>3 || words.some(w=>!/^\p{L}[\p{L}\p{M}]+$/u.test(w))) return '';
+  return words.map(w=>w[0].toUpperCase()+w.slice(1)).join(' ');
+}
 // Did the bot ask this lead for a number already? (MobileAskedAt on the lead record.)
 function engineLeadMobileAsked(lead){ return Boolean(String(lead?.MobileAskedAt||'').trim()); }
 // Instagram leads only, feature switched on, no Mobile yet:
@@ -19839,8 +19851,14 @@ export async function engineInstagramMobileTurn(env, c, state, userText, mediaTy
     if(state.leadId) await engineUpsertLead(env, 'PATCH', state.leadId, {Mobile:found.number, ...(asked?{}:{MobileAskedAt:now})}).catch(()=>{});
     state.lead={...(state.lead||{}), Mobile:found.number};
     state.mobileSaved=found.number;
-    if(!engineIsMobileOnlyMessage(text, found)) return null;
-    const reply=engineFillIntroTokens(cfg.thanksText, c, knownName).replace(/\{\{\s*(?:mobile|phone|number)\s*\}\}/gi, found.number);
+    // Name + number in answer to the intro: save the name the customer gave as the lead's Name.
+    const givenName=asked&&!engineIsMobileOnlyMessage(text, found)?engineNameWithMobile(text, found):'';
+    if(givenName){
+      if(state.leadId) await engineUpsertLead(env, 'PATCH', state.leadId, {Name:givenName}).catch(()=>{});
+      state.name=givenName; state.lead.Name=givenName;
+    }
+    if(!givenName && !engineIsMobileOnlyMessage(text, found)) return null;
+    const reply=engineFillIntroTokens(cfg.thanksText, c, givenName||knownName).replace(/\{\{\s*(?:mobile|phone|number)\s*\}\}/gi, found.number);
     return {route:'instagram_mobile_saved', text:await engineLocalizeReply(env, c, reply, lang), next:state.stage||'new', preserveCrmStage:true, lang, buttons:[], mediaUrl:''};
   }
   if(mediaType!=='text') return null;
