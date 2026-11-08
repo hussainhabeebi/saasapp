@@ -7,7 +7,7 @@ import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,shopifySettings,shopifyEcomProductPlan,shopifyEcomOrderPlan,shopifyFlowVariants,shopifyFlowOrders} from './shopify-sync.js';
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
-import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
+import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,waShopLoadClient,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
@@ -29009,7 +29009,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // instead of an answer. Now all unhandled turns get an AI reply.
     if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
       // 🛍️ WhatsApp Shop: a "show me your collection" ask gets the tappable WhatsApp catalog.
-      const shopLine=c[WA_SHOP_CONFIG_FIELD]?await waShopMaybeSendCatalog(env, WA_SHOP_DEPS, c, {phone, convId, inboxId:state.inboxId, text:userText,
+      const shopC=await waShopLoadClient(env, c).catch(()=>c);
+      const shopLine=shopC[WA_SHOP_CONFIG_FIELD]?await waShopMaybeSendCatalog(env, WA_SHOP_DEPS, shopC, {phone, convId, inboxId:state.inboxId, text:userText,
         categories:[...new Set((await ecomListActiveProducts(env, clientId).catch(()=>[])||[]).map(p=>p.category).filter(Boolean))]}).catch(e=>{ reportOpsError(env, 'waShopMaybeSendCatalog', e, {clientId, convId}); return null; }):null;
       const gallery=shopLine?{text:shopLine, quickReplies:null}:await engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userText, state, replyLang).catch(e=>{ reportOpsError(env, 'engineMaybeSendEcomGallery', e, {clientId, convId}); return null; });
       if(gallery){
@@ -37664,7 +37665,8 @@ async function runWaShopDailySyncForAllClients(env){
     const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${page*200}`);
     if(!r.ok) break;
     const rows=(await r.json().catch(()=>({})))?.list||[];
-    for(const c of rows) if(c[WA_SHOP_CONFIG_FIELD]) await waShopDailySync(env, WA_SHOP_DEPS, c);
+    // waShopLoadClient: a config kept only in KV (column missing on this base) still syncs.
+    for(const row of rows){ const c=await waShopLoadClient(env, row); if(c[WA_SHOP_CONFIG_FIELD]) await waShopDailySync(env, WA_SHOP_DEPS, c); }
     if(rows.length<200) break;
   }
 }

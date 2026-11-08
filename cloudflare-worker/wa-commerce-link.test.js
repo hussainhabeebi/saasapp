@@ -175,3 +175,25 @@ test('catalog icon and cart already on in Meta: no POST at all', async () => {
   assert.equal(r.d.shown_on_number, true);
   assert.ok(!h.graph.some(g => g.u.includes('whatsapp_commerce_settings') && g.method === 'POST'));
 });
+
+test('Couplo (Nov 2026): NocoDB silently drops wa_shop_config — Link still sticks via KV, status and Sync see it', async () => {
+  const h = harness({ meta: {
+    'WABA/product_catalogs': { method: 'GET', body: { data: [{ id: '1484032813531427', name: 'BABY SET' }] } },
+    '1484032813531427?fields=name,product_count': { body: { name: 'BABY SET', product_count: 24 } },
+    '1484032813531427/products': { body: { data: ITEMS } },
+  } });
+  h.deps.patchClientFields = async () => {}; // the column doesn't exist: PATCH "succeeds", nothing kept
+  const kv = new Map(); const env = { MATRI_CACHE: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); }, delete: async k => { kv.delete(k); } } };
+  const r = await h.call('/ecom/wa-shop/connect', { catalog_id: '1484032813531427' }, env);
+  assert.equal(r.s, 200, JSON.stringify(r.d));
+  const req = new Request('https://w/ecom/wa-shop/status', { method: 'GET' });
+  const st2 = await waShopHandleRoute(req, env, h.deps, new URL('https://w/ecom/wa-shop/status'));
+  assert.equal(st2.d.config.catalog_id, '1484032813531427');
+  assert.equal(st2.d.config.catalog_count, 24);
+  assert.ok(st2.d.config.linked_at);
+  // a later settings save keeps the link
+  await h.call('/ecom/wa-shop/config', { send_in_chat: false }, env);
+  const cfg = waShopConfig({ wa_shop_config: kv.get('wa_shop_config:7') });
+  assert.equal(cfg.catalog_id, '1484032813531427');
+  assert.equal(cfg.send_in_chat, false);
+});
