@@ -568,15 +568,18 @@ async function handleWebhook(request, env, deps, cid, ctx){
   if(!c) return new Response('ok', {status:200});
   const cfg=waShopConfig(c), cr=creds(deps, c, cfg);
   const target=waShopChatwootTarget(c, cfg, cr);
-  let forwarded=!target;
+  // Couplo (Nov 2026): a "Hi" sent with carts on got no reply — the relay counted any answer below
+  // 500 (a 404/401 from a wrong inbox address) as delivered and told Meta "ok", so the message was
+  // lost with no trace. Only a 2xx counts now; anything else is reported and Meta retries.
+  let forwarded=!target, fwdStatus='no target';
   if(target){
     const ctl=new AbortController(); const timer=setTimeout(()=>ctl.abort(), 9000);
     try{
       const headers={'Content-Type':'application/json'};
       const sig=request.headers.get('X-Hub-Signature-256'); if(sig) headers['X-Hub-Signature-256']=sig;
       const r=await fetch(target, {method:'POST', headers, body:raw, signal:ctl.signal});
-      forwarded=r.status<500;
-    }catch(e){ forwarded=false; }
+      forwarded=r.ok; fwdStatus=`HTTP ${r.status}`;
+    }catch(e){ forwarded=false; fwdStatus=e?.name==='AbortError'?'timeout':String(e?.message||e); }
     finally{ clearTimeout(timer); }
   }
   const work=(async()=>{
@@ -586,7 +589,7 @@ async function handleWebhook(request, env, deps, cid, ctx){
   })().catch(e=>deps.reportOpsError(env, 'wa shop webhook', e, {clientId:cid}));
   if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
   // Chatwoot didn't take it → let Meta retry (cart processing is idempotent on the message id).
-  if(!forwarded) await deps.reportOpsError(env, 'wa shop relay → Chatwoot forward failed', new Error(target), {clientId:cid});
+  if(!forwarded) await deps.reportOpsError(env, 'wa shop relay → Chatwoot forward failed', new Error(`${fwdStatus} from ${target}`), {clientId:cid});
   return new Response(forwarded?'ok':'retry', {status:forwarded?200:502});
 }
 
