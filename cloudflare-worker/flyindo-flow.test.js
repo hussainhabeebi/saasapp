@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import worker, { engineHandleFlyindo, ltTravelSettingsNormalize } from './worker.js';
 import { flyindoParseDate, flyindoCheckDate, flyindoMonthRows, flyindoWeekRows, flyindoDayRows, flyindoAdvance, flyindoPrompt, flyindoStart,
-  flyindoNormalizeDestinations, flyindoSummaryText, flyindoQualAnswers, FLYINDO_DEFAULT_DESTINATIONS } from './flyindo-flow.js';
+  flyindoNormalizeDestinations, flyindoSummaryText, flyindoQualAnswers, FLYINDO_DEFAULT_DESTINATIONS,
+  flyindoWantsAi, flyindoTapValue, flyindoBuildAiPrompt, flyindoParseAiReply, flyindoAiValueInput } from './flyindo-flow.js';
 
 const TODAY=new Date('2026-11-02T10:00:00Z');
 const dests=FLYINDO_DEFAULT_DESTINATIONS;
@@ -64,7 +65,10 @@ describe('steps', ()=>{
   test('free text that is not an answer repeats the step with a note', ()=>{
     const r=go(flyindoStart(), 'what is the price?');
     assert.equal(r.state.step, 'destination');
-    assert.match(r.note, /select a destination/);
+    assert.match(r.note, /didn't catch that/);
+    const p=flyindoPrompt(r.state,{agency:'ABC Travels',destinations:dests,note:r.note,resume:true});
+    assert.match(p.text, /Please select a destination from the list below/);
+    assert.doesNotMatch(p.text, /Welcome to/, 'a chat under way is not welcomed again');
   });
   test('row titles and typed answers also work', ()=>{
     let s=go(flyindoStart(), '🏖️ Goa').state;  assert.equal(s.destination,'Goa');
@@ -157,5 +161,95 @@ test('worker: Flyindo greets with destinations, re-asks on free text, hands over
 
     r=await engineHandleFlyindo(env,c,7,state,phone,'','talk to agent','text');
     assert.equal(r.introAction.intent,'WANTS_HUMAN');
+  }finally{ globalThis.fetch=realFetch; }
+});
+
+describe('AI upgrade', ()=>{
+  test('only typed questions / non-answers go to the AI; taps never do', ()=>{
+    const s=flyindoStart(),o={destinations:dests,today:TODAY};
+    const ask=t=>flyindoWantsAi(t, flyindoAdvance(s,t,o), flyindoTapValue(s,t,o));
+    assert.equal(ask('FLY:dest:1'), false);
+    assert.equal(ask('🏖️ Goa'), false, 'a row title is a tap');
+    assert.equal(ask('Goa'), false, 'a clean typed answer');
+    assert.equal(ask('Rs'), true, 'not an answer');
+    assert.equal(ask('Goa package price?'), true, 'answer + question');
+    assert.equal(ask('do you do visa for dubai'), true);
+  });
+  test('prompt carries the step, destinations, staff messages and the KB', ()=>{
+    const st={step:'adults',destination:'Goa',date:'2026-12-15',ages:[]};
+    const p=flyindoBuildAiPrompt(st,{text:'Rs',agency:'FLY INDO HOLIDAYS',kb:'Goa 3N/4D from Rs 12,999',destinations:dests,
+      history:[{role:'assistant',by:'agent',content:'PLEASE SEND CONTACT NUMBER'}],today:TODAY});
+    assert.match(p.system, /Goa 3N\/4D from Rs 12,999/);
+    assert.match(p.system, /- Maldives/);
+    assert.match(p.system, /the number of adults/);
+    assert.match(p.user, /Staff: PLEASE SEND CONTACT NUMBER/);
+    assert.match(p.user, /Destination: Goa/);
+  });
+  test('reply parsing and value mapping', ()=>{
+    assert.deepEqual(flyindoParseAiReply('```json\n{"answer":"Hi","value":"Goa","action":"answer"}\n```'), {answer:'Hi',value:'Goa',action:'answer'});
+    assert.equal(flyindoParseAiReply('not json'), null);
+    assert.equal(flyindoParseAiReply('{"answer":"","action":"answer"}'), null);
+    assert.equal(flyindoParseAiReply('{"answer":"","action":"handover"}').action, 'handover');
+    assert.equal(flyindoAiValueInput('month','2026-12'), 'FLY:month:2026-12');
+    assert.equal(flyindoAiValueInput('month','2026-12-20'), '2026-12-20');
+    assert.equal(flyindoAiValueInput('adults',2), '2');
+  });
+});
+
+test('worker: Flyindo AI answers a question, then takes the customer back to the menu', async()=>{
+  const env={DB:new D1Database(),GEMINI_API_KEY:'k'},realFetch=globalThis.fetch,meta=[],prompts=[];
+  let aiReply=null;
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u.includes('generativelanguage.googleapis.com')){prompts.push(String(opts.body||''));return Response.json({candidates:[{content:{parts:[{text:JSON.stringify(aiReply)}]}}]});}
+    if(u.startsWith('https://graph.facebook.com/')){meta.push(JSON.parse(opts.body));return new Response('{}');}
+    if(u.startsWith('https://cw.test/'))return new Response('{"id":1}');
+    return new Response('{}',{status:404});
+  };
+  try{
+    const c={Id:8,industry:'travel',client_name:'FLY INDO HOLIDAYS',language:'en',lt_chat_style:'flyindo',lt_flyindo_destinations:dests,kb_summary:'Goa 3N/4D package from Rs 12,999 per person.',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
+    const phone='+919800000002',state={convId:'56',stage:'new'};
+    let r=await engineHandleFlyindo(env,c,8,state,phone,'','hi','text');
+    assert.match(r.turn.text, /Welcome to \*FLY INDO HOLIDAYS\*/);
+    assert.equal(prompts.length, 0, 'greeting: no AI call');
+
+    // A question that isn't an answer: answered, destination list shown again (no second welcome).
+    aiReply={answer:'Our Goa 3N/4D package starts at *Rs 12,999* per person 😊',value:'',action:'answer'};
+    r=await engineHandleFlyindo(env,c,8,state,phone,'','Rs','text');
+    assert.equal(prompts.length, 1);
+    assert.match(r.turn.text, /^Our Goa 3N\/4D package starts at \*Rs 12,999\*/);
+    assert.match(r.turn.text, /Please select a destination from the list below 👇$/);
+    assert.doesNotMatch(r.turn.text, /Welcome to/);
+    await r.turn.deliver();
+    assert.equal(meta.at(-1).interactive.type, 'list', 'back to the menu');
+
+    // A question that also picks a destination moves the booking on.
+    aiReply={answer:'Goa is lovely in December! 🏖️',value:'Goa',action:'answer'};
+    r=await engineHandleFlyindo(env,c,8,state,phone,'','Goa package price?','text');
+    assert.match(r.turn.text, /Goa is lovely in December/);
+    assert.match(r.turn.text, /When are you planning to visit \*Goa\*/);
+    assert.equal(r.turn.qualAnswers.destination, 'Goa');
+
+    // Taps never call the AI.
+    const n=prompts.length;
+    r=await engineHandleFlyindo(env,c,8,state,phone,'','FLY:month:2026-12','text');
+    assert.equal(prompts.length, n);
+
+    // AI unavailable → the old behaviour (same options again).
+    aiReply='garbage';
+    r=await engineHandleFlyindo(env,c,8,state,phone,'','what about hotels?','text');
+    assert.match(r.turn.text, /Which week in/);
+
+    // Asking for a person through the AI hands over.
+    aiReply={answer:'',value:'',action:'handover'};
+    r=await engineHandleFlyindo(env,c,8,state,phone,'','can someone call me please','text');
+    assert.equal(r.introAction.intent, 'WANTS_HUMAN');
+
+    // Switched off in settings → no AI call.
+    await engineHandleFlyindo(env,c,8,state,phone,'','hi','text');
+    const m=prompts.length;
+    r=await engineHandleFlyindo(env,{...c,lt_flyindo_ai:false},8,state,phone,'','Rs','text');
+    assert.equal(prompts.length, m);
+    assert.match(r.turn.text, /didn't catch that/);
   }finally{ globalThis.fetch=realFetch; }
 });
