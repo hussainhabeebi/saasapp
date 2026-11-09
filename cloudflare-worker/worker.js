@@ -13,7 +13,7 @@ import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSett
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
-import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS} from './flyindo-flow.js';
+import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
@@ -21784,8 +21784,9 @@ export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:
   lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',
   // Chat style (Travel Settings → 🧭 Chat Style): '' = the normal bot, 'flyindo' = the guided,
   // buttons-only booking flow in flyindo-flow.js. Its destinations, the agency name it greets with
-  // (blank = the client name) and whether children's ages are asked.
-  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,
+  // (blank = the client name), whether children's ages are asked, and the AI upgrade (typed
+  // questions answered from the bot prompt / knowledge base, then back to the options).
+  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,
   // Contextual answers (Travel Settings → Itineraries): a follow-up such as "is it including flight
   // ticket?" right after a package is answered from THAT package's inclusions, and the flight
   // question that follows asks only where the customer flies from (the package is the destination).
@@ -21823,6 +21824,7 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_flyindo_destinations:flyindoNormalizeDestinations(raw?.lt_flyindo_destinations),
     lt_flyindo_agency_name:String(raw?.lt_flyindo_agency_name||'').replace(/\s+/g,' ').trim().slice(0,60),
     lt_flyindo_child_ages:ltYesNo(raw?.lt_flyindo_child_ages,d.lt_flyindo_child_ages),
+    lt_flyindo_ai:ltYesNo(raw?.lt_flyindo_ai,d.lt_flyindo_ai),
     lt_contextual_answers:ltYesNo(raw?.lt_contextual_answers,d.lt_contextual_answers),
     lt_flows_enabled:ltYesNo(raw?.lt_flows_enabled,d.lt_flows_enabled),
     ...Object.fromEntries(LT_TRAVEL_OPTIONAL_KEYS.map(k=>[k,ltYesNo(raw?.[k],d[k])])),
@@ -21861,7 +21863,7 @@ async function handleLtTravelSettings(request,env){
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
   for(const k of ['lt_pay_qr_1_label','lt_pay_qr_2_label'])if(k in body&&typeof body[k]!=='string')return json({error:`${k} must be text`},400);
   if('lt_chat_style' in body&&!['',FLYINDO_STYLE].includes(String(body.lt_chat_style||'')))return json({error:`lt_chat_style must be "" or "${FLYINDO_STYLE}"`},400);
-  if('lt_flyindo_child_ages' in body&&typeof body.lt_flyindo_child_ages!=='boolean')return json({error:'lt_flyindo_child_ages must be true or false'},400);
+  for(const k of ['lt_flyindo_child_ages','lt_flyindo_ai'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_flyindo_agency_name' in body&&typeof body.lt_flyindo_agency_name!=='string')return json({error:'lt_flyindo_agency_name must be text'},400);
   if('lt_flyindo_destinations' in body){
     const list=body.lt_flyindo_destinations;
@@ -22426,32 +22428,66 @@ async function flyindoSave(env,clientId,phone,st){
 async function flyindoClear(env,clientId,phone){
   if(phone)await env.DB.prepare(`DELETE FROM lt_flyindo_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run().catch(()=>{});
 }
+// Flyindo AI upgrade: one AI call that answers whatever the customer typed (from the bot prompt,
+// knowledge base and destinations) and reads the current step's answer out of it when given.
+// null when the AI is off, unavailable or returns nothing usable — the caller then re-asks as before.
+async function flyindoAiTurn(env,c,fs,text,{state,destinations,agency,lang,today}){
+  if(c.lt_flyindo_ai===false)return null;
+  const p=flyindoBuildAiPrompt(fs,{text,agency,mainPrompt:c.main_prompt||'',kb:engineSelectKb(c.kb_summary||'','QUESTION'),destinations,
+    history:state.activeHistory||state.history||[],langName:ENGINE_LANG_NAMES[lang]||lang,replyStyle:engineReplyStyleRules(c),today});
+  const system=engineWithContacts(p.system,await bcForBot(env,c).catch(()=>null));
+  const raw=await engineGeminiGenerateWithFallback(env,c,system,p.user,{json:true,maxOutputTokens:600,temperature:0.3,caller:'flyindo'}).catch(()=>null);
+  const ai=flyindoParseAiReply(raw);
+  if(ai?.answer)ai.answer=await engineGuardContacts(env,c,ai.answer,system,p.user);
+  return ai;
+}
 // Travel Settings → Chat Style "Flyindo": every message from a customer goes through the guided
-// booking steps (welcome → destination → date → travellers → handover) instead of being answered.
+// booking steps (welcome → destination → date → travellers → handover). Taps move the booking on
+// without the AI; anything typed that isn't a clean answer is answered by the AI and the customer
+// is taken back to the current step's options (see flyindoAiTurn).
 // Returns null when the style is off (or for opt-out words, media, or a chat already with the team
 // unless the customer starts again); {turn} for the next step; {introAction} to hand over at once.
 export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,userText,mediaType){
   if(!flyindoOn(c)||mediaType!=='text')return null;
   const text=String(userText||'').trim();
   if(!text||ENGINE_OPT_OUT_WORDS.includes(text.toLowerCase()))return null;
-  const lang=c.language||'en',convId=state.convId;
-  const opts={agency:c.lt_flyindo_agency_name||c.client_name||'',destinations:flyindoNormalizeDestinations(c.lt_flyindo_destinations),askAges:c.lt_flyindo_child_ages!==false,today:new Date()};
-  if(/^(?:👤\s*)?(?:talk|speak|chat)\s+(?:to|with)\s+(?:an?\s+)?(?:agent|human|person|team|consultant)$/i.test(text)&&c.handover_enabled!=='No'){
+  const convId=state.convId,today=new Date();
+  const lang=engineScriptLang(text)||engineSessionLanguage(state?.activeHistory,text,c.language||'en')||c.language||'en';
+  const opts={agency:c.lt_flyindo_agency_name||c.client_name||'',destinations:flyindoNormalizeDestinations(c.lt_flyindo_destinations),askAges:c.lt_flyindo_child_ages!==false,today};
+  const human=c.handover_enabled!=='No';
+  if(/^(?:👤\s*)?(?:talk|speak|chat)\s+(?:to|with)\s+(?:an?\s+)?(?:agent|human|person|team|consultant)$/i.test(text)&&human){
     await flyindoClear(env,clientId,phone);
     return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
   }
   const restart=ltMenuIsMenuRequest(text)||ltMenuIsGreeting(text)||/^(?:restart|start over|new booking|book again|plan (?:a|another) trip)$/i.test(text);
-  let fs=await flyindoLoad(env,clientId,phone).catch(()=>null),note='',userShown=text;
+  let fs=await flyindoLoad(env,clientId,phone).catch(()=>null),note='',userShown=text,resume=true,adv=null;
   if(!fs){
     // The booking request was already handed over: the consultant has the chat now.
     if((state.stage==='human_handover'||state.lead?.Handover==='Yes')&&!restart)return null;
-    fs=flyindoStart();
-  }else if(restart)fs=flyindoStart();
-  else{
-    const r=flyindoAdvance(fs,text,opts);
-    fs=r.state;note=r.note||'';
+    fs=flyindoStart();resume=false;
+  }else if(restart){fs=flyindoStart();resume=false;}
+  else adv=flyindoAdvance(fs,text,opts);
+  // AI upgrade: a question (or anything that isn't a clean answer) is answered, then back to the menu.
+  const tapValue=flyindoTapValue(fs,text,opts);
+  if(!restart&&flyindoWantsAi(text,adv,tapValue)){
+    const ai=await flyindoAiTurn(env,c,fs,text,{state,destinations:opts.destinations,agency:opts.agency,lang,today}).catch(()=>null);
+    if(ai?.action==='handover'&&human){
+      await flyindoClear(env,clientId,phone);
+      return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
+    }
+    if(ai){
+      // The AI decides whether the message gave this step's answer; otherwise the step stays and
+      // its options are shown again under the answer.
+      if(ai.action==='restart')fs=flyindoStart();
+      else if(ai.value){
+        const r=flyindoAdvance(fs,flyindoAiValueInput(fs.step,ai.value),opts);
+        if(!r.note)fs=r.state;
+      }
+      adv=null;note=ai.answer;resume=true;
+    }
   }
-  const p=flyindoPrompt(fs,{...opts,note});
+  if(adv){fs=adv.state;note=adv.note||'';}
+  const p=flyindoPrompt(fs,{...opts,note,resume});
   const base={route:'travel_flyindo',next:state.stage||'new',preserveCrmStage:true,lang,serviceCategory:'Package',historyUserText:userShown,
     qualAnswers:{...(state.qualAnswers||{}),...(fs.destination?flyindoQualAnswers(fs):{})}};
   if(p.done){

@@ -11,8 +11,13 @@
      4. Travellers         adults (list) → children (list) → each child's age (when enabled)
      5. Handover           booking summary, then the chat goes to the team (Stage human_handover)
 
-   Every step is a tap. Anything typed that isn't an answer to the current step gets the same
-   options again. Pure (no I/O) — storage and WhatsApp sends live in worker.js.
+   Every step is a tap. AI upgrade (Chat Style → "AI answers questions", on by default): anything
+   the customer types that isn't a clean answer — a question about prices, a package, visas,
+   hotels, a reply to a staff message — is answered by the AI from the bot prompt and knowledge
+   base, and the customer is then taken back to the current step's options. A typed message that
+   also gives the step's answer ("Goa package price?") moves the booking on. Without the AI (off,
+   no key, an error) the same options are shown again, as before.
+   Pure (no I/O) — storage, the AI call and WhatsApp sends live in worker.js.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export const FLYINDO_STYLE='flyindo';
@@ -175,11 +180,13 @@ export function flyindoSummaryText(s, agency){
 // state: {step, destination, date, adults, children, ages:[]} — step is one of
 // destination | month | week | day | adults | children | ages | done.
 // Returns {state, text, rows, button, done?}. `rows` are the options to send (list/buttons).
-export function flyindoPrompt(state, {agency='', destinations=[], today=new Date(), note=''}={}){
+// `resume` (an answer or note in a chat already under way): the destination step asks again in a
+// short line instead of repeating the whole welcome.
+export function flyindoPrompt(state, {agency='', destinations=[], today=new Date(), note='', resume=false}={}){
   const pre=note?`${note}\n\n`:'';
   switch(state.step){
     case 'destination':
-      return {text:pre+flyindoWelcomeText(agency),rows:destinations.map((d,i)=>({title:`${d.emoji?d.emoji+' ':''}${d.name}`,value:`${FLYINDO_PREFIX}dest:${i}`})),button:'Destinations',section:'Destinations'};
+      return {text:note&&resume?`${pre}🌍 *Where would you like to travel?*\nPlease select a destination from the list below 👇`:pre+flyindoWelcomeText(agency),rows:destinations.map((d,i)=>({title:`${d.emoji?d.emoji+' ':''}${d.name}`,value:`${FLYINDO_PREFIX}dest:${i}`})),button:'Destinations',section:'Destinations'};
     case 'month':
       return {text:`${pre}Great choice! 😊\n\nWhen are you planning to visit *${state.destination}*?\n\n📅 Please choose your travel month below.`,rows:flyindoMonthRows(today),button:'Choose month',section:'Travel month'};
     case 'week':
@@ -199,17 +206,20 @@ export function flyindoPrompt(state, {agency='', destinations=[], today=new Date
   }
 }
 
+// A tapped row can arrive as its title rather than its id — map it back to the id. Returns the
+// message unchanged when it isn't one of the current step's rows.
+export function flyindoTapValue(state, input, {destinations=[], today=new Date()}={}){
+  const raw=String(input||'').trim();
+  if(raw.toUpperCase().startsWith(FLYINDO_PREFIX)) return raw;
+  const norm=v=>String(v||'').toLowerCase().normalize('NFC').replace(/\s+/g,' ').trim();
+  const hit=(flyindoPrompt(state,{destinations,today}).rows||[]).find(r=>norm(r.title)===norm(raw));
+  return hit?hit.value:raw;
+}
 // Applies the customer's message to the current step. Returns {state, note} — note is set when the
 // message didn't fit the step (the same step is then asked again with that note on top).
 export function flyindoAdvance(state, input, {destinations=[], askAges=true, today=new Date()}={}){
   const s={...state, ages:[...(state.ages||[])]};
-  let raw=String(input||'').trim();
-  // A tapped row can arrive as its title rather than its id — map it back to the id.
-  if(!raw.toUpperCase().startsWith(FLYINDO_PREFIX)){
-    const norm=v=>String(v||'').toLowerCase().normalize('NFC').replace(/\s+/g,' ').trim();
-    const hit=(flyindoPrompt(state,{destinations,today}).rows||[]).find(r=>norm(r.title)===norm(raw));
-    if(hit) raw=hit.value;
-  }
+  const raw=flyindoTapValue(state,input,{destinations,today});
   const tap=raw.toUpperCase().startsWith(FLYINDO_PREFIX)?raw.slice(FLYINDO_PREFIX.length):'';
   const [kind,a,b]=tap.split(':');
   const again=note=>({state, note});
@@ -217,7 +227,7 @@ export function flyindoAdvance(state, input, {destinations=[], askAges=true, tod
     case 'destination':{
       let d=kind==='dest'?destinations[Number(a)]:null;
       if(!d && !tap){ const low=raw.toLowerCase(); d=destinations.find(x=>low.includes(x.name.toLowerCase())); }
-      if(!d) return again('Please select a destination from the list below 👇');
+      if(!d) return again('Sorry, I didn\'t catch that 🙂');
       return {state:{...s, step:'month', destination:d.name}};
     }
     case 'month': case 'week': case 'day':{
@@ -269,4 +279,73 @@ export function flyindoQualAnswers(s){
     // Month picked but no day yet: kept so a request the customer leaves half-way still says when.
     ...(!s.date&&s.month?{travel_month:s.month}:{}),
     ...((s.ages||[]).length?{children_ages:s.ages.map(ageTitle).join(', ')}:{})};
+}
+
+// ── AI upgrade: answer anything, then back to the menu ──────────────────────────
+const FLYINDO_QUESTION_RE=/^(?:what|whats|what's|how|which|when|where|why|who|whom|is|are|was|were|do|does|did|can|could|will|would|should|shall|may|any|price|prices|cost|rate|rates|rs|tariff|budget|cheap|tell|send|share|need|want|i want|i need|details|info|information|available|availability|include|includes|including|package|packages|offer|offers|discount|visa|hotel|hotels|flight|flights|ticket|tickets)\b/i;
+// True when a typed message should go to the AI: it isn't a tap, and it either didn't fit the
+// step (`adv.note`) or reads like a question/request even though a value was found in it.
+// `tapValue` is flyindoTapValue's result for the same message.
+export function flyindoWantsAi(text, adv, tapValue=text){
+  const t=String(text||'').trim();
+  if(!t||String(tapValue||'').toUpperCase().startsWith(FLYINDO_PREFIX)) return false;
+  if(adv?.note) return true;
+  return /[?？]/.test(t)||FLYINDO_QUESTION_RE.test(t)||t.split(/\s+/).length>6;
+}
+const STEP_VALUE={
+  destination:'the destination name exactly as listed, when the customer clearly chose one of them',
+  month:'"YYYY-MM-DD" for a travel date, or "YYYY-MM" when only the month is given',
+  week:'"YYYY-MM-DD" for a travel date, or "YYYY-MM" when only the month is given',
+  day:'"YYYY-MM-DD" for a travel date',
+  adults:'the number of adults (12 years and above) as a number',
+  children:'the number of children (below 12 years) as a number; 0 for "no children"',
+  ages:'the child\'s age in years as a number',
+};
+const STEP_LABEL={destination:'the destination',month:'the travel date or month',week:'the travel date',day:'the travel date',adults:'the number of adults',children:'the number of children',ages:'the child\'s age'};
+export function flyindoBuildAiPrompt(state, {text='', agency='', mainPrompt='', kb='', destinations=[], history=[], langName='English', replyStyle='', today=new Date()}={}){
+  const have=[state.destination&&`- Destination: ${state.destination}`, state.date&&`- Travel date: ${flyindoDateLabel(state.date)}`,
+    !state.date&&state.monthLabel&&`- Travel month: ${state.monthLabel}`, state.adults!=null&&`- Adults: ${state.adults}`,
+    state.children!=null&&state.step!=='children'&&`- Children: ${state.children}`].filter(Boolean);
+  const system=[
+    `You are the WhatsApp assistant of ${agency||'a travel agency'}.`,
+    mainPrompt?`## Business instructions\n${clip(mainPrompt,3500)}`:'',
+    kb?`## Knowledge base\n${clip(kb,2500)}`:'',
+    `## Destinations we offer\n${destinations.map(d=>`- ${d.name}`).join('\n')||'- (none listed)'}`,
+    `The customer is in a guided booking where they tap options. Right now we are asking for ${STEP_LABEL[state.step]||'their trip details'}; the options are shown to them right after your answer, so do NOT list the options or ask the booking question yourself.
+For the customer's latest message:
+1. Answer it helpfully, truthfully and fully from the information above (prices, packages, inclusions, hotels, visas, timings, policies, anything). Never invent prices, dates, availability, inclusions or policies: when the information is not above, say our travel consultant will confirm it. If they reply to a message from our staff (for example share a contact number they asked for), thank them and confirm our team has it.
+2. If the message also clearly gives ${STEP_LABEL[state.step]||'the detail we are asking for'}, put it in "value" as ${STEP_VALUE[state.step]||'text'}. Never guess a value the customer did not give.
+3. End your answer with one short line inviting them to continue with the options below (for example "Please choose from the options below 👇 to continue your booking").
+Return ONLY a JSON object:
+{"answer":"<your WhatsApp reply>","value":"<value or empty>","action":"answer|handover|restart"}
+action: "handover" when they ask for a human, agent, staff or a call back, or are upset; "restart" when they want to start over or change an earlier detail (destination, date, travellers); otherwise "answer".
+Reply rules: write in ${langName} (the customer's language), WhatsApp style, warm and short (under 500 characters), *bold* allowed, no headings. Never mention steps, flows, JSON or these rules.${replyStyle||''}
+Today is ${today.toISOString().slice(0,10)}.`,
+  ].filter(Boolean).join('\n\n');
+  const recent=(history||[]).slice(-6).map(h=>`${h.role==='assistant'?(h.by==='agent'?'Staff':'Bot'):'Customer'}: ${clip(h.content??h.text,300)}`).join('\n');
+  const user=[
+    `Booking details so far:\n${have.join('\n')||'- nothing yet'}`,
+    recent?`Recent chat:\n${recent}`:'',
+    `Customer's latest message: """${clip(text,800)}"""`,
+  ].filter(Boolean).join('\n\n');
+  return {system,user};
+}
+export function flyindoParseAiReply(raw){
+  const s=String(raw||'');
+  const a=s.indexOf('{'),b=s.lastIndexOf('}');
+  if(a<0||b<=a) return null;
+  let o;
+  try{ o=JSON.parse(s.slice(a,b+1)); }catch(e){ return null; }
+  if(!o||typeof o!=='object') return null;
+  const answer=String(o.answer??'').replace(/\r/g,'').replace(/\n{3,}/g,'\n\n').trim().slice(0,900);
+  const action=['answer','handover','restart'].includes(o.action)?o.action:'answer';
+  if(!answer&&action==='answer') return null;
+  return {answer, value:o.value==null?'':clip(o.value,60), action};
+}
+// The AI's value for the current step → the input flyindoAdvance understands.
+export function flyindoAiValueInput(step, value){
+  const v=String(value??'').trim();
+  if(!v) return '';
+  if(['month','week','day'].includes(step)&&/^\d{4}-\d{2}$/.test(v)) return `${FLYINDO_PREFIX}month:${v}`;
+  return v;
 }
