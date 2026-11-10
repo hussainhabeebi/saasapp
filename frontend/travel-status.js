@@ -116,7 +116,13 @@ function tsInjectStyle(){
 .ts-inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px}
 .ts-sel-inline{min-height:34px}
 .ts-cat{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1.5px solid #CBD5E1;background:var(--card);color:var(--ink);max-width:210px;min-height:34px}
-.ts-cat.set{border-color:#7DD3FC}
+.ts-cat.set{border-color:var(--cat-bd,#7DD3FC);background:var(--cat-bg,var(--card));color:var(--cat-fg,var(--ink));font-weight:600}
+.ts-catpill{-webkit-appearance:none;appearance:none;font:inherit;font-size:11.5px;font-weight:600;line-height:1.4;padding:2px 20px 2px 9px;border-radius:999px;border:1px dashed #CBD5E1;background:transparent;color:var(--muted);max-width:100%;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);background-position:calc(100% - 10px) 55%,calc(100% - 6px) 55%;background-size:4px 4px;background-repeat:no-repeat;text-overflow:ellipsis}
+.ts-catpill.set{border-style:solid;border-color:var(--cat-bd);background-color:var(--cat-bg);color:var(--cat-fg)}
+.tsk-cat{margin-top:6px}
+.tsk-kbbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+.tsk-kbbar select{font:inherit;font-size:12.5px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:inherit}
+@media (prefers-color-scheme:dark){.ts-cat.set,.ts-catpill.set{background-color:transparent;color:inherit}}
 .ts-chip{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;padding:3px 9px;white-space:nowrap;border:1px solid var(--line)}
 .ts-chip.gray{background:#F1F5F9;color:#475569}.ts-chip.blue{background:#E0F2FE;color:#075985}.ts-chip.amber{background:#FEF3C7;color:#92400E}.ts-chip.green{background:#DCFCE7;color:#166534}.ts-chip.red{background:#FEE2E2;color:#991B1B}
 .ts-rpt-tbl{width:100%;min-width:720px}
@@ -693,9 +699,10 @@ function tsKanbanHTML(list, opts={}){
 }
 function tsKbCard(l){
   const st=tsStatusOf(l), id=Number(l.Id), fu=tsFollowUpState(l);
-  const meta=[l.Destination, l.ServiceCategory].filter(Boolean).map(esc).join(' · ');
+  const meta=[l.Destination].filter(Boolean).map(esc).join(' · ');
   return `<article class="tsk-card tsb-c-${TS_BY_KEY[st.key][3]} ${tsOriginClass(l)}" draggable="true" data-lead="${id}" ondragstart="tsKbStart(event,${id})" ondragend="tsKbEnd(event)">
     <div class="tsk-top" onclick="openDetail(${id})"><span class="tsb-av">${esc(tsInitials(l))}</span><div><b>${esc(tsLeadName(l))}</b>${tsOriginBadge(l)}<div class="ts-meta">${esc(tsPhone(l))}</div></div></div>
+    <div class="tsk-cat">${tsCatPillHTML(l)}</div>
     ${meta?`<div class="ts-meta tsk-meta">${meta}</div>`:''}
     ${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}
     <div class="tsk-foot">
@@ -720,12 +727,23 @@ function tsKbDrop(e,key){
   tsChoose([id], key, e.currentTarget.querySelector('.tsk-hd'));
 }
 // Leads → 🗂 Pipeline for a travel account: the same status board, so the stages match everywhere.
+let _tsKbCat='';
+function tsSetKbCat(v){ _tsKbCat=String(v||''); if(typeof renderKanban==='function') renderKanban(); }
+function tsKbCatBarHTML(list){
+  const cats=typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[], n={};
+  list.forEach(l=>{ const c=String(l.ServiceCategory||'').trim()||'__none'; n[c]=(n[c]||0)+1; });
+  const all=[...new Set([...cats, ...Object.keys(n).filter(k=>k!=='__none')])];
+  const o=(v,label,c)=>`<option value="${esc(v)}"${_tsKbCat===v?' selected':''}>${esc(label)}${c!==undefined?` (${c||0})`:''}</option>`;
+  return `<div class="tsk-kbbar"><select aria-label="Service category" title="Show one service category" onchange="tsSetKbCat(this.value)">${o('','🗂️ All service categories')}${all.map(c=>o(c,`${serviceCategoryIcon(c)} ${c}`,n[c])).join('')}${o('__none','No category',n.__none)}</select></div>`;
+}
 function tsRenderLeadsKanban(wrap){
   if(!wrap) return; tsInjectStyle();
   wrap.classList.add('tsk-host');
   let list=(typeof allLeads!=='undefined'?allLeads:[]).slice();
   if(typeof tcFilterLeads==='function') list=tcFilterLeads(list); // 📲 Travel CRM filters (travel-crm.js)
-  wrap.innerHTML=`${typeof tcBarHTML==='function'?tcBarHTML():''}<div class="tsk-note ts-meta">Stages from the 📌 Status Board — drag a card to move it. <a href="#" onclick="navigate('tvstatus');return false">Open the Status Board →</a></div>${tsKanbanHTML(tsSort(list),{fromLeads:true})}`;
+  const catBar=tsKbCatBarHTML(list);
+  if(_tsKbCat) list=list.filter(l=>(String(l.ServiceCategory||'').trim()||'__none')===_tsKbCat);
+  wrap.innerHTML=`${typeof tcBarHTML==='function'?tcBarHTML():''}${catBar}<div class="tsk-note ts-meta">Stages from the 📌 Status Board — drag a card to move it. <a href="#" onclick="navigate('tvstatus');return false">Open the Status Board →</a></div>${tsKanbanHTML(tsSort(list),{fromLeads:true})}`;
 }
 
 function tsSetFilter(k,v){
@@ -856,14 +874,35 @@ function tsInlineChange(id,sel){
    "Leads by category", Reports → 🗂️ Service Category, the inbox category chips and the per-user
    category access all read. A category saved before LEAD_CATEGORIES changed stays selectable. */
 let _tsCatFieldReady=false;
+// One colour per Service Category (its place in LEAD_CATEGORIES; a category not in the list gets one
+// from its name), the same on the Pipeline cards, the Status Board and the Leads list.
+const TS_CAT_COLORS=[['#DBEAFE','#1E40AF','#93C5FD'],['#DCFCE7','#166534','#86EFAC'],['#FEF3C7','#92400E','#FCD34D'],['#FCE7F3','#9D174D','#F9A8D4'],
+  ['#EDE9FE','#5B21B6','#C4B5FD'],['#CCFBF1','#115E59','#5EEAD4'],['#FFEDD5','#9A3412','#FDBA74'],['#FFE4E6','#9F1239','#FDA4AF'],['#E0E7FF','#3730A3','#A5B4FC'],['#ECFCCB','#3F6212','#BEF264'],
+  ['#F3E8FF','#6B21A8','#D8B4FE'],['#CFFAFE','#155E75','#67E8F9']];
+function tsCatColor(cat){
+  const cats=typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[];
+  let i=cats.indexOf(cat);
+  if(i<0){ i=0; for(const ch of String(cat)) i=(i*31+ch.charCodeAt(0))>>>0; }
+  return TS_CAT_COLORS[i%TS_CAT_COLORS.length];
+}
+const tsCatStyle=cat=>{ if(!cat) return ''; const [bg,fg,bd]=tsCatColor(cat); return `--cat-bg:${bg};--cat-fg:${fg};--cat-bd:${bd}`; };
+function tsCatOptions(cur){
+  const cats=typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[];
+  const opts=!cur||cats.includes(cur)?cats:[cur,...cats];
+  return `<option value="">🗂️ No category</option>${opts.map(c=>`<option value="${esc(c)}"${c===cur?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')}`;
+}
+// 🗂 Pipeline card: the enquiry's Service Category as a coloured label, changed right on the card.
+function tsCatPillHTML(l){
+  if(!tsIsTravel()||!l) return '';
+  const cur=String(l.ServiceCategory||'').trim();
+  return `<select class="ts-catpill ${cur?'set':''}" style="${tsCatStyle(cur)}" draggable="false" data-lead="${Number(l.Id)}" aria-label="Service category" title="Service category — tap to change" onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" ondragstart="event.preventDefault();event.stopPropagation()" onchange="tsSetCategory(${Number(l.Id)},this.value)">${tsCatOptions(cur)}</select>`;
+}
 function tsInlineCategoryHTML(l){
   if(!tsIsTravel()||!l) return '';
   tsInjectStyle();
-  const cats=typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[];
   const cur=String(l.ServiceCategory||'').trim();
-  const opts=!cur||cats.includes(cur)?cats:[cur,...cats];
-  return `<select class="ts-cat ${cur?'set':''}" data-lead="${Number(l.Id)}" aria-label="Service category" title="Service category" onclick="event.stopPropagation()" onchange="tsSetCategory(${Number(l.Id)},this.value)">
-      <option value="">🗂️ No category</option>${opts.map(c=>`<option value="${esc(c)}"${c===cur?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')}
+  return `<select class="ts-cat ${cur?'set':''}" style="${tsCatStyle(cur)}" data-lead="${Number(l.Id)}" aria-label="Service category" title="Service category" onclick="event.stopPropagation()" onchange="tsSetCategory(${Number(l.Id)},this.value)">
+      ${tsCatOptions(cur)}
     </select>`;
 }
 async function tsSetCategory(id,cat){
@@ -888,6 +927,14 @@ async function tsSetCategory(id,cat){
 // Category counts (Leads chips, Home report, Status Board) follow the change. The Leads list is
 // only redrawn when a category filter is on (the row may no longer belong) or a save failed.
 function tsRefreshCategoryViews(failed){
+  // Every category picker showing this lead takes the new colour at once.
+  document.querySelectorAll('select.ts-cat[data-lead],select.ts-catpill[data-lead]').forEach(sel=>{
+    const l=(typeof allLeads!=='undefined'?allLeads:[]).find(x=>Number(x.Id)===Number(sel.dataset.lead)); if(!l) return;
+    const cur=String(l.ServiceCategory||'').trim();
+    if(sel.value!==cur) sel.value=cur;
+    sel.classList.toggle('set', !!cur); sel.setAttribute('style', tsCatStyle(cur));
+  });
+  if(_tsKbCat && typeof _leadsViewMode!=='undefined' && _leadsViewMode==='pipeline' && !$id('pageLeads')?.classList.contains('hidden') && typeof renderKanban==='function') renderKanban();
   if(!$id('pageLeads')?.classList.contains('hidden')){
     if(failed||$id('leadCategoryFilter')?.value){ if(typeof renderLeadsCurrentView==='function') renderLeadsCurrentView(); }
     else if(typeof renderLeadsCategoryChips==='function') renderLeadsCategoryChips();
