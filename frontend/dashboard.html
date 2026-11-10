@@ -3617,7 +3617,7 @@ const ROLES = {
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">📈 Meta Ads (Conversions API)</div>
-            <div class="s-note">Reports lead quality (captured → qualified/disqualified → booked) back to Meta so your ad campaigns optimize for real conversions, not just chat volume. Get a Pixel ID and access token from Events Manager → Data Sources → your Pixel → Settings → Conversions API.</div>
+            <div class="s-note">Reports lead quality (captured → qualified/non-qualified → won/lost) back to Meta so your ad campaigns optimize for real conversions, not just chat volume. Get a Pixel ID and access token from Events Manager → Data Sources → your Pixel → Settings → Conversions API.</div>
             <div id="intMetaCapiStatus" class="s-note" style="margin:8px 0"></div>
             <label class="form-label">Pixel ID</label>
             <input class="form-input" id="cfgMetaPixelId" type="text" placeholder="123456789012345" style="margin-bottom:8px">
@@ -3629,6 +3629,17 @@ const ROLES = {
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
               <button class="save-btn" onclick="saveMetaCapiConfig()">Save</button>
               <span class="save-msg" id="saveMetaCapiMsg"></span>
+            </div>
+            <!-- Report to Meta: each lead outcome ticked on/off on its own, sent as a Meta standard
+                 event (or a custom name). Only ticked outcomes reach Meta — worker metaCapiOutcomes. -->
+            <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+              <div class="s-head" style="font-size:14px">📤 Report to Meta</div>
+              <div class="s-note">Tick the lead outcomes you want reported to Meta (Conversions API, through your Pixel / dataset), and choose which Meta event each one is sent as — a standard event from Meta's list, or your own custom name. Unticked outcomes are never sent.</div>
+              <div id="metaCapiOutcomes" style="margin-top:8px"></div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                <button class="save-btn" onclick="saveMetaCapiOutcomes()">Save reporting</button>
+                <span class="save-msg" id="saveMetaCapiOutcomesMsg"></span>
+              </div>
             </div>
           </div>
         </div>
@@ -15419,6 +15430,8 @@ function reportLeadQualityChange(leadId, before, after){
     const l=allLeads.find(x=>x.Id===leadId);
     sendLeadCapiEvent(leadId,'purchase',{value:after.DealValue??before?.DealValue??l?.DealValue, currency:after.DealCurrency??before?.DealCurrency??l?.DealCurrency});
   }
+  // Lost → only reaches Meta when "Lost" is ticked under Meta Ads → 📤 Report to Meta (worker checks).
+  if(after.Stage && isLostLead(after) && !isLostLead(before||{})) sendLeadCapiEvent(leadId,'lost');
   // Revenue Forecast (Team page) needs to know *when* a deal actually closed, not just that it
   // did — stamped once, here, since every Stage-changing call site (kbDrop, saveLead, Human
   // Deals' removeHumanDeal) already routes through this one function. Only fires on the
@@ -16847,6 +16860,7 @@ async function saveEmailConfig(){
 async function loadMetaCapiStatus(){
   $id('cfgMetaPixelId').value=clientRecord?.meta_pixel_id||'';
   $id('cfgMetaAdAccountId').value=clientRecord?.meta_ad_account_id||'';
+  renderMetaCapiOutcomes(clientRecord?.meta_capi_outcomes);
   const el=$id('intMetaCapiStatus');
   el.textContent='Checking…';
   try{
@@ -16857,6 +16871,62 @@ async function loadMetaCapiStatus(){
     if(data.connected) html+=data.ads_read_configured?` · Ad spend: Ad Account ID ${esc(data.ad_account_id)} set — see Reports → 💸 Ads ROI.`:' · Ad spend not set up — add your Ad Account ID below for Reports → 💸 Ads ROI.';
     el.innerHTML=html;
   }catch(e){ el.textContent='Could not check status: '+e.message; }
+}
+
+// Settings → Integrations → Meta Ads → 📤 Report to Meta. Mirrors worker META_CAPI_OUTCOMES /
+// META_STANDARD_EVENTS (the worker cleans whatever is saved).
+const META_STANDARD_EVENTS=['AddPaymentInfo','AddToCart','AddToWishlist','CompleteRegistration','Contact','CustomizeProduct',
+  'Donate','FindLocation','InitiateCheckout','Lead','Purchase','Schedule','Search','StartTrial','SubmitApplication','Subscribe','ViewContent'];
+const META_CAPI_OUTCOME_ROWS=[
+  {k:'qualified',     label:'Qualified Lead',     hint:'lead scored Hot',              on:true,  event:'QualifiedLead'},
+  {k:'non_qualified', label:'Non Qualified',      hint:'lead scored Cold',             on:true,  event:'DisqualifiedLead'},
+  {k:'won',           label:'Won',                hint:'stage Won / Converted, or the purchase label — with the deal value', on:true, event:'Purchase'},
+  {k:'lost',          label:'Lost',               hint:'stage Lost',                   on:false, event:'LostLead'},
+];
+function metaCapiOutcomesFrom(raw){
+  let o=raw; if(typeof o==='string'){ try{ o=JSON.parse(o||'{}'); }catch(e){ o={}; } }
+  o=o&&typeof o==='object'?o:{};
+  return Object.fromEntries(META_CAPI_OUTCOME_ROWS.map(r=>{ const x=o[r.k]||{}; return [r.k, {on:typeof x.on==='boolean'?x.on:r.on, event:String(x.event||'').replace(/[^A-Za-z0-9_]/g,'')||r.event}]; }));
+}
+function renderMetaCapiOutcomes(raw){
+  const el=$id('metaCapiOutcomes'); if(!el) return;
+  const cfg=metaCapiOutcomesFrom(raw);
+  el.innerHTML=META_CAPI_OUTCOME_ROWS.map(r=>{
+    const v=cfg[r.k], std=META_STANDARD_EVENTS.includes(v.event);
+    const customs=[...new Set([r.event, ...(std?[]:[v.event])])].filter(e=>!META_STANDARD_EVENTS.includes(e));
+    return `<div class="meta-outcome" data-outcome="${r.k}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--line)">
+      <label style="display:flex;gap:8px;align-items:center;min-width:170px;font-size:13px;font-weight:600"><input type="checkbox" data-role="on"${v.on?' checked':''}> ${esc(r.label)}</label>
+      <span style="font-size:12px;color:var(--muted)">→ send as</span>
+      <select class="form-input" data-role="event" style="width:auto;min-width:180px;margin:0" onchange="this.nextElementSibling.style.display=this.value==='__custom'?'':'none'">
+        <optgroup label="Meta standard events">${META_STANDARD_EVENTS.map(e=>`<option value="${e}"${e===v.event?' selected':''}>${e}</option>`).join('')}</optgroup>
+        <optgroup label="Custom events">${customs.map(e=>`<option value="${esc(e)}"${e===v.event?' selected':''}>${esc(e)}</option>`).join('')}<option value="__custom">Other custom name…</option></optgroup>
+      </select>
+      <input class="form-input" data-role="custom" type="text" placeholder="CustomEventName" style="display:none;width:auto;min-width:160px;margin:0">
+      <div class="s-note" style="flex-basis:100%;margin:0">${esc(r.hint)}</div>
+    </div>`;
+  }).join('');
+}
+function readMetaCapiOutcomes(){
+  const out={};
+  document.querySelectorAll('#metaCapiOutcomes .meta-outcome').forEach(row=>{
+    const sel=row.querySelector('[data-role=event]').value;
+    const ev=sel==='__custom'?row.querySelector('[data-role=custom]').value.trim().replace(/[^A-Za-z0-9_]/g,''):sel;
+    out[row.dataset.outcome]={on:row.querySelector('[data-role=on]').checked, ...(ev?{event:ev}:{})};
+  });
+  return out;
+}
+async function saveMetaCapiOutcomes(){
+  const msg=$id('saveMetaCapiOutcomesMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/meta/capi/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({meta_capi_outcomes:readMetaCapiOutcomes()})});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    const saved=data.meta_capi_outcomes||metaCapiOutcomesFrom(readMetaCapiOutcomes());
+    clientRecord.meta_capi_outcomes=JSON.stringify(saved);
+    renderMetaCapiOutcomes(saved);
+    const on=META_CAPI_OUTCOME_ROWS.filter(r=>saved[r.k]?.on).map(r=>`${r.label} → ${saved[r.k].event}`);
+    msg.textContent='✓ Saved · '+(on.length?'reporting '+on.join(', '):'nothing reported to Meta'); msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 async function saveMetaCapiConfig(){

@@ -3433,7 +3433,7 @@ async function handleEmailStatus(request, env){
 // ctwa_clid (Click-to-WhatsApp ad click id) capture yet since WhatsApp inbound messages are
 // handled by the n8n engine, outside this repo; if that's ever wired through, add it to
 // user_data.ctwa_clid below (unhashed) for much stronger attribution. See SETUP.md.
-const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token','meta_ad_account_id'];
+const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token','meta_ad_account_id','meta_capi_outcomes'];
 const META_CAPI_EVENTS={
   lead:         {name:'Lead'},         // fired once, when a lead is first captured
   qualified:    {name:'QualifiedLead'},// custom event — lead scored Hot / marked good
@@ -3441,11 +3441,45 @@ const META_CAPI_EVENTS={
   booked:       {name:'Schedule'},     // standard event — reached a terminal/booked pipeline stage
   purchase:     {name:'Purchase'},     // standard event — the lead was won, with its deal value
   junk:         {name:'Junk'},         // custom event — marked Spam: Meta learns who NOT to find
+  lost:         {name:'LostLead'},     // custom event — the deal was lost (only when ticked, below)
 };
+// Settings → Integrations → Meta Ads → "Report to Meta": each lead outcome is ticked on/off on its
+// own and sent as the event the owner picked — one of Meta's standard Pixel/CAPI events or a
+// custom name. Only ticked outcomes go to Meta. Stored as JSON on the client row
+// (meta_capi_outcomes); no value yet = what was always sent (Qualified, Non-Qualified, Won; not Lost).
+// The event key (logged in meta_capi_events, read by Reports → 💸 Ads ROI) stays the same whatever
+// name is sent, so reports and the once-per-lead guard don't change.
+export const META_STANDARD_EVENTS=['AddPaymentInfo','AddToCart','AddToWishlist','CompleteRegistration','Contact','CustomizeProduct',
+  'Donate','FindLocation','InitiateCheckout','Lead','Purchase','Schedule','Search','StartTrial','SubmitApplication','Subscribe','ViewContent'];
+export const META_CAPI_OUTCOMES={
+  qualified:     {key:'qualified',    on:true,  event:'QualifiedLead'},
+  non_qualified: {key:'disqualified', on:true,  event:'DisqualifiedLead'},
+  won:           {key:'purchase',     on:true,  event:'Purchase'},
+  lost:          {key:'lost',         on:false, event:'LostLead'},
+};
+function metaCapiCleanEventName(v){ return String(v||'').replace(/[^A-Za-z0-9_]/g,'').slice(0,40); }
+// Raw (JSON string, object or nothing) → {qualified:{on,event}, non_qualified, won, lost}.
+export function metaCapiOutcomes(raw){
+  let o=raw; if(typeof o==='string'){ try{ o=JSON.parse(o||'{}'); }catch(e){ o={}; } }
+  o=o&&typeof o==='object'?o:{};
+  const out={};
+  for(const [k, d] of Object.entries(META_CAPI_OUTCOMES)){
+    const x=o[k]&&typeof o[k]==='object'?o[k]:{};
+    out[k]={on:typeof x.on==='boolean'?x.on:d.on, event:metaCapiCleanEventName(x.event)||d.event};
+  }
+  return out;
+}
+// The outcome (if any) an event key belongs to, with the client's on/off and event name.
+function metaCapiOutcomeFor(c, eventKey){
+  const k=Object.keys(META_CAPI_OUTCOMES).find(k=>META_CAPI_OUTCOMES[k].key===eventKey);
+  return k?{outcome:k, ...metaCapiOutcomes(c?.meta_capi_outcomes)[k]}:null;
+}
 // Funnel events (Reports → 💸 Ads ROI → settings): a pipeline stage mapped to an event name, e.g.
 // "quote_sent" → "QuoteSent". Keyed "funnel:<slug>" in meta_capi_events so each goes once per lead.
 export function metaFunnelEventKey(name){ return 'funnel:'+String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,40); }
-function metaCapiEventDef(eventKey, extra){
+function metaCapiEventDef(eventKey, extra, c){
+  const oc=c?metaCapiOutcomeFor(c, eventKey):null;
+  if(oc) return {name:oc.event};
   if(META_CAPI_EVENTS[eventKey]) return META_CAPI_EVENTS[eventKey];
   if(String(eventKey).startsWith('funnel:') && String(extra?.eventName||'').trim()) return {name:String(extra.eventName).trim().slice(0,50)};
   return null;
@@ -3471,7 +3505,7 @@ async function capiHashPhone(phone){
 // extra.web = {fbc, fbp, url, ip, ua}: an event that happened on a LeadVyne web page (store order,
 // booking) — sent with the same extra.eventId the page's Pixel used, so Meta counts it once.
 export function metaCapiBuildEvent(c, eventKey, lead, extra={}, hashed={}){
-  const def=metaCapiEventDef(eventKey, extra);
+  const def=metaCapiEventDef(eventKey, extra, c);
   const user_data={};
   if(hashed.em) user_data.em=[hashed.em];
   if(hashed.ph) user_data.ph=[hashed.ph];
@@ -3514,7 +3548,8 @@ export function metaCapiBuildEvent(c, eventKey, lead, extra={}, hashed={}){
     event.messaging_channel='whatsapp';
   }
   if(matchKey==='hashed' && !hashed.em && !hashed.ph && !(web && fbp)) return {error:'Lead has no email or phone to match on'};
-  if(extra.value || eventKey==='purchase'){
+  // Meta requires value+currency on Purchase — whichever outcome is mapped to it.
+  if(extra.value || eventKey==='purchase' || def.name==='Purchase'){
     event.custom_data={...(event.custom_data||{}), value:Number(extra.value)||0, currency:String(extra.currency||c?.deal_currency||'INR').toUpperCase()};
   }
   return {event, matchKey};
@@ -3539,9 +3574,12 @@ async function metaCapiLogError(env, c, eventKey, leadId, code, error){
   }catch(e){}
 }
 async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
-  const def=metaCapiEventDef(eventKey, extra);
+  const def=metaCapiEventDef(eventKey, extra, c);
   if(!def) return {ok:false, error:'Unknown event type'};
   if(!c?.meta_pixel_id||!c?.meta_capi_token) return {ok:false, skipped:true};
+  // An outcome not ticked "Report to Meta" never leaves LeadVyne.
+  const oc=metaCapiOutcomeFor(c, eventKey);
+  if(oc && !oc.on) return {ok:false, skipped:true, off:true};
   // Each stage reaches Meta once per lead — the dashboard and the bot can both report it.
   if(lead?.Id && env.DB){
     const dup=await env.DB.prepare(`SELECT 1 x FROM meta_capi_events WHERE client_id=? AND lead_id=? AND event=? LIMIT 1`).bind(Number(c.Id), Number(lead.Id), eventKey).first().catch(()=>null);
@@ -3660,7 +3698,8 @@ async function handleMetaCapiConfigSet(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   const fields={};
-  META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=String(body[k]||'').trim(); });
+  META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body && k!=='meta_capi_outcomes') fields[k]=String(body[k]||'').trim(); });
+  if('meta_capi_outcomes' in body) fields.meta_capi_outcomes=JSON.stringify(metaCapiOutcomes(body.meta_capi_outcomes));
   if('meta_capi_token' in fields){
     fields.meta_capi_token=metaCleanToken(fields.meta_capi_token);
     if(!fields.meta_capi_token) delete fields.meta_capi_token; // blank = keep the current token
@@ -3678,7 +3717,9 @@ async function handleMetaCapiConfigSet(request, env){
   const before=await getClientById(env, payload.cid);
   const tokenToCheck=fields.meta_capi_token||before?.meta_capi_token||'';
   const acctToCheck='meta_ad_account_id' in fields?fields.meta_ad_account_id:(before?.meta_ad_account_id||'');
-  const check=tokenToCheck?await metaCheckToken(tokenToCheck, acctToCheck):null;
+  // Only ticking outcomes ("Report to Meta") changes nothing Meta needs to re-check.
+  const onlyOutcomes=Object.keys(fields).every(k=>k==='meta_capi_outcomes');
+  const check=tokenToCheck&&!onlyOutcomes?await metaCheckToken(tokenToCheck, acctToCheck):null;
   if(fields.meta_capi_token && check?.invalid) return json({error:check.error, check}, 400);
   // These columns aren't on every CLIENTS table (meta_ad_account_id came later than the Pixel
   // fields): NocoDB drops or refuses a field it doesn't have, so the value never stuck.
@@ -3689,7 +3730,7 @@ async function handleMetaCapiConfigSet(request, env){
   const c=await getClientById(env, payload.cid);
   const lost=c?Object.keys(fields).filter(k=>String(c[k]??'')!==fields[k]):[];
   if(lost.length) return json({error:`Not saved: ${lost.join(', ')} — the clients table couldn't take this field. Ask LeadVyne support to add the column.`}, 502);
-  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||'', check});
+  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||'', meta_capi_outcomes:metaCapiOutcomes(c?.meta_capi_outcomes), check});
 }
 // A token as pasted from Business Settings / Events Manager: drop whitespace and line breaks
 // (phones wrap long tokens), surrounding quotes, and a "Bearer " / "access_token=" prefix.
@@ -3738,6 +3779,7 @@ async function handleMetaCapiStatus(request, env){
     // if it's a System User token with both permissions granted, but not guaranteed, so this is
     // reported separately from `connected` above (which only means "CAPI events can send").
     ads_read_configured:!!(c?.meta_ad_account_id&&c?.meta_capi_token),
+    outcomes:metaCapiOutcomes(c?.meta_capi_outcomes), standard_events:META_STANDARD_EVENTS,
   });
 }
 
