@@ -1123,6 +1123,13 @@ async function hashOf(obj){
 // ── 📝 Internal notes ─────────────────────────────────────────────────────────────────────────
 // Stored on the lead as NotesList: JSON [{text, ts, author, author_name, date}], newest first (the
 // CRM's own order). Either side may have written either order, so readers sort by ts.
+// A stored NotesList as an array — a value that isn't JSON (old free text, a bad merge) is kept as
+// one note instead of being treated as empty and written over.
+export function chatsV2NotesParse(raw){
+  if(Array.isArray(raw)) return raw;
+  const str=String(raw??'').trim(); if(!str) return [];
+  try{ const v=JSON.parse(str); return Array.isArray(v)?v:[]; }catch(e){ return [{text:str, ts:''}]; }
+}
 export function chatsV2NotesSorted(raw){
   let list=[]; try{ list=typeof raw==='string'?JSON.parse(raw||'[]'):(raw||[]); }catch(e){ list=[]; }
   if(!Array.isArray(list)) return [];
@@ -1138,6 +1145,9 @@ async function notesLeadFor(env, deps, cid, acc, leadIdRaw){
   const lead=await r.json().catch(()=>null);
   if(!lead||String(lead.ClientId)!==String(cid)) return null;
   const row=await convRow(env, leadId).catch(()=>null);
+  // The lead's own Owner may always note on it — the Chats row can lag a just-made claim (the CRM
+  // claims an unowned lead the moment a note is typed), which used to refuse that very note.
+  if(acc.me&&lc(lead.Owner)===acc.me) return lead;
   const view=row&&Number(row.client_id)===Number(cid)?row:{assignee_email:lc(lead.Owner), shared_with:chatsV2SharedKey(lead.SharedWith), service_category:String(lead.ServiceCategory||''), inbox_id:String(lead.InboxId||'')};
   return canSee(acc, view)?lead:null;
 }
@@ -1145,16 +1155,27 @@ export async function chatsV2NoteAdd(env, deps, cid, lead, {text, email, name}){
   const leadId=Number(lead.Id), now=new Date();
   const note={text, ts:now.toISOString(), date:now.toLocaleString('en-GB'), author:email||'', author_name:name||''};
   if(deps.ensureNotesColumn) await deps.ensureNotesColumn(env).catch(()=>{});
-  // Start from the stored list (re-read just now), so a teammate's note is never overwritten.
-  const fresh=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}?fields=Id,NotesList`);
-  const stored=fresh.ok?((await fresh.json().catch(()=>({})))?.NotesList??lead.NotesList):lead.NotesList;
-  let list=[]; try{ list=JSON.parse(stored||'[]'); }catch(e){ list=[]; }
-  if(!Array.isArray(list)) list=[];
-  const next=JSON.stringify([note, ...list]);
-  await ncPatchLeads(env, deps, [{Id:leadId, NotesList:next}]);
-  // Read back: a note that didn't stick is an error the page shows, not a silent loss.
-  const check=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}?fields=Id,NotesList`);
-  const saved=check.ok?((await check.json().catch(()=>({})))?.NotesList||''):next;
+  const readNotes=async()=>{
+    const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}?fields=Id,NotesList`);
+    return r.ok?((await r.json().catch(()=>({})))?.NotesList??null):null;
+  };
+  // Start from the stored list (re-read just now), so a teammate's note is never overwritten. If
+  // another save landed between our read and our write (two notes at once), ours is gone on the
+  // read-back — merge again on top of what is there now and retry, rather than lose it.
+  let saved='', base=null;
+  for(let attempt=0; attempt<3; attempt++){
+    const stored=await readNotes();
+    base=stored??(attempt?base:lead.NotesList);
+    let list=chatsV2NotesParse(base);
+    if(list.some(n=>n&&n.ts===note.ts&&n.text===note.text)){ saved=String(base); break; }
+    const next=JSON.stringify([note, ...list]);
+    await ncPatchLeads(env, deps, [{Id:leadId, NotesList:next}]);
+    // Read back: a note that didn't stick is an error the page shows, not a silent loss.
+    const check=await readNotes();
+    saved=check??next;
+    if(String(saved).includes(note.ts)) break;
+    base=check; saved='';
+  }
   if(!String(saved).includes(note.ts)) throw Object.assign(new Error('The note could not be saved — please try again.'), {status:502});
   if(deps.broadcast) await deps.broadcast(env, cid, {type:'note', lead_id:leadId, note, by:email||''}).catch(()=>{});
   return {note, notes:chatsV2NotesSorted(saved)};

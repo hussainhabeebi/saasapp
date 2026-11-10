@@ -18791,6 +18791,20 @@ async function handleMetaLeadgenTemplatePreset(request, env){
    already had it, and stops moving after maxHops. The NocoDB Owner field has no "assigned at"
    timestamp, so ownership start is tracked in D1 (migrations/0106_lead_cold_realloc.sql). ── */
 const COLD_REALLOC_NOTE_AUTHOR='auto-allocation';
+// A lead's NotesList read again right before an automatic note is added to it. The batch these jobs
+// work from can be minutes old — writing that copy back wiped any note a rep added in the meantime.
+// Text that isn't a JSON list (old free text) is kept as one note, never treated as empty.
+export function parseLeadNotes(raw){
+  const str=String(raw??'').trim(); if(!str) return [];
+  try{ const v=JSON.parse(str); return Array.isArray(v)?v:[]; }catch(e){ return [{text:str, ts:''}]; }
+}
+async function freshLeadNotes(env, leadId, fallbackRaw){
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(leadId)}?fields=Id,NotesList`);
+    if(r.ok){ const d=await r.json().catch(()=>null); if(d&&typeof d==='object'&&'NotesList' in d) return parseLeadNotes(d.NotesList); }
+  }catch(e){}
+  return parseLeadNotes(fallbackRaw);
+}
 const DAY_MS=86400000;
 
 export function coldReallocSettings(routing){
@@ -19011,8 +19025,7 @@ export async function coldReallocProcessClient(env, c, now=new Date()){
     let prev=[]; try{ prev=JSON.parse(track.previous_owners||'[]'); }catch(e){}
     const next=coldReallocPickNext(pool, owner, prev);
     if(!next) continue;
-    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
-    if(!Array.isArray(notes)) notes=[];
+    const notes=await freshLeadNotes(env, lead.Id, lead.NotesList);
     notes.unshift({text:`🔁 Auto-reallocated from ${owner} to ${next}: cold lead with no notes for ${cfg.days} day${cfg.days===1?'':'s'}.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[cold-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
@@ -19124,8 +19137,7 @@ export async function hotReallocProcessClient(env, c, now=new Date()){
     let prev=[]; try{ prev=JSON.parse(track.previous_owners||'[]'); }catch(e){}
     const next=coldReallocPickNext(pool, owner, prev);
     if(!next) continue;
-    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
-    if(!Array.isArray(notes)) notes=[];
+    const notes=await freshLeadNotes(env, lead.Id, lead.NotesList);
     notes.unshift({text:`⚡ Auto-reassigned from ${owner} to ${next}: Hot lead not called within ${cfg.minutes} minutes.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[hot-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
@@ -19257,8 +19269,7 @@ export async function idleReallocProcessClient(env, c, now=new Date()){
     if(!next) continue;
     const win=`${cfg.hours} hour${cfg.hours===1?'':'s'}`;
     const why=reason==='unanswered'?`last call unanswered, not reached by ${owner} within ${win}`:`not called by ${owner} within ${win}`;
-    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
-    if(!Array.isArray(notes)) notes=[];
+    const notes=await freshLeadNotes(env, lead.Id, lead.NotesList);
     notes.unshift({text:`📞 Auto-reassigned from ${owner} to ${next}: ${why}.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[idle-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
@@ -19361,8 +19372,7 @@ export async function assignUnassignedProcessClient(env, c, now=new Date()){
       const slot=await engineNextRoundRobinSlot(env, clientId, routing);
       to=pool[(slot===null?assigned:slot)%pool.length];
     }
-    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
-    if(!Array.isArray(notes)) notes=[];
+    const notes=await freshLeadNotes(env, lead.Id, lead.NotesList);
     notes.unshift({text:`🎯 Auto-assigned to ${to}: was unassigned.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:to, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[assign-unassigned] lead patch failed', clientId, leadId, pr.status); continue; }
@@ -19458,8 +19468,7 @@ export async function departedReassignProcessClient(env, c, {from='', to='', ema
     const open=!PIPELINE_TERMINAL_STAGES.has(lead.Stage||'');
     const next=toN||departedPickLeastLoaded(pool, load);
     if(open) load.set(next, (load.get(next)||0)+1);
-    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
-    if(!Array.isArray(notes)) notes=[];
+    const notes=await freshLeadNotes(env, lead.Id, lead.NotesList);
     notes.unshift({text:`🔁 Reassigned from ${prevOwner} to ${next}: ${prevOwner} is no longer on the team.`, date:now.toLocaleString(), ts:nowIso, author:by||COLD_REALLOC_NOTE_AUTHOR});
     updates.push({lead, prevOwner, next, open, patch:{Id:Number(lead.Id), Owner:next, NotesList:JSON.stringify(notes)}});
   }
@@ -19695,8 +19704,7 @@ export async function unattendedReallocProcessClient(env, c, now=new Date()){
     const next=coldReallocPickNext(pool, owner, prev)||(reason==='leave'?coldReallocPickNext(pool, owner, []):null);
     if(!next) continue;
     const why=reason==='leave'?`${owner} is on leave`:`not opened by ${owner} within ${cfg.hours} hour${cfg.hours===1?'':'s'}`;
-    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
-    if(!Array.isArray(notes)) notes=[];
+    const notes=await freshLeadNotes(env, lead.Id, lead.NotesList);
     notes.unshift({text:`🔁 Auto-reassigned from ${owner} to ${next}: ${why}.`, date:now.toLocaleString(), ts:nowIso, author:UNATTENDED_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[unattended] lead patch failed', clientId, leadId, pr.status); continue; }
