@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dashboardUrl = 'file://' + path.resolve(__dirname, '../dashboard.html');
 
-test('outcomes render from the saved setting and save only what is ticked', async ({ page }) => {
+test('outcomes render from what the worker has saved, and save only what is ticked', async ({ page }) => {
   const sent = [];
   await page.route('**/*', (route) => (route.request().url().startsWith('file://') ? route.continue() : route.abort()));
-  await page.route('**/meta/capi/status', (route) => route.fulfill({ json: { connected: true } }));
+  await page.route('**/meta/capi/status', (route) => route.fulfill({ json: { connected: true, outcomes: { qualified: { on: true, event: 'Lead' }, non_qualified: { on: true, event: 'DisqualifiedLead' }, won: { on: true, event: 'Purchase' }, lost: { on: false, event: 'LostLead' } } } }));
   await page.route('**/meta/capi/config', (route) => {
     const b = JSON.parse(route.request().postData()); sent.push(b);
     return route.fulfill({ json: { ok: true, meta_capi_outcomes: { qualified: { on: true, event: 'Lead' }, non_qualified: { on: false, event: 'DisqualifiedLead' }, won: { on: true, event: 'Purchase' }, lost: { on: true, event: 'DealLost' } } } });
@@ -18,7 +18,7 @@ test('outcomes render from the saved setting and save only what is ticked', asyn
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => {
     // @ts-ignore
-    clientRecord = { meta_pixel_id: '744598038086701', meta_capi_outcomes: JSON.stringify({ qualified: { on: true, event: 'Lead' } }) };
+    clientRecord = { meta_pixel_id: '744598038086701' };
     // @ts-ignore
     loadMetaCapiStatus();
     // Show the Integrations card without logging in: unhide its ancestors.

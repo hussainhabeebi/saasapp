@@ -16860,13 +16860,14 @@ async function saveEmailConfig(){
 async function loadMetaCapiStatus(){
   $id('cfgMetaPixelId').value=clientRecord?.meta_pixel_id||'';
   $id('cfgMetaAdAccountId').value=clientRecord?.meta_ad_account_id||'';
-  renderMetaCapiOutcomes(clientRecord?.meta_capi_outcomes);
+  renderMetaCapiOutcomes(null); // defaults until the worker answers with what's saved
   const el=$id('intMetaCapiStatus');
   el.textContent='Checking…';
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/meta/capi/status`,{headers:ncAuthHeaders()});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    if(data.outcomes) renderMetaCapiOutcomes(data.outcomes);
     let html=data.connected?'✅ Connected — lead events are being reported':'Not connected yet — add your Pixel ID and access token below.';
     if(data.connected) html+=data.ads_read_configured?` · Ad spend: Ad Account ID ${esc(data.ad_account_id)} set — see Reports → 💸 Ads ROI.`:' · Ad spend not set up — add your Ad Account ID below for Reports → 💸 Ads ROI.';
     el.innerHTML=html;
@@ -16922,7 +16923,6 @@ async function saveMetaCapiOutcomes(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     const saved=data.meta_capi_outcomes||metaCapiOutcomesFrom(readMetaCapiOutcomes());
-    clientRecord.meta_capi_outcomes=JSON.stringify(saved);
     renderMetaCapiOutcomes(saved);
     const on=META_CAPI_OUTCOME_ROWS.filter(r=>saved[r.k]?.on).map(r=>`${r.label} → ${saved[r.k].event}`);
     msg.textContent='✓ Saved · '+(on.length?'reporting '+on.join(', '):'nothing reported to Meta'); msg.className='save-msg ok';
