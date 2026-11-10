@@ -582,3 +582,44 @@ test('lead card notes are saved through the server and a teammate\'s note shows 
   await expect(page.locator('#detailNotes .note-item').first()).toContainText('Paid the advance');
   await expect(page.locator('#detailNotes .note-item').first()).toContainText('Rita');
 });
+
+// 🗂 Pipeline: each enquiry shows its Service Category as a coloured label (one colour per category,
+// the same on the Status Board and the Leads list), changeable on the card, with a category filter.
+test('pipeline cards show the service category as a coloured label that can be changed on the card', async ({ page }) => {
+  const { patches } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => { _leadsActiveView = 'all'; navigate('leads'); setLeadsViewMode('pipeline'); });
+  const card = id => page.locator(`#kanbanWrap .tsk-card[data-lead="${id}"]`);
+  const pill = id => card(id).locator('select.ts-catpill');
+  const colour = loc => loc.evaluate(el => getComputedStyle(el).color);
+  await expect(pill(1)).toHaveValue('Visa');
+  await expect(pill(1)).toHaveClass(/set/);
+  await expect(pill(4)).toHaveValue('Umrah and Hajj');
+  expect(await colour(pill(1))).not.toBe(await colour(pill(4)));   // different categories, different colours
+  await expect(pill(2)).toHaveValue('');
+  await expect(pill(2)).not.toHaveClass(/set/);
+
+  // Set it from the card: saved on the lead, and the label takes the category's colour.
+  await pill(2).selectOption('Visa');
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ Id: 2, ServiceCategory: 'Visa' });
+  await expect(pill(2)).toHaveClass(/set/);
+  expect(await colour(pill(2))).toBe(await colour(pill(1)));       // same category, same colour
+
+  // Filter the pipeline to one category.
+  await page.locator('#kanbanWrap .tsk-kbbar select').selectOption('Visa');
+  await expect(page.locator('#kanbanWrap .tsk-card')).toHaveCount(2);
+  await page.locator('#kanbanWrap .tsk-kbbar select').selectOption('__none');
+  await expect(page.locator('#kanbanWrap .tsk-card')).toHaveCount(1);
+  await expect(card(3)).toBeVisible();
+
+  // The Leads list's category picker uses the same colour.
+  // @ts-ignore
+  await page.evaluate(() => tsSetKbCat(''));
+  const visaColour = await colour(pill(1));
+  // @ts-ignore
+  await page.evaluate(() => setLeadsViewMode('list'));
+  const listSel = page.locator('#leadsList select.ts-cat[data-lead="1"]');
+  await expect(listSel).toHaveValue('Visa');
+  expect(await colour(listSel)).toBe(visaColour);
+});
