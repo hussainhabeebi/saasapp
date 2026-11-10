@@ -758,7 +758,7 @@ function adsHealthCard(h, s){
   const strong=(h.match?.lead_id||0)+(h.match?.ctwa_clid||0)+(h.match?.fbc||0);
   const funnelSent=(h.by_event||[]).filter(e=>String(e.event).startsWith('funnel:')).reduce((a,e)=>a+e.sent,0);
   const mapped=Object.keys(cfg.funnel_map||{}).length;
-  const evName=e=>({lead:'Lead', qualified:'Qualified', disqualified:'Disqualified', booked:'Booked (Schedule)', purchase:'Purchase', junk:'Junk'})[e]
+  const evName=e=>({lead:'Lead', qualified:'Qualified', disqualified:'Disqualified', booked:'Booked (Schedule)', purchase:'Purchase', lost:'Lost', junk:'Junk'})[e]
     ||(String(e).startsWith('funnel:')?(Object.values(cfg.funnel_map||{}).find(n=>'funnel:'+n.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')===e)||e.slice(7)):e);
   const metaRecv=h.meta?.received||{};
   const check=(ok, text, fix)=>`<div class="s-note" style="margin:3px 0">${ok?'✅':'⚠️'} ${esc(text)}${!ok&&fix?` — <span style="color:var(--muted)">${fix}</span>`:''}</div>`;
@@ -821,7 +821,7 @@ async function adsRefreshAudiences(){
 
 function adsCapiCard(capi){
   const rows=capi?.rows||[];
-  const EV={lead:'Lead', qualified:'Qualified', disqualified:'Disqualified', booked:'Booked', purchase:'Purchase'};
+  const EV={lead:'Lead', qualified:'Qualified', disqualified:'Disqualified', booked:'Booked', purchase:'Purchase', lost:'Lost'};
   const KEY={ctwa_clid:'WhatsApp ad click', lead_id:'Lead form id', hashed:'Phone/email only', '':'Not recorded'};
   const events=Object.keys(EV).map(e=>({e, by:Object.fromEntries(Object.keys(KEY).map(k=>[k, rows.filter(r=>r.event===e&&(r.match_key||'')===k).reduce((s,r)=>s+r.n,0)]))}));
   const total=rows.reduce((s,r)=>s+r.n,0);
