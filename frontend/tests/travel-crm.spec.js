@@ -81,13 +81,12 @@ test('off: nothing changes — no labels, filters, travel profile or report tab'
   // @ts-ignore
   await page.evaluate(() => renderReports());
   await expect(page.locator('#rptTabTcNumbers')).toBeHidden();
-  // The setting is offered to a travel agency account…
-  await expect(page.locator('#tcSettingsRow')).toHaveCSS('display', 'block');
+  // The old Industry Modules row is gone — the setting lives in Travel Settings now.
+  await expect(page.locator('#tcSettingsRow')).toHaveCount(0);
 });
 
-test('the setting is not offered to other industries', async ({ page }) => {
+test('other industries never get it, even with the flag set', async ({ page }) => {
   await boot(page, { on: true, industry: 'real_estate' });
-  await expect(page.locator('#tcSettingsRow')).toBeHidden();
   // @ts-ignore
   expect(await page.evaluate(() => tcOn())).toBe(false);
 });
@@ -188,4 +187,48 @@ test('the Status Board and Pipeline use the same filters', async ({ page }) => {
   await page.evaluate(() => { navigate('leads'); setLeadsViewMode('pipeline'); });
   await expect(page.locator('#kanbanWrap .tsk-card')).toHaveCount(1);
   await expect(page.locator('#kanbanWrap .tsk-card .tc-num')).toHaveText('📲 Dubai office');
+});
+
+test('a save in Live Agency → Travel Settings (embedded) switches the dashboard on straight away', async ({ page }) => {
+  await boot(page, { on: false });
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); setLeadsViewMode('list'); });
+  await expect(page.locator('#leadsList .tc-chip')).toHaveCount(0);
+  await page.evaluate(() => window.postMessage({ type: 'tc:settings', enabled: true, config: { enquiry_types: ['Visa'], routes: ['Calicut → Doha'] } }, '*'));
+  await expect(leadRow(page, 'Asha').locator('.tc-num')).toHaveText('📲 Calicut office');
+  await expect(page.locator('#tcLeadsBar select[aria-label="Route"]')).toContainText('Calicut → Doha');
+});
+
+const ltUrl = 'file://' + path.resolve(__dirname, '../live-travel-agency.html') + '?client=7&token=t';
+const ltBootstrap = { suppliers: [], searches: [], quotes: [], bookings: [], service_requests: [], wallet: [], wallet_entries: [], agents: [], commissions: [], currency_settings: { default_currency: 'AED' }, supported_currencies: [] };
+test('Live Agency → Travel Settings → 📲 Travel CRM: off by default, turns on and saves the lists', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: ltBootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) return route.fulfill({ json: { lt_show_fares: true, lt_fare_options: 2, lt_fare_style: 'classic', lt_online_booking: true } });
+    if (url.endsWith('/travel-crm/settings')) {
+      if (req.method() === 'PUT') {
+        saved = JSON.parse(req.postData() || '{}');
+        return route.fulfill({ json: { enabled: saved.enabled, is_travel_account: true, enquiry_types: saved.enquiry_types, routes: ['Calicut → Dubai', 'Kochi → Doha'], echo_url: WORKER + '/wa/business-echoes' } });
+      }
+      return route.fulfill({ json: { enabled: false, is_travel_account: true, enquiry_types: ['Air Ticket', 'Visa'], routes: ['Calicut → Dubai'], echo_url: WORKER + '/wa/business-echoes' } });
+    }
+    return route.abort();
+  });
+  await page.goto(ltUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await page.getByRole('button', { name: '📲 Travel CRM' }).click();
+  await expect(page.locator('#tcOn')).toHaveValue('0');
+  await expect(page.locator('#tcBadge')).toHaveText('Off');
+  await expect(page.locator('#tcTypes')).toHaveValue('Air Ticket\nVisa');
+  await expect(page.locator('main')).toContainText('/wa/business-echoes');
+  await page.selectOption('#tcOn', '1');
+  await page.fill('#tcRoutes', 'Calicut → Dubai\nkochi to doha');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#tcMsg')).toContainText('Travel CRM tools are on');
+  expect(saved).toEqual({ enabled: true, enquiry_types: ['Air Ticket', 'Visa'], routes: ['Calicut → Dubai', 'kochi to doha'] });
+  await expect(page.locator('#tcRoutes')).toHaveValue('Calicut → Dubai\nKochi → Doha');
+  await expect(page.locator('#tcBadge')).toHaveText('On');
 });

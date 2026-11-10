@@ -9371,7 +9371,7 @@ npx wrangler deploy
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
 
-## Travel CRM tools (Settings → 🧩 Industry Modules → 📲 Travel CRM tools)
+## Travel CRM tools (✈️ Flights / Live Agency → ⚙️ Travel Settings → 📲 Travel CRM)
 
 Optional, travel agency accounts only (industry `travel` or the Travel Agency module on). Off by
 default — while off nothing on screen changes. Code: `frontend/travel-crm.js`,
@@ -9388,8 +9388,9 @@ default — while off nothing on screen changes. Code: `frontend/travel-crm.js`,
   the daily cron (`runTravelCrmTripStatusForAllClients`) once the last travel day has passed.
 - **Filters** — WhatsApp number, route, enquiry type, travel date (next 7/30 days, this/next month,
   travelling now, completed, custom range) on Leads, 🗂 Pipeline and 📌 Status Board.
-- **Settings** — enquiry types and routes lists (`CLIENTS.travel_crm_config`), on/off in
-  `CLIENTS.travel_crm_enabled`.
+- **Settings** — the 📲 Travel CRM tab of Travel Settings (`live-travel-agency.html`, worker
+  `GET/PUT /travel-crm/settings`): on/off in `CLIENTS.travel_crm_enabled`, enquiry types and routes in
+  `CLIENTS.travel_crm_config`. A save there is picked up by the surrounding dashboard straight away.
 - **WhatsApp Business app replies** (Meta coexistence) — a reply that reaches Chatwoot with no
   sender is shown in Chats as "📱 WhatsApp Business app". If the Meta app's WhatsApp webhook points
   at the Worker instead, subscribe it to `smb_message_echoes` at `/wa/business-echoes`: set Worker

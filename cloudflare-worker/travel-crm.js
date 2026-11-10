@@ -167,3 +167,19 @@ export async function travelCrmProcessEchoes(body, deps){
   }
   return {received:echoes.length, saved};
 }
+
+/* ── Settings (Live Agency → ⚙️ Travel Settings → 📲 Travel CRM; worker GET/PUT /travel-crm/settings) ── */
+export function travelCrmSettingsView(c){
+  return {enabled:travelCrmOn(c), is_travel_account:travelCrmIsTravelAccount(c), ...travelCrmConfig(c)};
+}
+// PUT body {enabled, enquiry_types[], routes[]} → the CLIENTS fields to save, or {error}.
+export function travelCrmSettingsPatch(body, c){
+  if(!travelCrmIsTravelAccount(c)) return {error:'Travel CRM tools are for travel agency accounts.'};
+  if('enabled' in (body||{}) && typeof body.enabled!=='boolean') return {error:'enabled must be true or false'};
+  for(const k of ['enquiry_types','routes']) if(k in (body||{}) && !Array.isArray(body[k])) return {error:`${k} must be a list`};
+  const cur=travelCrmConfig(c);
+  const types=Array.isArray(body?.enquiry_types)?[...new Set(body.enquiry_types.map(x=>String(x||'').trim().slice(0,60)).filter(Boolean))].slice(0,40):cur.enquiry_types;
+  const routes=Array.isArray(body?.routes)?[...new Set(body.routes.map(travelCrmNormRoute).filter(Boolean))].slice(0,100):cur.routes;
+  const enabled='enabled' in body?body.enabled:travelCrmOn(c);
+  return {fields:{travel_crm_enabled:enabled?'Yes':'No', travel_crm_config:JSON.stringify({enquiry_types:types.length?types:TCRM_DEFAULT_ENQUIRY_TYPES, routes:routes.length?routes:TCRM_DEFAULT_ROUTES})}};
+}

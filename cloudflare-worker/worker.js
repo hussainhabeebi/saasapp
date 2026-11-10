@@ -19,7 +19,7 @@ import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFI
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
-import {TCRM_APP_SENDER,travelCrmOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes} from './travel-crm.js';
+import {TCRM_APP_SENDER,travelCrmOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -19010,6 +19010,22 @@ async function handleTravelCrmNumbers(request, env){
   if(c.chatwoot_inbox_id && !numbers.some(n=>n.inbox_id===String(c.chatwoot_inbox_id)) && c.wa_display_phone)
     numbers.push({inbox_id:String(c.chatwoot_inbox_id), name:'', phone:String(c.wa_display_phone)});
   return json({ok:true, numbers});
+}
+// GET/PUT /travel-crm/settings — Live Agency → ⚙️ Travel Settings → 📲 Travel CRM: on/off, enquiry
+// types and routes, saved on CLIENTS (travel_crm_enabled, travel_crm_config). Same access as the
+// other Travel Settings tabs; refused for accounts that aren't travel agencies.
+async function handleTravelCrmSettings(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const echo_url=`${new URL(request.url).origin}/wa/business-echoes`;
+  if(request.method==='GET') return json({...travelCrmSettingsView(c), echo_url});
+  const out=travelCrmSettingsPatch(await request.json().catch(()=>({})), c);
+  if(out.error) return json({error:out.error}, 400);
+  await ensureClientColumns(env, ['travel_crm_enabled','travel_crm_config']);
+  await patchClientFields(env, payload.cid, out.fields);
+  return json({...travelCrmSettingsView({...c, ...out.fields}), echo_url});
 }
 // GET/POST /wa/business-echoes — Meta WhatsApp webhook for replies typed in the WhatsApp Business
 // app on a number that also runs on the API (coexistence). Verified with META_WA_ECHO_VERIFY_TOKEN
@@ -42171,6 +42187,7 @@ export default {
       // 📲 Travel CRM tools (travel-crm.js): the account's WhatsApp numbers, and replies typed in the
       // WhatsApp Business app (Meta smb_message_echoes — signature-verified, travel CRM accounts only).
       else if(url.pathname==='/travel-crm/numbers' && request.method==='GET'){ res=await handleTravelCrmNumbers(request,env); }
+      else if(url.pathname==='/travel-crm/settings' && ['GET','PUT'].includes(request.method)){ res=await handleTravelCrmSettings(request,env); }
       else if(url.pathname==='/wa/business-echoes'){ res=await handleTravelCrmEchoWebhook(request,env,ctx); }
       else if(url.pathname==='/live-travel/flows' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlows(request,env); }
       else if(/^\/live-travel\/flows\/(save|delete|preview)$/.test(url.pathname) && request.method==='POST'){ res=await handleLtTravelFlows(request,env,url.pathname.split('/').pop()); }

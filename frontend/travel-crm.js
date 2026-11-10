@@ -1,5 +1,5 @@
 /* ── 📲 TRAVEL CRM TOOLS (travel agency accounts, optional) ─────────────────────────────────────────
-   Settings → 🧩 Industry Modules → 📲 Travel CRM tools (CLIENTS.travel_crm_enabled = 'Yes'). Offered
+   Live Agency → ⚙️ Travel Settings → 📲 Travel CRM (CLIENTS.travel_crm_enabled = 'Yes'). Offered
    only to travel agency accounts (industry 'travel' or the Travel Agency module on); while it is off
    nothing on screen changes. When on:
      • every enquiry shows the WhatsApp number it came in on (lead.InboxId → worker /travel-crm/numbers)
@@ -12,7 +12,8 @@
    Stored on the lead (NocoDB Leads, columns created on first use like every other optional field):
      EnquiryType, TravelRoute ("Calicut → Dubai"), TravelTrips (JSON [{id, route, depart, ret, note}]),
      TripStatus (Upcoming | Travelling | Completed), NextTravelDate (YYYY-MM-DD).
-   Settings: CLIENTS.travel_crm_config = {"enquiry_types":[…], "routes":[…]}.
+   Settings (Live Agency → ⚙️ Travel Settings → 📲 Travel CRM): CLIENTS.travel_crm_enabled and
+   CLIENTS.travel_crm_config = {"enquiry_types":[…], "routes":[…]}.
    Uses dashboard.html's globals: $id, esc, allLeads, clientRecord, clientId, CONFIG, ncAuthHeaders,
    ncPatch, ensureLeadsField, ensureClientField, patchClient, showToast, TODAY, isWonLead, isLostLead,
    rptLeads, _rptOlder, rptLoadOlderLeads, _reportsPage, currentLead, navigate.
@@ -436,38 +437,19 @@ function renderReportsTcNumbers(){
     </div>`;
 }
 
-/* ── Settings → 🧩 Industry Modules → 📲 Travel CRM tools ── */
+/* ── Settings live in Live Agency → ⚙️ Travel Settings → 📲 Travel CRM (live-travel-agency.html, worker
+   /travel-crm/settings). Here: the Reports tab follows the setting, and a save made in that page while
+   it is open inside the dashboard is picked up straight away. ── */
 function tcInitSettings(){
-  const row=$id('tcSettingsRow'); if(!row) return;
-  const show=tcIsTravelAccount();
-  row.style.display=show?'block':'none';
-  if(!show) return;
-  const on=tcOn(), cfg=tcConfig();
-  const sel=$id('cfgTcEnabled'); if(sel) sel.value=on?'Yes':'No';
-  const body=$id('tcSettingsBody'); if(body) body.style.display=on?'':'none';
-  const types=$id('cfgTcTypes'); if(types && document.activeElement!==types) types.value=cfg.enquiry_types.join('\n');
-  const routes=$id('cfgTcRoutes'); if(routes && document.activeElement!==routes) routes.value=cfg.routes.join('\n');
-  const hook=$id('tcEchoUrl'); if(hook) hook.textContent=`${CONFIG.WORKER_BASE}/wa/business-echoes`;
-  const badge=$id('tcStatusBadge');
-  if(badge && typeof _renderModuleBadge==='function') _renderModuleBadge('tcStatusBadge', on);
-  const tab=$id('rptTabTcNumbers'); if(tab) tab.style.display=on?'':'none';
+  const tab=$id('rptTabTcNumbers'); if(tab) tab.style.display=tcOn()?'':'none';
 }
-function tcToggleSettingsBody(){ const body=$id('tcSettingsBody'); if(body) body.style.display=$id('cfgTcEnabled')?.value==='Yes'?'':'none'; }
-async function tcSaveSettings(){
-  const btn=$id('saveTcEnabled'), msg=$id('saveTcMsg');
-  if(btn) btn.disabled=true; if(msg){ msg.textContent=''; msg.className='save-msg'; }
-  try{
-    const lines=id=>String($id(id)?.value||'').split(/\n|,/).map(x=>x.trim()).filter(Boolean);
-    const enabled=$id('cfgTcEnabled')?.value==='Yes'?'Yes':'No';
-    const cfg={enquiry_types:[...new Set(lines('cfgTcTypes').map(x=>x.slice(0,60)))].slice(0,40),
-      routes:[...new Set(lines('cfgTcRoutes').map(tcNormRoute).filter(Boolean))].slice(0,100)};
-    await ensureClientField('travel_crm_enabled');
-    await ensureClientField('travel_crm_config','LongText');
-    await patchClient({travel_crm_enabled:enabled, travel_crm_config:JSON.stringify(cfg)});
-    clientRecord.travel_crm_enabled=enabled; clientRecord.travel_crm_config=JSON.stringify(cfg);
-    if(enabled==='Yes') tcLoadNumbers(true);
-    tcInitSettings(); tcRefreshViews();
-    if(msg) msg.textContent=enabled==='Yes'?'✓ Saved — Travel CRM tools are on':'✓ Saved — everything works as before';
-  }catch(e){ if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; } }
-  finally{ if(btn) btn.disabled=false; setTimeout(()=>{ if(msg) msg.textContent=''; }, 4000); }
-}
+window.addEventListener('message', e=>{
+  const d=e.data;
+  if(!d||d.type!=='tc:settings'||typeof clientRecord==='undefined'||!clientRecord) return;
+  // Same origin only (a page opened from a local file reports its messages as 'null').
+  if(e.origin!==location.origin && !(location.protocol==='file:'&&e.origin==='null')) return;
+  clientRecord.travel_crm_enabled=d.enabled?'Yes':'No';
+  if(d.config&&typeof d.config==='object') clientRecord.travel_crm_config=JSON.stringify({enquiry_types:d.config.enquiry_types||[], routes:d.config.routes||[]});
+  if(d.enabled) tcLoadNumbers(true);
+  tcInitSettings(); tcRefreshViews();
+});
