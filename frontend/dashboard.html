@@ -830,8 +830,27 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 #pdResume b{font-weight:600;margin-left:6px}
 
 /* note item */
-.note-item{background:#FFFDF0;border-left:3px solid var(--yellow);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:11px 13px;margin-bottom:8px;font-size:13px;line-height:1.6}
-.note-meta{font-size:10px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
+.note-item{background:#FFFDF0;border:1px solid #F5E7A8;border-left:4px solid var(--yellow);border-radius:var(--r-sm);padding:10px 13px 11px;margin-bottom:8px;font-size:14px;line-height:1.55;color:var(--ink,#0F1F1A);box-shadow:0 1px 2px rgba(15,31,26,.05);word-break:break-word}
+.note-item .note-text{white-space:pre-wrap}
+.note-meta{font-size:11px;color:var(--muted);margin-top:0;margin-bottom:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.note-meta b{color:var(--ink,#0F1F1A);font-weight:600}
+.note-av{width:20px;height:20px;border-radius:50%;background:#FDE68A;color:#78350F;font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.note-item.saving{opacity:.65}
+.note-item.saving .note-meta::after{content:'Saving…';margin-left:auto;font-style:italic}
+.note-item.pinned{background:#EFF6FF;border-color:#BFDBFE;border-left-color:#3B82F6}
+.note-item.pinned .note-av{background:#BFDBFE;color:#1E3A8A}
+.note-item.spam{background:#FEF2F2;border-color:#FECACA;border-left-color:#DC2626}
+.note-item.system{background:var(--bg2,#F6F7F6);border-color:var(--line);border-left-color:#94A3B8;font-size:13px}
+.notes-hd-count{display:inline-block;min-width:18px;padding:0 6px;margin-left:6px;border-radius:9px;background:#FDE68A;color:#78350F;font-size:10.5px;text-align:center;letter-spacing:0}
+.notes-composer{border:1px solid var(--line);border-radius:var(--r-sm);padding:8px;margin-bottom:12px;background:var(--card,#fff)}
+.notes-composer:focus-within{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(250,204,21,.18)}
+.notes-composer textarea{border:0;box-shadow:none;padding:4px 6px;resize:vertical;min-height:52px;width:100%;box-sizing:border-box}
+.notes-composer textarea:focus{outline:none;box-shadow:none}
+.notes-composer-ft{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px}
+.notes-more{background:none;border:0;color:var(--muted);font-size:12px;cursor:pointer;padding:4px 0;text-decoration:underline}
+.spam-reason-chips{display:flex;flex-wrap:wrap;gap:6px}
+.spam-reason-chip{border:1px solid var(--line);background:var(--card,#fff);border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer;color:inherit}
+.spam-reason-chip[aria-checked="true"]{background:#FEE2E2;border-color:#DC2626;color:#991B1B;font-weight:600}
 
 /* action buttons in detail */
 .action-row{display:flex;gap:8px;margin-bottom:16px}
@@ -4809,6 +4828,27 @@ const ROLES = {
   </div>
 </div>
 
+<!-- Spam reason — asked every time a lead is marked spam (Leads ⋯ menu, Human Deals card), so the
+     team (and Reports) can see WHY a lead was junk, not just that it was. Saved on the lead as
+     SpamReason; askSpamReason() resolves with {reason, details} or null on cancel. -->
+<div class="modal" id="modalSpamReason" style="width:400px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">🚫 Mark as spam</div><button class="icon-btn" onclick="closeSpamReason(null)">✕</button></div>
+  <div class="modal-body">
+    <div id="spamReasonLead" style="font-size:12.5px;color:var(--muted);margin-bottom:12px"></div>
+    <div class="form-label" style="margin-bottom:6px">Why is this spam?</div>
+    <div id="spamReasonChips" class="spam-reason-chips" role="radiogroup" aria-label="Spam reason"></div>
+    <div class="form-group" style="margin-top:12px"><label class="form-label" for="spamReasonDetails">Details <span id="spamReasonDetailsHint" style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <textarea class="form-input" id="spamReasonDetails" rows="2" maxlength="300" placeholder="Anything the team should know…"></textarea></div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:12px">The bot stops replying to this lead (same as an opt-out). You can undo right after.</div>
+    <div id="spamReasonErr" style="display:none;color:#DC2626;font-size:12.5px;margin-bottom:10px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeSpamReason(null)">Cancel</button>
+      <button class="btn" id="spamReasonOk" style="background:#DC2626;color:#fff;border:1px solid #DC2626" onclick="confirmSpamReason()">🚫 Mark as spam</button>
+    </div>
+  </div>
+</div>
+
 <!-- Coach panel — surfaces the engine's own Sentiment/LastObjectionCategory signals plus the
      matching Settings → Objection Playbook response and a recent timeline, so a rep handling a
      Human Deals chat gets in-the-moment coaching instead of having to notice the drift
@@ -5063,12 +5103,12 @@ const ROLES = {
     <!-- sentiment / objection / SLA signals -->
     <div id="detailSignals" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
     <!-- notes -->
-    <div class="sec-hd">📝 Notes</div>
-    <div id="detailNotes"></div>
-    <div style="display:flex;gap:8px;margin-bottom:16px">
-      <textarea class="form-input" id="noteInput" rows="2" placeholder="Add a note…" style="flex:1"></textarea>
-      <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="addNote()">Add</button>
+    <div class="sec-hd">📝 Notes<span class="notes-hd-count" id="detailNotesCount" style="display:none"></span></div>
+    <div class="notes-composer">
+      <textarea class="form-input" id="noteInput" rows="2" placeholder="Add a note for the team… (Ctrl+Enter to save)" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();addNote();}"></textarea>
+      <div class="notes-composer-ft"><span style="font-size:11px;color:var(--muted)">Visible to your team on the lead and in Chats</span><button class="btn btn-primary btn-sm" id="noteAddBtn" onclick="addNote()">Save note</button></div>
     </div>
+    <div id="detailNotes" style="margin-bottom:16px"></div>
     <!-- call log -->
     <div class="sec-hd">📞 Call Log</div>
     <div id="detailCalls"></div>
@@ -7710,7 +7750,8 @@ function botReentryStage(){
   return (ids.length>2?ids[1]:ids[0])||'new';
 }
 const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'stage_2','Lost':'lost','No-response':'new','Spam':'lost'};
-async function applyHumanDealOutcome(leadId, outcome){
+// spam = {reason, details} from askSpamReason — saved as SpamReason ("Reason: details").
+async function applyHumanDealOutcome(leadId, outcome, spam=null){
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
   const prevStage=lead.Stage;
   let nextStage=HD_OUTCOME_STAGE[outcome]||'new';
@@ -7740,6 +7781,10 @@ async function applyHumanDealOutcome(leadId, outcome){
   // the bot goes silent for them going forward exactly the same way a real opt-out does, with no
   // separate "spam" concept needed anywhere on the engine side.
   if(outcome==='Spam') patch.OptOut='Yes';
+  if(outcome==='Spam' && spam?.reason){
+    await ensureLeadsField('SpamReason');
+    patch.SpamReason=spamReasonText(spam);
+  }
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
   Object.assign(lead, patch);
   reportLeadQualityChange(leadId, {Stage:prevStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:nextStage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
@@ -7784,9 +7829,9 @@ async function markHumanDealWon(leadId){
 // One-click "Spam" — see applyHumanDealOutcome's OptOut note above for what this actually does
 // (the bot stops replying to this lead entirely, same as a real customer-initiated opt-out).
 async function markHumanDealSpam(leadId){
-  if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  const spam=await askSpamReason(leadId); if(!spam) return;
   try{
-    await applyHumanDealOutcome(leadId, 'Spam');
+    await applyHumanDealOutcome(leadId, 'Spam', spam);
     renderHumanDeals();
   }catch(e){ showToast('Failed to save: '+e.message,'err'); }
 }
@@ -7811,17 +7856,22 @@ async function markLeadWon(leadId, ev){
 }
 // No confirm dialog — the lead disappears at once and an Undo toast restores every field the
 // Spam outcome touched (Stage, OptOut, handover fields) if it was a mis-tap.
-const SPAM_UNDO_KEYS=['Stage','Handover','HandoverAt','SlaAlerted','HandoverOutcome','OptOut','HandoverResponseMinutes','ClosedAt'];
+const SPAM_UNDO_KEYS=['Stage','Handover','HandoverAt','SlaAlerted','HandoverOutcome','OptOut','HandoverResponseMinutes','ClosedAt','SpamReason'];
 async function markLeadSpam(leadId, ev){
   ev?.stopPropagation();
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const spam=await askSpamReason(leadId); if(!spam) return;
   const before={Id:leadId}; SPAM_UNDO_KEYS.forEach(k=>{ before[k]=lead[k]??null; });
+  // SpamReason only goes back in the undo patch when the column exists (or was just added).
+  if(!('SpamReason' in lead)) delete before.SpamReason;
   await claimLeadIfUnowned(leadId,'Marked Spam');
   try{
-    await applyHumanDealOutcome(leadId, 'Spam');
+    await applyHumanDealOutcome(leadId, 'Spam', spam);
+    if('SpamReason' in lead && !('SpamReason' in before)) before.SpamReason=null;
     renderLeadsCurrentView();
+    if(currentLead?.Id===leadId && $id('detailNotes')) renderDetailNotes(lead);
   }catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
-  showUndoToast('🚫 Marked as spam', async ()=>{
+  showUndoToast('🚫 Marked as spam — '+spam.reason, async ()=>{
     try{
       await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,before);
       Object.assign(lead, before);
@@ -7829,6 +7879,41 @@ async function markLeadSpam(leadId, ev){
       showToast('↩️ Spam undone','ok');
     }catch(e){ showToast('Undo failed: '+e.message,'err'); }
   });
+}
+// ── Spam reason picker ── one tap on a reason, optional details (required for "Other").
+const SPAM_REASONS=['Fake / wrong number','Bot or automated messages','Not a real enquiry','Competitor or vendor pitch','Abusive or offensive','Duplicate lead','Other'];
+function spamReasonText(spam){
+  const r=String(spam?.reason||'').trim(), d=String(spam?.details||'').trim();
+  return (r&&d?`${r}: ${d}`:(r||d)).slice(0,500);
+}
+let _spamResolve=null, _spamPick='';
+function askSpamReason(leadId){
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(_spamResolve) _spamResolve(null);
+  _spamPick='';
+  $id('spamReasonLead').textContent=lead?`${leadDisplayName(lead)||'This lead'}${lead.Phone?' · '+lead.Phone:''}`:'';
+  $id('spamReasonDetails').value='';
+  $id('spamReasonErr').style.display='none';
+  renderSpamReasonChips();
+  openModal('modalSpamReason');
+  return new Promise(res=>{ _spamResolve=res; });
+}
+function renderSpamReasonChips(){
+  $id('spamReasonChips').innerHTML=SPAM_REASONS.map(r=>`<button type="button" class="spam-reason-chip" role="radio" aria-checked="${r===_spamPick}" onclick="pickSpamReason(this.dataset.r)" data-r="${esc(r)}">${esc(r)}</button>`).join('');
+  $id('spamReasonDetailsHint').textContent=_spamPick==='Other'?'(required)':'(optional)';
+}
+function pickSpamReason(r){ _spamPick=r; $id('spamReasonErr').style.display='none'; renderSpamReasonChips(); if(r==='Other') $id('spamReasonDetails').focus(); }
+function confirmSpamReason(){
+  const details=$id('spamReasonDetails').value.trim();
+  const err=msg=>{ const e=$id('spamReasonErr'); e.textContent=msg; e.style.display='block'; };
+  if(!_spamPick) return err('Pick a reason first.');
+  if(_spamPick==='Other'&&!details) return err('Tell us the reason in Details.');
+  closeSpamReason({reason:_spamPick, details});
+}
+function closeSpamReason(result){
+  closeModal('modalSpamReason');
+  const res=_spamResolve; _spamResolve=null;
+  if(res) res(result);
 }
 function showUndoToast(msg, onUndo){
   let t=$id('_undoToast');
@@ -10593,49 +10678,117 @@ function sortedLeadNotes(lead){
   return notes.map((n,i)=>({...(typeof n==='object'&&n?n:{text:String(n)}),_i:i}))
     .sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||''))||a._i-b._i);
 }
+// How many notes show before "Show all" — the newest are what a rep needs at a glance.
+const NOTES_PREVIEW=5;
+let _notesShowAll=false, _notesShowAllLead=null;
+function _noteAgo(ts){
+  const t=Date.parse(ts||''); if(!isFinite(t)) return '';
+  const m=Math.round((Date.now()-t)/60000);
+  if(m<1) return 'just now'; if(m<60) return m+'m ago';
+  const h=Math.round(m/60); if(h<24) return h+'h ago';
+  const d=Math.round(h/24); return d<30?d+'d ago':'';
+}
+function _noteCard(n, cls=''){
+  const authorName=n.author==='auto-allocation'?'Auto-assign':n.author?(getTeamMembers().find(m=>sameEmail(m.email,n.author))?.name||n.author_name||n.author):(n.author_name||'');
+  const initials=String(authorName||'?').replace(/@.*/,'').split(/[\s._-]+/).filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('')||'•';
+  const ago=_noteAgo(n.ts), when=n.date||(n.ts?new Date(n.ts).toLocaleString():'');
+  const system=/^(?:🔁|↩️|🚫)/u.test(String(n.text||''))||/^(?:auto-allocation|system|bot)$/i.test(String(n.author||''));
+  return `<div class="note-item${n._saving?' saving':''}${cls?' '+cls:(system?' system':'')}">
+    <div class="note-meta"><span class="note-av">${esc(n.icon||initials)}</span>${authorName?`<b>${esc(authorName)}</b>`:''}${n.label?`<b>${esc(n.label)}</b>`:''}${when?`<span title="${esc(when)}">${esc(ago||when)}</span>`:''}</div>
+    <div class="note-text">${esc(n.text||'')}</div></div>`;
+}
 function renderDetailNotes(lead){
-  const notes=sortedLeadNotes(lead).map(n=>({...n, date:n.date||(n.ts?new Date(n.ts).toLocaleString():'')}));
-  $id('detailNotes').innerHTML=notes.length
-    ?notes.map(n=>{
-      // author — added alongside the Chats tab's internal-note composer (chats.js chatSubmitNote)
-      // so a note written from either place shows who wrote it; older notes simply lack it.
-      const authorName=n.author?(getTeamMembers().find(m=>m.email===n.author)?.name||n.author_name||n.author):'';
-      return `<div class="note-item${n._saving?' saving':''}" style="${n._saving?'opacity:.6':''}">${esc(n.text||'').replace(/\n/g,'<br>')}<div class="note-meta">${authorName?esc(authorName)+' · ':''}${n.date||''}</div></div>`;
-    }).join('')
-    :'<div style="color:var(--muted);font-size:13px;margin-bottom:10px">No notes yet.</div>';
+  if(_notesShowAllLead!==lead?.Id){ _notesShowAll=false; _notesShowAllLead=lead?.Id; }
+  const notes=sortedLeadNotes(lead);
+  const pinned=[];
+  // Why it was marked spam — shown on top, so nobody re-works a junk lead.
+  if(lead?.HandoverOutcome==='Spam') pinned.push(_noteCard({text:lead.SpamReason||'No reason given', icon:'🚫', label:'Marked as spam'}, 'spam'));
+  // The Add/Edit Lead form's "Notes" box (LEADS.Notes) — it used to be saved but never shown here.
+  if(String(lead?.Notes||'').trim()) pinned.push(_noteCard({text:lead.Notes, icon:'📌', label:'Lead note'}, 'pinned'));
+  const shown=_notesShowAll?notes:notes.slice(0,NOTES_PREVIEW);
+  const cnt=$id('detailNotesCount');
+  if(cnt){ cnt.textContent=notes.length; cnt.style.display=notes.length?'inline-block':'none'; }
+  $id('detailNotes').innerHTML=pinned.join('')+(notes.length
+    ?shown.map(n=>_noteCard(n)).join('')+(notes.length>NOTES_PREVIEW?`<button class="notes-more" onclick="_notesShowAll=!_notesShowAll;renderDetailNotes(currentLead)">${_notesShowAll?'Show fewer':`Show all ${notes.length} notes`}</button>`:'')
+    :(pinned.length?'':'<div style="color:var(--muted);font-size:13px">No notes yet — add the first one above.</div>'));
 }
 
-async function addNote(){
-  const text=$id('noteInput').value.trim();
-  if(!text||!currentLead)return;
-  await claimLeadIfUnowned(currentLead.Id,'Note');
-  let notes=[]; try{notes=JSON.parse(currentLead.NotesList||'[]');}catch(e){}
-  // ts (ISO) is what chats.js's merged timeline sorts by — date stays for the existing display
-  // format above, ts is the addition. author lets both this panel and the Chats tab show who
-  // wrote it.
-  const lead=currentLead, before=lead.NotesList;
-  notes.unshift({text,date:new Date().toLocaleString(),ts:new Date().toISOString(),author:myEmail,_saving:true});
-  lead.NotesList=JSON.stringify(notes);
-  $id('noteInput').value='';
+// Saves run one after another, so two quick notes never race each other and drop one.
+let _noteQueue=Promise.resolve();
+// preset: a note added by the app itself (e.g. "Lead reversed") — the rep's half-typed text is left alone.
+function addNote(preset){
+  const text=String(preset??$id('noteInput').value).trim();
+  if(!text||!currentLead) return Promise.resolve();
+  const lead=currentLead;
+  // Optimistic: shown at once (faded, "Saving…") and the box is cleared for the next note.
+  const temp={text,date:new Date().toLocaleString(),ts:new Date().toISOString(),author:myEmail,_saving:true};
+  let cur=[]; try{cur=JSON.parse(lead.NotesList||'[]');}catch(e){}
+  if(!Array.isArray(cur)) cur=[];
+  lead.NotesList=JSON.stringify([temp,...cur]);
+  if(preset==null) $id('noteInput').value='';
   renderDetailNotes(lead);
-  // Through the Worker (same endpoint as Chats' internal notes): it adds the note to the stored list
-  // — a teammate's note added meanwhile is kept — and every open dashboard and Chats page is told.
+  const job=_noteQueue.then(()=>_saveLeadNote(lead, text, temp));
+  _noteQueue=job.catch(()=>{});
+  return job;
+}
+// The stored list without this browser's own unsaved placeholders.
+function _withoutTemp(raw, temp){
+  let l=[]; try{l=JSON.parse(raw||'[]');}catch(e){}
+  return Array.isArray(l)?l.filter(n=>!(n&&n._saving)&&!(n&&n.ts===temp.ts&&n.text===temp.text)):[];
+}
+async function _saveLeadNote(lead, text, temp){
+  const repaint=()=>{ if(currentLead?.Id===lead.Id && $id('detailNotes')) renderDetailNotes(currentLead); };
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/chats/v2/note`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:Number(lead.Id),text})});
-    const d=await r.json().catch(()=>({}));
-    if(r.status===404&&d.error==='Not found'){ // A Worker without the notes endpoint yet: the old way.
-      notes[0]={...notes[0]}; delete notes[0]._saving; lead.NotesList=JSON.stringify(notes);
-      await patchDetailField('NotesList',lead.NotesList); return;
+    await claimLeadIfUnowned(lead.Id,'Note');
+    // Through the Worker (same endpoint as Chats' internal notes): it adds the note to the stored
+    // list — a teammate's note added meanwhile is kept — and every open dashboard and Chats page is told.
+    let r=null, d={};
+    try{
+      r=await fetch(`${CONFIG.WORKER_BASE}/chats/v2/note`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:Number(lead.Id),text})});
+      d=await r.json().catch(()=>({}));
+    }catch(e){ r=null; }
+    if(r&&r.ok){
+      // Keep any other note still saving from this browser on screen.
+      let mine=[]; try{mine=JSON.parse(lead.NotesList||'[]');}catch(e){}
+      const stillSaving=(Array.isArray(mine)?mine:[]).filter(n=>n&&n._saving&&n.ts!==temp.ts);
+      lead.NotesList=JSON.stringify([...stillSaving,...[...(d.notes||[])].reverse()]);
+    }else if(r&&(r.status===404||r.status===503||r.status===403)){
+      // The Worker refused (no notes endpoint yet, Chats off, or this lead isn't in this person's
+      // Chats view — e.g. just claimed). Save straight to the lead instead, from a fresh copy so a
+      // teammate's note isn't overwritten, then read back to be sure it stuck.
+      await _directSaveNote(lead, temp);
+    }else if(r){
+      throw new Error(d.error||('HTTP '+r.status));
+    }else{
+      throw new Error('No connection');
     }
-    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
-    lead.NotesList=JSON.stringify([...(d.notes||[])].reverse());
-    if(currentLead?.Id===lead.Id) renderDetailNotes(lead);
+    const i=allLeads.findIndex(l=>l.Id===lead.Id); if(i>=0&&allLeads[i]!==lead) allLeads[i].NotesList=lead.NotesList;
+    repaint();
     if(typeof _cacheLeadsSoon==='function') _cacheLeadsSoon();
   }catch(e){
-    lead.NotesList=before;
-    if(currentLead?.Id===lead.Id){ renderDetailNotes(lead); $id('noteInput').value=text; }
-    showToast('Could not save note — '+e.message,'err');
+    let left=[]; try{left=JSON.parse(lead.NotesList||'[]');}catch(_){}
+    lead.NotesList=JSON.stringify((Array.isArray(left)?left:[]).filter(n=>!(n&&n._saving&&n.ts===temp.ts)));
+    // Put the unsaved text back (after anything typed meanwhile) so it's never lost.
+    if(currentLead?.Id===lead.Id){ const box=$id('noteInput'); if(box) box.value=box.value.trim()?box.value+'\n'+text:text; }
+    repaint();
+    showToast('Could not save note — '+e.message+'. Your text is back in the box; tap Save note to retry.','err');
+    throw e;
   }
+}
+async function _directSaveNote(lead, temp){
+  const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=Id,NotesList`;
+  const note={text:temp.text,date:temp.date,ts:temp.ts,author:temp.author};
+  for(let attempt=0;attempt<3;attempt++){
+    const fresh=await ncGet(url).catch(()=>null);
+    const list=_withoutTemp(fresh?fresh.NotesList:lead.NotesList,temp);
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:lead.Id,NotesList:JSON.stringify([note,...list])});
+    const check=await ncGet(url).catch(()=>null);
+    if(!check||String(check.NotesList||'').includes(temp.ts)){
+      lead.NotesList=check?.NotesList||JSON.stringify([note,...list]);
+      return;
+    }
+  }
+  throw new Error('the note did not stick');
 }
 // A teammate's note, from Chats or another dashboard (worker type:'note'): shown at once on that lead.
 function onLiveNoteEvent(msg){
@@ -15143,6 +15296,7 @@ function closeModal(id){
 }
 function closeAllModals(){
   if($id('modalCall')?.classList.contains('open')) _forgetPendingCall(); // tap outside = Cancel
+  if(typeof _spamResolve==='function'){ const r=_spamResolve; _spamResolve=null; r(null); } // tap outside = Cancel
   document.querySelectorAll('.modal').forEach(m=>m.classList.remove('open'));
   $id('overlay').classList.remove('show');
 }
@@ -19760,12 +19914,11 @@ async function reverseLead(){
   const patch={Id:currentLead.Id,Stage:'new',Handover:'No',HandoverOutcome:'',ClosedAt:'','Follow up 1':'No','Follow up 2':'No','Follow up 3':'No','Follow up 4':'No','Follow up 5':'No'};
   await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
   // append a note so history shows this was a repeat-customer reversal
-  const notes=currentLead.Notes?currentLead.Notes+'\n':'';
-  const noteText=notes+`[${new Date().toLocaleDateString()}] Lead reversed from Won — repeat customer`;
-  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,Notes:noteText});
-  Object.assign(currentLead,patch,{Notes:noteText});
+  Object.assign(currentLead,patch);
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
-  if(idx>=0)Object.assign(allLeads[idx],patch,{Notes:noteText});
+  if(idx>=0)Object.assign(allLeads[idx],patch);
+  // In the notes timeline (not the lead's single Notes box) so it shows with who did it and when.
+  await addNote('↩️ Lead reversed from Won — repeat customer').catch(()=>{});
   closeModal('modalDetail');
   showToast('Lead reversed — re-activated as repeat customer');
   loadAll();
@@ -21976,9 +22129,14 @@ async function doMerge(dupId){
   $id('mergeStatus').textContent='Merging…';
 
   // Merge notes
-  const existNotes=currentLead.NotesList||'';
-  const dupNotes=dup.NotesList||'';
-  const mergedNotes=existNotes+(dupNotes?'\n---\n'+dupNotes:'');
+  // One JSON array, newest first — gluing the two strings together made NotesList unparseable, so
+  // the merged lead showed "No notes yet" and the next note saved over all of them.
+  const notesArr=raw=>{ let l=[]; try{ l=JSON.parse(raw||'[]'); }catch(e){ l=String(raw||'').trim()?[{text:String(raw)}]:[]; } return Array.isArray(l)?l.map(n=>typeof n==='object'&&n?n:{text:String(n)}):[]; };
+  const dupLabel=leadDisplayName(dup)||dup.Phone||('#'+dup.Id);
+  const mergedNotes=JSON.stringify(notesArr(currentLead.NotesList)
+    .concat(notesArr(dup.NotesList).map(n=>({...n, merged_from:dup.Id})))
+    .concat(String(dup.Notes||'').trim()?[{text:`Lead note from merged lead ${dupLabel}: ${dup.Notes}`, ts:'', merged_from:dup.Id}]:[])
+    .sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||''))));
 
   // Merge call logs
   // Merge call logs — one JSON array, newest first (gluing the two strings together made the result

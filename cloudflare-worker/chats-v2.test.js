@@ -672,6 +672,32 @@ describe('internal notes', ()=>{
     assert.match(r.data.error, /could not be saved/);
     assert.equal((await call(d, '/chats/v2/note', {method:'POST', body:{lead_id:55, text:'   '}})).status, 400);
   });
+  test('two notes saved at once: the one overwritten by the other is merged back in, not lost', async()=>{
+    const {store, deps:d}=notesDeps({Id:57, ClientId:String(CID), Owner:'', NotesList:'[]'});
+    let raced=false;
+    // The first write lands, then a teammate's save (made from the old list) overwrites it.
+    const racing={...d, ncFetch:async(env, path, opts={})=>{
+      const r=await d.ncFetch(env, path, opts);
+      if(opts.method==='PATCH'&&!raced){ raced=true; store.NotesList=JSON.stringify([{text:'teammate note', ts:'2026-11-06T09:00:00.000Z'}]); }
+      return r;
+    }};
+    const r=await call(racing, '/chats/v2/note', {method:'POST', body:{lead_id:57, text:'my note'}});
+    assert.equal(r.status, 200);
+    assert.deepEqual(JSON.parse(store.NotesList).map(n=>n.text), ['my note', 'teammate note']);
+  });
+  test('the lead\'s owner can note on it even when the chat row still shows someone else', async()=>{
+    db.prepare(`INSERT INTO conversations (lead_id, client_id, status, synced, assignee_email, last_message_at, updated_at) VALUES (58, ?, 'open', 1, ?, ?, ?)`).run(CID, SHAFNA, T('08:00'), T('08:00'));
+    const {store, deps:d}=notesDeps({Id:58, ClientId:String(CID), Owner:RAHUL, NotesList:''});
+    assert.equal((await call(d, '/chats/v2/note', {method:'POST', who:'rahul', body:{lead_id:58, text:'Claimed and called'}})).status, 200);
+    assert.equal(JSON.parse(store.NotesList)[0].text, 'Claimed and called');
+  });
+  test('old free-text notes are kept when a new note is added', async()=>{
+    const {store, deps:d}=notesDeps({Id:59, ClientId:String(CID), Owner:'', NotesList:'met at expo\n---\n[{"text":"x"}]'});
+    assert.equal((await call(d, '/chats/v2/note', {method:'POST', body:{lead_id:59, text:'follow up'}})).status, 200);
+    const saved=JSON.parse(store.NotesList);
+    assert.equal(saved[0].text, 'follow up');
+    assert.match(saved[1].text, /met at expo/);
+  });
   test('notes written newest-first (CRM) or oldest-first (old Chats) read back in time order', ()=>{
     const mixed=JSON.stringify([{text:'c', ts:'2026-11-03'}, {text:'a', ts:'2026-11-01'}, 'plain old note', {text:'b', ts:'2026-11-02'}]);
     assert.deepEqual(chatsV2NotesSorted(mixed).map(n=>n.text), ['plain old note', 'a', 'b', 'c']);

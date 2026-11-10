@@ -77,7 +77,7 @@ test('Lead Ref shows on desktop, hidden on phones', async ({ page }) => {
   await expect(page.locator('#leadsList .lead-ref-list').first()).toBeHidden();
 });
 
-test('spam: one tap hides the lead, Undo brings it back', async ({ page }) => {
+test('spam: pick a reason, the lead hides with the reason saved, Undo brings it back', async ({ page }) => {
   await renderLeads(page);
   await page.evaluate(() => {
     // @ts-ignore
@@ -94,11 +94,45 @@ test('spam: one tap hides the lead, Undo brings it back', async ({ page }) => {
   });
   await page.locator('#leadsList .lead-more-btn').first().click();
   await page.getByRole('menuitem', { name: '🚫 Mark as spam' }).click();
+  const modal = page.locator('#modalSpamReason');
+  await expect(modal).toHaveClass(/\bopen\b/);
+  // no reason picked → nothing saved
+  await modal.getByRole('button', { name: '🚫 Mark as spam' }).click();
+  await expect(modal).toContainText('Pick a reason first.');
+  // "Other" needs details
+  await modal.getByRole('radio', { name: 'Other' }).click();
+  await modal.getByRole('button', { name: '🚫 Mark as spam' }).click();
+  await expect(modal).toContainText('Tell us the reason in Details.');
+  await modal.getByRole('radio', { name: 'Fake / wrong number' }).click();
+  await modal.locator('#spamReasonDetails').fill('Number belongs to a shop');
+  await modal.getByRole('button', { name: '🚫 Mark as spam' }).click();
+  await expect(modal).not.toHaveClass(/\bopen\b/);
   await expect(page.locator('#leadsList .lead-item')).toHaveCount(0);
+  const spamPatch = await page.evaluate(() => window.__patches.find((p) => p.HandoverOutcome === 'Spam'));
+  expect(spamPatch).toMatchObject({ Id: 15787, OptOut: 'Yes', SpamReason: 'Fake / wrong number: Number belongs to a shop' });
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.locator('#leadsList .lead-item')).toHaveCount(1);
   const last = await page.evaluate(() => window.__patches.at(-1));
-  expect(last).toMatchObject({ Id: 15787, Stage: 'new', OptOut: null, HandoverOutcome: null });
+  expect(last).toMatchObject({ Id: 15787, Stage: 'new', OptOut: null, HandoverOutcome: null, SpamReason: null });
+});
+
+test('spam: Cancel on the reason picker leaves the lead alone', async ({ page }) => {
+  await renderLeads(page);
+  await page.evaluate(() => {
+    // @ts-ignore
+    window.__patches = [];
+    // @ts-ignore
+    window.ncPatch = async (_url, body) => { window.__patches.push(body); };
+    // @ts-ignore
+    _leadsActiveView = 'all';
+    window.renderLeadsList();
+  });
+  await page.locator('#leadsList .lead-more-btn').first().click();
+  await page.getByRole('menuitem', { name: '🚫 Mark as spam' }).click();
+  await page.locator('#modalSpamReason').getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.locator('#modalSpamReason')).not.toHaveClass(/\bopen\b/);
+  await expect(page.locator('#leadsList .lead-item')).toHaveCount(1);
+  expect(await page.evaluate(() => window.__patches.length)).toBe(0);
 });
 
 test('called leads move down: never-called first, then follow-up due, then oldest call first', async ({ page }) => {
