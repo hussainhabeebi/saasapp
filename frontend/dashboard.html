@@ -3912,25 +3912,6 @@ const ROLES = {
               <span id="taFlowStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
-            <!-- 📲 Travel CRM tools (travel-crm.js) — travel agency accounts only; off = nothing changes. -->
-            <div id="tcSettingsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                <div style="flex:1;min-width:180px"><b>📲 Travel CRM tools</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">Which WhatsApp number each enquiry came in on, enquiry type &amp; route labels, a travel profile with the customer's travel dates (✅ Completed automatically once the trip is over), filters by number / route / travel date / enquiry type, a 📲 WhatsApp Numbers report, and replies sent from the WhatsApp Business app shown in Chats. Off = everything works exactly as today.</div></div>
-                <select class="form-input" id="cfgTcEnabled" style="max-width:160px" onchange="tcToggleSettingsBody()"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-                <button class="save-btn" id="saveTcEnabled" onclick="tcSaveSettings()">Save</button>
-                <span class="save-msg" id="saveTcMsg"></span>
-                <span id="tcStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-              </div>
-              <div id="tcSettingsBody" style="display:none;margin-top:10px">
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-                  <div><label class="form-label">Enquiry types <span class="s-note" style="display:inline">(one per line)</span></label><textarea class="form-input" id="cfgTcTypes" rows="6" placeholder="Air Ticket&#10;Holiday Package&#10;Visa"></textarea></div>
-                  <div><label class="form-label">Routes <span class="s-note" style="display:inline">(one per line)</span></label><textarea class="form-input" id="cfgTcRoutes" rows="6" placeholder="Calicut → Dubai&#10;Calicut → Sharjah&#10;Kochi → Dubai"></textarea></div>
-                </div>
-                <div class="s-note" style="margin-top:8px"><b>WhatsApp Business app replies:</b> replies your team types in the WhatsApp Business app on the phone show in Chats as "📱 WhatsApp Business app" when they reach your Chatwoot inbox. If your Meta app sends WhatsApp webhooks here instead, subscribe it to <code>smb_message_echoes</code> at <code id="tcEchoUrl"></code>.</div>
-                <div class="s-note" style="margin-top:4px">Press Save after changing the lists.</div>
-              </div>
-            </div>
-
             <div id="taOptionsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
               <div><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">Live fares &amp; booking, currency, the WhatsApp menu, itinerary options and 📲 Travel CRM tools are all in ✈️ Flights → ⚙️ Travel Settings.</div></div>
             </div>
