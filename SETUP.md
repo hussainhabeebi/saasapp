@@ -9371,6 +9371,31 @@ npx wrangler deploy
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
 
+## Travel CRM tools (Settings → 🧩 Industry Modules → 📲 Travel CRM tools)
+
+Optional, travel agency accounts only (industry `travel` or the Travel Agency module on). Off by
+default — while off nothing on screen changes. Code: `frontend/travel-crm.js`,
+`cloudflare-worker/travel-crm.js` (tests: `travel-crm.test.js`, `frontend/tests/travel-crm.spec.js`).
+
+- **Which WhatsApp number an enquiry came in on** — leads already record their Chatwoot inbox in
+  `InboxId`; `GET /travel-crm/numbers` names each WhatsApp inbox (name + phone). Shown as a 📲 label
+  on every lead, at the top of the lead's 🧳 Travel profile, and in Reports → 📲 WhatsApp Numbers
+  (leads, open, won = conversions, lost, conversion %, won value; enquiry type × number; routes).
+- **Lead fields** (created on first use): `EnquiryType`, `TravelRoute` ("Calicut → Dubai"),
+  `TravelTrips` (JSON `[{id, route, depart, ret, note}]`), `TripStatus` (Upcoming / Travelling /
+  Completed), `NextTravelDate`. A lead without `TravelTrips` falls back to its older `TravelDates`.
+- **Completed automatically** — worked out from the travel dates on screen, and stamped on the lead by
+  the daily cron (`runTravelCrmTripStatusForAllClients`) once the last travel day has passed.
+- **Filters** — WhatsApp number, route, enquiry type, travel date (next 7/30 days, this/next month,
+  travelling now, completed, custom range) on Leads, 🗂 Pipeline and 📌 Status Board.
+- **Settings** — enquiry types and routes lists (`CLIENTS.travel_crm_config`), on/off in
+  `CLIENTS.travel_crm_enabled`.
+- **WhatsApp Business app replies** (Meta coexistence) — a reply that reaches Chatwoot with no
+  sender is shown in Chats as "📱 WhatsApp Business app". If the Meta app's WhatsApp webhook points
+  at the Worker instead, subscribe it to `smb_message_echoes` at `/wa/business-echoes`: set Worker
+  secret `META_WA_ECHO_VERIFY_TOKEN` (any random string; deliveries are checked with `META_APP_SECRET`).
+  Each reply is added to that customer's Chats thread once and stamps `LastAgentMsgAt`.
+
 ## Live Travel Agency
 
 `frontend/live-travel-agency.html` is an isolated, D1-backed flight operations module. The legacy

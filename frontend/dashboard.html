@@ -2102,6 +2102,8 @@ const ROLES = {
           <!-- Where leads came from (LEAD_ORIGINS): Auto / Manual / Instagram / Lead form… with counts. -->
           <div id="leadsOriginChips" class="leads-view-tabs" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
           <div id="leadsOriginBanner"></div>
+          <!-- 📲 Travel CRM tools (travel-crm.js): WhatsApp number / route / enquiry type / travel date filters. -->
+          <div id="tcLeadsBar" style="display:none"></div>
 
           <div class="leads-toolbar" id="leadsToolbar">
             <!-- Row 1: Search + owner + mine. On phones the secondary filters (row 2) fold behind
@@ -2625,6 +2627,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="scheduled">🗓️ Scheduled Reports</button>
         <button class="hosp-tab" data-reports="tvstatus" id="rptTabTvStatus" style="display:none">📌 Status Changes</button>
         <button class="hosp-tab" data-reports="category" id="rptTabCategory" style="display:none">🗂️ Service Category</button>
+        <button class="hosp-tab" data-reports="tcnumbers" id="rptTabTcNumbers" style="display:none">📲 WhatsApp Numbers</button>
       </div>
       <div id="rptFilterBar" style="background:var(--card);border-bottom:1px solid var(--line);padding:8px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:41px;z-index:9">
         <div style="display:flex;gap:3px;flex-wrap:wrap">
@@ -3909,6 +3912,25 @@ const ROLES = {
               <span id="taFlowStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <!-- 📲 Travel CRM tools (travel-crm.js) — travel agency accounts only; off = nothing changes. -->
+            <div id="tcSettingsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px"><b>📲 Travel CRM tools</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">Which WhatsApp number each enquiry came in on, enquiry type &amp; route labels, a travel profile with the customer's travel dates (✅ Completed automatically once the trip is over), filters by number / route / travel date / enquiry type, a 📲 WhatsApp Numbers report, and replies sent from the WhatsApp Business app shown in Chats. Off = everything works exactly as today.</div></div>
+                <select class="form-input" id="cfgTcEnabled" style="max-width:160px" onchange="tcToggleSettingsBody()"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+                <button class="save-btn" id="saveTcEnabled" onclick="tcSaveSettings()">Save</button>
+                <span class="save-msg" id="saveTcMsg"></span>
+                <span id="tcStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+              </div>
+              <div id="tcSettingsBody" style="display:none;margin-top:10px">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+                  <div><label class="form-label">Enquiry types <span class="s-note" style="display:inline">(one per line)</span></label><textarea class="form-input" id="cfgTcTypes" rows="6" placeholder="Air Ticket&#10;Holiday Package&#10;Visa"></textarea></div>
+                  <div><label class="form-label">Routes <span class="s-note" style="display:inline">(one per line)</span></label><textarea class="form-input" id="cfgTcRoutes" rows="6" placeholder="Calicut → Dubai&#10;Calicut → Sharjah&#10;Kochi → Dubai"></textarea></div>
+                </div>
+                <div class="s-note" style="margin-top:8px"><b>WhatsApp Business app replies:</b> replies your team types in the WhatsApp Business app on the phone show in Chats as "📱 WhatsApp Business app" when they reach your Chatwoot inbox. If your Meta app sends WhatsApp webhooks here instead, subscribe it to <code>smb_message_echoes</code> at <code id="tcEchoUrl"></code>.</div>
+                <div class="s-note" style="margin-top:4px">Press Save after changing the lists.</div>
+              </div>
+            </div>
+
             <div id="taOptionsRow" style="display:none;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
               <div><b>⚙️ Travel Settings</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">Live fares &amp; booking, currency, the WhatsApp menu and itinerary options are all in ✈️ Flights → ⚙️ Travel Settings.</div></div>
             </div>
@@ -5067,6 +5089,8 @@ const ROLES = {
   <div class="modal-body">
     <!-- actions -->
     <div class="action-row" id="detailActions"></div>
+    <!-- 🧳 Travel profile (travel-crm.js) — Travel CRM tools only -->
+    <div id="detailTravelCrm" style="display:none"></div>
     <!-- tags -->
     <div style="margin-bottom:14px">
       <div class="form-label">Tags</div>
@@ -8237,6 +8261,7 @@ function applyLeadsViewFilter(leads){
   const ctyf=$id('leadCountryFilter')?.value||'';
   if(ctyf) out=out.filter(l=>ctyf==='__none'?!leadCountry(l):leadCountry(l).toLowerCase()===ctyf.toLowerCase());
   if(_leadsOriginFilter) out=out.filter(l=>leadOrigin(l)===_leadsOriginFilter);
+  if(typeof tcFilterLeads==='function') out=tcFilterLeads(out); // 📲 Travel CRM tools — no-op while off
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   // Spam is hidden unless the stage filter explicitly asks for Lost (where Spam lands)
   else out=out.filter(l=>l.HandoverOutcome!=='Spam');
@@ -8704,6 +8729,7 @@ function toggleLeadsMobileFilters(){
 }
 
 function renderLeadsList(){
+  if(typeof tcRenderBar==='function') tcRenderBar('tcLeadsBar'); // 📲 Travel CRM filters (travel-crm.js)
   renderLeadsViewTabs();
   renderLeadsMomentumStrip();
   const filtered=sortLeadsForView(applyLeadsViewFilter(allLeads));
@@ -8736,6 +8762,7 @@ function renderLeadsList(){
         <div class="li-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||mtgBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${mtgBadge}${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
+        ${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
         ${typeof tsInlineCategoryHTML==='function'&&clientRecord?.industry==='travel'?`<div class="ts-inline" onclick="event.stopPropagation()">${tsInlineCategoryHTML(l)}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
@@ -9085,6 +9112,7 @@ function toggleLeadsView(){
 }
 
 function renderLeadsTable(){
+  if(typeof tcRenderBar==='function') tcRenderBar('tcLeadsBar'); // 📲 Travel CRM filters (travel-crm.js)
   renderLeadsViewTabs();
   renderLeadsMomentumStrip();
   renderLeadsFilterOptions();
@@ -9118,7 +9146,7 @@ function renderLeadsTable(){
     return `<tr class="${leadOriginClass(l)}" onclick="openDetail(${l.Id})">
       <td class="td-chk" onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
       <td class="lead-ref lead-ref-list" style="white-space:nowrap">${leadRef(l)}</td>
-      <td class="td-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}</td>
+      <td class="td-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}${leadMeetingBadge(l)?`<br>${leadMeetingBadge(l)}`:''}</td>
       ${tsCol?`<td class="td-wide" onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td class="td-wide" onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
@@ -10419,6 +10447,7 @@ function openDetail(id){
     <span class="detail-more" style="display:inline-flex;align-items:center">${leadMoreMenuHTML(lead, lead.Id+'d')}</span>
   `;
   mtgRenderDetailLine(lead);
+  if(typeof tcRenderDetail==='function') tcRenderDetail(lead);
 
   // tags
   renderDetailTags(lead);
@@ -20575,6 +20604,9 @@ function renderReports(){
   if(tvTab) tvTab.style.display=isTravel?'':'none';
   const catTab=$id('rptTabCategory'); if(catTab) catTab.style.display=isTravel?'':'none';
   if(!isTravel&&(_reportsPage==='tvstatus'||_reportsPage==='category')) _reportsPage='overview';
+  // 📲 WhatsApp Numbers (travel-crm.js) — Travel CRM tools only.
+  const tcOnNow=typeof tcOn==='function'&&tcOn(); const tcTab=$id('rptTabTcNumbers'); if(tcTab) tcTab.style.display=tcOnNow?'':'none';
+  if(!tcOnNow&&_reportsPage==='tcnumbers') _reportsPage='overview';
   rptPopulateMemberFilter(); rptPopulateCategoryFilter(); renderReportsSubPage(_reportsPage);
 }
 function renderReportsSubPage(page){
@@ -20587,6 +20619,7 @@ function renderReportsSubPage(page){
     scheduled:renderReportsScheduled,
     tvstatus:()=>typeof renderReportsTravelStatus==='function'?renderReportsTravelStatus():renderReportsOverview(),
     category:renderReportsCategory,
+    tcnumbers:()=>typeof renderReportsTcNumbers==='function'?renderReportsTcNumbers():renderReportsOverview(),
   };
   (fns[page]||renderReportsOverview)();
 }
@@ -22324,6 +22357,7 @@ function updateAgencyTabVisibility(){
   const optRow=$id('taOptionsRow'); if(optRow) optRow.style.display=enabled?'block':'none';
   [$id('dnAgencyTab'),$id('bnAgencyTab'),$id('moreAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
   if(typeof tvApply==='function') tvApply();
+  if(typeof tcInitSettings==='function') tcInitSettings(); // 📲 Travel CRM tools (travel-crm.js)
 }
 
 $id('saveTaEnabled').addEventListener('click',async()=>{
@@ -24900,8 +24934,9 @@ async function deleteHospBooking(id){
 <script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=8"></script>
+<script src="travel-status.js?v=9"></script>
 <script src="travel-view.js?v=8"></script>
+<script src="travel-crm.js?v=1"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>
 <script src="commerce-view.js?v=3"></script>
