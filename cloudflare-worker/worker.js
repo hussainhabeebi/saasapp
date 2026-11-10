@@ -21920,9 +21920,11 @@ async function handleTravelAiItinerary(request,env){
   const payload=await requireSession(request,env);
   if(!payload)return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({}));
-  const pkg=body?.package&&typeof body.package==='object'?body.package:null;
-  if(!pkg)return json({error:'Missing package'},400);
   const c=await getClientById(env,payload.cid).catch(()=>null);
+  // Chats → ✨ AI Itinerary sends just the package id; Agency → Packages sends the package itself.
+  let pkg=body?.package&&typeof body.package==='object'?body.package:null;
+  if(!pkg&&body?.package_id!=null&&c)pkg=await taChatPackage(env,c,payload.cid,body.package_id);
+  if(!pkg)return json({error:'Missing package'},400);
   // A whole trip is a long answer: allow far more time and tokens than a WhatsApp reply.
   const opts={json:true,temperature:0.4,maxOutputTokens:8192,timeoutMs:90000,caller:'ta-ai-itinerary'};
   const generate=async(system,user)=>{
@@ -21940,6 +21942,80 @@ async function handleTravelAiItinerary(request,env){
     return json({error:out.error},422);
   }
   return json(out);
+}
+// ── Chats → ✨ AI Itinerary (Travel Agency only) ──
+// Pick a package in a chat, draft the day-by-day plan with AI (POST /travel/ai-itinerary with
+// package_id), review it, then "Approve & send": the itinerary PDF goes straight into that chat.
+// Nothing is saved to the Itineraries list, so the bot's own package replies are unchanged.
+const taChatPkgFields=p=>({id:taPkgId(p),name:String(p?.name||'').trim(),destination:String(p?.destination||'').trim(),
+  nights:Number(p?.nights)||0,price:taPackagePrice(p),currency:String(p?.currency||'').trim()||'AED',region:taPackageRegion(p)||'',active:String(p?.status||p?.active||'').toLowerCase()});
+async function taChatPackage(env,c,clientId,id){
+  const want=String(id??'').trim(); if(!want)return null;
+  return (await taReadRecords(env,c,clientId,'packages')).find(p=>taPkgId(p)===want)||null;
+}
+function taIsTravelClient(c){ return String(c?.industry||'').toLowerCase()==='travel'; }
+// GET /travel/chat-packages → {packages:[{id,name,destination,nights,price,currency}]}
+async function handleTravelChatPackages(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c)return json({error:'Client not found'},404);
+  if(!taIsTravelClient(c))return json({error:'AI Itinerary is for Travel Agency accounts.'},403);
+  const list=(await taReadRecords(env,c,payload.cid,'packages')).map(taChatPkgFields)
+    .filter(p=>p.id&&p.name&&!/^(inactive|archived|draft|no|false)$/.test(p.active))
+    .map(({active,...p})=>p).sort((a,b)=>a.name.localeCompare(b.name));
+  return json({packages:list});
+}
+// The AI draft as the itinerary record taBuildItineraryPdf reads: only the day fields it uses,
+// trimmed, at most 31 days — a browser can't slip anything else into the PDF.
+export function taChatDraftItin(pkg,rawDays){
+  const days=(Array.isArray(rawDays)?rawDays:[]).slice(0,31).map((d,i)=>({day_no:i+1,
+    title:String(d?.title||'').slice(0,200),description:String(d?.description||'').slice(0,2000),overnight:String(d?.overnight||'').slice(0,200),
+    meals:(Array.isArray(d?.meals)?d.meals:[]).filter(m=>['B','L','D'].includes(m)),
+    items:(Array.isArray(d?.items)?d.items:[]).slice(0,20).map(it=>({type:String(it?.type||'activity').slice(0,20),time:String(it?.time||'').slice(0,10),
+      description:String(it?.description||'').slice(0,500),image:/^https:\/\/upload\.wikimedia\.org\/\S+$/i.test(String(it?.image||''))?String(it.image):''}))}))
+    .filter(d=>d.title||d.description||d.items.some(it=>it.description)).map((d,i)=>({...d,day_no:i+1}));
+  return {title:String(pkg?.name||'').trim(),days};
+}
+// POST /travel/chat-itinerary/send {lead_id, package_id, days} → the PDF is sent into the lead's chat.
+async function handleTravelChatItinerarySend(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c)return json({error:'Client not found'},404);
+  if(!taIsTravelClient(c))return json({error:'AI Itinerary is for Travel Agency accounts.'},403);
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token)return json({error:'Chatwoot is not configured for this account.'},400);
+  const leadId=Number(body?.lead_id)||0;
+  if(!leadId)return json({error:'lead_id required'},400);
+  const lr=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  const lead=lr.ok?await lr.json().catch(()=>null):null;
+  if(!lead||String(lead.ClientId)!==String(payload.cid))return json({error:'Lead not found'},404);
+  const convId=String(lead.ConversationID||'').trim();
+  if(!convId)return json({error:'This lead has no WhatsApp chat yet.'},400);
+  const access=await chatSendCheckAndClaim(env,c,payload,{leadId,convId});
+  if(!access.ok)return json({error:access.error},403);
+  const pkg=await taChatPackage(env,c,payload.cid,body?.package_id);
+  if(!pkg)return json({error:'Package not found'},404);
+  const itin=taChatDraftItin(pkg,body?.days);
+  if(!itin.days.length)return json({error:'The itinerary has no days to send.'},400);
+  let bytes;
+  try{
+    const assets=await taFetchItineraryAssets(pkg,itin,{logoUrl:String(bcLogoForPdf(await bcForClient(env,c),c)||'').trim()});
+    bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',accent:c.quote_accent_color||'',assets});
+  }catch(e){ await reportOpsError(env,'Chats AI itinerary — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
+  const caption=String(body?.caption||'').trim().slice(0,1000)||`📄 Here is the itinerary for *${pkg.name}*.`;
+  const name=taItineraryPdfName(pkg);
+  const fd=new FormData();
+  fd.append('content',caption); fd.append('message_type','outgoing'); fd.append('private','false');
+  fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),name);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+  if(!r.ok)return json({error:'WhatsApp send failed (HTTP '+r.status+')'},502);
+  const data=await r.json().catch(()=>({}));
+  const sent=data?.attachments?.[0]||{};
+  await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
+    attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+  return json({ok:true,data});
 }
 export async function ltMenuLoad(env,clientId){
   await ltMenuEnsureSchema(env);
@@ -41997,6 +42073,8 @@ export default {
       else if(/^\/live-travel\/flows\/(save|delete|preview)$/.test(url.pathname) && request.method==='POST'){ res=await handleLtTravelFlows(request,env,url.pathname.split('/').pop()); }
       else if(url.pathname==='/travel/drive-image' && request.method==='GET'){ res=await handleTravelDriveImage(request,env); }
       else if(url.pathname==='/travel/ai-itinerary' && request.method==='POST'){ res=await handleTravelAiItinerary(request,env); }
+      else if(url.pathname==='/travel/chat-packages' && request.method==='GET'){ res=await handleTravelChatPackages(request,env); }
+      else if(url.pathname==='/travel/chat-itinerary/send' && request.method==='POST'){ res=await handleTravelChatItinerarySend(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
