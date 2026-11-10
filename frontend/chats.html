@@ -225,6 +225,10 @@ button{transition:transform .08s ease,filter .08s ease,background-color .12s}
 button:active:not(:disabled){transform:scale(.96);filter:brightness(.94)}
 .contact:active{filter:brightness(.97)}
 @media (prefers-reduced-motion:reduce){button{transition:none}button:active:not(:disabled){transform:none}}
+/* WhatsApp number the chat came in on — one colour per number (same as the dashboard, travel-crm.js) */
+.wn{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;border-radius:999px;padding:1px 7px;border:1px solid var(--wn-bd);background:var(--wn-bg);color:var(--wn-fg);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none;vertical-align:middle}
+.wn i{width:7px;height:7px;border-radius:50%;background:var(--wn-fg);flex:none}
+.chat-sub .wn{margin-left:6px;max-width:220px}.kv .wn{max-width:none;font-size:12px}
 </style>
 </head>
 <body>
@@ -276,6 +280,37 @@ const isOut=m=>['assistant','bot','agent'].includes(m?.role);
 // (the Worker's engineParseChatwootPayload) — never shown or dialled as a number.
 const isIgKey=p=>String(p||'').startsWith('ig:');
 const isIg=l=>(l?.Channel||'whatsapp')==='instagram'||isIgKey(l?.Phone);
+// ── Which WhatsApp number a chat came in on. Travel agency accounts with 2+ WhatsApp numbers (or
+// Travel CRM tools on): a coloured chip per number on the chat row, in the chat header and in the
+// contact panel. Numbers and colours come from /travel-crm/numbers, cached under the same key the
+// dashboard uses (travel-crm.js), and sorted the same way, so a number has one colour everywhere.
+const WN_COLORS=[['#DCFCE7','#166534','#86EFAC'],['#DBEAFE','#1E40AF','#93C5FD'],['#FEF3C7','#92400E','#FCD34D'],['#FCE7F3','#9D174D','#F9A8D4'],
+ ['#EDE9FE','#5B21B6','#C4B5FD'],['#CCFBF1','#115E59','#5EEAD4'],['#FFEDD5','#9A3412','#FDBA74'],['#FFE4E6','#9F1239','#FDA4AF'],['#E0E7FF','#3730A3','#A5B4FC'],['#ECFCCB','#3F6212','#BEF264']];
+let wnNums=null,wnLoading=false;
+const wnKey=()=>'lv_tcnums_'+clientId;
+function wnTravel(){return !!boot2?.travel||String(clientRecord?.industry||'')==='travel'||clientRecord?.ta_enabled==='Yes'}
+function wnList(){if(!wnNums){try{const c=JSON.parse(localStorage.getItem(wnKey())||'null');if(Array.isArray(c))wnNums=c}catch{}}return wnNums||[]}
+function wnOn(){return wnTravel()&&(String(clientRecord?.travel_crm_enabled||'').toLowerCase()==='yes'||wnList().length>=2)}
+async function wnLoad(){
+ if(wnLoading||!wnTravel())return;wnLoading=true;
+ try{const d=await apiJson(WORKER+'/travel-crm/numbers');if(Array.isArray(d?.numbers)){const ch=JSON.stringify(d.numbers)!==JSON.stringify(wnNums);wnNums=d.numbers;try{localStorage.setItem(wnKey(),JSON.stringify(d.numbers))}catch{}if(ch){paintList();wnPaintHeader();renderInfo()}}}catch{}
+}
+function wnOf(l){
+ const id=String(l?._v2?.inbox_id||l?.InboxId||'');if(!id||isIg(l))return null;
+ const n=wnList().find(x=>String(x.inbox_id)===id);if(n)return n;
+ const ib=(boot2?.inboxes||[]).find(x=>String(x.id)===id);return {inbox_id:id,name:ib?.name||'',phone:ib?.phone_number||''};
+}
+function wnColor(id){
+ const ids=[...new Set(wnList().map(n=>String(n.inbox_id)))].sort((a,b)=>(Number(a)-Number(b))||a.localeCompare(b));
+ let i=ids.indexOf(String(id));if(i<0){i=0;for(const ch of String(id))i=(i*31+ch.charCodeAt(0))>>>0}
+ return WN_COLORS[i%WN_COLORS.length];
+}
+const wnLabel=n=>n.name&&n.phone?`${n.name} · ${n.phone}`:(n.name||n.phone||'WhatsApp #'+n.inbox_id);
+function wnChip(l,full){
+ if(!wnOn())return '';const n=wnOf(l);if(!n)return '';const [bg,fg,bd]=wnColor(n.inbox_id);
+ return `<span class="wn" style="--wn-bg:${bg};--wn-fg:${fg};--wn-bd:${bd}" title="Came in on WhatsApp number: ${esc(wnLabel(n))}"><i></i>${esc(full?wnLabel(n):(n.name||n.phone||'#'+n.inbox_id))}</span>`;
+}
+function wnPaintHeader(){const el=$('wnHdr');if(el&&current)el.innerHTML=wnChip(current,true)}
 const who=l=>l?.Name||(isIgKey(l?.Phone)?'Instagram user':l?.Phone)||'';
 const svg=(d,s=24)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">${d}</svg>`;
 const IC={
@@ -503,13 +538,13 @@ async function boot(){
  try{
   await Promise.all([loadBootstrap(),(async()=>{V2=true;await loadView(false)})(),loadCounts()]);
   if(!boot2)throw new Error('no bootstrap');
-  V2=true;show();$('app').classList.add('v2');paintNotifyBtn();renderInboxRow();renderAgentRow();renderContacts();connectWs();
+  V2=true;show();$('app').classList.add('v2');paintNotifyBtn();renderInboxRow();renderAgentRow();renderContacts();connectWs();wnLoad();
   // Safety net while the socket is down or a delta was missed.
   setInterval(()=>queueSync(),60000);
   setInterval(()=>{if(!document.hidden){paintList();renderHeaderCtl()}},30000);
   toParent('ready');return;
  }catch(e){V2=false;boot2=null;counts2=null;views2={};leads=[]}
- try{await loadLeads(false,true);show();let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+ try{await loadLeads(false,true);show();wnLoad();let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
 // The 12s poll asks only for leads whose LastMsgAt moved since the newest one we hold (delta) and
 // merges them in, instead of re-downloading 200 full lead rows (each with its ConvHistory) every
@@ -759,7 +794,7 @@ function rowHtml(l,i){
  if(draft)p=`<span class="draft">Draft:</span> ${esc(draft.replace(/\s+/g,' ').slice(0,60))}`;
  else if(out)p=`${r?.last_sender==='bot'?'<span class="checks">🤖</span>':''}${tickHtml(r?.last_message_status)} `+p;
  const labels=String(l.Tags||'').split(',').map(x=>x.trim()).filter(Boolean);
- const row3=(labels.slice(0,2).map(x=>`<span class="lbl">${esc(x)}</span>`).join('')+(labels.length>2?`<span class="lbl more">+${labels.length-2}</span>`:'')+(r?.priority>=3?`<i class="prio p${r.priority}" title="${r.priority>=4?'Urgent':'High'} priority"></i>`:'')+(sharedList(l).length?`<span class="lbl" title="Shared with ${esc(sharedList(l).map(agentName).join(', '))}">👥 ${sharedList(l).length}</span>`:''));
+ const row3=(wnChip(l)+labels.slice(0,2).map(x=>`<span class="lbl">${esc(x)}</span>`).join('')+(labels.length>2?`<span class="lbl more">+${labels.length-2}</span>`:'')+(r?.priority>=3?`<i class="prio p${r.priority}" title="${r.priority>=4?'Urgent':'High'} priority"></i>`:'')+(sharedList(l).length?`<span class="lbl" title="Shared with ${esc(sharedList(l).map(agentName).join(', '))}">👥 ${sharedList(l).length}</span>`:''));
  const owner=String(l.Owner||'').trim();
  const pk=picked.has(String(l.Id));
  return `<div class="contact ${u?'unread':''} ${active?'active':''} ${pk?'picked':''}" style="top:${i*ROW}px" data-id="${esc(l.Id)}" onclick="rowClick(event,'${esc(l.Id)}')" onmouseenter="hoverPrefetch('${esc(l.Id)}')" onmouseleave="hoverPrefetch(null)"><div class="avatar-wrap"><div class="avatar">${esc(initials(l))}</div>${channel==='all'&&r?`<span class="ch-badge" title="${isIg(l)?'Instagram':'WhatsApp'}">${isIg(l)?'📸':'💬'}</span>`:''}${V2?`<span class="ck" title="Select" onclick="event.stopPropagation();togglePick('${esc(l.Id)}')">${pk?'✓':'☐'}</span>`:''}${human?'<i class="handover"></i>':''}</div><div class="info"><div class="row1"><div class="name">${esc(who(l)||'Unknown')}</div><span class="hnd" title="${human?'A person is handling this chat':'The bot is handling this chat'}">${human?'👤':'🤖'}</span><div class="time">${esc(ago(l.LastMsgAt||l.Date))}</div></div><div class="row2">${l.Pinned==='Yes'?'<span class="pin">📌</span>':''}<div class="preview">${p}</div>${waitBadge(r)}${owner?`<span class="asg" title="Assigned to ${esc(agentName(owner))}">${esc(agentInitials(owner))}</span>`:''}${u?`<span class="badge">${r?Math.min(r.unread_count,99):1}</span>`:''}</div>${row3?`<div class="row3">${row3}</div>`:''}</div></div>`;
@@ -869,7 +904,7 @@ function menuTopHtml(l){
 function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return menuTopHtml(l)+`<button onclick="loadFullHistory()" title="Bring in every earlier Chatwoot conversation with this customer">📜 Load full history</button><button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button>${V2?'':`<button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button>`}<button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button>${isIg(l)?'':'<button onclick="copyPhone()">Copy contact number</button>'}${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}${embedded?'<button onclick="toggleMenu(false);toParent(\'meeting\',{leadId:current.Id})">📅 Meeting…</button>':''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(who(l)||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}<span id="fuChip"></span><span id="mtgChip"></span><span id="subMeta" class="sub-meta"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn" id="menuBtn" title="Menu" aria-label="More actions" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(who(l)||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}<span id="wnHdr">${wnChip(l,true)}</span><span id="fuChip"></span><span id="mtgChip"></span><span id="subMeta" class="sub-meta"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn" id="menuBtn" title="Menu" aria-label="More actions" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="tsIdx=-1;searchThread(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();stepThreadSearch(event.shiftKey?1:-1)}"><span class="ts-nav"><span id="tsCount"></span><button title="Earlier match" onclick="stepThreadSearch(-1)">▲</button><button title="Later match" onclick="stepThreadSearch(1)">▼</button></span></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -1605,6 +1640,7 @@ function renderInfo(){
   ${created?`<div class="kv"><span>Created</span>${esc(new Date(created).toLocaleString([],{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}))}</div>`:''}
   ${firstResponse(hist(l))?`<div class="kv"><span>First response</span>${esc(firstResponse(hist(l)))}</div>`:''}
   <div class="kv"><span>Channel</span>${isIg(l)?'Instagram':'WhatsApp'}</div>
+  ${wnChip(l,true)?`<div class="kv"><span>WhatsApp number</span>${wnChip(l,true)}</div>`:''}
   <div class="kv"><span>Handled by</span>${takenOver(l)?'👤 '+esc(agentName(l.HandoverBy)):'🤖 Bot'}</div>
   ${l.Owner?`<div class="kv"><span>Assigned to</span>${esc(agentName(l.Owner))}</div>`:''}
   ${sharedList(l).length?`<div class="kv"><span>👥 Shared with</span>${esc(sharedList(l).map(agentName).join(', '))}</div>`:''}

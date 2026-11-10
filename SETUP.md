@@ -9381,6 +9381,11 @@ default — while off nothing on screen changes. Code: `frontend/travel-crm.js`,
   `InboxId`; `GET /travel-crm/numbers` names each WhatsApp inbox (name + phone). Shown as a 📲 label
   on every lead, at the top of the lead's 🧳 Travel profile, and in Reports → 📲 WhatsApp Numbers
   (leads, open, won = conversions, lost, conversion %, won value; enquiry type × number; routes).
+- **2+ WhatsApp numbers** — a travel agency account with two or more WhatsApp numbers connected gets
+  the number labels without the setting: one colour per number (numbers sorted by inbox id, the same
+  palette in `travel-crm.js` and `chats.html`), on Leads, 🗂 Pipeline, 📌 Status Board, the lead's
+  details, the Inbox (chat row, chat header, contact panel), the number filter and Reports → 📲
+  WhatsApp Numbers. Enquiry type, route and travel dates still need the setting.
 - **Lead fields** (created on first use): `EnquiryType`, `TravelRoute` ("Calicut → Dubai"),
   `TravelTrips` (JSON `[{id, route, depart, ret, note}]`), `TripStatus` (Upcoming / Travelling /
   Completed), `NextTravelDate`. A lead without `TravelTrips` falls back to its older `TravelDates`.

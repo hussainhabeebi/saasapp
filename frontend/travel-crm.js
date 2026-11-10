@@ -1,7 +1,9 @@
 /* ── 📲 TRAVEL CRM TOOLS (travel agency accounts, optional) ─────────────────────────────────────────
    Live Agency → ⚙️ Travel Settings → 📲 Travel CRM (CLIENTS.travel_crm_enabled = 'Yes'). Offered
    only to travel agency accounts (industry 'travel' or the Travel Agency module on); while it is off
-   nothing on screen changes. When on:
+   nothing on screen changes. Exception — the WhatsApp number an enquiry came in on (coloured label per
+   number, number filter, Reports → 📲 WhatsApp Numbers) also shows, without the setting, for a travel
+   agency account with 2+ WhatsApp numbers connected (tcNumbersOn). When on:
      • every enquiry shows the WhatsApp number it came in on (lead.InboxId → worker /travel-crm/numbers)
      • an Enquiry type label and a Route label on the lead (Leads list, table, 🗂 Pipeline, 📌 Status Board)
      • lead → 🧳 Travel profile: number, enquiry type, route and the customer's travel dates (one row
@@ -94,8 +96,29 @@ function tcLoadNumbers(force){
 }
 function tcNumbers(){
   if(!_tcNumbers){ try{ const c=JSON.parse(localStorage.getItem(tcNumKey())||'null'); if(Array.isArray(c)) _tcNumbers=c; }catch(e){} }
-  if(!_tcNumbersP && tcOn()) tcLoadNumbers();
+  if(!_tcNumbersP && tcIsTravelAccount()) tcLoadNumbers();
   return _tcNumbers||[];
+}
+// WhatsApp number labels, colours, the number filter and Reports → 📲 WhatsApp Numbers: on for a
+// travel agency account with 2+ WhatsApp numbers connected, or with Travel CRM tools on. The rest of
+// Travel CRM tools (enquiry type, route, travel dates…) still needs the setting.
+function tcNumbersOn(){ return tcIsTravelAccount() && (tcOn() || tcNumbers().length>=2); }
+// One colour per number, the same everywhere (Leads, Inquiries, lead details, Reports and the Inbox —
+// chats.html uses the same list and order): numbers sorted by inbox id, colours in this order.
+const TC_NUM_COLORS=[['#DCFCE7','#166534','#86EFAC'],['#DBEAFE','#1E40AF','#93C5FD'],['#FEF3C7','#92400E','#FCD34D'],['#FCE7F3','#9D174D','#F9A8D4'],
+  ['#EDE9FE','#5B21B6','#C4B5FD'],['#CCFBF1','#115E59','#5EEAD4'],['#FFEDD5','#9A3412','#FDBA74'],['#FFE4E6','#9F1239','#FDA4AF'],['#E0E7FF','#3730A3','#A5B4FC'],['#ECFCCB','#3F6212','#BEF264']];
+function tcNumColor(inboxId){
+  const ids=[...new Set(tcNumbers().map(n=>String(n.inbox_id)))].sort((a,b)=>(Number(a)-Number(b))||a.localeCompare(b));
+  let i=ids.indexOf(String(inboxId));
+  if(i<0){ i=0; for(const ch of String(inboxId)) i=(i*31+ch.charCodeAt(0))>>>0; }
+  return TC_NUM_COLORS[i%TC_NUM_COLORS.length];
+}
+// A coloured chip for one number. `full`: name and number; otherwise the short name.
+function tcNumChipHTML(n, full){
+  if(!n) return '';
+  tcInjectStyle();
+  const [bg,fg,bd]=tcNumColor(n.inbox_id);
+  return `<span class="tc-chip tc-num" style="--tcn-bg:${bg};--tcn-fg:${fg};--tcn-bd:${bd}" title="Came in on WhatsApp number: ${esc(tcNumberLabel(n))}"><i class="tc-dot"></i>📲 ${esc(full?tcNumberLabel(n):tcNumberShort(n))}</span>`;
 }
 function tcNumberOf(l){
   const id=String(l?.InboxId||''); if(!id) return null;
@@ -112,13 +135,17 @@ function tcInjectStyle(){
   st.textContent=`
   .tc-chip{display:inline-flex;align-items:center;gap:3px;font-size:11px;line-height:1.5;padding:1px 8px;border-radius:999px;border:1px solid var(--line,#e5e7eb);background:var(--card,#fff);color:var(--ink,#111);white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
   .tc-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-  .tc-num{background:#E7F8EF;border-color:#A7E3C2;color:#065F46}
+  .tc-num{background:var(--tcn-bg,#E7F8EF);border-color:var(--tcn-bd,#A7E3C2);color:var(--tcn-fg,#065F46);font-weight:600}
+  .tc-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--tcn-fg,#065F46);flex:none}
+  .tc-srcline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:14px}
+  .tc-srcline .tc-chip{font-size:12.5px;padding:3px 10px;max-width:none}
+  .tc-rdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
   .tc-type{background:#EEF2FF;border-color:#C7D2FE;color:#3730A3}
   .tc-route{background:#FFF7ED;border-color:#FED7AA;color:#9A3412}
   .tc-st-up{background:#EFF6FF;border-color:#BFDBFE;color:#1E40AF}
   .tc-st-now{background:#FEF9C3;border-color:#FDE68A;color:#854D0E}
   .tc-st-done{background:#DCFCE7;border-color:#86EFAC;color:#166534;font-weight:600}
-  @media (prefers-color-scheme:dark){ .tc-num,.tc-type,.tc-route,.tc-st-up,.tc-st-now,.tc-st-done{background:transparent;color:inherit} }
+  @media (prefers-color-scheme:dark){ .tc-num,.tc-type,.tc-route,.tc-st-up,.tc-st-now,.tc-st-done{background:transparent;color:inherit} .tc-num .tc-dot{background:var(--tcn-bd)} }
   .tc-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 12px}
   .tc-bar select,.tc-bar input{font:inherit;font-size:12.5px;padding:7px 9px;border:1px solid var(--line,#e5e7eb);border-radius:8px;background:var(--card,#fff);color:inherit;max-width:220px;min-width:0}
   .tc-bar .tc-lbl{font-size:12px;font-weight:600;color:var(--muted,#6b7280)}
@@ -148,10 +175,11 @@ function tcEnsureRouteList(){
 
 /* ── Labels on lead rows / cards ── */
 function tcChipsHTML(l, opts={}){
-  if(!tcOn()||!l) return '';
+  if(!l||!tcNumbersOn()) return '';
   tcInjectStyle();
   const n=tcNumberOf(l), out=[];
-  if(n) out.push(`<span class="tc-chip tc-num" title="Came in on WhatsApp number: ${esc(tcNumberLabel(n))}">📲 ${esc(tcNumberShort(n))}</span>`);
+  if(n) out.push(tcNumChipHTML(n));
+  if(!tcOn()) return out.length?(opts.inline?out.join(' '):`<div class="tc-chips">${out.join('')}</div>`):'';
   if(l.EnquiryType) out.push(`<span class="tc-chip tc-type" title="Enquiry type">${tcTypeIcon(l.EnquiryType)} ${esc(l.EnquiryType)}</span>`);
   const route=tcLeadRoutes(l)[0];
   if(route) out.push(`<span class="tc-chip tc-route" title="Route">🛫 ${esc(route)}</span>`);
@@ -165,7 +193,7 @@ function tcChipsHTML(l, opts={}){
 let _tcF={num:'', route:'', type:'', date:'', from:'', to:''};
 const tcPrefKey=()=>`lv_tcf_${typeof clientId!=='undefined'?clientId:''}`;
 (function(){ try{ const p=JSON.parse(sessionStorage.getItem(tcPrefKey())||'null'); if(p&&typeof p==='object') _tcF={..._tcF, ...p}; }catch(e){} })();
-const tcFiltering=()=>tcOn()&&!!(_tcF.num||_tcF.route||_tcF.type||_tcF.date);
+const tcFiltering=()=>(tcNumbersOn()&&!!_tcF.num)||(tcOn()&&!!(_tcF.route||_tcF.type||_tcF.date));
 function tcAddDays(iso, n){ const d=new Date(iso+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
 function tcMonthRange(offset){ const t=new Date(); const a=new Date(Date.UTC(t.getFullYear(), t.getMonth()+offset, 1)); const b=new Date(Date.UTC(t.getFullYear(), t.getMonth()+offset+1, 0)); return [a.toISOString().slice(0,10), b.toISOString().slice(0,10)]; }
 function tcDateMatch(l){
@@ -188,14 +216,16 @@ function tcDateMatch(l){
 }
 function tcMatch(l){
   if(!tcFiltering()) return true;
-  if(_tcF.num){ const id=String(l.InboxId||''); if(_tcF.num==='__none'?!!id:id!==_tcF.num) return false; }
+  if(_tcF.num && tcNumbersOn()){ const id=String(l.InboxId||''); if(_tcF.num==='__none'?!!id:id!==_tcF.num) return false; }
+  if(!tcOn()) return true;
   if(_tcF.type){ const t=String(l.EnquiryType||''); if(_tcF.type==='__none'?!!t:t!==_tcF.type) return false; }
   if(_tcF.route){ const r=tcLeadRoutes(l); if(_tcF.route==='__none'?r.length>0:!r.includes(_tcF.route)) return false; }
   return tcDateMatch(l);
 }
 function tcFilterLeads(list){ return tcFiltering()?list.filter(tcMatch):list; }
 function tcBarHTML(){
-  if(!tcOn()) return '';
+  if(!tcNumbersOn()) return '';
+  const full=tcOn();
   tcInjectStyle();
   const leads=typeof allLeads!=='undefined'?allLeads:[];
   const cnt={num:{}, type:{}, route:{}};
@@ -212,11 +242,11 @@ function tcBarHTML(){
   const opt=(v,label,cur,c)=>`<option value="${esc(v)}"${cur===v?' selected':''}>${esc(label)}${c!==undefined?` (${c||0})`:''}</option>`;
   const on=k=>_tcF[k]?' on':'';
   return `<div class="tc-bar" role="group" aria-label="Travel filters">
-    <span class="tc-lbl">🧳 Travel filters</span>
+    <span class="tc-lbl">${full?'🧳 Travel filters':'📲 WhatsApp number'}</span>
     <select class="${on('num')}" aria-label="WhatsApp number" title="WhatsApp number the enquiry came in on" onchange="tcSet('num',this.value)">
       ${opt('','📲 All WhatsApp numbers',_tcF.num)}${nums.map(n=>opt(String(n.inbox_id), tcNumberLabel(n), _tcF.num, cnt.num[String(n.inbox_id)])).join('')}${opt('__none','No WhatsApp number',_tcF.num,cnt.num.__none)}
     </select>
-    <select class="${on('route')}" aria-label="Route" onchange="tcSet('route',this.value)">
+    ${full?`<select class="${on('route')}" aria-label="Route" onchange="tcSet('route',this.value)">
       ${opt('','🛫 All routes',_tcF.route)}${routes.map(r=>opt(r,r,_tcF.route,cnt.route[r])).join('')}${opt('__none','No route',_tcF.route,cnt.route.__none)}
     </select>
     <select class="${on('type')}" aria-label="Enquiry type" onchange="tcSet('type',this.value)">
@@ -225,7 +255,7 @@ function tcBarHTML(){
     <select class="${on('date')}" aria-label="Travel date" onchange="tcSet('date',this.value)">
       ${[['','📅 Any travel date'],['travelling','🧳 Travelling now'],['next7','Departing in 7 days'],['next30','Departing in 30 days'],['month','This month'],['nextmonth','Next month'],['upcoming','All upcoming'],['completed','✅ Completed trips'],['none','No travel date'],['custom','Custom dates…']].map(([v,l])=>opt(v,l,_tcF.date)).join('')}
     </select>
-    ${_tcF.date==='custom'?`<input type="date" aria-label="Travel from" value="${esc(_tcF.from)}" onchange="tcSet('from',this.value)"><input type="date" aria-label="Travel to" value="${esc(_tcF.to)}" onchange="tcSet('to',this.value)">`:''}
+    ${_tcF.date==='custom'?`<input type="date" aria-label="Travel from" value="${esc(_tcF.from)}" onchange="tcSet('from',this.value)"><input type="date" aria-label="Travel to" value="${esc(_tcF.to)}" onchange="tcSet('to',this.value)">`:''}`:''}
     ${tcFiltering()?'<button class="tc-clear" onclick="tcClearFilters()">Clear</button>':''}
   </div>`;
 }
@@ -247,6 +277,7 @@ function tcOpenLeads(k,v){
 const tcVisible=id=>{ const el=$id(id); return !!el && !el.classList.contains('hidden'); };
 function tcRefreshViews(){
   try{
+    tcInitSettings();
     if(tcVisible('pageLeads')){
       const mode=typeof _leadsViewMode!=='undefined'?_leadsViewMode:'list';
       if(mode==='pipeline'){ if(typeof renderKanban==='function') renderKanban(); }
@@ -296,22 +327,28 @@ function tcSetRoute(id, v){ const r=tcNormRoute(v); return tcSaveLead(id, {Trave
 
 /* ── Lead → 🧳 Travel profile ── */
 let _tcEdit=null; // {leadId, tripId} while the add/edit trip form is open ('' = new trip)
+function tcSourceHTML(lead){
+  const n=tcNumberOf(lead);
+  if(n) return `<span>Came in on</span>${tcNumChipHTML(n, true)}`;
+  if(String(lead?.Channel||'')==='instagram'||String(lead?.Phone||'').startsWith('ig:')) return '<span>📷 Came in on Instagram — not a WhatsApp number</span>';
+  return '<span style="color:var(--muted)">📲 No WhatsApp number recorded (added manually, imported, or from before numbers were tracked)</span>';
+}
 function tcRenderDetail(lead){
   const el=$id('detailTravelCrm'); if(!el) return;
-  if(!tcOn()||!lead){ el.innerHTML=''; el.style.display='none'; return; }
-  tcInjectStyle(); tcEnsureRouteList();
+  if(!lead||!tcNumbersOn()){ el.innerHTML=''; el.style.display='none'; return; }
+  tcInjectStyle();
+  // 2+ numbers without Travel CRM tools: just the number the enquiry came in on.
+  if(!tcOn()){ el.style.display=''; el.innerHTML=`<div class="tc-srcline">${tcSourceHTML(lead)}</div>`; return; }
+  tcEnsureRouteList();
   if(_tcEdit && Number(_tcEdit.leadId)!==Number(lead.Id)) _tcEdit=null;
   const id=Number(lead.Id), n=tcNumberOf(lead), trips=tcLeadTrips(lead), st=tcLeadTripStatus(lead), cfg=tcConfig();
   const cur=String(lead.EnquiryType||'');
   const types=cur&&!cfg.enquiry_types.includes(cur)?[cur,...cfg.enquiry_types]:cfg.enquiry_types;
-  const src=n?`📲 Came in on <b>${esc(tcNumberLabel(n))}</b>`
-    :String(lead.Channel||'')==='instagram'||String(lead.Phone||'').startsWith('ig:')?'📷 Came in on Instagram — not a WhatsApp number'
-    :'<span style="color:var(--muted)">📲 No WhatsApp number recorded (added manually, imported, or from before numbers were tracked)</span>';
   const sorted=trips.slice().sort((a,b)=>String(a.depart||a.ret).localeCompare(String(b.depart||b.ret)));
   el.style.display='';
   el.innerHTML=`<div class="tc-card">
     <div class="tc-hd"><span>🧳 Travel profile</span>${st?tcStatusChip(st):''}</div>
-    <div class="tc-src">${src}</div>
+    <div class="tc-srcline" style="margin-bottom:10px">${tcSourceHTML(lead)}</div>
     <div class="tc-grid">
       <div><label class="form-label">Enquiry type</label>
         <select class="form-input" onchange="tcSetType(${id},this.value)"><option value="">— Select —</option>${types.map(t=>`<option value="${esc(t)}"${t===cur?' selected':''}>${tcTypeIcon(t)} ${esc(t)}</option>`).join('')}</select></div>
@@ -375,7 +412,7 @@ async function tcDeleteTrip(id, tripId){
 /* ── Reports → 📲 WhatsApp Numbers ── */
 function renderReportsTcNumbers(){
   const box=$id('reportsContent'); if(!box) return;
-  if(!tcOn()){ box.innerHTML='<div class="s-note">Turn on 📲 Travel CRM tools in Settings → Industry Modules to see this report.</div>'; return; }
+  if(!tcNumbersOn()){ box.innerHTML='<div class="s-note">This report shows once 2 or more WhatsApp numbers are connected, or 📲 Travel CRM tools is on (✈️ Flights → ⚙️ Travel Settings).</div>'; return; }
   tcInjectStyle();
   if(typeof _rptOlder!=='undefined' && !_rptOlder.loading && Date.now()-_rptOlder.at>300000 && typeof rptLoadOlderLeads==='function')
     rptLoadOlderLeads().then(()=>{ if(_reportsPage==='tcnumbers') renderReportsTcNumbers(); });
@@ -417,31 +454,31 @@ function renderReportsTcNumbers(){
       <div class="card-title">📲 Leads &amp; conversions by WhatsApp number</div>
       <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:620px">
         <thead><tr><th>WhatsApp number</th><th>Leads</th><th>Open</th><th>Won</th><th>Lost</th><th>Conversion</th><th>Won value</th></tr></thead>
-        <tbody>${numRows.map(([k,r])=>`<tr style="cursor:pointer" onclick="tcOpenLeads('num',${js(k)})"><td>${k==='__none'?'—':'📲'} ${esc(numName(k))}</td><td><b>${r.total}</b></td><td>${r.open}</td><td style="color:#047857">${r.won}</td><td style="color:#B91C1C">${r.lost}</td><td>${pct(r)}</td><td>${money(r.value)}</td></tr>`).join('')}</tbody>
+        <tbody>${numRows.map(([k,r])=>`<tr style="cursor:pointer" onclick="tcOpenLeads('num',${js(k)})"><td>${k==='__none'?'—':`<i class="tc-rdot" style="background:${tcNumColor(k)[1]}"></i>📲`} ${esc(numName(k))}</td><td><b>${r.total}</b></td><td>${r.open}</td><td style="color:#047857">${r.won}</td><td style="color:#B91C1C">${r.lost}</td><td>${pct(r)}</td><td>${money(r.value)}</td></tr>`).join('')}</tbody>
         <tfoot><tr style="font-weight:700"><td>Total</td><td>${tot.total}</td><td>${tot.open}</td><td>${tot.won}</td><td>${tot.lost}</td><td>${pct(tot)}</td><td>${money(tot.value)}</td></tr></tfoot>
       </table></div>
     </div>
-    ${types.length?`<div class="card" style="margin-bottom:14px">
+    ${tcOn()&&types.length?`<div class="card" style="margin-bottom:14px">
       <div class="card-title">🏷️ Enquiry type by WhatsApp number <span class="s-note" style="display:inline">(leads · won)</span></div>
       <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:${200+types.length*110}px">
         <thead><tr><th>WhatsApp number</th>${types.map(t=>`<th>${t==='—'?'No type':`${tcTypeIcon(t)} ${esc(t)}`}</th>`).join('')}</tr></thead>
         <tbody>${numRows.filter(([,r])=>r.total).map(([k])=>`<tr><td>${esc(numName(k))}</td>${types.map(t=>{ const c=matrix[k]?.[t]; return `<td>${c?`<b>${c.total}</b> · <span style="color:#047857">${c.won}</span>`:'—'}</td>`; }).join('')}</tr>`).join('')}</tbody>
       </table></div>
     </div>`:''}
-    <div class="card" style="margin-bottom:14px">
+    ${tcOn()?`<div class="card" style="margin-bottom:14px">
       <div class="card-title">🛫 Leads by route</div>
       ${routeRows.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:520px">
         <thead><tr><th>Route</th><th>Leads</th><th>Open</th><th>Won</th><th>Lost</th><th>Conversion</th></tr></thead>
         <tbody>${routeRows.map(([k,r])=>`<tr style="cursor:pointer" onclick="tcOpenLeads('route',${js(k==='—'?'__none':k)})"><td>${k==='—'?'No route':'🛫 '+esc(k)}</td><td><b>${r.total}</b></td><td>${r.open}</td><td style="color:#047857">${r.won}</td><td style="color:#B91C1C">${r.lost}</td><td>${pct(r)}</td></tr>`).join('')}</tbody>
       </table></div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}
-    </div>`;
+    </div>`:''}`;
 }
 
 /* ── Settings live in Live Agency → ⚙️ Travel Settings → 📲 Travel CRM (live-travel-agency.html, worker
    /travel-crm/settings). Here: the Reports tab follows the setting, and a save made in that page while
    it is open inside the dashboard is picked up straight away. ── */
 function tcInitSettings(){
-  const tab=$id('rptTabTcNumbers'); if(tab) tab.style.display=tcOn()?'':'none';
+  const tab=$id('rptTabTcNumbers'); if(tab) tab.style.display=tcNumbersOn()?'':'none';
 }
 window.addEventListener('message', e=>{
   const d=e.data;
