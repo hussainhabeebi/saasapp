@@ -3433,7 +3433,7 @@ async function handleEmailStatus(request, env){
 // ctwa_clid (Click-to-WhatsApp ad click id) capture yet since WhatsApp inbound messages are
 // handled by the n8n engine, outside this repo; if that's ever wired through, add it to
 // user_data.ctwa_clid below (unhashed) for much stronger attribution. See SETUP.md.
-const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token','meta_ad_account_id','meta_capi_outcomes'];
+const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token','meta_ad_account_id'];
 const META_CAPI_EVENTS={
   lead:         {name:'Lead'},         // fired once, when a lead is first captured
   qualified:    {name:'QualifiedLead'},// custom event — lead scored Hot / marked good
@@ -3445,8 +3445,9 @@ const META_CAPI_EVENTS={
 };
 // Settings → Integrations → Meta Ads → "Report to Meta": each lead outcome is ticked on/off on its
 // own and sent as the event the owner picked — one of Meta's standard Pixel/CAPI events or a
-// custom name. Only ticked outcomes go to Meta. Stored as JSON on the client row
-// (meta_capi_outcomes); no value yet = what was always sent (Qualified, Non-Qualified, Won; not Lost).
+// custom name. Only ticked outcomes go to Meta. Stored in the worker's D1 (meta_capi_outcomes —
+// migrations/0130), not on the NocoDB clients table; no row yet = what was always sent (Qualified,
+// Non-Qualified, Won; not Lost).
 // The event key (logged in meta_capi_events, read by Reports → 💸 Ads ROI) stays the same whatever
 // name is sent, so reports and the once-per-lead guard don't change.
 export const META_STANDARD_EVENTS=['AddPaymentInfo','AddToCart','AddToWishlist','CompleteRegistration','Contact','CustomizeProduct',
@@ -3468,6 +3469,25 @@ export function metaCapiOutcomes(raw){
     out[k]={on:typeof x.on==='boolean'?x.on:d.on, event:metaCapiCleanEventName(x.event)||d.event};
   }
   return out;
+}
+async function metaCapiOutcomesEnsure(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_capi_outcomes (client_id INTEGER PRIMARY KEY, config_json TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT)`).run();
+}
+// The client's saved outcomes (raw JSON) from D1, or null when none is saved / no DB.
+export async function metaCapiLoadOutcomes(env, cid){
+  if(!env?.DB || !cid) return null;
+  try{
+    const row=await env.DB.prepare(`SELECT config_json FROM meta_capi_outcomes WHERE client_id=?`).bind(Number(cid)).first();
+    return row?.config_json||null;
+  }catch(e){ return null; } // table not created yet = nothing saved
+}
+export async function metaCapiSaveOutcomes(env, cid, raw, by){
+  const clean=metaCapiOutcomes(raw);
+  await metaCapiOutcomesEnsure(env);
+  await env.DB.prepare(`INSERT INTO meta_capi_outcomes (client_id, config_json, updated_at, updated_by) VALUES (?,?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET config_json=excluded.config_json, updated_at=excluded.updated_at, updated_by=excluded.updated_by`)
+    .bind(Number(cid), JSON.stringify(clean), new Date().toISOString(), String(by||'').slice(0,120)).run();
+  return clean;
 }
 // The outcome (if any) an event key belongs to, with the client's on/off and event name.
 function metaCapiOutcomeFor(c, eventKey){
@@ -3577,7 +3597,11 @@ async function sendMetaCapiEvent(env, c, eventKey, lead, extra={}){
   const def=metaCapiEventDef(eventKey, extra, c);
   if(!def) return {ok:false, error:'Unknown event type'};
   if(!c?.meta_pixel_id||!c?.meta_capi_token) return {ok:false, skipped:true};
-  // An outcome not ticked "Report to Meta" never leaves LeadVyne.
+  // An outcome not ticked "Report to Meta" never leaves LeadVyne (setting read from D1).
+  if(Object.values(META_CAPI_OUTCOMES).some(o=>o.key===eventKey)){
+    const saved=await metaCapiLoadOutcomes(env, c.Id);
+    if(saved) c={...c, meta_capi_outcomes:saved};
+  }
   const oc=metaCapiOutcomeFor(c, eventKey);
   if(oc && !oc.on) return {ok:false, skipped:true, off:true};
   // Each stage reaches Meta once per lead — the dashboard and the bot can both report it.
@@ -3698,8 +3722,15 @@ async function handleMetaCapiConfigSet(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   const fields={};
-  META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body && k!=='meta_capi_outcomes') fields[k]=String(body[k]||'').trim(); });
-  if('meta_capi_outcomes' in body) fields.meta_capi_outcomes=JSON.stringify(metaCapiOutcomes(body.meta_capi_outcomes));
+  // 📤 Report to Meta — kept in D1 by the worker, so it saves whatever the clients table has.
+  let outcomes;
+  if('meta_capi_outcomes' in body){
+    if(!env.DB) return json({error:'Could not save: the worker database is not available.'}, 502);
+    try{ outcomes=await metaCapiSaveOutcomes(env, payload.cid, body.meta_capi_outcomes, payload.email); }
+    catch(e){ return json({error:'Could not save: '+e.message}, 502); }
+  }
+  META_CAPI_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=String(body[k]||'').trim(); });
+  if(outcomes && !Object.keys(fields).length) return json({ok:true, meta_capi_outcomes:outcomes});
   if('meta_capi_token' in fields){
     fields.meta_capi_token=metaCleanToken(fields.meta_capi_token);
     if(!fields.meta_capi_token) delete fields.meta_capi_token; // blank = keep the current token
@@ -3717,9 +3748,7 @@ async function handleMetaCapiConfigSet(request, env){
   const before=await getClientById(env, payload.cid);
   const tokenToCheck=fields.meta_capi_token||before?.meta_capi_token||'';
   const acctToCheck='meta_ad_account_id' in fields?fields.meta_ad_account_id:(before?.meta_ad_account_id||'');
-  // Only ticking outcomes ("Report to Meta") changes nothing Meta needs to re-check.
-  const onlyOutcomes=Object.keys(fields).every(k=>k==='meta_capi_outcomes');
-  const check=tokenToCheck&&!onlyOutcomes?await metaCheckToken(tokenToCheck, acctToCheck):null;
+  const check=tokenToCheck?await metaCheckToken(tokenToCheck, acctToCheck):null;
   if(fields.meta_capi_token && check?.invalid) return json({error:check.error, check}, 400);
   // These columns aren't on every CLIENTS table (meta_ad_account_id came later than the Pixel
   // fields): NocoDB drops or refuses a field it doesn't have, so the value never stuck.
@@ -3730,7 +3759,7 @@ async function handleMetaCapiConfigSet(request, env){
   const c=await getClientById(env, payload.cid);
   const lost=c?Object.keys(fields).filter(k=>String(c[k]??'')!==fields[k]):[];
   if(lost.length) return json({error:`Not saved: ${lost.join(', ')} — the clients table couldn't take this field. Ask LeadVyne support to add the column.`}, 502);
-  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||'', meta_capi_outcomes:metaCapiOutcomes(c?.meta_capi_outcomes), check});
+  return json({ok:true, meta_pixel_id:c?.meta_pixel_id||'', meta_ad_account_id:c?.meta_ad_account_id||'', meta_capi_outcomes:outcomes||metaCapiOutcomes(await metaCapiLoadOutcomes(env, payload.cid)), check});
 }
 // A token as pasted from Business Settings / Events Manager: drop whitespace and line breaks
 // (phones wrap long tokens), surrounding quotes, and a "Bearer " / "access_token=" prefix.
@@ -3779,7 +3808,7 @@ async function handleMetaCapiStatus(request, env){
     // if it's a System User token with both permissions granted, but not guaranteed, so this is
     // reported separately from `connected` above (which only means "CAPI events can send").
     ads_read_configured:!!(c?.meta_ad_account_id&&c?.meta_capi_token),
-    outcomes:metaCapiOutcomes(c?.meta_capi_outcomes), standard_events:META_STANDARD_EVENTS,
+    outcomes:metaCapiOutcomes(await metaCapiLoadOutcomes(env, payload.cid)), standard_events:META_STANDARD_EVENTS,
   });
 }
 
