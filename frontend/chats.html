@@ -311,6 +311,19 @@ function wnChip(l,full){
  return `<span class="wn" style="--wn-bg:${bg};--wn-fg:${fg};--wn-bd:${bd}" title="Came in on WhatsApp number: ${esc(wnLabel(n))}"><i></i>${esc(full?wnLabel(n):(n.name||n.phone||'#'+n.inbox_id))}</span>`;
 }
 function wnPaintHeader(){const el=$('wnHdr');if(el&&current)el.innerHTML=wnChip(current,true)}
+// 🧳 The customer's route and travel dates (saved on the lead by the dashboard's travel profile and
+// picked up from the chat by the Worker, travel-crm.js) — read-only here; edited in the CRM.
+function travelInfoHtml(rec){
+ if(!wnTravel()||String(clientRecord?.travel_trips_enabled||'').toLowerCase()==='no')return '';
+ const day=v=>{const x=String(v||'').trim().slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(x)?x:''};
+ let trips=[];try{const v=JSON.parse(rec.TravelTrips||'[]');if(Array.isArray(v))trips=v.map(t=>({route:String(t?.route||''),depart:day(t?.depart),ret:day(t?.ret),auto:t?.auto===true})).filter(t=>t.depart||t.ret)}catch{}
+ if(!trips.length){const [a,b]=String(rec.TravelDates||'').split('→').map(day);if(a||b)trips=[{route:'',depart:a||b,ret:b||''}]}
+ const today=new Date().toISOString().slice(0,10),fmt=d=>new Date(d+'T00:00:00').toLocaleDateString([],{day:'numeric',month:'short',year:d.slice(0,4)===today.slice(0,4)?undefined:'numeric'});
+ const st=t=>{const a=t.depart||t.ret,b=t.ret||t.depart;return b<today?'✅ Completed':a<=today?'🧳 Travelling':'🗓️ Upcoming'};
+ const route=String(rec.TravelRoute||'').trim();
+ if(!route&&!trips.length)return '<h4>🧳 Travel</h4><div class="kv"><span>Route & dates</span>Not shared yet</div>';
+ return `<h4>🧳 Travel</h4>${route?`<div class="kv"><span>Route</span>🛫 ${esc(route)}${rec.TravelRouteBy==='auto'?' <small title="Picked up from the chat">🤖</small>':''}</div>`:''}${trips.sort((x,y)=>(x.depart||x.ret).localeCompare(y.depart||y.ret)).map(t=>`<div class="kv"><span>${esc(st(t))}</span>${esc(t.depart&&t.ret&&t.ret!==t.depart?fmt(t.depart)+' → '+fmt(t.ret):fmt(t.depart||t.ret))}${t.route&&t.route!==route?' · '+esc(t.route):''}${t.auto?' <small title="Picked up from the chat">🤖</small>':''}</div>`).join('')}`;
+}
 const who=l=>l?.Name||(isIgKey(l?.Phone)?'Instagram user':l?.Phone)||'';
 const svg=(d,s=24)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">${d}</svg>`;
 const IC={
@@ -1635,6 +1648,7 @@ function renderInfo(){
  const created=rec.CreatedAt||rec.Date||rec.created_at;
  p.innerHTML=`<div class="info-head"><h4>Contact</h4><button class="info-x" id="infoClose" title="Close" aria-label="Close contact details" onclick="toggleInfo(false)">✕</button></div>${field('Name','Name')}${isIg(l)?field('Mobile','Mobile','tel'):field('Phone','Phone','tel')}${field('Email','Email','email')}
   ${isTravelInbox()?`<label class="fld"><span>Service category</span><select onchange="setLeadCategory(this.value)"><option value=""${catOf(l)?(boot2?.me?.categories?' disabled':''):' selected'}>— None —</option>${categoryChoices(catOf(l)).map(c=>`<option value="${esc(c)}"${c===catOf(l)?' selected':''}>${esc(c)}</option>`).join('')}</select></label>`:''}
+  ${travelInfoHtml(rec)}
   ${attrs?`<h4>Details</h4>${attrs}`:''}
   <h4>Conversation</h4>
   ${created?`<div class="kv"><span>Created</span>${esc(new Date(created).toLocaleString([],{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}))}</div>`:''}

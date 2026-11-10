@@ -682,8 +682,10 @@ async function renderTravelCrmSettings(){
   let t;try{t=await api('/travel-crm/settings')}catch(e){$('main').innerHTML=title()+`<div class="error">${esc(e.message)}</div>`;return}
   if(!t.is_travel_account){$('main').innerHTML=title()+'<div class="card" style="margin-top:0"><h3>📲 Travel CRM tools</h3><p class="sub">Available for travel agency accounts only.</p></div>';return}
   $('main').innerHTML=title()+`<div class="card" style="margin-top:0"><h3>📲 Travel CRM tools <span class="badge ${t.enabled?'ok':'warn'}" id="tcBadge">${t.enabled?'On':'Off'}</span></h3><div class="formgrid">
-<div class="field span4"><label>📲 Travel CRM tools</label><select id="tcOn"><option value="0" ${!t.enabled?'selected':''}>Off — leads, pipeline and reports work as today</option><option value="1" ${t.enabled?'selected':''}>On — show the travel CRM tools below</option></select>
-<div class="sub" style="margin-top:6px">When on: every enquiry shows the <b>WhatsApp number</b> it came in on · <b>enquiry type</b> and <b>route</b> labels in the pipeline · a 🧳 <b>travel profile</b> on each lead with the customer's travel dates, marked <b>✅ Completed</b> automatically once the trip is over · <b>filters</b> by WhatsApp number, route, travel date and enquiry type · Reports → 📲 <b>WhatsApp Numbers</b> (leads and conversions per number) · replies sent from the <b>WhatsApp Business app</b> shown in Chats.</div></div>
+<div class="field span4"><label>🧳 Route &amp; travel dates</label><select id="tcTrips"><option value="1" ${t.trips_enabled!==false?'selected':''}>On — pick up route &amp; travel dates from chats</option><option value="0" ${t.trips_enabled===false?'selected':''}>Off</option></select>
+<div class="sub" style="margin-top:6px">When a customer writes a route ("Calicut to Dubai") or travel dates ("15 Dec", "15/12"), they are saved on the enquiry as tags — <b>🛫 route</b> and <b>📅 travel date</b> — marked 🤖 from chat, and staff can edit them. They show on the Status Board, Pipeline and Inquiries with filters, and in each enquiry's 🧳 travel profile, which turns <b>✅ Completed</b> once the trip is over.</div></div>
+<div class="field span4"><label>📲 Travel CRM tools</label><select id="tcOn"><option value="0" ${!t.enabled?'selected':''}>Off</option><option value="1" ${t.enabled?'selected':''}>On — enquiry type labels &amp; filter</option></select>
+<div class="sub" style="margin-top:6px">When on: an <b>enquiry type</b> label from the list below on every enquiry, with a filter, and the <b>WhatsApp number</b> each enquiry came in on even with one number connected (with 2+ numbers it always shows) · Reports → 📲 <b>WhatsApp Numbers</b> · replies sent from the <b>WhatsApp Business app</b> shown in Chats.</div></div>
 <div class="field span2"><label>🏷️ Enquiry types <span class="sub">(one per line)</span></label><textarea id="tcTypes" rows="8">${esc((t.enquiry_types||[]).join('\n'))}</textarea></div>
 <div class="field span2"><label>🛫 Routes <span class="sub">(one per line)</span></label><textarea id="tcRoutes" rows="8" placeholder="Calicut → Dubai">${esc((t.routes||[]).join('\n'))}</textarea><div class="sub" style="margin-top:4px">"Calicut to Dubai" or "Calicut-Dubai" is saved as Calicut → Dubai.</div></div>
 <div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="tcSave" onclick="saveTravelCrmSettings()">Save settings</button><span class="sub" id="tcMsg"></span></div></div>
@@ -693,12 +695,12 @@ async function saveTravelCrmSettings(){
   const btn=$('tcSave'),msg=$('tcMsg');btn.disabled=true;msg.textContent='';
   const lines=id=>$(id).value.split(/\n|,/).map(x=>x.trim()).filter(Boolean);
   try{
-    const t=await api('/travel-crm/settings',{method:'PUT',body:JSON.stringify({enabled:$('tcOn').value==='1',enquiry_types:lines('tcTypes'),routes:lines('tcRoutes')})});
+    const t=await api('/travel-crm/settings',{method:'PUT',body:JSON.stringify({enabled:$('tcOn').value==='1',trips_enabled:$('tcTrips').value==='1',enquiry_types:lines('tcTypes'),routes:lines('tcRoutes')})});
     $('tcTypes').value=t.enquiry_types.join('\n');$('tcRoutes').value=t.routes.join('\n');
     const b=$('tcBadge');if(b){b.textContent=t.enabled?'On':'Off';b.className='badge '+(t.enabled?'ok':'warn')}
     msg.textContent=t.enabled?'✓ Saved — Travel CRM tools are on':'✓ Saved — everything works as before';msg.style.color='var(--green)';
     // The dashboard around this frame picks the change up straight away (travel-crm.js).
-    try{if(window.parent!==window)window.parent.postMessage({type:'tc:settings',enabled:t.enabled,config:{enquiry_types:t.enquiry_types,routes:t.routes}},location.protocol==='file:'?'*':location.origin)}catch(e){}
+    try{if(window.parent!==window)window.parent.postMessage({type:'tc:settings',enabled:t.enabled,trips_enabled:t.trips_enabled,config:{enquiry_types:t.enquiry_types,routes:t.routes}},location.protocol==='file:'?'*':location.origin)}catch(e){}
   }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
 }
