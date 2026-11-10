@@ -359,11 +359,11 @@ async function clearSupplier(supplier,priority){if(confirm(`Remove this client's
 async function savePoomasSettings(){try{const body={api_base:$('poomasApi').value.trim()||'https://api.flypoomas.com',checkout_base:$('poomasCheckout').value.trim()||'https://flypoomas.com'};await api('/live-travel/poomas/settings',{method:'PATCH',body:JSON.stringify(body)});await refresh();show('suppliers')}catch(e){alert('Failed to save POOMAS settings: '+e.message)}}
 // ⚙️ Travel Settings — every travel setting on one page, as tabs: live fares & booking, currency,
 // the WhatsApp menu and itineraries. Each tab keeps its own renderer and save.
-const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['chatstyle','🧭 Chat Style'],['flows','🧩 Flows'],['itinerary','🗺️ Itineraries']];
+const SETTINGS_TABS=[['fares','✈️ Live fares & booking'],['currency','💱 Currency'],['whatsapp','💬 WhatsApp Menu'],['chatstyle','🧭 Chat Style'],['flows','🧩 Flows'],['itinerary','🗺️ Itineraries'],['crm','📲 Travel CRM']];
 let settingsTab='fares';
 function settingsTabs(){return page==='settings'?`<div class="quick" style="margin:0 0 14px">${SETTINGS_TABS.map(([k,l])=>`<button class="btn ${settingsTab===k?'primary':''}" onclick="settingsGo('${k}')">${l}</button>`).join('')}</div>`:''}
 function settingsGo(k){if(k!=='flows'&&tfEdit?._dirty&&!confirm('Leave without saving your flow?'))return;if(k!=='flows')tfEdit=null;settingsTab=k;renderTravelSettings()}
-function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,chatstyle:renderChatStyle,flows:renderFlows,itinerary:renderItinerarySettings}[settingsTab]||renderSettings)()}
+function renderTravelSettings(){({fares:renderSettings,currency:renderCurrency,whatsapp:renderWhatsappMenu,chatstyle:renderChatStyle,flows:renderFlows,itinerary:renderItinerarySettings,crm:renderTravelCrmSettings}[settingsTab]||renderSettings)()}
 // Live fares & booking (worker /live-travel/travel-settings).
 let fareSettings=null;
 const FARE_PREVIEW={
@@ -672,6 +672,34 @@ async function saveItinerarySettings(){
   const btn=$('itSave'),msg=$('itMsg');btn.disabled=true;msg.textContent='';
   try{fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({itin_share_pdf:$('itPdf').value==='1',itin_auto_images:$('itImg').value==='1',lt_contextual_answers:$('itCtx').value==='1'})});msg.textContent='✓ Saved';msg.style.color='var(--green)'}
   catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
+  finally{btn.disabled=false}
+}
+// 📲 Travel CRM tools (worker /travel-crm/settings; screens in dashboard's travel-crm.js). Off by
+// default — while off the leads, pipeline, reports and chats work exactly as before.
+async function renderTravelCrmSettings(){
+  const title=()=>settingsTabs()+head('Travel Settings','Track which WhatsApp number each enquiry came from, its type, route and travel dates');
+  $('main').innerHTML=title()+'<div class="card"><span class="spinner"></span> Loading…</div>';
+  let t;try{t=await api('/travel-crm/settings')}catch(e){$('main').innerHTML=title()+`<div class="error">${esc(e.message)}</div>`;return}
+  if(!t.is_travel_account){$('main').innerHTML=title()+'<div class="card" style="margin-top:0"><h3>📲 Travel CRM tools</h3><p class="sub">Available for travel agency accounts only.</p></div>';return}
+  $('main').innerHTML=title()+`<div class="card" style="margin-top:0"><h3>📲 Travel CRM tools <span class="badge ${t.enabled?'ok':'warn'}" id="tcBadge">${t.enabled?'On':'Off'}</span></h3><div class="formgrid">
+<div class="field span4"><label>📲 Travel CRM tools</label><select id="tcOn"><option value="0" ${!t.enabled?'selected':''}>Off — leads, pipeline and reports work as today</option><option value="1" ${t.enabled?'selected':''}>On — show the travel CRM tools below</option></select>
+<div class="sub" style="margin-top:6px">When on: every enquiry shows the <b>WhatsApp number</b> it came in on · <b>enquiry type</b> and <b>route</b> labels in the pipeline · a 🧳 <b>travel profile</b> on each lead with the customer's travel dates, marked <b>✅ Completed</b> automatically once the trip is over · <b>filters</b> by WhatsApp number, route, travel date and enquiry type · Reports → 📲 <b>WhatsApp Numbers</b> (leads and conversions per number) · replies sent from the <b>WhatsApp Business app</b> shown in Chats.</div></div>
+<div class="field span2"><label>🏷️ Enquiry types <span class="sub">(one per line)</span></label><textarea id="tcTypes" rows="8">${esc((t.enquiry_types||[]).join('\n'))}</textarea></div>
+<div class="field span2"><label>🛫 Routes <span class="sub">(one per line)</span></label><textarea id="tcRoutes" rows="8" placeholder="Calicut → Dubai">${esc((t.routes||[]).join('\n'))}</textarea><div class="sub" style="margin-top:4px">"Calicut to Dubai" or "Calicut-Dubai" is saved as Calicut → Dubai.</div></div>
+<div class="span4" style="display:flex;gap:10px;align-items:center"><button class="btn primary" id="tcSave" onclick="saveTravelCrmSettings()">Save settings</button><span class="sub" id="tcMsg"></span></div></div>
+<div class="notice">📱 <b>WhatsApp Business app replies</b> show in Chats as "📱 WhatsApp Business app" when they reach your Chatwoot inbox. If your Meta app sends WhatsApp webhooks here instead, subscribe it to <code>smb_message_echoes</code> at <code>${esc(t.echo_url||'')}</code>.</div></div>`;
+}
+async function saveTravelCrmSettings(){
+  const btn=$('tcSave'),msg=$('tcMsg');btn.disabled=true;msg.textContent='';
+  const lines=id=>$(id).value.split(/\n|,/).map(x=>x.trim()).filter(Boolean);
+  try{
+    const t=await api('/travel-crm/settings',{method:'PUT',body:JSON.stringify({enabled:$('tcOn').value==='1',enquiry_types:lines('tcTypes'),routes:lines('tcRoutes')})});
+    $('tcTypes').value=t.enquiry_types.join('\n');$('tcRoutes').value=t.routes.join('\n');
+    const b=$('tcBadge');if(b){b.textContent=t.enabled?'On':'Off';b.className='badge '+(t.enabled?'ok':'warn')}
+    msg.textContent=t.enabled?'✓ Saved — Travel CRM tools are on':'✓ Saved — everything works as before';msg.style.color='var(--green)';
+    // The dashboard around this frame picks the change up straight away (travel-crm.js).
+    try{if(window.parent!==window)window.parent.postMessage({type:'tc:settings',enabled:t.enabled,config:{enquiry_types:t.enquiry_types,routes:t.routes}},location.protocol==='file:'?'*':location.origin)}catch(e){}
+  }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
 }
 function renderCurrency(){

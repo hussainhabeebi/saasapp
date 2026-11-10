@@ -6,6 +6,7 @@ import {
   travelCrmOn, travelCrmNormRoute, travelCrmConfig, travelCrmParseTrips, travelCrmLeadTrips, travelCrmTripStatus,
   travelCrmLeadTripStatus, travelCrmNextDate, travelCrmTripPatch, travelCrmTripStatusProcessClient, travelCrmNumbers,
   travelCrmParseEchoes, travelCrmEchoSeen, travelCrmProcessEchoes, TCRM_APP_SENDER, TCRM_DEFAULT_ROUTES,
+  travelCrmSettingsView, travelCrmSettingsPatch,
 } from './travel-crm.js';
 import { engineStaffSender } from './worker.js';
 
@@ -138,4 +139,20 @@ test('a reply echoed into Chatwoot with no sender is labelled only for Travel CR
   assert.equal(engineStaffSender({content:'x'}, {industry:'travel'}).sender_name, '');
   assert.equal(engineStaffSender({content:'x'}).sender_name, '');
   assert.equal(engineStaffSender({content:'x', sender:{name:'Asha'}}, ON).sender_name, 'Asha');
+});
+
+test('Travel Settings → 📲 Travel CRM: saves on/off and the lists, travel accounts only', ()=>{
+  const TA={Id:7, industry:'travel'};
+  assert.deepEqual(travelCrmSettingsView(TA), {enabled:false, is_travel_account:true, enquiry_types:travelCrmConfig({}).enquiry_types, routes:TCRM_DEFAULT_ROUTES});
+  const out=travelCrmSettingsPatch({enabled:true, enquiry_types:['Visa',' Visa ','Ticket'], routes:['calicut to doha','']}, TA);
+  assert.deepEqual(out.fields, {travel_crm_enabled:'Yes', travel_crm_config:JSON.stringify({enquiry_types:['Visa','Ticket'], routes:['Calicut → Doha']})});
+  assert.equal(travelCrmSettingsView({...TA, ...out.fields}).enabled, true);
+  // Leaving a field out keeps what is saved; empty lists fall back to the defaults.
+  const off=travelCrmSettingsPatch({enabled:false}, {...TA, ...out.fields});
+  assert.equal(JSON.parse(off.fields.travel_crm_config).routes[0], 'Calicut → Doha');
+  assert.equal(off.fields.travel_crm_enabled, 'No');
+  assert.deepEqual(JSON.parse(travelCrmSettingsPatch({routes:[]}, TA).fields.travel_crm_config).routes, TCRM_DEFAULT_ROUTES);
+  assert.match(travelCrmSettingsPatch({enabled:'yes'}, TA).error, /true or false/);
+  assert.match(travelCrmSettingsPatch({routes:'x'}, TA).error, /list/);
+  assert.match(travelCrmSettingsPatch({enabled:true}, {industry:'ecommerce'}).error, /travel agency/);
 });
