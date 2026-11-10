@@ -71,6 +71,51 @@ test.describe('travel workspace', () => {
     await expect(dep.locator('.tv-row', { hasText: 'Asha' })).toHaveCount(0);
   });
 
+  test('departures calendar shows each inquiry\'s travel-profile trips — from chat, with returns, route filter and Completed', async ({ page }) => {
+    await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
+    // @ts-ignore
+    await page.evaluate(({ dep, ret, past1, past2 }) => {
+      allLeads.push(
+        { Id: 3, Name: 'Fathima', Phone: '9190000003', Date: dep, Stage: 'new', TravelRoute: 'Calicut → Dubai', TravelRouteBy: 'auto',
+          TravelTrips: JSON.stringify([{ id: 'a', route: 'Calicut → Dubai', depart: dep, ret, auto: true }]) },
+        { Id: 4, Name: 'Noor', Phone: '9190000004', Date: dep, Stage: 'new', TravelRoute: 'Kochi → Sharjah',
+          TravelTrips: JSON.stringify([{ id: 'b', route: 'Kochi → Sharjah', depart: dep, ret: '' }, { id: 'c', route: 'Kochi → Sharjah', depart: past1, ret: past2 }]) });
+      navigate('travelhome');
+    }, { dep: iso(4), ret: iso(9), past1: iso(-9), past2: iso(-6) });
+    // Today → "travelling in the next 14 days" shows the route and where the date came from.
+    const soon = page.locator('#tvHomeBody .card', { hasText: 'travelling in the next 14 days' });
+    await expect(soon.locator('.tv-row', { hasText: 'Fathima' })).toContainText('Calicut → Dubai');
+    await expect(soon.locator('.tv-row', { hasText: 'Fathima' })).toContainText('from chat');
+
+    await page.locator('#travelNav .dnTab[data-page="departures"]').click();
+    const dep = page.locator('#tvDepBody');
+    // @ts-ignore — look at the month of Fathima's travel date (the test may run at a month end).
+    await page.evaluate((m) => { _tvCalMonth = m; renderDepartures(); }, iso(4).slice(0, 7));
+    const ev = dep.locator('.tv-cal .tv-ev', { hasText: 'Fathima' }).first();
+    await expect(ev).toContainText('Fathima · Calicut → Dubai');
+    await expect(ev).toHaveClass(/inquiry/);
+    await expect(ev).toHaveClass(/auto/);
+    await expect(dep.locator('.tv-row', { hasText: 'Fathima' }).first()).toContainText('from chat');
+    // The return shows too (route reversed) — check in its own month.
+    // @ts-ignore
+    await page.evaluate((m) => { _tvCalMonth = m; renderDepartures(); }, iso(9).slice(0, 7));
+    await expect(dep.locator('.tv-cal .tv-ev.return', { hasText: 'Fathima' })).toContainText('Dubai → Calicut');
+    // Route filter: only that route's inquiries.
+    // @ts-ignore
+    await page.evaluate((m) => { _tvCalMonth = m; renderDepartures(); }, iso(4).slice(0, 7));
+    await dep.locator('select[aria-label="Inquiry route"]').selectOption('Kochi → Sharjah');
+    await expect(dep.locator('.tv-cal .tv-ev.inquiry', { hasText: 'Fathima' })).toHaveCount(0);
+    await expect(dep.locator('.tv-cal .tv-ev.inquiry', { hasText: 'Noor' }).first()).toBeVisible();
+    // A finished trip is shown as Completed.
+    // @ts-ignore
+    await page.evaluate((m) => { tvSetCalRoute(''); _tvCalMonth = m; renderDepartures(); }, iso(-9).slice(0, 7));
+    await expect(dep.locator('.tv-cal .tv-ev.inquiry.done', { hasText: 'Noor' })).toBeVisible();
+    await expect(dep.locator('.tv-row', { hasText: 'Noor' }).first()).toContainText('Completed');
+    // Tapping an inquiry opens its travel profile.
+    await dep.locator('.tv-cal .tv-ev.inquiry.done', { hasText: 'Noor' }).click();
+    await expect(page.locator('#detailTravelCrm .tc-card')).toContainText('Kochi → Sharjah');
+  });
+
   test('Trips opens the agency frame on bookings in travel-shell mode', async ({ page }) => {
     await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
     await page.locator('#travelNav .dnTab[data-page="tvtrips"]').click();

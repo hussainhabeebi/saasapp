@@ -9397,7 +9397,10 @@ default — while off nothing on screen changes. Code: `frontend/travel-crm.js`,
   staff edit them they are left alone. Shown as 🛫 route / 📅 date tags (dashed = from chat) on
   Inquiries, 🗂 Pipeline and 📌 Status Board with route / travel-date filters, in the lead's 🧳 Travel
   profile (🔎 Find in chat = `POST /travel-crm/detect`, reads the whole conversation), and read-only
-  in the Inbox contact panel.
+  in the Inbox contact panel. The 📅 Departures calendar and Today → "Inquiries travelling in the
+  next 14 days" read the same trips (`tvLeadTrips` in `travel-view.js`): each trip on its travel
+  day, its return on the return day, dashed when from chat, faded when Completed, with a route
+  filter; tapping one opens the inquiry's travel profile.
 - **Lead fields** (created on first use): `EnquiryType`, `TravelRoute` ("Calicut → Dubai"), `TravelRouteBy`,
   `TravelTrips` (JSON `[{id, route, depart, ret, note}]`), `TripStatus` (Upcoming / Travelling /
   Completed), `NextTravelDate`. A lead without `TravelTrips` falls back to its older `TravelDates`.
