@@ -140,6 +140,8 @@ html:not(.tv-mode) .tv-only{display:none!important}
 .tv-ev.umrah{background:#DCFCE7;border-color:#16A34A;color:#166534}
 .tv-ev.car{background:#FFEDD5;border-color:#EA580C;color:#9A3412}
 .tv-ev.inquiry{background:#F1F5F9;border-color:#94A3B8;color:#475569}
+.tv-ev.auto{border-left-style:dashed}.tv-ev.done{opacity:.55}
+.tv-cal-head select{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:inherit;max-width:200px}
 .tv-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin:10px 0}
 .tv-legend .tv-ev{display:inline-block;margin:0 4px 0 0;padding:0 6px}
 @media(max-width:640px){.tv-day{min-height:58px}.tv-ev{font-size:9px;padding:1px 3px}}
@@ -373,6 +375,17 @@ function tvFmtCur(m){
 }
 function tvLeadTravelFrom(l){ return tvDay(String(l.TravelDates||'').split('→')[0].trim()); }
 function tvLeadTravelTo(l){ const p=String(l.TravelDates||'').split('→'); return tvDay((p[1]||'').trim()); }
+// An inquiry's trips: its 🧳 travel profile (travel-crm.js — TravelTrips, picked up from the chat or
+// added by staff, with the older TravelDates as a fallback) while route & travel dates are on; else
+// just the older TravelDates field, as before.
+function tvLeadTrips(l){
+  if(typeof tcLeadTrips==='function' && typeof tcTripsOn==='function' && tcTripsOn()) return tcLeadTrips(l);
+  const a=tvLeadTravelFrom(l), b=tvLeadTravelTo(l), ok=v=>/^\d{4}-\d{2}-\d{2}$/.test(v);
+  return ok(a)?[{depart:a, ret:ok(b)?b:'', route:''}]:[];
+}
+function tvTripRoute(l,t){ return String(t?.route||(typeof tcNormRoute==='function'?tcNormRoute(l.TravelRoute):l.TravelRoute)||'').trim(); }
+// The next trip starting on/after `from` (YYYY-MM-DD), or null.
+function tvLeadNextTrip(l, from){ return tvLeadTrips(l).filter(t=>(t.depart||t.ret)>=from).sort((a,b)=>(a.depart||a.ret).localeCompare(b.depart||b.ret))[0]||null; }
 function tvIsClosedLead(l){ return ['won','converted','lost'].includes(l.Stage); }
 // A trip that is going ahead (quoted or later). New requests from the WhatsApp bot (requested /
 // contacted) have no price and no confirmed date yet, so departures, quotes and sales leave them out.
@@ -470,8 +483,9 @@ function renderTravelHomeScoped(){
   const thisMonth=live.filter(b=>tvCreated(b).slice(0,7)===month);
   const revenue=tvSumByCur(thisMonth,b=>tvNum(b.sell_price));
   const margin=tvSumByCur(thisMonth,b=>tvNum(b.sell_price)-tvNum(b.cost_price));
-  const travellingSoon=leads.filter(l=>{ const d=tvLeadTravelFrom(l); return d&&d>=today&&d<=in14&&!['lost'].includes(l.Stage); })
-    .sort((a,b)=>tvLeadTravelFrom(a).localeCompare(tvLeadTravelFrom(b)));
+  const travellingSoon=leads.filter(l=>{ if(['lost'].includes(l.Stage)) return false; const t=tvLeadNextTrip(l,today); return t&&(t.depart||t.ret)<=in14; })
+    .map(l=>({l,t:tvLeadNextTrip(l,today)}))
+    .sort((a,b)=>(a.t.depart||a.t.ret).localeCompare(b.t.depart||b.t.ret));
 
   // Funnel over the last 30 days: inquiries → quotes → booked → travelled.
   const fInq=leads.filter(l=>tvDay(l.Date)>=ago30).length;
@@ -537,7 +551,7 @@ function renderTravelHomeScoped(){
       <div class="card"><div class="card-title">📥 Newest inquiries</div>
         <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
       <div class="card"><div class="card-title">🧳 Inquiries travelling in the next 14 days</div>
-        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(l=>row(tvShort(tvLeadTravelFrom(l)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),`${esc(l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
+        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(({l,t})=>row(tvShort(t.depart||t.ret),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),`${esc(tvTripRoute(l,t)||l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}${t.auto?' · 🤖 from chat':''}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
     </div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📊 Last 30 days</div>
@@ -584,18 +598,32 @@ function tvDepartureEvents(){
   tvCarBookings().filter(c=>c.status!=='cancelled').forEach(c=>{
     if(tvDay(c.pickup_date)) ev.push({d:tvDay(c.pickup_date),kind:'car',label:`🚗 ${c.customer_name||'Customer'} · ${c.car_name||'car'}`,meta:'pickup',go:"navigate('tvcars')"});
   });
+  // Inquiry travel dates — every trip in the inquiry's 🧳 travel profile (picked up from the chat or
+  // added by staff): its travel day and, when given, its return. Tapping one opens the inquiry.
   if(_tvShowInquiries){
     (typeof allLeads!=='undefined'?allLeads:[]).filter(l=>l.Stage!=='lost').forEach(l=>{
-      const d=tvLeadTravelFrom(l); if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
-      ev.push({d,kind:'inquiry',label:`📥 ${l.Name||l.Phone||'Inquiry'}${l.Destination?' · '+l.Destination:''}`,meta:`inquiry · ${stageLabel(l.Stage||'new')}`,go:`openDetail(${Number(l.Id)})`});
-      const r=tvLeadTravelTo(l);
-      if(/^\d{4}-\d{2}-\d{2}$/.test(r)) ev.push({d:r,kind:'return',label:`🛬 ${l.Name||l.Phone||'Inquiry'}`,meta:'inquiry returns',go:`openDetail(${Number(l.Id)})`});
+      const who=(typeof leadDisplayName==='function'?leadDisplayName(l):'')||l.Name||l.Phone||'Inquiry';
+      tvLeadTrips(l).forEach(t=>{
+        const route=tvTripRoute(l,t), done=typeof tcTripStatus==='function'&&tcTripStatus(t,TODAY)==='Completed';
+        if(_tvCalRoute && route!==_tvCalRoute) return;
+        const tags=`${t.auto?' · 🤖 from chat':''}${done?' · ✅ Completed':''}`, cls=`${t.auto?' auto':''}${done?' done':''}`;
+        const dep=t.depart||t.ret;
+        if(dep) ev.push({d:dep,kind:'inquiry'+cls,route,label:`📥 ${who}${route?' · '+route:(l.Destination?' · '+l.Destination:'')}`,meta:`inquiry · ${stageLabel(l.Stage||'new')}${tags}`,go:`openDetail(${Number(l.Id)})`});
+        if(t.depart&&t.ret&&t.ret!==t.depart) ev.push({d:t.ret,kind:'return'+cls,route,label:`🛬 ${who}${route?' · '+route.split('→').reverse().map(x=>x.trim()).join(' → '):''}`,meta:`inquiry returns${tags}`,go:`openDetail(${Number(l.Id)})`});
+      });
     });
   }
   return ev.sort((a,b)=>a.d.localeCompare(b.d));
 }
-let _tvShowInquiries=true;
+let _tvShowInquiries=true, _tvCalRoute='';
 function tvToggleInquiries(v){ _tvShowInquiries=v; renderDepartures(); }
+function tvSetCalRoute(v){ _tvCalRoute=String(v||''); renderDepartures(); }
+// The routes of inquiries with travel dates, for the calendar's route picker.
+function tvCalRoutes(){
+  const set=new Set();
+  (typeof allLeads!=='undefined'?allLeads:[]).filter(l=>l.Stage!=='lost').forEach(l=>tvLeadTrips(l).forEach(t=>{ const r=tvTripRoute(l,t); if(r) set.add(r); }));
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}
 
 function renderDepartures(){
   const el=$id('tvDepBody'); if(!el) return;
@@ -625,10 +653,11 @@ function renderDepartures(){
       <button class="btn-ghost" onclick="tvCalShift(1)" aria-label="Next month">›</button>
       <button class="btn-ghost" onclick="tvCalToday()">Today</button>
       <label style="font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-left:auto"><input type="checkbox" ${_tvShowInquiries?'checked':''} onchange="tvToggleInquiries(this.checked)"> Show inquiry travel dates</label>
+      ${_tvShowInquiries&&(tvCalRoutes().length||_tvCalRoute)?`<select aria-label="Inquiry route" title="Show inquiries on one route" onchange="tvSetCalRoute(this.value)"><option value="">🛫 All routes</option>${[...new Set([...tvCalRoutes(),...(_tvCalRoute?[_tvCalRoute]:[])])].map(r=>`<option value="${esc(r)}"${r===_tvCalRoute?' selected':''}>${esc(r)}</option>`).join('')}</select>`:''}
       ${tvCanSee('tvtrips')?`<button class="btn btn-primary btn-sm" onclick="tvNew('tvtrips')">+ New booking</button>`:''}
     </div>
     <div class="tv-cal">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<div class="tv-dow">${d}</div>`).join('')}${cells.join('')}</div>
-    <div class="tv-legend"><span><span class="tv-ev booking">&nbsp;</span>Trip departure</span><span><span class="tv-ev umrah">&nbsp;</span>Umrah group</span><span><span class="tv-ev return">&nbsp;</span>Return</span><span><span class="tv-ev car">&nbsp;</span>Car pickup</span><span><span class="tv-ev inquiry">&nbsp;</span>Inquiry travel date</span></div>
+    <div class="tv-legend"><span><span class="tv-ev booking">&nbsp;</span>Trip departure</span><span><span class="tv-ev umrah">&nbsp;</span>Umrah group</span><span><span class="tv-ev return">&nbsp;</span>Return</span><span><span class="tv-ev car">&nbsp;</span>Car pickup</span><span><span class="tv-ev inquiry">&nbsp;</span>Inquiry travel date</span><span><span class="tv-ev inquiry auto">&nbsp;</span>From chat</span><span><span class="tv-ev inquiry done">&nbsp;</span>Completed</span></div>
     <div class="card"><div class="card-title">🗓️ ${esc(title)} — ${monthEvents.length} item${monthEvents.length===1?'':'s'}</div>
       <div class="tv-list">${monthEvents.length?monthEvents.map(e=>`<div class="tv-row" onclick="${e.go}"><span class="tv-date">${esc(tvShort(e.d))}</span><div class="tv-main">${esc(e.label)}<div class="tv-meta">${esc(e.meta)}</div></div></div>`).join(''):'<div class="tv-empty">Nothing scheduled this month.</div>'}</div></div>`;
 }
