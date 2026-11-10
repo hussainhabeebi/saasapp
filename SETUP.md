@@ -9386,7 +9386,19 @@ default — while off nothing on screen changes. Code: `frontend/travel-crm.js`,
   palette in `travel-crm.js` and `chats.html`), on Leads, 🗂 Pipeline, 📌 Status Board, the lead's
   details, the Inbox (chat row, chat header, contact panel), the number filter and Reports → 📲
   WhatsApp Numbers. Enquiry type, route and travel dates still need the setting.
-- **Lead fields** (created on first use): `EnquiryType`, `TravelRoute` ("Calicut → Dubai"),
+- **Route & travel dates from chats** — on for every travel agency account unless switched off
+  (Travel Settings → 📲 Travel CRM → 🧳 Route & travel dates, `CLIENTS.travel_trips_enabled = 'No'`).
+  Each customer message is read for a route (the flight bot's airport list: "Calicut to Dubai",
+  "dubai kochi ticket") and travel dates ("15 Dec", "15/12", "Dec 15 to Dec 22"); birth / passport
+  dates, people counts, past dates and dates over ~13 months ahead are ignored, and a bare "12/5"
+  needs a travel word or a route. Runs in the background after the turn
+  (`engineTravelCrmDetectLater`), so it never slows a reply. What it finds is one auto trip
+  (`auto:true`) plus the lead's route (`TravelRouteBy = 'auto'`), updated by later messages; once
+  staff edit them they are left alone. Shown as 🛫 route / 📅 date tags (dashed = from chat) on
+  Inquiries, 🗂 Pipeline and 📌 Status Board with route / travel-date filters, in the lead's 🧳 Travel
+  profile (🔎 Find in chat = `POST /travel-crm/detect`, reads the whole conversation), and read-only
+  in the Inbox contact panel.
+- **Lead fields** (created on first use): `EnquiryType`, `TravelRoute` ("Calicut → Dubai"), `TravelRouteBy`,
   `TravelTrips` (JSON `[{id, route, depart, ret, note}]`), `TripStatus` (Upcoming / Travelling /
   Completed), `NextTravelDate`. A lead without `TravelTrips` falls back to its older `TravelDates`.
 - **Completed automatically** — worked out from the travel dates on screen, and stamped on the lead by

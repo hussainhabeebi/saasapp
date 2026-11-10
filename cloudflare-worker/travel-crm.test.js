@@ -6,9 +6,9 @@ import {
   travelCrmOn, travelCrmNormRoute, travelCrmConfig, travelCrmParseTrips, travelCrmLeadTrips, travelCrmTripStatus,
   travelCrmLeadTripStatus, travelCrmNextDate, travelCrmTripPatch, travelCrmTripStatusProcessClient, travelCrmNumbers,
   travelCrmParseEchoes, travelCrmEchoSeen, travelCrmProcessEchoes, TCRM_APP_SENDER, TCRM_DEFAULT_ROUTES,
-  travelCrmSettingsView, travelCrmSettingsPatch,
+  travelCrmSettingsView, travelCrmSettingsPatch, travelCrmTripsOn, travelCrmMergeDetection, travelCrmDetectHistory,
 } from './travel-crm.js';
-import { engineStaffSender } from './worker.js';
+import { engineStaffSender, travelCrmDetectText, travelCrmRouteOf, TRAVEL_CRM_PARSERS, engineTravelCrmDetectLater } from './worker.js';
 
 const ON={Id:7, industry:'travel', travel_crm_enabled:'Yes'};
 
@@ -61,7 +61,7 @@ test('a trip is Completed once its last day has passed', ()=>{
   assert.equal(travelCrmLeadTripStatus({}, T), '');
 });
 
-test('the daily run only patches leads whose status moved, and only when switched on', async ()=>{
+test('the daily run only patches leads whose status moved, and not when route & dates are switched off', async ()=>{
   const leads=[
     {Id:1, TravelTrips:JSON.stringify([{depart:'2026-11-01', ret:'2026-11-05'}]), TripStatus:'Upcoming', NextTravelDate:'2026-11-01'},
     {Id:2, TravelTrips:JSON.stringify([{depart:'2026-12-01'}]), TripStatus:'Upcoming', NextTravelDate:'2026-12-01'},
@@ -70,7 +70,8 @@ test('the daily run only patches leads whose status moved, and only when switche
   const patched=[], told=[];
   const deps={listLeads:async ()=>leads, patch:async rows=>patched.push(...rows), broadcast:async (cid, m)=>told.push(m)};
   const now=new Date('2026-11-10T03:00:00Z');
-  assert.deepEqual(await travelCrmTripStatusProcessClient({...ON, travel_crm_enabled:'No'}, deps, now), {updated:0});
+  assert.deepEqual(await travelCrmTripStatusProcessClient({...ON, travel_trips_enabled:'No'}, deps, now), {updated:0});
+  assert.deepEqual(await travelCrmTripStatusProcessClient({Id:9, industry:'ecommerce'}, deps, now), {updated:0});
   assert.equal(patched.length, 0);
   assert.deepEqual(await travelCrmTripStatusProcessClient(ON, deps, now), {updated:2});
   assert.deepEqual(patched, [
@@ -143,9 +144,9 @@ test('a reply echoed into Chatwoot with no sender is labelled only for Travel CR
 
 test('Travel Settings → 📲 Travel CRM: saves on/off and the lists, travel accounts only', ()=>{
   const TA={Id:7, industry:'travel'};
-  assert.deepEqual(travelCrmSettingsView(TA), {enabled:false, is_travel_account:true, enquiry_types:travelCrmConfig({}).enquiry_types, routes:TCRM_DEFAULT_ROUTES});
+  assert.deepEqual(travelCrmSettingsView(TA), {enabled:false, trips_enabled:true, is_travel_account:true, enquiry_types:travelCrmConfig({}).enquiry_types, routes:TCRM_DEFAULT_ROUTES});
   const out=travelCrmSettingsPatch({enabled:true, enquiry_types:['Visa',' Visa ','Ticket'], routes:['calicut to doha','']}, TA);
-  assert.deepEqual(out.fields, {travel_crm_enabled:'Yes', travel_crm_config:JSON.stringify({enquiry_types:['Visa','Ticket'], routes:['Calicut → Doha']})});
+  assert.deepEqual(out.fields, {travel_crm_enabled:'Yes', travel_trips_enabled:'Yes', travel_crm_config:JSON.stringify({enquiry_types:['Visa','Ticket'], routes:['Calicut → Doha']})});
   assert.equal(travelCrmSettingsView({...TA, ...out.fields}).enabled, true);
   // Leaving a field out keeps what is saved; empty lists fall back to the defaults.
   const off=travelCrmSettingsPatch({enabled:false}, {...TA, ...out.fields});
@@ -155,4 +156,96 @@ test('Travel Settings → 📲 Travel CRM: saves on/off and the lists, travel ac
   assert.match(travelCrmSettingsPatch({enabled:'yes'}, TA).error, /true or false/);
   assert.match(travelCrmSettingsPatch({routes:'x'}, TA).error, /list/);
   assert.match(travelCrmSettingsPatch({enabled:true}, {industry:'ecommerce'}).error, /travel agency/);
+});
+
+test('route & travel dates are on for travel agencies unless switched off', ()=>{
+  assert.equal(travelCrmTripsOn({industry:'travel'}), true);
+  assert.equal(travelCrmTripsOn({industry:'travel', travel_trips_enabled:'No'}), false);
+  assert.equal(travelCrmTripsOn({industry:'general', ta_enabled:'Yes'}), true);
+  assert.equal(travelCrmTripsOn({industry:'ecommerce'}), false);
+  assert.equal(travelCrmSettingsPatch({trips_enabled:false}, {industry:'travel'}).fields.travel_trips_enabled, 'No');
+  assert.match(travelCrmSettingsPatch({trips_enabled:'no'}, {industry:'travel'}).error, /true or false/);
+});
+
+const NOW=new Date('2026-11-10T08:00:00Z');
+test('a route and travel dates are read from what the customer writes', ()=>{
+  assert.equal(travelCrmRouteOf('need ticket calicut to dubai'), 'Calicut → Dubai');
+  assert.equal(travelCrmRouteOf('dubai kochi ticket'), 'Dubai → Kochi');
+  assert.equal(travelCrmRouteOf('hi'), '');
+  assert.deepEqual(travelCrmDetectText('Calicut to Dubai on 15 Dec, return 22 Dec', NOW), {route:'Calicut → Dubai', depart:'2026-12-15', ret:'2026-12-22'});
+  assert.deepEqual(travelCrmDetectText('tomorrow kochi to doha', NOW), {route:'Kochi → Doha', depart:'2026-11-11'});
+  assert.deepEqual(travelCrmDetectText('flight on 20/12', NOW), {depart:'2026-12-20'});
+  assert.deepEqual(travelCrmDetectText('15th of january 2027 trip', NOW), {depart:'2027-01-15'});
+  // Not travel dates: birth / passport dates, people counts, a fraction, past or far-off dates.
+  for(const t of ['my dob 12/05/1990', 'passport expiry 15 dec 2026', '2/3 people for the trip', 'price is 1/2 off', 'we went on 5 Nov', 'hello', 'trip in Dec 2030'])
+    assert.equal(travelCrmDetectText(t, NOW), null, t);
+});
+
+test('what is found becomes one auto trip and the route; later messages update it', ()=>{
+  let lead={Id:5};
+  const p1=travelCrmMergeDetection(lead, travelCrmDetectText('calicut to dubai', NOW), NOW);
+  assert.deepEqual(p1, {TravelRoute:'Calicut → Dubai', TravelRouteBy:'auto'});   // route only: no trip yet
+  lead={...lead, ...p1};
+  const p2=travelCrmMergeDetection(lead, travelCrmDetectText('on 15 dec', NOW), NOW);
+  const t2=JSON.parse(p2.TravelTrips);
+  assert.equal(t2.length, 1);
+  assert.deepEqual({route:t2[0].route, depart:t2[0].depart, ret:t2[0].ret, auto:t2[0].auto}, {route:'Calicut → Dubai', depart:'2026-12-15', ret:'', auto:true});
+  assert.deepEqual({s:p2.TripStatus, n:p2.NextTravelDate}, {s:'Upcoming', n:'2026-12-15'});
+  lead={...lead, ...p2};
+  // The customer changes the date and adds a return: the same auto trip is updated.
+  const p3=travelCrmMergeDetection(lead, travelCrmDetectText('make it 18 dec, back 25 dec', NOW), NOW);
+  const t3=JSON.parse(p3.TravelTrips);
+  assert.equal(t3.length, 1);
+  assert.deepEqual([t3[0].depart, t3[0].ret], ['2026-12-18', '2026-12-25']);
+  lead={...lead, ...p3};
+  assert.equal(travelCrmMergeDetection(lead, travelCrmDetectText('18 dec', NOW), NOW), null);   // nothing new
+});
+
+test('what staff set by hand is left alone', ()=>{
+  const lead={Id:5, TravelRoute:'Kochi → Doha', TravelRouteBy:'rita@agency.com',
+    TravelTrips:JSON.stringify([{id:'m1', route:'Kochi → Doha', depart:'2026-12-01', ret:'2026-12-09'}])};
+  const p=travelCrmMergeDetection(lead, travelCrmDetectText('calicut to dubai on 15 dec', NOW), NOW);
+  assert.equal(p.TravelRoute, undefined);                      // a person's route wins
+  const trips=JSON.parse(p.TravelTrips);
+  assert.equal(trips.length, 2);                               // the manual trip stays; a new auto trip is added
+  assert.deepEqual(trips[0], {id:'m1', route:'Kochi → Doha', depart:'2026-12-01', ret:'2026-12-09', note:''});
+  assert.deepEqual([trips[1].route, trips[1].depart, trips[1].auto], ['Calicut → Dubai', '2026-12-15', true]);
+  // The same date as a manual trip is not added again.
+  assert.equal(travelCrmMergeDetection(lead, travelCrmDetectText('on 1 dec', NOW), NOW), null);
+  // An older TravelDates value is kept as a trip when the first auto trip is added.
+  const old=travelCrmMergeDetection({Id:6, TravelDates:'2026-11-20 → 2026-11-25'}, travelCrmDetectText('20 jan', NOW), NOW);
+  assert.deepEqual(JSON.parse(old.TravelTrips).map(t=>[t.depart, !!t.auto]), [['2026-11-20', false], ['2027-01-20', true]]);
+});
+
+test('🔎 Find in chat reads the whole conversation, customer messages only', ()=>{
+  const hist=[
+    {role:'user', content:'hi, need tickets'},
+    {role:'assistant', content:'Sure! Where from? e.g. Kochi to Doha on 1 Dec'},
+    {role:'user', content:'calicut to sharjah'},
+    {role:'user', content:'10/12 please'},
+  ];
+  const p=travelCrmDetectHistory({Id:7}, hist, TRAVEL_CRM_PARSERS, NOW);
+  assert.equal(p.TravelRoute, 'Calicut → Sharjah');
+  assert.deepEqual(JSON.parse(p.TravelTrips).map(t=>[t.route, t.depart]), [['Calicut → Sharjah', '2026-12-10']]);
+  assert.equal(travelCrmDetectHistory({Id:7}, [{role:'user', content:'hello'}], TRAVEL_CRM_PARSERS, NOW), null);
+});
+
+test('a chat message is saved on its lead after the turn (worker path)', async ()=>{
+  const realFetch=globalThis.fetch, patches=[];
+  globalThis.fetch=async (url, opts={})=>{
+    const u=String(url);
+    if(u.includes('/api/v2/meta/tables/')) return Response.json({columns:[], fields:[]});
+    if(u.includes('/records') && opts.method==='PATCH'){ patches.push(JSON.parse(opts.body)); return Response.json({Id:41}); }
+    if(u.includes('/records')) return Response.json({list:[{Id:41, ClientId:'7', ConversationID:'900'}]});
+    return Response.json({});
+  };
+  try{
+    const env={NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t'};
+    const p=await engineTravelCrmDetectLater(env, 7, {conversation:{id:900}}, 'Calicut to Dubai 15 Dec', {wait:0});
+    assert.equal(p.TravelRoute, 'Calicut → Dubai');
+    const saved=patches.find(x=>x.TravelTrips);
+    assert.equal(saved.Id, 41);
+    assert.equal(JSON.parse(saved.TravelTrips)[0].auto, true);
+    assert.equal(await engineTravelCrmDetectLater(env, 7, {conversation:{id:900}}, 'thanks', {wait:0}), null);
+  }finally{ globalThis.fetch=realFetch; }
 });

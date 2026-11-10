@@ -19,7 +19,7 @@ import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFI
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
-import {TCRM_APP_SENDER,travelCrmOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch} from './travel-crm.js';
+import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -18981,7 +18981,7 @@ export async function runTravelCrmTripStatusForAllClients(env, now=new Date()){
     const rows=(await r.json().catch(()=>({})))?.list||[];
     if(!rows.length) break;
     for(const c of rows){
-      if(!travelCrmOn(c)) continue;
+      if(!travelCrmTripsOn(c)) continue;
       try{
         if(!columnsReady){ await ensureLeadsColumns(env, ['TripStatus','NextTravelDate']).catch(()=>{}); columnsReady=true; }
         await travelCrmTripStatusProcessClient(c, deps, now);
@@ -19011,6 +19011,55 @@ async function handleTravelCrmNumbers(request, env){
     numbers.push({inbox_id:String(c.chatwoot_inbox_id), name:'', phone:String(c.wa_display_phone)});
   return json({ok:true, numbers});
 }
+const TCRM_TRIP_COLUMNS=['TravelRoute','TravelRouteBy','TravelTrips','TripStatus','NextTravelDate'];
+async function travelCrmSaveLeadPatch(env, clientId, leadId, patch){
+  await ensureLeadsColumns(env, TCRM_TRIP_COLUMNS).catch(()=>{});
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...patch}});
+  if(!r.ok) throw new Error('NocoDB '+r.status);
+  try{ await engineBroadcastUpdate(env, clientId, {type:'lead_updated', lead_ids:[Number(leadId)], fields:Object.keys(patch), by:'auto', at:new Date().toISOString()}); }catch(e){}
+}
+// A customer message → route / travel dates on the lead. Waits for the turn to create or update the
+// lead first (a brand-new lead only exists once the reply is out), then merges what was found.
+export async function engineTravelCrmDetectLater(env, clientId, body, text, {wait=10000}={}){
+  let det=travelCrmDetectText(text);
+  // A bare "10/12" only counts once we know the enquiry already has a route — check the lead for it.
+  const bareDate=!det && /\b\d{1,2}[-\/.]\d{1,2}\b/.test(String(text||''));
+  if(!det && !bareDate) return null;
+  let lead=null;
+  for(let i=0;i<2 && !lead?.Id;i++){
+    if(wait) await new Promise(r=>setTimeout(r, wait));
+    lead=await engineLeadForChatwootBody(env, clientId, body).catch(()=>null);
+  }
+  if(!lead?.Id) return null;
+  if(!det && String(lead.TravelRoute||'').trim()) det=travelCrmDetectText(text, new Date(), {known:true});
+  if(!det) return null;
+  const patch=travelCrmMergeDetection(lead, det);
+  if(patch) await travelCrmSaveLeadPatch(env, clientId, lead.Id, patch);
+  return patch;
+}
+// POST /travel-crm/detect {lead_id} — 🔎 Find in chat: read the lead's whole conversation for a
+// route and travel dates (for enquiries from before detection, or to check again).
+async function handleTravelCrmDetect(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!travelCrmTripsOn(c)) return json({error:'Route & travel dates are switched off in Travel Settings.'}, 400);
+  const {lead_id}=await request.json().catch(()=>({}));
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(lead_id)||0}`);
+  const lead=r.ok?await r.json().catch(()=>null):null;
+  if(!lead?.Id || String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  let history=[]; try{ history=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+  if(env.DB){
+    try{
+      const {results}=await env.DB.prepare(`SELECT role, content FROM lead_messages WHERE lead_id=? AND role='user' ORDER BY ts LIMIT 500`).bind(Number(lead.Id)).all();
+      if(results?.length) history=results;
+    }catch(e){}
+  }
+  const patch=travelCrmDetectHistory(lead, Array.isArray(history)?history:[], TRAVEL_CRM_PARSERS);
+  if(patch) await travelCrmSaveLeadPatch(env, payload.cid, lead.Id, patch);
+  return json({ok:true, found:!!patch, patch:patch||{}});
+}
 // GET/PUT /travel-crm/settings — Live Agency → ⚙️ Travel Settings → 📲 Travel CRM: on/off, enquiry
 // types and routes, saved on CLIENTS (travel_crm_enabled, travel_crm_config). Same access as the
 // other Travel Settings tabs; refused for accounts that aren't travel agencies.
@@ -19023,7 +19072,7 @@ async function handleTravelCrmSettings(request, env){
   if(request.method==='GET') return json({...travelCrmSettingsView(c), echo_url});
   const out=travelCrmSettingsPatch(await request.json().catch(()=>({})), c);
   if(out.error) return json({error:out.error}, 400);
-  await ensureClientColumns(env, ['travel_crm_enabled','travel_crm_config']);
+  await ensureClientColumns(env, ['travel_crm_enabled','travel_trips_enabled','travel_crm_config']);
   await patchClientFields(env, payload.cid, out.fields);
   return json({...travelCrmSettingsView({...c, ...out.fields}), echo_url});
 }
@@ -21147,6 +21196,15 @@ export function ltParseFlightRoute(value){
   return origin&&destination&&origin!==destination?{origin,destination}:null;
 }
 
+// 🧳 Travel CRM route detection (travel-crm.js): city names via ltAirportCityName below.
+// "calicut to dubai", "ദുബായ് കോഴിക്കോട് ടിക്കറ്റ്" → "Calicut → Dubai" (or '' when no route).
+export function travelCrmRouteOf(text){
+  const r=ltParseFlightRoute(String(text||'').split('\n').slice(0,6).join(' '));
+  const name=code=>ltAirportCityName(code)||String(code||'');
+  return r?`${name(r.origin)} → ${name(r.destination)}`:'';
+}
+export const TRAVEL_CRM_PARSERS={routeOf:travelCrmRouteOf, parseDate:(raw, now)=>ltParseConversationalFlightDate(raw, now)};
+export function travelCrmDetectText(text, now=new Date(), opts={}){ return travelCrmDetect(ltLocalTravelText(text), TRAVEL_CRM_PARSERS, now, opts); }
 // "Salem to Trichy" where a side is not a known airport: the unread side(s), as typed. Only the
 // first line counts (a burst may add "08 Nov 2026" on the next), and only short place-like words.
 export function ltUnknownRouteCities(value,known={}){
@@ -27868,6 +27926,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
     state.channel=parsed.channel||'whatsapp';
     if(parsed.igId) state.igId=parsed.igId;
+    // 🧳 Route & travel dates from what the customer wrote (travel-crm.js) — in the background, after
+    // the turn has saved the lead, whichever path below answers this message.
+    if(text && ctx?.waitUntil && travelCrmTripsOn(c)) ctx.waitUntil(engineTravelCrmDetectLater(env, clientId, body, text).catch(e=>console.error('[travel-crm] detect', e.message)));
     if(engineV2On(c)){
       state.staffNotes=engineActiveStaffNotes(state.lead?.StaffNotes);
       state.winExamples=await engineLoadWinExamples(env, clientId).catch(()=>[]);
@@ -42188,6 +42249,7 @@ export default {
       // WhatsApp Business app (Meta smb_message_echoes — signature-verified, travel CRM accounts only).
       else if(url.pathname==='/travel-crm/numbers' && request.method==='GET'){ res=await handleTravelCrmNumbers(request,env); }
       else if(url.pathname==='/travel-crm/settings' && ['GET','PUT'].includes(request.method)){ res=await handleTravelCrmSettings(request,env); }
+      else if(url.pathname==='/travel-crm/detect' && request.method==='POST'){ res=await handleTravelCrmDetect(request,env); }
       else if(url.pathname==='/wa/business-echoes'){ res=await handleTravelCrmEchoWebhook(request,env,ctx); }
       else if(url.pathname==='/live-travel/flows' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlows(request,env); }
       else if(/^\/live-travel\/flows\/(save|delete|preview)$/.test(url.pathname) && request.method==='POST'){ res=await handleLtTravelFlows(request,env,url.pathname.split('/').pop()); }

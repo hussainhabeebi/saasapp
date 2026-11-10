@@ -3,7 +3,10 @@
    only to travel agency accounts (industry 'travel' or the Travel Agency module on); while it is off
    nothing on screen changes. Exception — the WhatsApp number an enquiry came in on (coloured label per
    number, number filter, Reports → 📲 WhatsApp Numbers) also shows, without the setting, for a travel
-   agency account with 2+ WhatsApp numbers connected (tcNumbersOn). When on:
+   agency account with 2+ WhatsApp numbers connected (tcNumbersOn). Route & travel dates (🛫 route and
+   📅 date tags, their filters, the 🧳 travel profile and ✅ Completed) are on for every travel agency
+   account unless switched off (CLIENTS.travel_trips_enabled = 'No', tcTripsOn); the Worker picks them
+   up from the chat (marked 🤖 from chat / dashed tags) and staff can edit them. Travel CRM tools on adds:
      • every enquiry shows the WhatsApp number it came in on (lead.InboxId → worker /travel-crm/numbers)
      • an Enquiry type label and a Route label on the lead (Leads list, table, 🗂 Pipeline, 📌 Status Board)
      • lead → 🧳 Travel profile: number, enquiry type, route and the customer's travel dates (one row
@@ -25,11 +28,14 @@
 const TC_DEFAULT_TYPES=['Air Ticket','Holiday Package','Visa','Hotel Booking','Umrah / Hajj','Group Booking','Other'];
 const TC_DEFAULT_ROUTES=['Calicut → Dubai','Calicut → Sharjah','Kochi → Dubai'];
 const TC_TYPE_ICON={'Air Ticket':'✈️','Holiday Package':'🏝️','Visa':'🛂','Hotel Booking':'🏨','Umrah / Hajj':'🕋','Group Booking':'👥','Other':'🏷️'};
-const TC_FIELDS=['EnquiryType','TravelRoute',['TravelTrips','LongText'],'TripStatus','NextTravelDate'];
+const TC_FIELDS=['EnquiryType','TravelRoute','TravelRouteBy',['TravelTrips','LongText'],'TripStatus','NextTravelDate'];
 const TC_STATUS={Upcoming:['🗓️','up'], Travelling:['🧳','now'], Completed:['✅','done']};
 
 function tcIsTravelAccount(){ return typeof clientRecord!=='undefined' && !!clientRecord && (clientRecord.industry==='travel' || clientRecord.ta_enabled==='Yes'); }
 function tcOn(){ return tcIsTravelAccount() && String(clientRecord.travel_crm_enabled||'').trim().toLowerCase()==='yes'; }
+// Route & travel dates — tags, filters, the travel profile, ✅ Completed and auto-detection from chats
+// (worker travel-crm.js): on for every travel agency account unless switched off in Travel Settings.
+function tcTripsOn(){ return tcIsTravelAccount() && String(clientRecord.travel_trips_enabled||'').trim().toLowerCase()!=='no'; }
 const tcToday=()=>new Date().toISOString().slice(0,10);
 const tcTypeIcon=t=>TC_TYPE_ICON[t]||'🏷️';
 
@@ -53,7 +59,7 @@ function tcConfig(){
 const tcDay=v=>{ const s=String(v||'').trim().slice(0,10); return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:''; };
 function tcParseTrips(raw){
   let v=raw; if(typeof v==='string'){ try{ v=JSON.parse(v||'[]'); }catch(e){ v=[]; } }
-  return (Array.isArray(v)?v:[]).filter(t=>t&&typeof t==='object').map(t=>({id:String(t.id||'').slice(0,40), route:tcNormRoute(t.route), depart:tcDay(t.depart), ret:tcDay(t.ret), note:String(t.note||'').slice(0,300)})).filter(t=>t.depart||t.ret);
+  return (Array.isArray(v)?v:[]).filter(t=>t&&typeof t==='object').map(t=>({id:String(t.id||'').slice(0,40), route:tcNormRoute(t.route), depart:tcDay(t.depart), ret:tcDay(t.ret), note:String(t.note||'').slice(0,300), ...(t.auto===true?{auto:true}:{})})).filter(t=>t.depart||t.ret);
 }
 function tcLeadTrips(l){
   const trips=tcParseTrips(l?.TravelTrips);
@@ -145,6 +151,10 @@ function tcInjectStyle(){
   .tc-st-up{background:#EFF6FF;border-color:#BFDBFE;color:#1E40AF}
   .tc-st-now{background:#FEF9C3;border-color:#FDE68A;color:#854D0E}
   .tc-st-done{background:#DCFCE7;border-color:#86EFAC;color:#166534;font-weight:600}
+  .tc-chip.tc-auto{border-style:dashed}
+  .tc-autob{font-size:10px;font-weight:700;color:#6D28D9;background:#EDE9FE;border-radius:999px;padding:0 6px;margin-left:4px;vertical-align:middle}
+  .tc-sec{border-top:1px solid var(--line,#e5e7eb);padding-top:10px;margin-top:10px}
+  .tc-sechd{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;font-weight:700;color:var(--muted,#6b7280);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
   @media (prefers-color-scheme:dark){ .tc-num,.tc-type,.tc-route,.tc-st-up,.tc-st-now,.tc-st-done{background:transparent;color:inherit} .tc-num .tc-dot{background:var(--tcn-bd)} }
   .tc-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 12px}
   .tc-bar select,.tc-bar input{font:inherit;font-size:12.5px;padding:7px 9px;border:1px solid var(--line,#e5e7eb);border-radius:8px;background:var(--card,#fff);color:inherit;max-width:220px;min-width:0}
@@ -175,16 +185,23 @@ function tcEnsureRouteList(){
 
 /* ── Labels on lead rows / cards ── */
 function tcChipsHTML(l, opts={}){
-  if(!l||!tcNumbersOn()) return '';
+  if(!l) return '';
+  const nums=tcNumbersOn(), full=tcOn(), trips=tcTripsOn();
+  if(!nums&&!full&&!trips) return '';
   tcInjectStyle();
-  const n=tcNumberOf(l), out=[];
+  const out=[];
+  const n=nums?tcNumberOf(l):null;
   if(n) out.push(tcNumChipHTML(n));
-  if(!tcOn()) return out.length?(opts.inline?out.join(' '):`<div class="tc-chips">${out.join('')}</div>`):'';
-  if(l.EnquiryType) out.push(`<span class="tc-chip tc-type" title="Enquiry type">${tcTypeIcon(l.EnquiryType)} ${esc(l.EnquiryType)}</span>`);
-  const route=tcLeadRoutes(l)[0];
-  if(route) out.push(`<span class="tc-chip tc-route" title="Route">🛫 ${esc(route)}</span>`);
-  const st=tcLeadTripStatus(l);
-  if(st){ const next=tcNextDate(l); out.push(st==='Completed'?tcStatusChip(st):`<span class="tc-chip tc-st-${TC_STATUS[st][1]}" title="Travel date">${TC_STATUS[st][0]} ${esc(next?tcFmtDate(next):st)}</span>`); }
+  if(full && l.EnquiryType) out.push(`<span class="tc-chip tc-type" title="Enquiry type">${tcTypeIcon(l.EnquiryType)} ${esc(l.EnquiryType)}</span>`);
+  if(trips){
+    const route=tcLeadRoutes(l)[0], autoRoute=route&&String(l.TravelRouteBy||'')==='auto';
+    if(route) out.push(`<span class="tc-chip tc-route${autoRoute?' tc-auto':''}" title="Route${autoRoute?' — picked up from the chat':''}">🛫 ${esc(route)}</span>`);
+    const st=tcLeadTripStatus(l);
+    if(st){
+      const next=tcNextDate(l), trip=tcLeadTrips(l).find(t=>(t.depart||t.ret)===next), auto=!!trip?.auto;
+      out.push(st==='Completed'?tcStatusChip(st):`<span class="tc-chip tc-st-${TC_STATUS[st][1]}${auto?' tc-auto':''}" title="Travel date${auto?' — picked up from the chat':''}">${TC_STATUS[st][0]} ${esc(next?tcFmtDate(next):st)}</span>`);
+    }
+  }
   if(!out.length) return '';
   return opts.inline?out.join(' '):`<div class="tc-chips">${out.join('')}</div>`;
 }
@@ -193,7 +210,7 @@ function tcChipsHTML(l, opts={}){
 let _tcF={num:'', route:'', type:'', date:'', from:'', to:''};
 const tcPrefKey=()=>`lv_tcf_${typeof clientId!=='undefined'?clientId:''}`;
 (function(){ try{ const p=JSON.parse(sessionStorage.getItem(tcPrefKey())||'null'); if(p&&typeof p==='object') _tcF={..._tcF, ...p}; }catch(e){} })();
-const tcFiltering=()=>(tcNumbersOn()&&!!_tcF.num)||(tcOn()&&!!(_tcF.route||_tcF.type||_tcF.date));
+const tcFiltering=()=>(tcNumbersOn()&&!!_tcF.num)||(tcOn()&&!!_tcF.type)||(tcTripsOn()&&!!(_tcF.route||_tcF.date));
 function tcAddDays(iso, n){ const d=new Date(iso+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
 function tcMonthRange(offset){ const t=new Date(); const a=new Date(Date.UTC(t.getFullYear(), t.getMonth()+offset, 1)); const b=new Date(Date.UTC(t.getFullYear(), t.getMonth()+offset+1, 0)); return [a.toISOString().slice(0,10), b.toISOString().slice(0,10)]; }
 function tcDateMatch(l){
@@ -217,15 +234,15 @@ function tcDateMatch(l){
 function tcMatch(l){
   if(!tcFiltering()) return true;
   if(_tcF.num && tcNumbersOn()){ const id=String(l.InboxId||''); if(_tcF.num==='__none'?!!id:id!==_tcF.num) return false; }
-  if(!tcOn()) return true;
-  if(_tcF.type){ const t=String(l.EnquiryType||''); if(_tcF.type==='__none'?!!t:t!==_tcF.type) return false; }
+  if(_tcF.type && tcOn()){ const t=String(l.EnquiryType||''); if(_tcF.type==='__none'?!!t:t!==_tcF.type) return false; }
+  if(!tcTripsOn()) return true;
   if(_tcF.route){ const r=tcLeadRoutes(l); if(_tcF.route==='__none'?r.length>0:!r.includes(_tcF.route)) return false; }
   return tcDateMatch(l);
 }
 function tcFilterLeads(list){ return tcFiltering()?list.filter(tcMatch):list; }
 function tcBarHTML(){
-  if(!tcNumbersOn()) return '';
-  const full=tcOn();
+  const nOn=tcNumbersOn(), full=tcOn(), trips=tcTripsOn();
+  if(!nOn&&!full&&!trips) return '';
   tcInjectStyle();
   const leads=typeof allLeads!=='undefined'?allLeads:[];
   const cnt={num:{}, type:{}, route:{}};
@@ -242,15 +259,15 @@ function tcBarHTML(){
   const opt=(v,label,cur,c)=>`<option value="${esc(v)}"${cur===v?' selected':''}>${esc(label)}${c!==undefined?` (${c||0})`:''}</option>`;
   const on=k=>_tcF[k]?' on':'';
   return `<div class="tc-bar" role="group" aria-label="Travel filters">
-    <span class="tc-lbl">${full?'🧳 Travel filters':'📲 WhatsApp number'}</span>
-    <select class="${on('num')}" aria-label="WhatsApp number" title="WhatsApp number the enquiry came in on" onchange="tcSet('num',this.value)">
+    <span class="tc-lbl">${full||trips?'🧳 Travel filters':'📲 WhatsApp number'}</span>
+    ${nOn?`<select class="${on('num')}" aria-label="WhatsApp number" title="WhatsApp number the enquiry came in on" onchange="tcSet('num',this.value)">
       ${opt('','📲 All WhatsApp numbers',_tcF.num)}${nums.map(n=>opt(String(n.inbox_id), tcNumberLabel(n), _tcF.num, cnt.num[String(n.inbox_id)])).join('')}${opt('__none','No WhatsApp number',_tcF.num,cnt.num.__none)}
-    </select>
-    ${full?`<select class="${on('route')}" aria-label="Route" onchange="tcSet('route',this.value)">
-      ${opt('','🛫 All routes',_tcF.route)}${routes.map(r=>opt(r,r,_tcF.route,cnt.route[r])).join('')}${opt('__none','No route',_tcF.route,cnt.route.__none)}
-    </select>
-    <select class="${on('type')}" aria-label="Enquiry type" onchange="tcSet('type',this.value)">
+    </select>`:''}
+    ${full?`<select class="${on('type')}" aria-label="Enquiry type" onchange="tcSet('type',this.value)">
       ${opt('','🏷️ All enquiry types',_tcF.type)}${types.map(t=>opt(t,`${tcTypeIcon(t)} ${t}`,_tcF.type,cnt.type[t])).join('')}${opt('__none','No enquiry type',_tcF.type,cnt.type.__none)}
+    </select>`:''}
+    ${trips?`<select class="${on('route')}" aria-label="Route" onchange="tcSet('route',this.value)">
+      ${opt('','🛫 All routes',_tcF.route)}${routes.map(r=>opt(r,r,_tcF.route,cnt.route[r])).join('')}${opt('__none','No route',_tcF.route,cnt.route.__none)}
     </select>
     <select class="${on('date')}" aria-label="Travel date" onchange="tcSet('date',this.value)">
       ${[['','📅 Any travel date'],['travelling','🧳 Travelling now'],['next7','Departing in 7 days'],['next30','Departing in 30 days'],['month','This month'],['nextmonth','Next month'],['upcoming','All upcoming'],['completed','✅ Completed trips'],['none','No travel date'],['custom','Custom dates…']].map(([v,l])=>opt(v,l,_tcF.date)).join('')}
@@ -323,7 +340,7 @@ async function tcSaveLead(id, patch, okMsg){
   }
 }
 function tcSetType(id, v){ return tcSaveLead(id, {EnquiryType:String(v||'').trim()}, v?`Enquiry type: ${v}`:'Enquiry type cleared'); }
-function tcSetRoute(id, v){ const r=tcNormRoute(v); return tcSaveLead(id, {TravelRoute:r}, r?`Route: ${r}`:'Route cleared'); }
+function tcSetRoute(id, v){ const r=tcNormRoute(v); return tcSaveLead(id, {TravelRoute:r, TravelRouteBy:typeof myEmail!=='undefined'?myEmail||'':''}, r?`Route: ${r}`:'Route cleared'); }
 
 /* ── Lead → 🧳 Travel profile ── */
 let _tcEdit=null; // {leadId, tripId} while the add/edit trip form is open ('' = new trip)
@@ -335,36 +352,53 @@ function tcSourceHTML(lead){
 }
 function tcRenderDetail(lead){
   const el=$id('detailTravelCrm'); if(!el) return;
-  if(!lead||!tcNumbersOn()){ el.innerHTML=''; el.style.display='none'; return; }
+  const nOn=tcNumbersOn(), full=tcOn(), trips=tcTripsOn();
+  if(!lead||(!nOn&&!full&&!trips)){ el.innerHTML=''; el.style.display='none'; return; }
   tcInjectStyle();
-  // 2+ numbers without Travel CRM tools: just the number the enquiry came in on.
-  if(!tcOn()){ el.style.display=''; el.innerHTML=`<div class="tc-srcline">${tcSourceHTML(lead)}</div>`; return; }
+  // Only the WhatsApp number (2+ numbers, route & dates switched off).
+  if(!full&&!trips){ el.style.display=''; el.innerHTML=`<div class="tc-srcline">${tcSourceHTML(lead)}</div>`; return; }
   tcEnsureRouteList();
   if(_tcEdit && Number(_tcEdit.leadId)!==Number(lead.Id)) _tcEdit=null;
-  const id=Number(lead.Id), n=tcNumberOf(lead), trips=tcLeadTrips(lead), st=tcLeadTripStatus(lead), cfg=tcConfig();
+  const id=Number(lead.Id), list=tcLeadTrips(lead), st=tcLeadTripStatus(lead), cfg=tcConfig();
   const cur=String(lead.EnquiryType||'');
   const types=cur&&!cfg.enquiry_types.includes(cur)?[cur,...cfg.enquiry_types]:cfg.enquiry_types;
-  const sorted=trips.slice().sort((a,b)=>String(a.depart||a.ret).localeCompare(String(b.depart||b.ret)));
+  const sorted=list.slice().sort((a,b)=>String(a.depart||a.ret).localeCompare(String(b.depart||b.ret)));
+  const autoTag='<span class="tc-autob" title="Picked up from the chat — edit it if it is wrong">🤖 from chat</span>';
+  const routeAuto=String(lead.TravelRouteBy||'')==='auto'&&tcNormRoute(lead.TravelRoute);
   el.style.display='';
   el.innerHTML=`<div class="tc-card">
     <div class="tc-hd"><span>🧳 Travel profile</span>${st?tcStatusChip(st):''}</div>
-    <div class="tc-srcline" style="margin-bottom:10px">${tcSourceHTML(lead)}</div>
+    ${nOn?`<div class="tc-srcline" style="margin-bottom:10px">${tcSourceHTML(lead)}</div>`:''}
     <div class="tc-grid">
-      <div><label class="form-label">Enquiry type</label>
-        <select class="form-input" onchange="tcSetType(${id},this.value)"><option value="">— Select —</option>${types.map(t=>`<option value="${esc(t)}"${t===cur?' selected':''}>${tcTypeIcon(t)} ${esc(t)}</option>`).join('')}</select></div>
-      <div><label class="form-label">Route</label>
-        <input class="form-input" list="tcRouteList" placeholder="e.g. Calicut → Dubai" value="${esc(tcNormRoute(lead.TravelRoute))}" onchange="tcSetRoute(${id},this.value)"></div>
+      ${full?`<div><label class="form-label">Enquiry type</label>
+        <select class="form-input" onchange="tcSetType(${id},this.value)"><option value="">— Select —</option>${types.map(t=>`<option value="${esc(t)}"${t===cur?' selected':''}>${tcTypeIcon(t)} ${esc(t)}</option>`).join('')}</select></div>`:''}
+      ${trips?`<div${full?'':' style="grid-column:1/-1"'}><label class="form-label">Route${routeAuto?autoTag:''}</label>
+        <input class="form-input" list="tcRouteList" placeholder="e.g. Calicut → Dubai" value="${esc(tcNormRoute(lead.TravelRoute))}" onchange="tcSetRoute(${id},this.value)"></div>`:''}
     </div>
-    <div class="form-label" style="margin-bottom:2px">Travel dates</div>
+    ${trips?`<div class="tc-sec">
+    <div class="tc-sechd"><span>Travel dates</span><button class="btn btn-secondary btn-sm" id="tcDetectBtn" onclick="tcDetectFromChat(${id})" title="Read this customer's chat for a route and travel dates">🔎 Find in chat</button></div>
     ${sorted.length?sorted.map(t=>_tcEdit&&_tcEdit.tripId===t.id?tcTripFormHTML(id,t):`<div class="tc-trip">
-        <div class="tc-tmain"><b>${esc(tcTripDates(t))}</b>${t.route?` · 🛫 ${esc(t.route)}`:''}${t.note?`<span class="tc-tnote">${esc(t.note)}</span>`:''}</div>
+        <div class="tc-tmain"><b>${esc(tcTripDates(t))}</b>${t.auto?autoTag:''}${t.route?` · 🛫 ${esc(t.route)}`:''}${t.note?`<span class="tc-tnote">${esc(t.note)}</span>`:''}</div>
         ${tcStatusChip(tcTripStatus(t))}
         <button class="tc-ic" title="Edit" aria-label="Edit travel dates" onclick="tcEditTrip(${id},'${esc(t.id)}')">✏️</button>
         <button class="tc-ic" title="Remove" aria-label="Remove travel dates" onclick="tcDeleteTrip(${id},'${esc(t.id)}')">🗑️</button>
-      </div>`).join(''):'<div class="s-note" style="margin:2px 0 6px">No travel dates yet — add the dates the customer shared.</div>'}
+      </div>`).join(''):'<div class="s-note" style="margin:2px 0 6px">No travel dates yet — they are picked up from the chat when the customer shares them, or add them here.</div>'}
     ${_tcEdit&&_tcEdit.tripId===''?tcTripFormHTML(id,null):`<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="tcEditTrip(${id},'')">+ Add travel dates</button>`}
-    <div class="s-note" style="margin-top:8px">A trip shows ✅ Completed by itself once its last travel day has passed.</div>
+    <div class="s-note" style="margin-top:8px">A trip shows ✅ Completed by itself once its last travel day has passed.</div></div>`:''}
   </div>`;
+}
+// 🔎 Find in chat — the worker reads the whole conversation (POST /travel-crm/detect).
+async function tcDetectFromChat(id){
+  const btn=$id('tcDetectBtn'); if(btn){ btn.disabled=true; btn.textContent='Reading chat…'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/travel-crm/detect`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:Number(id)})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const lead=allLeads.find(l=>Number(l.Id)===Number(id));
+    if(lead&&d.found){ Object.assign(lead, d.patch); if(typeof _noteLeadEdits==='function') _noteLeadEdits({Id:lead.Id, ...d.patch}); if(typeof _cacheLeadsSoon==='function') _cacheLeadsSoon(); }
+    if(typeof showToast==='function') showToast(d.found?'Route / travel dates found in the chat':'No new route or travel dates in this chat');
+    tcRefreshViews();
+  }catch(e){ if(typeof showToast==='function') showToast('Could not read the chat — '+e.message,'err'); if(btn){ btn.disabled=false; btn.textContent='🔎 Find in chat'; } }
 }
 function tcTripFormHTML(id, t){
   const lead=allLeads.find(l=>Number(l.Id)===Number(id));
@@ -465,7 +499,7 @@ function renderReportsTcNumbers(){
         <tbody>${numRows.filter(([,r])=>r.total).map(([k])=>`<tr><td>${esc(numName(k))}</td>${types.map(t=>{ const c=matrix[k]?.[t]; return `<td>${c?`<b>${c.total}</b> · <span style="color:#047857">${c.won}</span>`:'—'}</td>`; }).join('')}</tr>`).join('')}</tbody>
       </table></div>
     </div>`:''}
-    ${tcOn()?`<div class="card" style="margin-bottom:14px">
+    ${tcTripsOn()?`<div class="card" style="margin-bottom:14px">
       <div class="card-title">🛫 Leads by route</div>
       ${routeRows.length?`<div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:520px">
         <thead><tr><th>Route</th><th>Leads</th><th>Open</th><th>Won</th><th>Lost</th><th>Conversion</th></tr></thead>
@@ -486,6 +520,7 @@ window.addEventListener('message', e=>{
   // Same origin only (a page opened from a local file reports its messages as 'null').
   if(e.origin!==location.origin && !(location.protocol==='file:'&&e.origin==='null')) return;
   clientRecord.travel_crm_enabled=d.enabled?'Yes':'No';
+  if('trips_enabled' in d) clientRecord.travel_trips_enabled=d.trips_enabled?'Yes':'No';
   if(d.config&&typeof d.config==='object') clientRecord.travel_crm_config=JSON.stringify({enquiry_types:d.config.enquiry_types||[], routes:d.config.routes||[]});
   if(d.enabled) tcLoadNumbers(true);
   tcInitSettings(); tcRefreshViews();

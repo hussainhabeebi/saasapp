@@ -21,14 +21,20 @@ const NUMBERS = [
   { inbox_id: '33', name: '', phone: '+971500000033' },
 ];
 
-async function boot(page, { on = true, industry = 'travel', numbers = NUMBERS } = {}) {
+async function boot(page, { on = true, industry = 'travel', numbers = NUMBERS, trips = true } = {}) {
   const patches = [];
   const fieldsAdded = [];
+  const detects = [];
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
     if (url.startsWith('file://')) return route.continue();
     if (url.startsWith(WORKER + '/travel-crm/numbers')) return route.fulfill({ json: { ok: true, numbers } });
+    if (url.startsWith(WORKER + '/travel-crm/detect')) {
+      detects.push(JSON.parse(req.postData()));
+      return route.fulfill({ json: { ok: true, found: true, patch: { TravelRoute: 'Calicut → Doha', TravelRouteBy: 'auto',
+        TravelTrips: JSON.stringify([{ id: 'x', route: 'Calicut → Doha', depart: iso(12), ret: '', auto: true }]), TripStatus: 'Upcoming', NextTravelDate: iso(12) } } });
+    }
     if (url.startsWith(WORKER + '/nocodb/api/v2/meta/tables/')) {
       if (req.method() === 'POST') { fieldsAdded.push(JSON.parse(req.postData()).title); return route.fulfill({ json: {} }); }
       return route.fulfill({ json: { columns: [{ title: 'Name' }] } });
@@ -40,7 +46,7 @@ async function boot(page, { on = true, industry = 'travel', numbers = NUMBERS } 
     return route.abort();
   });
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(({ OWNER, on, industry, past, past2, soon }) => {
+  await page.evaluate(({ OWNER, on, industry, past, past2, soon, trips }) => {
     document.getElementById('app').classList.add('show');
     document.getElementById('gate')?.style.setProperty('display', 'none');
     try { localStorage.clear(); sessionStorage.clear(); } catch (e) {}
@@ -48,7 +54,7 @@ async function boot(page, { on = true, industry = 'travel', numbers = NUMBERS } 
     // @ts-ignore
     clientId = 7; myEmail = OWNER; sessionToken = 't';
     // @ts-ignore
-    clientRecord = { industry, ta_enabled: 'No', authentik_email: OWNER, travel_crm_enabled: on ? 'Yes' : 'No' };
+    clientRecord = { industry, ta_enabled: 'No', authentik_email: OWNER, travel_crm_enabled: on ? 'Yes' : 'No', travel_trips_enabled: trips ? 'Yes' : 'No' };
     // @ts-ignore
     allLeads = [
       { Id: 1, Name: 'Asha', Phone: '911', Owner: OWNER, Date: now, Stage: 'won', InboxId: '11', EnquiryType: 'Visa', TravelRoute: 'Calicut → Dubai' },
@@ -63,13 +69,13 @@ async function boot(page, { on = true, industry = 'travel', numbers = NUMBERS } 
     applyTheme(industry);
     // @ts-ignore
     updateAgencyTabVisibility();
-  }, { OWNER, on, industry, past: iso(-3), past2: iso(-8), soon: iso(5) });
-  return { patches, fieldsAdded };
+  }, { OWNER, on, industry, past: iso(-3), past2: iso(-8), soon: iso(5), trips });
+  return { patches, fieldsAdded, detects };
 }
 const leadRow = (page, name) => page.locator('#leadsList .lead-item', { hasText: name });
 
 test('off with one WhatsApp number: nothing changes — no labels, filters, travel profile or report tab', async ({ page }) => {
-  await boot(page, { on: false, numbers: NUMBERS.slice(0, 1) });
+  await boot(page, { on: false, numbers: NUMBERS.slice(0, 1), trips: false });
   // @ts-ignore
   await page.evaluate(() => { navigate('leads'); setLeadsViewMode('list'); });
   await expect(leadRow(page, 'Asha')).toBeVisible();
@@ -191,13 +197,13 @@ test('the Status Board and Pipeline use the same filters', async ({ page }) => {
 });
 
 test('a save in Live Agency → Travel Settings (embedded) switches the dashboard on straight away', async ({ page }) => {
-  await boot(page, { on: false, numbers: NUMBERS.slice(0, 1) });
+  await boot(page, { on: false, numbers: NUMBERS.slice(0, 1), trips: false });
   // @ts-ignore
   await page.evaluate(() => { navigate('leads'); setLeadsViewMode('list'); });
   await expect(page.locator('#leadsList .tc-chip')).toHaveCount(0);
   // @ts-ignore — the cached list is one number; Travel CRM tools turning on is what shows the labels.
   await expect.poll(() => page.evaluate(() => tcNumbers().length)).toBe(1);
-  await page.evaluate(() => window.postMessage({ type: 'tc:settings', enabled: true, config: { enquiry_types: ['Visa'], routes: ['Calicut → Doha'] } }, '*'));
+  await page.evaluate(() => window.postMessage({ type: 'tc:settings', enabled: true, trips_enabled: true, config: { enquiry_types: ['Visa'], routes: ['Calicut → Doha'] } }, '*'));
   await expect(leadRow(page, 'Asha').locator('.tc-num')).toHaveText('📲 Calicut office');
   await expect(page.locator('#tcLeadsBar select[aria-label="Route"]')).toContainText('Calicut → Doha');
 });
@@ -214,7 +220,7 @@ test('Live Agency → Travel Settings → 📲 Travel CRM: off by default, turns
     if (url.endsWith('/travel-crm/settings')) {
       if (req.method() === 'PUT') {
         saved = JSON.parse(req.postData() || '{}');
-        return route.fulfill({ json: { enabled: saved.enabled, is_travel_account: true, enquiry_types: saved.enquiry_types, routes: ['Calicut → Dubai', 'Kochi → Doha'], echo_url: WORKER + '/wa/business-echoes' } });
+        return route.fulfill({ json: { enabled: saved.enabled, trips_enabled: saved.trips_enabled, is_travel_account: true, enquiry_types: saved.enquiry_types, routes: ['Calicut → Dubai', 'Kochi → Doha'], echo_url: WORKER + '/wa/business-echoes' } });
       }
       return route.fulfill({ json: { enabled: false, is_travel_account: true, enquiry_types: ['Air Ticket', 'Visa'], routes: ['Calicut → Dubai'], echo_url: WORKER + '/wa/business-echoes' } });
     }
@@ -231,14 +237,14 @@ test('Live Agency → Travel Settings → 📲 Travel CRM: off by default, turns
   await page.fill('#tcRoutes', 'Calicut → Dubai\nkochi to doha');
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.locator('#tcMsg')).toContainText('Travel CRM tools are on');
-  expect(saved).toEqual({ enabled: true, enquiry_types: ['Air Ticket', 'Visa'], routes: ['Calicut → Dubai', 'kochi to doha'] });
+  expect(saved).toEqual({ enabled: true, trips_enabled: true, enquiry_types: ['Air Ticket', 'Visa'], routes: ['Calicut → Dubai', 'kochi to doha'] });
   await expect(page.locator('#tcRoutes')).toHaveValue('Calicut → Dubai\nKochi → Doha');
   await expect(page.locator('#tcBadge')).toHaveText('On');
 });
 
 const numVar = (loc) => loc.evaluate(el => getComputedStyle(el).getPropertyValue('--tcn-fg').trim());
 test('2+ WhatsApp numbers, Travel CRM tools off: each lead shows its number in its own colour, with a number filter and report', async ({ page }) => {
-  await boot(page, { on: false });
+  await boot(page, { on: false, trips: false });
   // @ts-ignore
   await page.evaluate(() => { navigate('leads'); setLeadsViewMode('list'); });
   const asha = leadRow(page, 'Asha').locator('.tc-num'), meera = leadRow(page, 'Meera').locator('.tc-num'), ravi = leadRow(page, 'Ravi').locator('.tc-num');
@@ -274,6 +280,74 @@ test('2+ WhatsApp numbers, Travel CRM tools off: each lead shows its number in i
   const row = page.locator('#tsBody .tsb-row[data-lead="1"] .tc-num');
   await expect(row).toHaveText('📲 Calicut office');
   expect(await numVar(row)).toBe(await numVar(asha));
+});
+
+test('route & travel date tags are on for a travel agency by default: tags, filters, profile, Find in chat', async ({ page }) => {
+  const { patches, detects } = await boot(page, { on: false, numbers: NUMBERS.slice(0, 1) });
+  // @ts-ignore
+  await page.evaluate(() => {
+    const l = allLeads.find(x => x.Id === 2); l.TravelRouteBy = 'auto';
+    l.TravelTrips = JSON.stringify([{ id: 'a', route: 'Kochi → Dubai', depart: new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10), ret: '', auto: true }]);
+    navigate('leads'); setLeadsViewMode('list');
+  });
+  // Tags: route and travel date (dashed = picked up from the chat); Completed for a finished trip.
+  await expect(leadRow(page, 'Ravi').locator('.tc-route')).toHaveText('🛫 Kochi → Dubai');
+  await expect(leadRow(page, 'Ravi').locator('.tc-route')).toHaveClass(/tc-auto/);
+  await expect(leadRow(page, 'Ravi').locator('.tc-st-up')).toHaveClass(/tc-auto/);
+  await expect(leadRow(page, 'Asha').locator('.tc-route')).not.toHaveClass(/tc-auto/);
+  await expect(leadRow(page, 'Meera').locator('.tc-st-done')).toContainText('Completed');
+  // No WhatsApp number or enquiry type with one number and Travel CRM tools off.
+  await expect(page.locator('#leadsList .tc-num, #leadsList .tc-type')).toHaveCount(0);
+  const bar = page.locator('#tcLeadsBar .tc-bar');
+  await expect(bar.locator('select')).toHaveCount(2);
+  await bar.locator('select[aria-label="Route"]').selectOption('Kochi → Dubai');
+  await expect(page.locator('#leadsList .lead-item')).toHaveCount(1);
+  await page.locator('#tcLeadsBar .tc-clear').click();
+  await page.locator('#tcLeadsBar select[aria-label="Travel date"]').selectOption('completed');
+  await expect(page.locator('#leadsList .lead-item')).toHaveCount(1);
+  await expect(leadRow(page, 'Meera')).toBeVisible();
+  await page.locator('#tcLeadsBar .tc-clear').click();
+
+  // Profile: route + travel dates, the auto ones marked, editable; no enquiry type without the setting.
+  // @ts-ignore
+  await page.evaluate(() => openDetail(2));
+  const card = page.locator('#detailTravelCrm .tc-card');
+  await expect(card.locator('select')).toHaveCount(0);
+  await expect(card.locator('.tc-trip')).toContainText('from chat');
+  await expect(card.locator('.form-label', { hasText: 'Route' })).toContainText('from chat');
+  await card.locator('input[list="tcRouteList"]').fill('kochi to sharjah');
+  await card.locator('input[list="tcRouteList"]').blur();
+  await expect.poll(() => patches.filter(p => p.TravelRoute).length).toBe(1);
+  expect(patches.find(p => p.TravelRoute)).toMatchObject({ Id: 2, TravelRoute: 'Kochi → Sharjah', TravelRouteBy: OWNER });
+
+  // 🔎 Find in chat on a lead with nothing yet.
+  // @ts-ignore
+  await page.evaluate(() => openDetail(4));
+  await page.getByRole('button', { name: '🔎 Find in chat' }).click();
+  await expect.poll(() => detects.length).toBe(1);
+  expect(detects[0]).toEqual({ lead_id: 4 });
+  await expect(page.locator('#detailTravelCrm .tc-trip')).toContainText('Calicut → Doha');
+  await expect(page.locator('#detailTravelCrm .tc-hd')).toContainText('Upcoming');
+
+  // Status Board and Pipeline show the same tags and use the same filters.
+  // @ts-ignore
+  await page.evaluate(() => { closeModal('modalDetail'); navigate('tvstatus'); });
+  await expect(page.locator('#tsBody .tsb-row[data-lead="4"] .tc-route')).toHaveText('🛫 Calicut → Doha');
+  await page.locator('#tsBody .tc-bar select[aria-label="Route"]').selectOption('Calicut → Doha');
+  await expect(page.locator('#tsBody .tsb-row')).toHaveCount(1);
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); setLeadsViewMode('pipeline'); });
+  await expect(page.locator('#kanbanWrap .tsk-card')).toHaveCount(1);
+  await expect(page.locator('#kanbanWrap .tsk-card .tc-route')).toHaveText('🛫 Calicut → Doha');
+});
+
+test('route & travel dates switched off: no tags, filters or profile', async ({ page }) => {
+  await boot(page, { on: false, numbers: NUMBERS.slice(0, 1), trips: false });
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); setLeadsViewMode('list'); openDetail(2); });
+  await expect(page.locator('#leadsList .tc-chip')).toHaveCount(0);
+  await expect(page.locator('#tcLeadsBar')).toBeHidden();
+  await expect(page.locator('#detailTravelCrm')).toBeHidden();
 });
 
 test('other industries never see the numbers, even with several connected', async ({ page }) => {
@@ -337,4 +411,19 @@ test('Inbox: other industries — no number chips', async ({ page }) => {
   await openInbox(page, { travel: false });
   await expect(page.locator('#list .contact', { hasText: 'Asha' })).toBeVisible();
   await expect(page.locator('#list .wn')).toHaveCount(0);
+});
+
+test('Inbox: the contact panel shows the customer\'s route and travel dates', async ({ page }) => {
+  await openInbox(page);
+  // Registered after the harness's catch-all, so this one answers the lead record.
+  await page.route('**/nocodb/api/v2/tables/*/records/*', route => route.fulfill({ json: { TravelRoute: 'Calicut → Dubai', TravelRouteBy: 'auto',
+    TravelTrips: JSON.stringify([{ route: 'Calicut → Dubai', depart: iso(-9), ret: iso(-2) }, { route: 'Calicut → Dubai', depart: iso(20), ret: '', auto: true }]) } }));
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  // @ts-ignore
+  await page.evaluate(() => toggleInfo(true));
+  const panel = page.locator('#infoPanel');
+  await expect(panel).toContainText('🧳 Travel');
+  await expect(panel).toContainText('🛫 Calicut → Dubai');
+  await expect(panel).toContainText('✅ Completed');
+  await expect(panel).toContainText('🗓️ Upcoming');
 });
