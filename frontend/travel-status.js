@@ -333,6 +333,7 @@ function tsFiltered(){
     if(_tsFilter.owner==='__none'){ if(String(l.Owner||'').trim()) return false; }
     else if(_tsFilter.owner && !sameEmail(l.Owner,_tsFilter.owner)) return false;
     if(_tsFilter.cat && l.ServiceCategory!==_tsFilter.cat) return false;
+    if(typeof tcMatch==='function' && !tcMatch(l)) return false; // 📲 Travel CRM filters (travel-crm.js)
     if(q && ![l.Name,l.Phone,l.Destination,l.LeadRef].some(v=>String(v||'').toLowerCase().includes(q))) return false;
     return true;
   });
@@ -435,6 +436,7 @@ function renderTravelStatus(){
     ${board?'':`<div class="tsb-chips" role="group" aria-label="Statuses">
       ${chipStatuses.map(([k,l,i,g])=>`<button class="tsb-chip ts-tile tsb-c-${g}${f===k?' on':''}${counts[k]?'':' zero'}" data-status="${k}" onclick="tsSetFilter('status',${f===k?`'${activeGroup?'__'+activeGroup:''}'`:`'${k}'`})" aria-pressed="${f===k?'true':'false'}">${i} <span class="l">${esc(l)}</span> <span class="c n">${counts[k]||0}</span></button>`).join('')}
     </div>`}
+    ${typeof tcBarHTML==='function'?tcBarHTML():''}
     <div class="tsb-bar">
       ${staffSel}
       <select aria-label="Service" onchange="tsSetFilter('cat',this.value)">
@@ -469,7 +471,7 @@ function tsRowHTML(l, all){
   return `<div class="tsb-row tsb-c-${grp} ${tsOriginClass(l)}${picked?' picked':''}" data-lead="${id}" data-status="${st.key}">
     <div class="who tsb-who"><input type="checkbox" class="tsb-ck" aria-label="Select ${esc(tsLeadName(l))}" ${picked?'checked':''} onclick="event.stopPropagation()" onchange="tsTogglePick(${id},this.checked)">
       <span class="tsb-av" onclick="openDetail(${id})">${esc(tsInitials(l))}</span>
-      <div onclick="openDetail(${id})" title="Open inquiry"><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div></div></div>
+      <div onclick="openDetail(${id})" title="Open inquiry"><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div>${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}</div></div>
     <div class="svc">${tsInlineCategoryHTML(l)}</div>
     ${all?`<div class="staff ts-meta"><span class="tsb-lbl">Staff</span>${esc(tsOwnerName(l.Owner))}</div>`:''}
     <div class="st"><button class="tsb-pill" onclick="tsPick(${id},this)" aria-haspopup="dialog" aria-label="Status: ${esc(s[1])}${st.auto?' (auto)':''}. Change status"><span>${s[2]}</span><span class="t">${esc(s[1])}${st.auto?' <span class="ts-auto">auto</span>':''}</span><span class="car">▼</span></button>${reason}</div>
@@ -695,6 +697,7 @@ function tsKbCard(l){
   return `<article class="tsk-card tsb-c-${TS_BY_KEY[st.key][3]} ${tsOriginClass(l)}" draggable="true" data-lead="${id}" ondragstart="tsKbStart(event,${id})" ondragend="tsKbEnd(event)">
     <div class="tsk-top" onclick="openDetail(${id})"><span class="tsb-av">${esc(tsInitials(l))}</span><div><b>${esc(tsLeadName(l))}</b>${tsOriginBadge(l)}<div class="ts-meta">${esc(tsPhone(l))}</div></div></div>
     ${meta?`<div class="ts-meta tsk-meta">${meta}</div>`:''}
+    ${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}
     <div class="tsk-foot">
       ${st.key==='follow_up_pending'&&l.TravelFollowUpAt?`<button class="tsb-fu ${fu==='overdue'?'overdue':fu==='today'?'today':''}" onclick="tsPick(${id},this,'date')">⏰ ${esc(tsFmtDate(l.TravelFollowUpAt))}</button>`:''}
       ${TS_LOST.has(st.key)&&l.TravelLostReason?`<span class="ts-meta">${esc(l.TravelLostReason)}</span>`:''}
@@ -720,8 +723,9 @@ function tsKbDrop(e,key){
 function tsRenderLeadsKanban(wrap){
   if(!wrap) return; tsInjectStyle();
   wrap.classList.add('tsk-host');
-  const list=(typeof allLeads!=='undefined'?allLeads:[]).slice();
-  wrap.innerHTML=`<div class="tsk-note ts-meta">Stages from the 📌 Status Board — drag a card to move it. <a href="#" onclick="navigate('tvstatus');return false">Open the Status Board →</a></div>${tsKanbanHTML(tsSort(list),{fromLeads:true})}`;
+  let list=(typeof allLeads!=='undefined'?allLeads:[]).slice();
+  if(typeof tcFilterLeads==='function') list=tcFilterLeads(list); // 📲 Travel CRM filters (travel-crm.js)
+  wrap.innerHTML=`${typeof tcBarHTML==='function'?tcBarHTML():''}<div class="tsk-note ts-meta">Stages from the 📌 Status Board — drag a card to move it. <a href="#" onclick="navigate('tvstatus');return false">Open the Status Board →</a></div>${tsKanbanHTML(tsSort(list),{fromLeads:true})}`;
 }
 
 function tsSetFilter(k,v){

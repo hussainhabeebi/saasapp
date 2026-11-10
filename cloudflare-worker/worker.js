@@ -19,6 +19,7 @@ import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFI
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
+import {TCRM_APP_SENDER,travelCrmOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -3185,11 +3186,15 @@ export async function engineRecordStaffReply(env, c, clientId, body){
   if(!engineIsHumanAgentMessage(body, lead.ConvHistory, results)) return false;
   const n=engineNormText(body.content);
   if((results||[]).some(r=>{ const x=engineNormText(r.content); return x && (x===n || (n.length>=20 && x.includes(n)) || n.endsWith(x)); })) return false;
-  await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:String(body.content||'').trim(), ts:new Date().toISOString(), ...engineStaffSender(body), ...(cwId?{cw_id:cwId}:{})});
+  await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:String(body.content||'').trim(), ts:new Date().toISOString(), ...engineStaffSender(body, c), ...(cwId?{cw_id:cwId}:{})});
   return true;
 }
-export function engineStaffSender(body){
-  return {sender_type:'agent', sender_name:String(body?.sender?.available_name||body?.sender?.name||'').slice(0,80), sender_email:String(body?.sender?.email||'').trim().toLowerCase().slice(0,140)};
+// `c` (optional): with 📲 Travel CRM tools on, a reply with no Chatwoot sender — one typed in the
+// WhatsApp Business app on the phone and echoed into Chatwoot — is labelled as such in Chats.
+export function engineStaffSender(body, c=null){
+  let name=String(body?.sender?.available_name||body?.sender?.name||'').slice(0,80);
+  if(!name && !body?.sender && c && travelCrmOn(c)) name=TCRM_APP_SENDER;
+  return {sender_type:'agent', sender_name:name, sender_email:String(body?.sender?.email||'').trim().toLowerCase().slice(0,140)};
 }
 
 async function engineRecordOutgoingChatwootMedia(env, clientId, body){
@@ -18951,6 +18956,100 @@ export async function runTravelStaleFollowupsForAllClients(env, now=new Date()){
   }
 }
 
+// Daily: 📲 Travel CRM tools — TripStatus / NextTravelDate for every lead with travel dates.
+export async function runTravelCrmTripStatusForAllClients(env, now=new Date()){
+  const deps={
+    listLeads:async cid=>{
+      const where=encodeURIComponent(`(ClientId,eq,${cid})~and((TravelTrips,isnot,null)~or(TravelDates,isnot,null))`);
+      let out=[];
+      for(let off=0; off<20000; off+=200){
+        const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&fields=Id,TravelTrips,TravelDates,TravelRoute,TripStatus,NextTravelDate&limit=200&offset=${off}`);
+        if(!r.ok) break;
+        const list=(await r.json().catch(()=>({})))?.list||[];
+        out=out.concat(list);
+        if(list.length<200) break;
+      }
+      return out;
+    },
+    patch:async rows=>{ const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:rows}); if(!r.ok) throw new Error('NocoDB '+r.status); },
+    broadcast:(cid, msg)=>engineBroadcastUpdate(env, cid, msg),
+  };
+  let page=1, columnsReady=false;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!travelCrmOn(c)) continue;
+      try{
+        if(!columnsReady){ await ensureLeadsColumns(env, ['TripStatus','NextTravelDate']).catch(()=>{}); columnsReady=true; }
+        await travelCrmTripStatusProcessClient(c, deps, now);
+      }catch(e){ console.error('[travel-crm] trip status failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+// GET /travel-crm/numbers — the account's WhatsApp numbers (Chatwoot WhatsApp inboxes), so the
+// dashboard can show which number each enquiry (lead.InboxId) came in on. Names and numbers only.
+async function handleTravelCrmNumbers(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  let inboxes=[];
+  if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+    try{
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
+      const data=await r.json().catch(()=>({}));
+      if(r.ok) inboxes=data?.payload||data?.data?.payload||[];
+    }catch(e){}
+  }
+  const numbers=travelCrmNumbers(inboxes, metaCredentialSummary(c));
+  if(c.chatwoot_inbox_id && !numbers.some(n=>n.inbox_id===String(c.chatwoot_inbox_id)) && c.wa_display_phone)
+    numbers.push({inbox_id:String(c.chatwoot_inbox_id), name:'', phone:String(c.wa_display_phone)});
+  return json({ok:true, numbers});
+}
+// GET/POST /wa/business-echoes — Meta WhatsApp webhook for replies typed in the WhatsApp Business
+// app on a number that also runs on the API (coexistence). Verified with META_WA_ECHO_VERIFY_TOKEN
+// (subscribe) and META_APP_SECRET (each delivery). Each reply goes into that customer's Chats thread
+// as a team reply from "WhatsApp Business app" — only for accounts with Travel CRM tools on.
+async function handleTravelCrmEchoWebhook(request, env, ctx){
+  const url=new URL(request.url);
+  if(request.method==='GET'){
+    const token=env.META_WA_ECHO_VERIFY_TOKEN;
+    return token && url.searchParams.get('hub.mode')==='subscribe' && url.searchParams.get('hub.verify_token')===token
+      ?new Response(url.searchParams.get('hub.challenge')||''):json({error:'Forbidden'}, 403);
+  }
+  if(request.method!=='POST') return json({error:'Method not allowed'}, 405);
+  const raw=await request.text();
+  if(!await verifyWebhookSignature(env.META_APP_SECRET, raw, request.headers.get('x-hub-signature-256'))) return json({error:'Invalid signature'}, 403);
+  let body; try{ body=JSON.parse(raw); }catch(e){ return json({error:'Invalid JSON'}, 400); }
+  const work=travelCrmProcessEchoes(body, travelCrmEchoDeps(env)).catch(e=>{ console.error('[travel-crm] echoes', e.message); return {error:e.message}; });
+  // Meta retries anything that doesn't answer 200 quickly — acknowledge first, work in background.
+  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true}); }
+  return json({ok:true, ...(await work)});
+}
+export function travelCrmEchoDeps(env){
+  return {
+    clientForPhoneNumberId:async pid=>{
+      const direct=await findClientByField(env, 'wa_phone_id', pid);
+      if(direct) return direct;
+      const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(`(${META_CHANNEL_CREDENTIALS_FIELD},like,%${pid}%)`)}&limit=5`).catch(()=>null);
+      const list=r?.ok?(await r.json().catch(()=>({})))?.list||[]:[];
+      return list.find(c=>parseMetaChannelCredentials(c).some(x=>String(x.wa_phone_id||'')===pid))||null;
+    },
+    leadForPhone:(clientId, digits)=>engineLeadForChatwootBody(env, clientId, {conversation:{meta:{sender:{phone_number:digits}}}}, 'Id'),
+    recentAssistant:async leadId=>(await env.DB.prepare(`SELECT content FROM lead_messages WHERE lead_id=? AND role='assistant' ORDER BY ts DESC LIMIT 8`).bind(Number(leadId)).all().catch(()=>({results:[]})))?.results||[],
+    insert:(leadId, clientId, msg)=>d1InsertLeadMessage(env, leadId, clientId, msg),
+    markAgentReply:async (leadId, ts)=>{
+      await ensureLeadsColumns(env, ['LastAgentMsgAt']).catch(()=>{});
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastAgentMsgAt:ts, LastMsgAt:ts}});
+    },
+  };
+}
+
 async function coldReallocEmail(env, to, subject, html){
   if(!env.RESEND_API_KEY || !to) return;
   try{
@@ -27257,7 +27356,7 @@ async function engineV2HandleStaffMessage(env, c, clientId, body){
     // In D1 but not in ConvHistory → a Chats-page send: history only, no second bubble.
   } else {
     const cwId=Number(body?.id)||0;
-    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:text, ts:now, ...(hist[hist.length-1].by==='agent'?engineStaffSender(body):{sender_type:'automation'}), ...(cwId?{cw_id:cwId}:{})});
+    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:text, ts:now, ...(hist[hist.length-1].by==='agent'?engineStaffSender(body, c):{sender_type:'automation'}), ...(cwId?{cw_id:cwId}:{})});
   }
   const patch={Id:Number(lead.Id), ConvHistory:JSON.stringify(hist.slice(-40))};
   if(hist[hist.length-1].by==='agent'){
@@ -42069,6 +42168,10 @@ export default {
       else if(url.pathname==='/live-travel/whatsapp-menu' && ['GET','PUT'].includes(request.method)){ res=await handleLtWhatsappMenu(request,env); }
       else if(url.pathname==='/live-travel/travel-flow' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlow(request,env); }
       else if(url.pathname==='/live-travel/travel-settings' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelSettings(request,env); }
+      // 📲 Travel CRM tools (travel-crm.js): the account's WhatsApp numbers, and replies typed in the
+      // WhatsApp Business app (Meta smb_message_echoes — signature-verified, travel CRM accounts only).
+      else if(url.pathname==='/travel-crm/numbers' && request.method==='GET'){ res=await handleTravelCrmNumbers(request,env); }
+      else if(url.pathname==='/wa/business-echoes'){ res=await handleTravelCrmEchoWebhook(request,env,ctx); }
       else if(url.pathname==='/live-travel/flows' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlows(request,env); }
       else if(/^\/live-travel\/flows\/(save|delete|preview)$/.test(url.pathname) && request.method==='POST'){ res=await handleLtTravelFlows(request,env,url.pathname.split('/').pop()); }
       else if(url.pathname==='/travel/drive-image' && request.method==='GET'){ res=await handleTravelDriveImage(request,env); }
@@ -42768,6 +42871,8 @@ export default {
       // Travel 📌 Status Board — inquiries stuck 2+ days at Quote sent / Negotiating / Docs / Payment
       // pending become a follow-up due today, and their owner is emailed (travel-status-auto.js).
       ctx.waitUntil(runTravelStaleFollowupsForAllClients(env).catch(e=>reportOpsError(env, 'travel stale follow-ups', e)));
+      // 📲 Travel CRM tools — enquiries whose travel date has passed read Completed (travel-crm.js).
+      ctx.waitUntil(runTravelCrmTripStatusForAllClients(env).catch(e=>reportOpsError(env, 'travel crm trip status', e)));
     }
     else if(event.cron==='*/15 * * * *'){
       // Chats v2 "Schedule message" — sends whatever is due (15-minute granularity).
