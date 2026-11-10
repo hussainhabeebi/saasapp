@@ -59,6 +59,9 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .tpl-form{background:#fff;border-radius:10px;padding:14px;display:grid;gap:10px}.tpl-form label{font-size:12px;color:var(--muted);display:grid;gap:4px}.tpl-form input{width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px}.tpl-form input:focus{border-color:var(--wa)}
 .tpl-preview{display:flex;justify-content:flex-end}.tpl-preview .bubble{max-width:min(100%,420px)}.tpl-hdr{font-weight:650;margin-bottom:4px}.tpl-foot{color:#667781;font-size:12.5px;margin-top:4px}.tpl-media-ph{height:130px;border-radius:6px;background:#dfe5e7;display:grid;place-items:center;color:#667781;margin-bottom:6px;font-size:13px}
 .tpl-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px}.tpl-empty{padding:40px 20px;text-align:center;color:var(--muted)}
+.ai-itin-pkg{background:#fff;border-radius:10px;padding:14px}.ai-itin-pkg h3{margin:0 0 4px;font-size:16px}.ai-itin-pkg small{color:var(--muted)}
+.ai-itin-day{background:#fff;border-radius:10px;padding:12px 14px;border-left:4px solid #0d9c93}.ai-itin-day b{display:block;margin-bottom:4px}.ai-itin-day p{margin:0 0 6px;font-size:13.5px;color:#3b4a54}.ai-itin-day ul{margin:0;padding-left:18px;font-size:13.5px}.ai-itin-day .facts{font-size:12.5px;color:var(--muted);margin-top:6px}
+.ai-itin-btn{height:40px;border-radius:20px;border:0;padding:0 18px;font-weight:600;cursor:pointer;background:#0d9c93;color:#fff}.ai-itin-btn.sec{background:#fff;color:#0d9c93;border:1px solid #0d9c93}.ai-itin-btn:disabled{opacity:.55;cursor:default}
 @media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
 /* voice / audio player */
@@ -887,6 +890,7 @@ function buildShell(){
    <button onclick="pickFiles('image/*',true)"><span class="dot" style="background:#ff2e74">${IC.cam}</span>Camera</button>
    <button onclick="pickFiles('audio/*')"><span class="dot" style="background:#ff7f23">${IC.audio}</span>Audio</button>
    <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
+   ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
   </div>
   <div class="input-wrap" id="inputWrap">
    <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
@@ -1219,6 +1223,59 @@ async function sendTemplate(){
  }catch(e){setMsgStatus(lead,msg,'failed');toast('Template not sent: '+e.message)}};
  await msg._retry();
 }
+
+// ── ✨ AI Itinerary (Travel Agency accounts only) ─────────────────────────────────────────────
+// Attach → AI Itinerary: pick a package, the AI drafts a day-by-day plan, review it, then
+// "Approve & send" puts the itinerary PDF into this chat (worker /travel/chat-itinerary/send).
+function isTravelAcct(){return String(clientRecord.industry||'').toLowerCase()==='travel'}
+let aiItin={pkgs:null,sel:null,days:null,busy:false,seq:0};
+async function openAiItin(){
+ closePopovers();if(!current||isIg(current)||!isTravelAcct())return;
+ let ov=$('aiItinOv');if(!ov){ov=document.createElement('div');ov.id='aiItinOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
+ ov.classList.remove('hidden');aiItin={...aiItin,sel:null,days:null,busy:false,lead:current};
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="aiItinBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✨ AI Itinerary for <b>${esc(who(current)||'contact')}</b></div></div><div class="tpl-main" id="aiItinMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="aiItinSearch" placeholder="Search packages" oninput="drawAiItinPkgs()"></div></div><div class="tpl-items" id="aiItinItems"><div class="tpl-empty"><div class="spinner"></div>Loading packages…</div></div></div><div class="tpl-detail" id="aiItinDetail"><div class="tpl-empty">Choose a package — the AI drafts its day-by-day itinerary for you to check before it is sent.</div></div></div>`;
+ try{if(!aiItin.pkgs){const d=await apiJson(WORKER+'/travel/chat-packages');aiItin.pkgs=d.packages||[]}drawAiItinPkgs()}
+ catch(e){const el=$('aiItinItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load packages.<br><small>${esc(e.message)}</small></div>`}
+}
+const aiItinPrice=p=>p.price?`${p.currency||'AED'} ${Number(p.price).toLocaleString()}`:'';
+function drawAiItinPkgs(){
+ const el=$('aiItinItems');if(!el||!aiItin.pkgs)return;const q=($('aiItinSearch')?.value||'').trim().toLowerCase();
+ const list=aiItin.pkgs.filter(p=>!q||`${p.name} ${p.destination}`.toLowerCase().includes(q));
+ el.innerHTML=list.length?list.map(p=>`<button class="tpl-item ${aiItin.sel===p?'active':''}" onclick="pickAiItinPkg('${esc(p.id)}')"><b>${esc(p.name)}</b><small>${esc([p.destination,p.nights?p.nights+' nights':'',aiItinPrice(p)].filter(Boolean).join(' · '))}</small></button>`).join(''):`<div class="tpl-empty">${aiItin.pkgs.length?'No packages match.':'No packages yet. Add them in Travel Agency → Packages.'}</div>`;
+}
+function pickAiItinPkg(id){
+ const p=(aiItin.pkgs||[]).find(x=>String(x.id)===String(id));if(!p||aiItin.busy)return;
+ aiItin.sel=p;aiItin.days=null;$('aiItinMain')?.classList.add('picked');drawAiItinPkgs();aiItinGenerate();
+}
+function drawAiItinDetail(state,msg){
+ const el=$('aiItinDetail'),p=aiItin.sel;if(!el||!p)return;
+ const head=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc([p.destination,p.nights?`${p.nights} nights`:'',aiItinPrice(p)?aiItinPrice(p)+' per person':''].filter(Boolean).join(' · '))}</small></div>`;
+ if(state==='loading'){el.innerHTML=head+`<div class="tpl-empty"><div class="spinner"></div>Drafting the itinerary… this can take up to a minute.</div>`;return}
+ if(state==='error'){el.innerHTML=head+`<div class="tpl-empty">AI could not draft this itinerary.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiItinGenerate()">↻ Try again</button></div>`;return}
+ const meals={B:'Breakfast',L:'Lunch',D:'Dinner'};
+ const days=(aiItin.days||[]).map(d=>`<div class="ai-itin-day"><b>Day ${esc(d.day_no)}${d.title?' — '+esc(d.title):''}</b>${d.description?`<p>${esc(d.description)}</p>`:''}${(d.items||[]).filter(i=>i.description).length?`<ul>${d.items.filter(i=>i.description).map(i=>`<li>${i.time?`<b style="display:inline">${esc(i.time)}</b> `:''}${esc(i.description)}</li>`).join('')}</ul>`:''}${(d.meals||[]).length||d.overnight?`<div class="facts">${[(d.meals||[]).map(m=>meals[m]).filter(Boolean).join(', '),d.overnight?'🌙 '+d.overnight:''].filter(Boolean).map(esc).join(' · ')}</div>`:''}</div>`).join('');
+ el.innerHTML=head+days+`<div class="tpl-form"><label>Message with the PDF<input id="aiItinCaption" value="${esc(`📄 Here is the itinerary for *${p.name}*.`)}"></label><div id="aiItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiItinSendBtn" onclick="aiItinSend()">✅ Approve &amp; send</button></div>`;
+}
+async function aiItinGenerate(){
+ const p=aiItin.sel;if(!p)return;const seq=++aiItin.seq;aiItin.busy=true;drawAiItinDetail('loading');
+ try{const d=await apiJson(WORKER+'/travel/ai-itinerary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package_id:p.id})});
+  if(seq!==aiItin.seq)return;if(!Array.isArray(d.days)||!d.days.length)throw new Error('The draft had no days.');aiItin.days=d.days;drawAiItinDetail('ready')}
+ catch(e){if(seq===aiItin.seq)drawAiItinDetail('error',e.message)}
+ finally{if(seq===aiItin.seq)aiItin.busy=false}
+}
+async function aiItinSend(){
+ const lead=aiItin.lead,p=aiItin.sel,days=aiItin.days;if(!lead||!p||!days)return;
+ const btn=$('aiItinSendBtn'),err=$('aiItinErr');const caption=($('aiItinCaption')?.value||'').trim();
+ if(btn){btn.disabled=true;btn.textContent='Sending…'}if(err)err.textContent='';
+ try{
+  await apiJson(WORKER+'/travel/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,package_id:p.id,days,caption})});
+  closeAiItin();
+  const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind:'document',type:'application/pdf',name:`${p.name} itinerary.pdf`}});setMsgStatus(lead,msg,null);
+  toast('✓ Itinerary sent');
+ }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent='✅ Approve & send'}}
+}
+function aiItinBack(){const m=$('aiItinMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){m.classList.remove('picked');aiItin.sel=null;aiItin.seq++;drawAiItinPkgs();return}closeAiItin()}
+function closeAiItin(){const ov=$('aiItinOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}aiItin.sel=null;aiItin.days=null;aiItin.seq++}
 
 // ── Voice & audio playback ───────────────────────────────────────────────────────────────────
 // One shared <audio>: starting a note stops the previous one, and progress survives the thread
@@ -1730,7 +1787,7 @@ function stepThreadSearch(d){if(!tsHits.length)return;tsIdx=(tsIdx+d+tsHits.leng
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
 document.addEventListener('click',e=>{if(!ddJustOpened&&!e.target.closest('.dd'))closeDd();if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions')){$('chatMenu')?.classList.add('hidden');syncBackdrop()}});
-document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if($('aiItinOv')&&!$('aiItinOv').classList.contains('hidden'))return aiItinBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
  const {channel:ch,leadId}=e.data;

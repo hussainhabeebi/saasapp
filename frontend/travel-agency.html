@@ -392,6 +392,12 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Meal Plan</label><select class="form-input" id="itinMealPlan"><option value="">—</option><option>Room Only</option><option>Breakfast (CP)</option><option>Half Board (MAP)</option><option>Full Board (AP)</option><option>All Inclusive</option></select></div>
         <div class="form-group"><label class="form-label">Transport</label><input class="form-input" id="itinTransport" placeholder="e.g. AC bus, private car, train"></div>
       </div>
+      <div class="sec-hd">Client</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
+        <div class="form-group"><label class="form-label">Client Name</label><input class="form-input" id="itinClientName" placeholder="e.g. Mr. Rahul Menon"></div>
+        <div class="form-group"><label class="form-label">Client Phone</label><input class="form-input" id="itinClientPhone" placeholder="e.g. +971 50 123 4567"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Client Address</label><textarea class="form-input" id="itinClientAddress" rows="2" placeholder="Shown on the itinerary PDF under &quot;To&quot;"></textarea></div>
+      </div>
       <div class="sec-hd">Travellers &amp; Rates</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:6px">
         <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="0" id="itinAdults" value="1" oninput="itinUpdateRateTotal()"></div>
@@ -405,6 +411,12 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
         <div class="form-group"><label class="form-label">Child Price (with bed)</label><input class="form-input" type="number" min="0" id="itinChildPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
         <div class="form-group"><label class="form-label">Child Price (no bed)</label><input class="form-input" type="number" min="0" id="itinChildNoBedPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
         <div class="form-group"><label class="form-label">Infant Price</label><input class="form-input" type="number" min="0" id="itinInfantPrice" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+      </div>
+      <div class="itin-discount-box" style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;background:var(--accent-soft);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;margin:4px 0 10px">
+        <div style="font-size:12.5px;font-weight:700;color:var(--accent-ink);align-self:center">🏷️ Discount</div>
+        <div class="form-group" style="margin:0"><label class="form-label">Type</label><select class="form-input" id="itinDiscountType" onchange="itinUpdateRateTotal()"><option value="amount">Amount</option><option value="percent">Percent (%)</option></select></div>
+        <div class="form-group" style="margin:0;flex:1;min-width:120px"><label class="form-label">Discount</label><input class="form-input" type="number" min="0" step="any" id="itinDiscountValue" placeholder="0" oninput="itinUpdateRateTotal()"></div>
+        <div class="form-group" style="margin:0;flex:2;min-width:160px"><label class="form-label">Label (optional)</label><input class="form-input" id="itinDiscountLabel" placeholder="e.g. Early bird offer"></div>
       </div>
       <div id="itinRateTotal" style="font-size:12.5px;color:var(--accent-ink);font-weight:600;margin-bottom:14px"></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
@@ -1203,6 +1215,9 @@ const TA_ADDED_COLUMNS={
     {title:'inclusions',uidt:'LongText'},{title:'exclusions',uidt:'LongText'},
     // JSON {layout, color, cover} — this itinerary's own PDF format (itinPdfFormat).
     {title:'pdf_format',uidt:'LongText'},
+    {title:'client_name',uidt:'SingleLineText'},{title:'client_phone',uidt:'SingleLineText'},{title:'client_address',uidt:'LongText'},
+    // Special pricing: 'amount' (off the total) or 'percent'; applied on the PDF's price table.
+    {title:'discount_type',uidt:'SingleLineText'},{title:'discount_value',uidt:'Decimal'},{title:'discount_label',uidt:'SingleLineText'},
   ],
 };
 const _taColumnsChecked=new Set();
@@ -1985,8 +2000,10 @@ function renderItinList() {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
         <div>
           <div style="font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:3px">${esc(it.title||'—')}</div>
+          ${String(it.client_name||'').trim()?`<div style="font-size:12px;margin-bottom:2px">👤 ${esc(it.client_name)}${String(it.client_address||'').trim()?' · '+esc(String(it.client_address).split(/\n/)[0]):''}</div>`:''}
           <div style="font-size:11.5px;color:var(--muted)">${esc(it.destination||'—')} · ${it.nights?`${it.nights}N / ${(it.days||[]).length}D`:`${(it.days||[]).length} days`}${taPaxSummary(it)?' · '+esc(taPaxSummary(it)):''} · Created ${esc(it.created_at||'')}</div>
           ${parseFloat(it.adult_price)?`<div style="font-size:11.5px;color:var(--accent-ink);font-weight:600;margin-top:3px">${esc(it.currency||'AED')} ${parseFloat(it.adult_price).toLocaleString()} / adult${parseFloat(it.child_price)?` · ${esc(it.currency||'AED')} ${parseFloat(it.child_price).toLocaleString()} / child`:''}</div>`:''}
+          ${parseFloat(it.discount_value)?`<div style="font-size:11.5px;color:#B91C1C;font-weight:600;margin-top:2px">🏷️ ${esc(String(it.discount_label||'').trim()||'Discount')}: ${esc(itinDiscountText(it,it.currency))}</div>`:''}
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm" title="Duplicate" onclick="duplicateItin('${it.Id}')">⧉</button>
@@ -2072,9 +2089,27 @@ function itinUpdateRateTotal(){
     .forEach(([k,id])=>{rec[k]=$id(id).value;});
   const lines=taPaxLines(rec).filter(l=>l.price);
   const cur=$id('itinCurrency').value||'AED';
+  const sub=lines.reduce((s,l)=>s+l.total,0);
+  const dis=itinDiscountOf({discount_type:$id('itinDiscountType')?.value,discount_value:$id('itinDiscountValue')?.value},sub);
   el.textContent=lines.length
-    ? 'Estimated total: '+lines.map(l=>`${l.count} × ${l.label} @ ${cur} ${l.price.toLocaleString()}`).join(' + ')+` = ${cur} ${lines.reduce((s,l)=>s+l.total,0).toLocaleString()}`
-    : '';
+    ? 'Estimated total: '+lines.map(l=>`${l.count} × ${l.label} @ ${cur} ${l.price.toLocaleString()}`).join(' + ')+` = ${cur} ${sub.toLocaleString()}`
+      +(dis.amount?` − discount ${cur} ${dis.amount.toLocaleString()} = ${cur} ${(sub-dis.amount).toLocaleString()}`:'')
+    : (dis.value?'Discount: '+itinDiscountText({discount_type:dis.type,discount_value:dis.value},cur):'');
+}
+// The itinerary's discount against a total: {type,value,amount} — percent capped at 100, an
+// amount never more than the total. amount is 0 when there is no total to take it from.
+function itinDiscountOf(it,total){
+  const type=it?.discount_type==='percent'?'percent':'amount';
+  let value=Math.max(0,parseFloat(it?.discount_value)||0);
+  if(type==='percent') value=Math.min(100,value);
+  const t=Math.max(0,Number(total)||0);
+  const amount=t?Math.round(Math.min(t,type==='percent'?t*value/100:value)*100)/100:0;
+  return {type,value,amount};
+}
+// "10% off" / "AED 500 off" — for places with no total to subtract from.
+function itinDiscountText(it,cur){
+  const d=itinDiscountOf(it,0); if(!d.value) return '';
+  return (d.type==='percent'?`${d.value}%`:`${cur||'AED'} ${d.value.toLocaleString()}`)+' off';
 }
 
 // `prefill` (title/destination/from_date/to_date/notes/days — same shape as an itinerary record)
@@ -2092,11 +2127,15 @@ function openItinModal(id, prefill) {
   $id('itinFrom').value=it.from_date||''; $id('itinTo').value=it.to_date||'';
   $id('itinNotes').value=it.notes||'';
   $id('itinNights').value=it.nights||''; $id('itinDepCity').value=it.departure_city||'';
-  $id('itinHotelCat').value=it.hotel_category||''; $id('itinMealPlan').value=it.meal_plan||'';
+  itinSetSelect('itinHotelCat',it.hotel_category||''); itinSetSelect('itinMealPlan',it.meal_plan||'');
   $id('itinTransport').value=it.transport||'';
   $id('itinAdults').value=it.adults??1; $id('itinChildren').value=it.children||0;
   $id('itinChildrenNoBed').value=it.children_nobed||0; $id('itinInfants').value=it.infants||0;
-  $id('itinCurrency').value=it.currency||'AED';
+  itinSetSelect('itinCurrency',String(it.currency||'AED').trim().toUpperCase()||'AED');
+  $id('itinClientName').value=it.client_name||''; $id('itinClientPhone').value=it.client_phone||'';
+  $id('itinClientAddress').value=it.client_address||'';
+  $id('itinDiscountType').value=it.discount_type==='percent'?'percent':'amount';
+  $id('itinDiscountValue').value=parseFloat(it.discount_value)||''; $id('itinDiscountLabel').value=it.discount_label||'';
   $id('itinAdultPrice').value=it.adult_price||''; $id('itinChildPrice').value=it.child_price||'';
   $id('itinChildNoBedPrice').value=it.child_nobed_price||''; $id('itinInfantPrice').value=it.infant_price||'';
   $id('itinInclusions').value=taList(it.inclusions).join('\n');
@@ -2110,6 +2149,14 @@ function openItinModal(id, prefill) {
   renderItinDays(); openModal('modalItin');
 }
 
+// A <select> set to a value that isn't one of its options silently shows "—" and the next save
+// wipes it (a package's "THB" currency, a hotel category typed elsewhere) — add it as an option.
+function itinSetSelect(id,val){
+  const el=$id(id); if(!el) return;
+  [...el.querySelectorAll('option[data-extra]')].forEach(o=>o.remove());
+  if(val&&![...el.options].some(o=>o.value===val)){ const o=document.createElement('option'); o.value=val; o.textContent=val; o.dataset.extra='1'; el.appendChild(o); }
+  el.value=val;
+}
 // ── Create Itinerary from Package / Group Fare / Special Fare ──
 // Each builds a starting itinerary from whichever structured fields that source type actually
 // has (packages: nights → blank day count; fares: flight fields → a seeded Flight item using the
@@ -2356,7 +2403,7 @@ async function itinPreviewPdf(){
   btn.disabled=true; msg.textContent='Building PDF…'; msg.className='save-msg';
   try{
     const rec={...itinFormRecord(),days:JSON.parse(JSON.stringify(_itinDays))};
-    const doc=await itinBuildSharePdf(rec,{Name:'Sample Customer',Phone:'971500000000'},'ITN-0000 (preview)');
+    const doc=await itinBuildSharePdf(rec,rec.client_name||rec.client_phone?{}:{Name:'Sample Customer',Phone:'971500000000'},'ITN-0000 (preview)');
     msg.textContent='';
     window.open(doc.output('bloburl'),'_blank');
   }catch(e){ msg.textContent='Preview failed: '+e.message; msg.className='save-msg err'; }
@@ -2479,6 +2526,16 @@ function addItinImageLink(di){
   if(!d.image_links.includes(u)) d.image_links.push(u);
   renderItinDays();
 }
+// A photo link pasted into a day's box but never "+ Add link"-ed used to be dropped on Save.
+function itinCommitPendingLinks(){
+  _itinDays.forEach((d,di)=>{
+    const inp=$id('itinImgLink'+di); const u=(inp?.value||'').trim();
+    if(!/^https?:\/\/\S+$/i.test(u)) return;
+    d.image_links=itinDayImageLinks(d);
+    if(!d.image_links.includes(u)) d.image_links.push(u);
+    inp.value='';
+  });
+}
 function removeItinImageLink(di,li){ const d=_itinDays[di]; d.image_links=itinDayImageLinks(d); d.image_links.splice(li,1); renderItinDays(); }
 function addItinItem(di){_itinDays[di].items.push({type:'activity',time:'',description:'',image:''});renderItinDays();}
 function removeItinItem(di,ii){_itinDays[di].items.splice(ii,1);renderItinDays();}
@@ -2500,6 +2557,7 @@ function itinRemoveItemImage(di,ii){ _itinDays[di].items[ii].image=''; renderIti
 
 // The itinerary as the form currently shows it (used by Save and by Preview PDF).
 function itinFormRecord(){
+  itinCommitPendingLinks();
   const existing=_editItinId?(_taItineraries.find(x=>String(x.Id)===String(_editItinId))||{}):{};
   const num=id=>parseFloat($id(id).value)||0;
   const lines=id=>JSON.stringify($id(id).value.split('\n').map(x=>x.trim()).filter(Boolean));
@@ -2509,7 +2567,9 @@ function itinFormRecord(){
     departure_city:$id('itinDepCity').value.trim(),hotel_category:$id('itinHotelCat').value,meal_plan:$id('itinMealPlan').value,transport:$id('itinTransport').value.trim(),
     adults:parseInt($id('itinAdults').value)||0,children:parseInt($id('itinChildren').value)||0,children_nobed:parseInt($id('itinChildrenNoBed').value)||0,infants:parseInt($id('itinInfants').value)||0,
     currency:$id('itinCurrency').value,adult_price:num('itinAdultPrice'),child_price:num('itinChildPrice'),child_nobed_price:num('itinChildNoBedPrice'),infant_price:num('itinInfantPrice'),
-    inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions'),pdf_format:JSON.stringify(_itinFormat)};
+    inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions'),pdf_format:JSON.stringify(_itinFormat),
+    client_name:$id('itinClientName').value.trim(),client_phone:$id('itinClientPhone').value.trim(),client_address:$id('itinClientAddress').value.trim(),
+    discount_type:$id('itinDiscountType').value==='percent'?'percent':'amount',discount_value:num('itinDiscountValue'),discount_label:$id('itinDiscountLabel').value.trim()};
   return it;
 }
 async function saveItin() {
@@ -2519,10 +2579,47 @@ async function saveItin() {
   if(!it.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     await taEnsureColumns('itineraries');
-    if(_editItinId) await taUpdate('itineraries',_editItinId,it); else await taCreate('itineraries',it);
+    let rowId=_editItinId;
+    if(rowId) await taUpdate('itineraries',rowId,it);
+    else{ const r=await taCreate('itineraries',it); rowId=r?.Id??r?.id??null; if(rowId) _editItinId=rowId; }
+    // Read the record back: a field the table didn't keep (a column that was never added, text
+    // cut short by the database) is reported here instead of quietly going missing.
+    let missing=await itinVerifySaved(rowId,it);
+    if(missing.length){
+      _taColumnsChecked.delete('itineraries');
+      await taEnsureColumns('itineraries');
+      await taUpdate('itineraries',rowId,it);
+      missing=await itinVerifySaved(rowId,it);
+    }
+    if(missing.length) throw new Error('Saved, but these details did not stick: '+missing.join(', ')+'. '+(missing.includes('Day-by-day plan')||missing.includes('PDF format')?'Too many uploaded photos — remove some or use Drive photo links, then save again.':'Please save again.'));
     msg.textContent='✓ Saved';_taLoaded=false;setTimeout(async()=>{closeModal('modalItin');await taLoad(['itineraries']);renderAgencySubPage('itineraries');},600);
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;}
+}
+const ITIN_FIELD_LABELS={title:'Title',destination:'Destination',from_date:'From date',to_date:'To date',notes:'Notes',days:'Day-by-day plan',logo_url:'Logo',
+  nights:'Nights',departure_city:'Departure city',hotel_category:'Hotel category',meal_plan:'Meal plan',transport:'Transport',adults:'Adults',children:'Children',
+  children_nobed:'Children (no bed)',infants:'Infants',currency:'Currency',adult_price:'Adult price',child_price:'Child price',child_nobed_price:'Child (no bed) price',
+  infant_price:'Infant price',inclusions:'Inclusions',exclusions:'Exclusions',pdf_format:'PDF format',client_name:'Client name',client_phone:'Client phone',
+  client_address:'Client address',discount_type:'Discount type',discount_value:'Discount',discount_label:'Discount label'};
+// Names of the fields whose stored value doesn't match what was sent. A failed read-back (network)
+// reports nothing — the save itself already succeeded.
+async function itinVerifySaved(rowId,sent){
+  if(!rowId) return [];
+  const id=taTableIds().itineraries; if(!id) return [];
+  const rec=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${id}/records/${rowId}`).catch(()=>null);
+  if(!rec||typeof rec!=='object') return [];
+  const same=(k,a,b)=>{
+    if(k==='days'||k==='pdf_format'||k==='inclusions'||k==='exclusions'){
+      const pa=typeof a==='string'?safeJson(a,null):a, pb=typeof b==='string'?safeJson(b,null):b;
+      return JSON.stringify(pa)===JSON.stringify(pb);
+    }
+    // Numbers: only "nothing stored" counts — a column's own rounding (e.g. 99.99 → 100) isn't loss.
+    if(typeof a==='number') return !(b==null||b===''||(parseFloat(b)||0)===0);
+    const sa=String(a??'').trim(), sb=String(b??'').trim();
+    if(/_date$/.test(k)) return sa.slice(0,10)===sb.slice(0,10);
+    return sa===sb;
+  };
+  return Object.keys(ITIN_FIELD_LABELS).filter(k=>k in sent&&(sent[k]!==''&&sent[k]!==0&&sent[k]!=null)&&!same(k,sent[k],rec[k])).map(k=>ITIN_FIELD_LABELS[k]);
 }
 
 function duplicateItin(id){
@@ -3044,9 +3141,14 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   // PDF's own FROM/TO block.
   const fromAddr=(clientRecord.quote_footer_address||'').trim();
   const fromLines=fromAddr?doc.splitTextToSize(fromAddr,contentW/2-30):[];
+  // The itinerary's own Client fields fill in whatever the lead doesn't have, plus the address.
+  const toName=lead.Name||String(it.client_name||'').trim()||lead.Phone||String(it.client_phone||'').trim()||'Customer';
   const toLines=[];
-  if(lead.Phone) toLines.push(String(lead.Phone));
+  const toPhone=lead.Phone||String(it.client_phone||'').trim();
+  if(toPhone&&toPhone!==toName) toLines.push(String(toPhone));
   if(lead.Email) toLines.push(String(lead.Email));
+  const toAddr=String(it.client_address||'').trim();
+  if(toAddr) toAddr.split(/\n+/).forEach(l=>toLines.push(...doc.splitTextToSize(l.trim(),contentW/2-20)));
 
   doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
   doc.text(clientRecord.client_name||'—',marginX,y);
@@ -3058,7 +3160,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
   doc.text('TO',toX,y-11);
   doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
-  doc.text(lead.Name||lead.Phone||'Customer',toX,y);
+  doc.text(toName,toX,y);
   doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
   let ty=y+13;
   toLines.forEach(line=>{doc.text(line,toX,ty);ty+=12;});
@@ -3218,8 +3320,11 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   // Package price per traveller type (adult / child with bed / child no bed / infant).
   const cur=it.currency||'AED';
   const priced=TA_PAX_TYPES.map(t=>({label:t.label,price:parseFloat(it[t.price])||0,count:parseInt(it[t.count])||0})).filter(r=>r.price>0);
+  const grandAll=priced.reduce((s,r)=>s+r.count*r.price,0);
+  const disc=itinDiscountOf(it,grandAll);
+  const discLabel=String(it.discount_label||'').trim()||'Discount';
   if(priced.length){
-    const rowH=18,boxH=22+rowH*priced.length+(priced.some(r=>r.count)?rowH+4:0);
+    const rowH=18,boxH=22+rowH*priced.length+(priced.some(r=>r.count)?rowH+4:0)+(disc.amount?rowH*2:disc.value?rowH:0);
     ensureSpace(boxH+16);
     const colCount=marginX+contentW-190,colPrice=marginX+contentW-100,colTotal=marginX+contentW-12;
     doc.setFillColor(...accent);
@@ -3243,10 +3348,25 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
     });
     if(priced.some(r=>r.count)){
       doc.setDrawColor(...accent);doc.setLineWidth(1);doc.line(marginX,y,pageW-marginX,y);
+      if(disc.amount){
+        // Subtotal, the special discount, then the total the client actually pays.
+        doc.setFont('helvetica','normal');doc.setTextColor(20);
+        doc.text('Subtotal',colPrice,y+14,{align:'right'});
+        doc.text(`${cur} ${grand.toLocaleString()}`,colTotal,y+14,{align:'right'});
+        y+=rowH;
+        doc.setTextColor(185,28,28);
+        doc.text(`${discLabel}${disc.type==='percent'?` (${disc.value}%)`:''}`,colPrice,y+14,{align:'right'});
+        doc.text(`- ${cur} ${disc.amount.toLocaleString()}`,colTotal,y+14,{align:'right'});
+        y+=rowH;
+      }
       doc.setFont('helvetica','bold');doc.setTextColor(...accentInk);
       doc.text('Total',colPrice,y+14,{align:'right'});
-      doc.text(`${cur} ${grand.toLocaleString()}`,colTotal,y+14,{align:'right'});
+      doc.text(`${cur} ${Math.max(0,grand-disc.amount).toLocaleString()}`,colTotal,y+14,{align:'right'});
       y+=rowH+4;
+    }else if(disc.value){
+      doc.setFont('helvetica','bold');doc.setTextColor(185,28,28);
+      doc.text(`${discLabel}: ${itinDiscountText(it,cur)}`,marginX+12,y+13);
+      y+=rowH;
     }
     doc.setTextColor(0);
     y+=12;
@@ -4276,7 +4396,8 @@ function taBuildTripItinerary(id){
   else renderAgencySubPage('itineraries');
   openItinModal(null,{title:`${b.destination||b.package_name||'Trip'} – ${b.client_name||''}`.trim(),destination:b.destination||b.package_name||'',
     from_date:b.departure_date?String(b.departure_date).slice(0,10):'',adults:parseInt(b.adults)||parseInt(b.pax)||1,children:parseInt(b.children)||0,
-    departure_city:b.departure_city||'',notes:b.children_ages?`Children's ages: ${b.children_ages}`:''});
+    departure_city:b.departure_city||'',notes:b.children_ages?`Children's ages: ${b.children_ages}`:'',
+    client_name:b.client_name||'',client_phone:b.client_phone||''});
 }
 // Writes a trip's status and keeps its lead's Stage in step (TA_TRIP_LEAD_STAGE).
 async function taApplyTripStatus(b,status,extra={}){
@@ -4770,6 +4891,8 @@ async function printItinerary(id){
   if(!w)return;
   const facts=[it.destination,it.nights?`${it.nights} nights / ${days.length} days`:`${days.length} days`,it.departure_city?'From '+it.departure_city:'',it.hotel_category,it.meal_plan,it.transport,taPaxSummary(it)].filter(Boolean);
   let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${facts.map(esc).join(' &middot; ')}</p>`;
+  const forWho=[it.client_name,it.client_phone].map(x=>String(x||'').trim()).filter(Boolean);
+  if(forWho.length||String(it.client_address||'').trim()) body+=`<p class="facts"><b>Prepared for:</b> ${forWho.map(esc).join(' &middot; ')}${String(it.client_address||'').trim()?`<br>${esc(it.client_address.trim()).replace(/\n/g,'<br>')}`:''}</p>`;
   days.forEach(d=>{
     const date=itinDayDate(it.from_date,d.day_no);
     body+=`<h2>Day ${d.day_no}: ${esc(d.title||'')}${date?` <small>${esc(date)}</small>`:''}</h2>`;
@@ -4789,7 +4912,8 @@ async function printItinerary(id){
   if(exc.length) body+=`<h2>Exclusions</h2><ul>${exc.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
   const cur=it.currency||'AED';
   const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
-  if(priced.length) body+=`<h2>Package Price</h2><table>${priced.map(t=>`<tr><td>${t.label}</td><td>${esc(cur)} ${parseFloat(it[t.price]).toLocaleString()} per person</td></tr>`).join('')}</table>`;
+  const pTotal=taPaxLines(it).reduce((s,l)=>s+l.total,0),pDisc=itinDiscountOf(it,pTotal),pLabel=String(it.discount_label||'').trim()||'Discount';
+  if(priced.length) body+=`<h2>Package Price</h2><table>${priced.map(t=>`<tr><td>${t.label}</td><td>${esc(cur)} ${parseFloat(it[t.price]).toLocaleString()} per person</td></tr>`).join('')}${pDisc.amount?`<tr><td>Subtotal</td><td>${esc(cur)} ${pTotal.toLocaleString()}</td></tr><tr><td>${esc(pLabel)}${pDisc.type==='percent'?` (${pDisc.value}%)`:''}</td><td>- ${esc(cur)} ${pDisc.amount.toLocaleString()}</td></tr><tr><td><b>Total</b></td><td><b>${esc(cur)} ${(pTotal-pDisc.amount).toLocaleString()}</b></td></tr>`:pDisc.value?`<tr><td>${esc(pLabel)}</td><td>${esc(itinDiscountText(it,cur))}</td></tr>`:''}</table>`;
   if(it.notes)body+=`<p><em>${esc(it.notes)}</em></p>`;
   w.document.write(`<!DOCTYPE html><html><head><title>${esc(it.title||'Itinerary')}</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;color:#111}h1{font-size:22px}h2{font-size:16px;margin-top:20px;color:#0D9C93}h2 small{font-size:12px;color:#666;font-weight:normal}ul{margin:8px 0 0 18px}li{margin-bottom:4px}.facts{font-size:13px;color:#555}.photos{display:flex;gap:8px;margin:8px 0}.photos img{width:200px;height:132px;object-fit:cover;border-radius:6px}td{padding:4px 16px 4px 0}</style></head><body>${body}</body></html>`);
   w.document.close();
@@ -4803,6 +4927,7 @@ function itinWaText(it){
   let body=`*${it.title}*\n${facts}\n`;
   if(it.from_date) body+=`📅 ${it.from_date}${it.to_date?' to '+it.to_date:''}\n`;
   if(taPaxSummary(it)) body+=`👥 ${taPaxSummary(it)}\n`;
+  if(String(it.departure_city||'').trim()) body+=`🛫 From ${String(it.departure_city).trim()}\n`;
   [['🏨',it.hotel_category],['🍽️',it.meal_plan],['🚌',it.transport]].forEach(([icon,v])=>{ if(v) body+=`${icon} ${v}\n`; });
   body+='\n';
   days.forEach(d=>{
@@ -4820,6 +4945,9 @@ function itinWaText(it){
   const cur=it.currency||'AED';
   const priced=TA_PAX_TYPES.filter(t=>parseFloat(it[t.price])>0);
   if(priced.length) body+=`💰 *Price per person*\n${priced.map(t=>`• ${t.label}: ${cur} ${parseFloat(it[t.price]).toLocaleString()}`).join('\n')}\n\n`;
+  const wTotal=taPaxLines(it).reduce((s,l)=>s+l.total,0),wDisc=itinDiscountOf(it,wTotal),wLabel=String(it.discount_label||'').trim()||'Discount';
+  if(wDisc.amount) body+=`🏷️ ${wLabel}${wDisc.type==='percent'?` (${wDisc.value}%)`:''}: -${cur} ${wDisc.amount.toLocaleString()}\n*Total: ${cur} ${(wTotal-wDisc.amount).toLocaleString()}*\n\n`;
+  else if(wDisc.value) body+=`🏷️ ${wLabel}: ${itinDiscountText(it,cur)}\n\n`;
   if(it.notes)body+=`_${it.notes}_`;
   return body.trim();
 }
