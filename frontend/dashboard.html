@@ -20585,8 +20585,8 @@ function renderReports(){
   if(tvTab) tvTab.style.display=isTravel?'':'none';
   const catTab=$id('rptTabCategory'); if(catTab) catTab.style.display=isTravel?'':'none';
   if(!isTravel&&(_reportsPage==='tvstatus'||_reportsPage==='category')) _reportsPage='overview';
-  // 📲 WhatsApp Numbers (travel-crm.js) — Travel CRM tools only.
-  const tcOnNow=typeof tcOn==='function'&&tcOn(); const tcTab=$id('rptTabTcNumbers'); if(tcTab) tcTab.style.display=tcOnNow?'':'none';
+  // 📲 WhatsApp Numbers (travel-crm.js) — travel accounts with 2+ WhatsApp numbers, or Travel CRM tools on.
+  const tcOnNow=typeof tcNumbersOn==='function'&&tcNumbersOn(); const tcTab=$id('rptTabTcNumbers'); if(tcTab) tcTab.style.display=tcOnNow?'':'none';
   if(!tcOnNow&&_reportsPage==='tcnumbers') _reportsPage='overview';
   rptPopulateMemberFilter(); rptPopulateCategoryFilter(); renderReportsSubPage(_reportsPage);
 }
@@ -24917,7 +24917,7 @@ async function deleteHospBooking(id){
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=9"></script>
 <script src="travel-view.js?v=8"></script>
-<script src="travel-crm.js?v=2"></script>
+<script src="travel-crm.js?v=3"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>
 <script src="commerce-view.js?v=3"></script>
