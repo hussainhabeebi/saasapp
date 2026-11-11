@@ -13,7 +13,7 @@ import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSett
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
-import {FLYINDO_STYLE,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
+import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
@@ -22038,7 +22038,9 @@ export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:
   // buttons-only booking flow in flyindo-flow.js. Its destinations, the agency name it greets with
   // (blank = the client name), whether children's ages are asked, and the AI upgrade (typed
   // questions answered from the bot prompt / knowledge base, then back to the options).
-  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,
+  // 'greeting' = "Greetings only": the Flyindo welcome once (lt_flyindo_greeting_text, blank = the
+  // default), then the chat is the team's and the bot stays silent for that customer.
+  lt_chat_style:'',lt_flyindo_destinations:null,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',
   // Contextual answers (Travel Settings → Itineraries): a follow-up such as "is it including flight
   // ticket?" right after a package is answered from THAT package's inclusions, and the flight
   // question that follows asks only where the customer flies from (the package is the destination).
@@ -22077,6 +22079,7 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_flyindo_agency_name:String(raw?.lt_flyindo_agency_name||'').replace(/\s+/g,' ').trim().slice(0,60),
     lt_flyindo_child_ages:ltYesNo(raw?.lt_flyindo_child_ages,d.lt_flyindo_child_ages),
     lt_flyindo_ai:ltYesNo(raw?.lt_flyindo_ai,d.lt_flyindo_ai),
+    lt_flyindo_greeting_text:String(raw?.lt_flyindo_greeting_text||'').replace(/\r/g,'').trim().slice(0,GREETING_TEXT_MAX),
     lt_contextual_answers:ltYesNo(raw?.lt_contextual_answers,d.lt_contextual_answers),
     lt_flows_enabled:ltYesNo(raw?.lt_flows_enabled,d.lt_flows_enabled),
     ...Object.fromEntries(LT_TRAVEL_OPTIONAL_KEYS.map(k=>[k,ltYesNo(raw?.[k],d[k])])),
@@ -22114,7 +22117,8 @@ async function handleLtTravelSettings(request,env){
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
   for(const k of ['lt_pay_qr_1_label','lt_pay_qr_2_label'])if(k in body&&typeof body[k]!=='string')return json({error:`${k} must be text`},400);
-  if('lt_chat_style' in body&&!['',FLYINDO_STYLE].includes(String(body.lt_chat_style||'')))return json({error:`lt_chat_style must be "" or "${FLYINDO_STYLE}"`},400);
+  if('lt_chat_style' in body&&!['',...CHAT_STYLES].includes(String(body.lt_chat_style||'')))return json({error:`lt_chat_style must be "", "${FLYINDO_STYLE}" or "${GREETING_STYLE}"`},400);
+  if('lt_flyindo_greeting_text' in body&&typeof body.lt_flyindo_greeting_text!=='string')return json({error:'lt_flyindo_greeting_text must be text'},400);
   for(const k of ['lt_flyindo_child_ages','lt_flyindo_ai'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_flyindo_agency_name' in body&&typeof body.lt_flyindo_agency_name!=='string')return json({error:'lt_flyindo_agency_name must be text'},400);
   if('lt_flyindo_destinations' in body){
@@ -22825,6 +22829,22 @@ export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,use
   }
   await flyindoSave(env,clientId,phone,fs);
   return {turn:{...base,text:p.text,...(fs.destination?{tripRequest:{complete:false}}:{}),deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
+}
+
+// Travel Settings → Chat Style "Greetings only": the customer's first message gets the Flyindo
+// welcome (no menu, no AI) and the chat is handed to the team, so every later message is saved to
+// Chats without a bot reply (engineHandoverSilenceTurn). null when the style is off, for opt-out
+// words, or a chat already with the team.
+export function engineGreetingOnlyTurn(env,c,clientId,state,userText){
+  if(!greetingOnlyOn(c))return null;
+  const text=String(userText||'').trim();
+  if(ENGINE_OPT_OUT_WORDS.includes(text.toLowerCase()))return null;
+  if(state.stage==='human_handover'||state.lead?.Handover==='Yes')return null;
+  const lang=c.language||'en';
+  const reply=greetingOnlyText(c.lt_flyindo_agency_name||c.client_name||'',c.lt_flyindo_greeting_text);
+  return {turn:{route:'human',next:'human_handover',preserveCrmStage:false,intent:'FLOW_ENTRY',lang,text:reply,historyUserText:text,
+    qualAnswers:state.qualAnswers||{},
+    deliver:async()=>{await engineDeliverReply(env,c,clientId,state.convId,reply,{mediaType:'text',langCode:lang});await engineSendHandoverLabel(c,state.convId);return null;}}};
 }
 
 // ── Travel flows (travel-flows.js): AI-first booking flows from Travel Settings → 🧩 Flows. ──
@@ -26965,14 +26985,16 @@ async function engineJournalStageChange(env, clientId, leadId, fromStage, toStag
 // the chats the team most needs to see. Returns the webhook response, or null when not silent.
 export async function engineHandoverSilenceTurn(env, c, clientId, body, state, parsed, text, startMs=Date.now(), ctx=null){
   const healthcare=engineHealthcareHandoverSilenceActive(c,state,startMs);
-  const configured=c.industry!=='healthcare' && state.lead &&
-    (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
-    c.handover_silence_enabled==='Yes';
-  if(!healthcare && !configured) return null;
+  const handedOver=!!state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover');
+  const configured=c.industry!=='healthcare' && handedOver && c.handover_silence_enabled==='Yes';
+  // Travel Settings → Chat Style "Greetings only": once greeted (and so handed over) the bot never
+  // replies to that customer again, whatever the handover-silence setting says.
+  const greetingOnly=!healthcare && !configured && handedOver && greetingOnlyOn(c);
+  if(!healthcare && !configured && !greetingOnly) return null;
   await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
   // A Baby Care customer changing their order still updates it.
   if(configured) await engineSilentBabyCareOrderUpdate(env, c, clientId, parsed.phone, text, state.lead, ctx);
-  const reason=healthcare?'healthcare-handover-5h':'handed-over';
+  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':'handed-over';
   await logEngineSkip(env,clientId,parsed.phone,parsed.convId,reason,`stage ${state.stage||''} — message saved to Chats, no bot reply`);
   return json({ok:true,skipped:reason,lead_collected:true});
 }
@@ -28217,6 +28239,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     // Travel agencies: their own WhatsApp menu (Live Agency → 💬 WhatsApp Menu) answers "hi" /
     // "menu" and every menu tap before any AI path. Agencies without an enabled menu get null.
+    // Travel Settings → Chat Style "Greetings only": one welcome, then the team takes the chat and
+    // the bot stays silent (no flows, menu or AI for this agency's customers).
+    if(!introAction){
+      const greetTurn=engineGreetingOnlyTurn(env,c,clientId,state,userText);
+      if(greetTurn?.turn){
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,greetTurn.turn.historyUserText||userText,messageId,isNewLead,greetTurn.turn,startMs,mediaType,ctx);
+        return json({ok:true,route:'travel_greeting',sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
     // Travel Settings → 🧩 Flows: a published flow whose keyword or package this message matches
     // (or a chat already in one) — AI-first, so side questions are still answered. Runs before
     // Flyindo, so a flow takes over only for its own trigger; everything else is unchanged.
