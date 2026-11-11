@@ -22,6 +22,11 @@
 
 export const FLYINDO_STYLE='flyindo';
 export const FLYINDO_PREFIX='FLY:';
+// Chat Style "Greetings only": the customer's first message gets the Flyindo welcome (no menu),
+// the chat is handed to the team and the bot stays silent for that customer from then on.
+export const GREETING_STYLE='greeting';
+export const CHAT_STYLES=[FLYINDO_STYLE,GREETING_STYLE];
+export const GREETING_TEXT_MAX=1000;
 export const FLYINDO_MAX_DESTINATIONS=10;
 export const FLYINDO_MAX_DAYS_AHEAD=550;   // ~18 months
 export const FLYINDO_MAX_ADULTS=9;         // the last row is "10 or more"
@@ -59,8 +64,9 @@ export function flyindoNormalizeDestinations(raw){
     .slice(0,FLYINDO_MAX_DESTINATIONS);
   return out.length?out:FLYINDO_DEFAULT_DESTINATIONS.map(d=>({...d}));
 }
-export function flyindoNormalizeStyle(v){ return String(v||'').trim().toLowerCase()===FLYINDO_STYLE?FLYINDO_STYLE:''; }
+export function flyindoNormalizeStyle(v){ const s=String(v||'').trim().toLowerCase(); return CHAT_STYLES.includes(s)?s:''; }
 export function flyindoOn(c={}){ return flyindoNormalizeStyle(c?.lt_chat_style)===FLYINDO_STYLE; }
+export function greetingOnlyOn(c={}){ return flyindoNormalizeStyle(c?.lt_chat_style)===GREETING_STYLE; }
 
 // ── Dates ────────────────────────────────────────────────────────────────────
 const utcDay=d=>new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()));
@@ -169,6 +175,14 @@ export function flyindoParseCount(text){
 // ── Messages ─────────────────────────────────────────────────────────────────
 export function flyindoWelcomeText(agency){
   return `Hello! 👋 Welcome to *${agency||'our travel team'}*!\nWe're happy to help you plan your next trip. 🌍\n\nWhere would you like to travel today?\n\nPlease select your preferred destination below 👇`;
+}
+// "Greetings only": the Flyindo welcome without the destination list. A custom text (Chat Style
+// → Greeting message) replaces it; {agency} in it becomes the agency name.
+export function greetingOnlyText(agency, custom=''){
+  const name=agency||'our travel team';
+  const t=String(custom||'').replace(/\r/g,'').trim().slice(0,GREETING_TEXT_MAX);
+  if(t) return t.replace(/\{agency\}/gi,name);
+  return `Hello! 👋 Welcome to *${name}*!\nWe're happy to help you plan your next trip. 🌍\n\nWhere would you like to travel today?\n\nOur travel consultant will reply to you shortly. 😊`;
 }
 export function flyindoSummaryText(s, agency){
   const lines=[`📍 Destination: ${s.destination}`,`📅 Travel Date: ${flyindoDateLabel(s.date)}`,`👨 Adults: ${s.adults}`,`👧 Children: ${s.children||0}`];
