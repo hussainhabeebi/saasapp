@@ -380,6 +380,32 @@ describe('Live Travel ticketing in chat',()=>{
     assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
   });
 
+  test('fare options: one fare per flight and different airlines first (Travel Settings)',()=>{
+    const leg=(dep,stops=0)=>[{origin:'DXB',destination:'COK',departureTime:`2026-12-01T${dep}:00Z`,arrivalTime:'2026-12-01T23:00:00Z',duration:240,stops}];
+    const f=(id,airline,no,dep,amt,stops=0)=>({airline_code:airline,airline_name:airline,flight_numbers:no,currency:'AED',total_amount:amt,bookable:true,supplier_offer_id:id,itinerary:leg(dep,stops)});
+    const ixBasic=f('a','IX','IX 434','08:00',400),ixFlex=f('b','IX','IX 434','08:00',520),ix2=f('c','IX','IX 436','14:00',430),ix3=f('d','IX','IX 438','20:00',450);
+    const g9=f('e','G9','G9 455','10:00',480),ek=f('g','EK','EK 532','03:00',900),sv=f('h','SV','SV 1','01:00',300,1);
+    const all=[ixFlex,ek,ix3,g9,ixBasic,ix2,sv];
+    // Off: plain direct-first then cheapest — one airline takes every slot.
+    assert.deepEqual(ltBookableChatOffers(all,'',3),[ixBasic,ix2,ix3]);
+    // One fare per flight: IX 434 Flex is dropped, the other IX flights still fill the slots.
+    assert.deepEqual(ltBookableChatOffers(all,'',5,{onePerFlight:true}),[ixBasic,ix2,ix3,g9,ek]);
+    // Variety: each airline's best fare first, listed in the normal order.
+    const picked=ltBookableChatOffers(all,'',3,{variety:true,onePerFlight:true});
+    assert.deepEqual(picked,[ixBasic,g9,ek]);
+    // Re-running on the picked list (save / format) keeps the same options in the same order.
+    assert.deepEqual(ltBookableChatOffers(picked,'',3),picked);
+    // More slots than airlines: the remaining slots go to the next best fares.
+    assert.deepEqual(ltBookableChatOffers(all,'',5,{variety:true,onePerFlight:true}),[ixBasic,ix2,g9,ek,sv]);
+    // Variety without one-per-flight never shows the same flight twice before other airlines.
+    assert.deepEqual(ltBookableChatOffers(all,'cheapest',3,{variety:true}),[sv,ixBasic,g9]);
+    // Fares with no flight number are never merged.
+    const bare=[{...ixBasic,flight_numbers:''},{...ixFlex,flight_numbers:''}];
+    assert.equal(ltBookableChatOffers(bare,'',3,{onePerFlight:true}).length,2);
+    assert.deepEqual(ltTravelSettingsNormalize({lt_airline_variety:'No',lt_one_fare_per_flight:false}).lt_airline_variety,false);
+    assert.deepEqual(ltChatFarePrefs({}).variety,true);
+  });
+
   test('lists direct flights before cheaper connecting flights',()=>{
     const leg=stops=>[{origin:'CCJ',destination:'DXB',departureTime:'2026-10-15T07:00:00Z',arrivalTime:'2026-10-15T10:00:00Z',duration:230,stops}];
     const indigo={airline_name:'IndiGo',flight_numbers:'153',currency:'INR',total_amount:22447,seats_left:5,bookable:true,supplier_offer_id:'a',itinerary:leg(1)};
@@ -500,8 +526,8 @@ describe('Live Travel ticketing in chat',()=>{
   });
 
   test('Travel settings: fare option count is 1–5 (default 3) and prices can be hidden',()=>{
-    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false});
-    assert.deepEqual(ltChatFarePrefs({lt_fare_options:'9',lt_show_fares:'No'}),{limit:5,showFares:false,style:'classic',onlineBooking:true,contextual:true,directList:false,datePicker:false,passport:false});
+    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_airline_variety:true,lt_one_fare_per_flight:true});
+    assert.deepEqual(ltChatFarePrefs({lt_fare_options:'9',lt_show_fares:'No'}),{limit:5,showFares:false,style:'classic',onlineBooking:true,contextual:true,directList:false,datePicker:false,passport:false,variety:true,onePerFlight:true});
     assert.equal(ltChatFarePrefs({lt_fare_options:'0'}).limit,1);
     const fares=[1,2,3,4,5,6].map(n=>({airline_name:'Air '+n,total_amount:100*n,currency:'AED',bookable:true,supplier_offer_id:'f'+n,itinerary:[{origin:'DXB',destination:'COK',stops:0}]}));
     assert.equal(ltBookableChatOffers(fares).length,3);

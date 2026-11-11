@@ -21450,21 +21450,45 @@ function ltOfferStops(o){
 // "Book Option 1" always books the flight shown as Option 1.
 // A customer sort ("cheapest", "fastest", "earliest") replaces the direct-first default.
 // limit = Settings → Travel Agency → Number of live fare options (1–5, default 3).
-export function ltBookableChatOffers(offers,sort='',limit=LT_TRAVEL_SETTINGS_DEFAULTS.lt_fare_options){
+// pick (Travel Settings → ✈️ Live fares, both on by default via ltChatFarePrefs):
+//   onePerFlight — fare variants of the same flight (Basic / Standard / Flex) collapse to the
+//     best one, so one flight never fills several option slots.
+//   variety — each airline's best fare gets a slot before any airline gets a second one, so the
+//     cheapest carrier can't take every option. The picked options are then listed in the normal
+//     order. Re-running on its own output returns the same list, so "Book Option 1" stays stable.
+export function ltBookableChatOffers(offers,sort='',limit=LT_TRAVEL_SETTINGS_DEFAULTS.lt_fare_options,pick={}){
   const price=(a,b)=>Number(a.total_amount)-Number(b.total_amount);
   const leg=o=>Array.isArray(o?.itinerary)?o.itinerary[0]||{}:{};
   const compare=sort==='cheapest'?price
     :sort==='fastest'?(a,b)=>(Number(leg(a).duration)||Infinity)-(Number(leg(b).duration)||Infinity)||price(a,b)
     :sort==='earliest'?(a,b)=>(Date.parse(leg(a).departureTime)||Infinity)-(Date.parse(leg(b).departureTime)||Infinity)||price(a,b)
     :(a,b)=>(ltOfferStops(a)===0?0:1)-(ltOfferStops(b)===0?0:1)||price(a,b);
-  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort(compare).slice(0,ltFareOptionLimit(limit));
+  let list=(offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort(compare);
+  const max=ltFareOptionLimit(limit);
+  if(pick.onePerFlight){const seen=new Set();list=list.filter(o=>{const k=ltOfferFlightKey(o);if(!k)return true;if(seen.has(k))return false;seen.add(k);return true;});}
+  if(!pick.variety||list.length<=max)return list.slice(0,max);
+  const chosen=new Set(),airlines=new Set();
+  for(const o of list){if(chosen.size>=max)break;const a=ltOfferAirlineKey(o);if(a&&airlines.has(a))continue;if(a)airlines.add(a);chosen.add(o);}
+  for(const o of list){if(chosen.size>=max)break;chosen.add(o);}
+  return list.filter(o=>chosen.has(o));
+}
+const ltOfferAirlineKey=o=>String(o?.airline_code||o?.airline_name||'').trim().toUpperCase();
+// Same airline + flight number(s) + departure time = the same flight sold as different fares.
+// Offers without a flight number or departure time are never merged.
+function ltOfferFlightKey(o){
+  const leg=Array.isArray(o?.itinerary)?o.itinerary[0]||{}:{};
+  const nums=String(o?.flight_numbers||'').toUpperCase().replace(/\s+/g,''),dep=String(leg.departureTime||'').trim();
+  if(!nums||!dep)return '';
+  const legs=(Array.isArray(o.itinerary)?o.itinerary:[]).map(l=>`${l?.departureTime||''}>${l?.arrivalTime||''}`).join('|');
+  return `${ltOfferAirlineKey(o)}|${nums}|${legs}`;
 }
 const ltFareOptionLimit=n=>Math.min(LT_FARE_OPTIONS_MAX,Math.max(1,parseInt(n,10)||LT_TRAVEL_SETTINGS_DEFAULTS.lt_fare_options));
 // The agency's live-fare chat options, loaded onto c by the webhook (ltTravelSettingsStored).
 export function ltChatFarePrefs(c={}){
   const s=ltTravelSettingsNormalize(c);
   return {limit:s.lt_fare_options,showFares:s.lt_show_fares,style:s.lt_fare_style,onlineBooking:s.lt_online_booking,contextual:s.lt_contextual_answers,
-    directList:s.lt_direct_list,datePicker:s.lt_date_picker,passport:s.lt_passport_details};
+    directList:s.lt_direct_list,datePicker:s.lt_date_picker,passport:s.lt_passport_details,
+    variety:s.lt_airline_variety,onePerFlight:s.lt_one_fare_per_flight};
 }
 async function ltSaveChatOffers(env,clientId,phone,offers,sort='',limit){
   if(!phone)return;
@@ -22055,8 +22079,13 @@ export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:
   // lt_date_picker — a missing travel date is asked with a 📅 date list (the next days) plus a
   //   "✍️ Type a date" option for typing any date by hand.
   // lt_passport_details — the booking form also asks date of birth, passport number and expiry.
-  lt_direct_list:false,lt_date_picker:false,lt_passport_details:false};
+  lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,
+  // How the live fare options are picked (Travel Settings → ✈️ Live fares), on by default:
+  // lt_airline_variety — prefer different airlines in the options (ltBookableChatOffers).
+  // lt_one_fare_per_flight — one fare per flight, never Basic + Flex of the same flight.
+  lt_airline_variety:true,lt_one_fare_per_flight:true};
 const LT_TRAVEL_OPTIONAL_KEYS=['lt_direct_list','lt_date_picker','lt_passport_details'];
+const LT_FARE_PICK_KEYS=['lt_airline_variety','lt_one_fare_per_flight'];
 const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
 const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
 const ltPayQrLabel=v=>String(v||'').replace(/\s+/g,' ').trim().slice(0,40);
@@ -22082,7 +22111,7 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_flyindo_greeting_text:String(raw?.lt_flyindo_greeting_text||'').replace(/\r/g,'').trim().slice(0,GREETING_TEXT_MAX),
     lt_contextual_answers:ltYesNo(raw?.lt_contextual_answers,d.lt_contextual_answers),
     lt_flows_enabled:ltYesNo(raw?.lt_flows_enabled,d.lt_flows_enabled),
-    ...Object.fromEntries(LT_TRAVEL_OPTIONAL_KEYS.map(k=>[k,ltYesNo(raw?.[k],d[k])])),
+    ...Object.fromEntries([...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS].map(k=>[k,ltYesNo(raw?.[k],d[k])])),
   };
 }
 // The saved D1 settings when present, else the CLIENTS fields, else the defaults.
@@ -22101,7 +22130,7 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
   const yn=v=>v?'Yes':'No';
   try{
     await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS).filter(k=>!k.startsWith('lt_flyindo_')&&k!=='lt_flows_enabled'));
-    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),lt_contextual_answers:yn(settings.lt_contextual_answers),...Object.fromEntries(LT_TRAVEL_OPTIONAL_KEYS.map(k=>[k,yn(settings[k])])),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
+    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),lt_contextual_answers:yn(settings.lt_contextual_answers),...Object.fromEntries([...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS].map(k=>[k,yn(settings[k])])),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
   }catch(e){}
 }
 // GET/PUT /live-travel/travel-settings — Dashboard → Settings → Modules → Travel Agency options.
@@ -22112,7 +22141,7 @@ async function handleLtTravelSettings(request,env){
   const current=await ltTravelSettingsStored(env,auth.cid,client||{});
   if(request.method==='GET')return json(current);
   const body=await request.json().catch(()=>({}));
-  for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking','lt_contextual_answers',...LT_TRAVEL_OPTIONAL_KEYS])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
+  for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking','lt_contextual_answers',...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_fare_style' in body&&!LT_FARE_STYLES.includes(body.lt_fare_style))return json({error:`lt_fare_style must be one of: ${LT_FARE_STYLES.join(', ')}`},400);
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
@@ -23545,7 +23574,7 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
     const narrowed=ltChatFlightFilterLabel({...filters,sort:''});
     const fallback=!!narrowed&&!ltBookableChatOffers(matching).length&&ltBookableChatOffers(offers).length>0;
     const prefs=ltChatFarePrefs(c);
-    const bookingOffers=ltBookableChatOffers(fallback?offers:matching,filters.sort,prefs.limit);
+    const bookingOffers=ltBookableChatOffers(fallback?offers:matching,filters.sort,prefs.limit,{variety:prefs.variety,onePerFlight:prefs.onePerFlight});
     const note=bookingAsk&&!ltChatFlightIntent(userText)?'Those fares were refreshed. Tap *Book Option* on your flight below to get the secure booking link.':fallback?`No ${narrowed} flights found from ${input.origin} to ${input.destination} on ${input.departure_date}. Here are the other available options:`:'';
     await ltSaveChatOffers(env,clientId,phone,bookingOffers,filters.sort,prefs.limit);
     await ltSaveChatLastSearch(env,clientId,phone,input);
