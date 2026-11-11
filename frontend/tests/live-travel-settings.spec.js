@@ -47,6 +47,7 @@ test('live fares & booking: load, preview the chosen style and save only those f
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.locator('#fsMsg')).toContainText('Saved');
   expect(saved).toEqual({ lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'highlighted', lt_online_booking: false,
+    lt_airline_variety: true, lt_one_fare_per_flight: true,
     lt_direct_list: false, lt_date_picker: false, lt_passport_details: false,
     lt_pay_qr_1_label: 'UPI', lt_pay_qr_1_url: 'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing', lt_pay_qr_2_label: '', lt_pay_qr_2_url: '' });
 });
@@ -78,6 +79,30 @@ test('optional WhatsApp chat extras are off by default, preview the direct fligh
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.locator('#fsMsg')).toContainText('Saved');
   expect(saved).toMatchObject({ lt_direct_list: true, lt_date_picker: true, lt_passport_details: true });
+});
+
+test('fare pick options default on and save when turned off', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: saved }); }
+      return route.fulfill({ json: { lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'classic', lt_online_booking: true } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await expect(page.locator('#main')).toContainText('Prefer different airlines in options');
+  await expect(page.locator('#fsVariety')).toHaveValue('1');
+  await expect(page.locator('#fsOnePerFlight')).toHaveValue('1');
+  await page.selectOption('#fsVariety', '0');
+  await page.selectOption('#fsOnePerFlight', '0');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#fsMsg')).toContainText('Saved');
+  expect(saved).toMatchObject({ lt_airline_variety: false, lt_one_fare_per_flight: false });
 });
 
 test('currency, WhatsApp menu and itineraries are tabs of the same page; the old menu items are gone', async ({ page }) => {
