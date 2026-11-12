@@ -53,3 +53,18 @@ test.describe('on an Android phone', () => {
     expect(href).not.toContain('package=');
   });
 });
+
+test('voice recording stays one tap away while typing', async ({ page }) => {
+  const now = new Date().toISOString();
+  MESSAGES[0].ts = now; // inside the 24-hour window, so the box isn't locked
+  await open(page, { ...LEAD, LastMsgAt: now, LastInboundAt: now, ConvHistory: JSON.stringify(MESSAGES) });
+  const mic = page.locator('#micInline');
+  await expect(mic).toBeHidden(); // the big button is the mic while the box is empty
+  await page.locator('#msg').fill('Hi');
+  await page.locator('#msg').dispatchEvent('input');
+  await expect(page.locator('#actionBtn')).toHaveAttribute('data-state', 'send');
+  await expect(mic).toBeVisible();
+  await page.locator('#msg').fill('');
+  await page.locator('#msg').dispatchEvent('input');
+  await expect(mic).toBeHidden();
+});

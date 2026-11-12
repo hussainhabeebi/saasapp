@@ -267,6 +267,12 @@ const sessionToken=params.get('token')||'';
 // dashboard's own navigation replaces our "← Dashboard" button, and lead details open as the CRM's
 // lead card on top of the chat. See chats.js for the dashboard half of this postMessage channel.
 const embedded=params.get('embed')==='1'&&window.parent!==window;
+// The page itself never scrolls (only the list and thread do), but iPhone scrolls it anyway to bring
+// the message box above the keyboard — inside the phone app's frame that slid the whole chat out of
+// view and left a white screen. Put it back whenever that happens.
+(function(){const pin=()=>{const e=document.scrollingElement;if(e&&(e.scrollTop||e.scrollLeft)){e.scrollTop=0;e.scrollLeft=0}};
+ addEventListener('scroll',pin,{passive:true});addEventListener('focusin',()=>{pin();setTimeout(pin,60);setTimeout(pin,350)});
+ window.visualViewport?.addEventListener('resize',()=>setTimeout(pin,50))})();
 if(embedded)document.documentElement.classList.add('embedded');
 if(params.get('skin')==='m')document.documentElement.classList.add('skin-m');
 function toParent(type,data={}){if(!embedded)return;try{window.parent.postMessage({source:'lv-chats',type,...data},location.protocol==='file:'?'*':location.origin)}catch{}}
@@ -975,6 +981,7 @@ function buildShell(){
    <textarea id="msg" rows="1" placeholder="Type a message" oninput="onType()" onkeydown="keySend(event)" onpaste="onPaste(event)"></textarea>
    <button class="icon-btn" id="attachBtn" title="Attach" onclick="togglePanel('attachMenu')" ${ig?'disabled':''}>${IC.attach}</button>
    <button class="icon-btn cam-btn" id="camBtn" title="Camera" onclick="pickFiles('image/*',true)" ${ig?'disabled':''}>${IC.cam}</button>
+   ${ig?'':`<button class="icon-btn hidden" id="micInline" title="Record voice message" aria-label="Record voice message" onclick="startRecording()">${IC.mic}</button>`}
   </div>
   <div class="rec-row hidden" id="recRow">
    <button class="icon-btn rec-trash" title="Delete recording" onclick="cancelRecording()">${IC.trash}</button>
@@ -1126,7 +1133,7 @@ function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.lengt
 // Mic when the box is empty, paper plane when there's something to send — same as WhatsApp.
 // Internal notes and Instagram are text-only, so they always show send.
 function actionState(){if(rec)return'rec';if(composeMode==='note'||($('msg')?.value||'').trim())return'send';return'mic'}
-function updateAction(){const b=$('actionBtn');if(!b)return;const s=actionState();if(b.dataset.state===s)return;b.dataset.state=s;b.innerHTML=s==='mic'?IC.mic:IC.send;b.title=s==='mic'?'Record voice message (hold, or tap to lock)':s==='rec'?'Send voice message':'Send';const cam=$('camBtn');if(cam)cam.classList.toggle('hidden',s!=='mic');const sm=$('sendMore');if(sm)sm.classList.toggle('hidden',s!=='send'||composeMode!=='reply')}
+function updateAction(){const b=$('actionBtn');if(!b)return;const s=actionState();const mi=$('micInline');if(mi)mi.classList.toggle('hidden',s!=='send'||composeMode!=='reply');if(b.dataset.state===s)return;b.dataset.state=s;b.innerHTML=s==='mic'?IC.mic:IC.send;b.title=s==='mic'?'Record voice message (hold, or tap to lock)':s==='rec'?'Send voice message':'Send';const cam=$('camBtn');if(cam)cam.classList.toggle('hidden',s!=='mic');const sm=$('sendMore');if(sm)sm.classList.toggle('hidden',s!=='send'||composeMode!=='reply')}
 function setReply(i){if(!current)return;const m=hist(current)[i];if(!m)return;if(composeMode==='note')setComposeMode('reply');replyTarget={index:i,snippet:snippetOf(m),who:isOut(m)?'You':(current.Name||'Customer')};renderReply();$('msg')?.focus()}
 function clearReply(){replyTarget=null;renderReply()}
 function renderReply(){const box=$('replyBox');if(!box)return;if(!replyTarget){box.classList.add('hidden');box.innerHTML='';return}box.classList.remove('hidden');box.innerHTML=`<div class="reply-card"><b>${esc(replyTarget.who)}</b><div>${esc(replyTarget.snippet)}</div></div><button class="icon-btn" title="Cancel reply" onclick="clearReply()">${IC.close}</button>`}
