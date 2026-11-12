@@ -37,6 +37,7 @@ button:active{transform:scale(.98)}
 #app{position:relative;height:100%;height:var(--app-h,100%);max-width:760px;margin:0 auto;overflow:hidden;background:var(--bg)}
 /* iPhone keyboard: pinned to the visible area (see the sizing script). */
 .kb-open #app{position:fixed;left:0;right:0;top:var(--app-top,0px)}.kb-open .thread-open #tabChats{bottom:0}
+html.ios-short{--sab:0px}.ios-short .thread-open #tabChats{bottom:0}
 .tab{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;flex-direction:column;visibility:hidden;background:var(--bg)}
 .tab.on{visibility:visible}
 .thread-open #nav{display:none}
@@ -243,31 +244,39 @@ const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 // Size the app to the page that's actually on screen (see --app-h in the <style>).
 // iPhone: with the keyboard up, iOS keeps the page full height and scrolls it under the status bar,
-// so the app follows the visible area instead (--app-top / --app-h, #app is fixed). With the keyboard
-// down, an installed iPhone app covers the whole screen, but iOS 26 can report innerHeight short of
-// it, which left a blank band under the chat composer — so it uses the screen height there.
+// so the app follows the visible area instead (--app-top / --app-h, #app is fixed).
+// With the keyboard down the app uses innerHeight. An installed iPhone app on iOS 26 can get a page
+// shorter than the screen (it ends above the home-indicator area, leaving a blank band iOS draws
+// itself); sizing past it only scrolled the page under the status bar. In that case the band
+// already keeps the composer clear of the home indicator, so our own bottom padding is dropped
+// (html.ios-short) instead of being added on top.
 (function(){
   const root=document.documentElement,vv=window.visualViewport;
   const ios=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
   const standalone=navigator.standalone===true||matchMedia('(display-mode: standalone)').matches;
-  let full=0;const tall={};
+  const tall={};let kb=false;
   const fit=()=>{
-    let h=window.innerHeight,top=0,kb=false;
+    let h=window.innerHeight,top=0,short=false;kb=false;
     if(ios&&vv){
       const portrait=window.innerWidth<=window.innerHeight||vv.width<=vv.height;
-      const screenH=standalone?(portrait?Math.max(screen.width,screen.height):Math.min(screen.width,screen.height)):0;
-      // Tallest height seen in this orientation: in Safari innerHeight shrinks with the keyboard too.
-      const k=portrait?'p':'l';full=Math.max(window.innerHeight,screenH,tall[k]||0);if(!(vv.height<full-120))tall[k]=full=Math.max(full,vv.height);
+      const k=portrait?'p':'l';
+      const full=Math.max(window.innerHeight,tall[k]||0);
       kb=vv.height<full-120;
       if(kb){h=Math.round(vv.height);top=Math.max(0,Math.round(vv.offsetTop));if(window.scrollY)window.scrollTo(0,0)}
-      else h=standalone?full:window.innerHeight;
+      else{
+        tall[k]=Math.max(full,Math.round(vv.height));h=window.innerHeight;
+        const screenH=portrait?Math.max(screen.width,screen.height):Math.min(screen.width,screen.height);
+        short=standalone&&portrait&&h<screenH-30;
+      }
     }
     if(h>0)root.style.setProperty('--app-h',h+'px');
     root.style.setProperty('--app-top',top+'px');
-    root.classList.toggle('kb-open',kb);
+    root.classList.toggle('kb-open',kb);root.classList.toggle('ios-short',short);
   };
   fit(); window.addEventListener('resize',fit); window.addEventListener('orientationchange',()=>setTimeout(fit,300));
   if(vv){vv.addEventListener('resize',fit);if(ios)vv.addEventListener('scroll',fit)}
+  // The page itself never scrolls; if iOS scrolls it anyway (keyboard down), put it back.
+  addEventListener('scroll',()=>{if(!kb&&(window.scrollY||window.scrollX))window.scrollTo(0,0)},{passive:true});
 })();
 let clientId='',sessionToken='';
 try{clientId=localStorage.getItem('lv_cid')||'';sessionToken=localStorage.getItem('lv_session')||''}catch{}

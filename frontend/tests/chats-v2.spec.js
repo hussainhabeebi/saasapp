@@ -500,6 +500,17 @@ test('@mention picker in internal notes', async ({ page }) => {
 
 test.describe('on a phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  test('suggested replies are full-width readable cards, tap to use, ✕ hides them', async ({ page }) => {
+    await open(page);
+    await page.locator('#list .contact', { hasText: 'Asha' }).click();
+    const cards = page.locator('#suggestRow button');
+    await expect(cards).toHaveCount(3);
+    await expect(page.locator('#suggestRow .sg-t')).toBeVisible();
+    const row = await page.locator('#suggestRow').boundingBox(), card = await cards.first().boundingBox();
+    expect(card.width).toBeGreaterThan(row.width - 40); // full width, not a cut-off chip
+    await page.locator('#suggestRow .sg-x').click();
+    await expect(page.locator('#suggestRow')).toBeHidden();
+  });
   test('the header keeps the name, a visible Call button and ⋮; pills get their own row; menus are bottom sheets', async ({ page }) => {
     await open(page);
     await page.locator('#list .contact', { hasText: 'Asha' }).click();
