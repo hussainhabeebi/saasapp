@@ -163,6 +163,16 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
 .send-more{width:26px;height:46px;border:0;background:transparent;color:#54656f;flex:none;padding:0;font-size:13px}
 .info-panel{position:absolute;top:60px;right:0;bottom:0;width:340px;max-width:100%;background:#fff;border-left:1px solid var(--line);box-shadow:-6px 0 18px rgba(0,0,0,.08);z-index:25;overflow:auto;padding:0 0 30px}.info-panel h4{margin:16px 16px 6px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}.info-panel .fld{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;padding:3px 16px}.info-panel .fld span{font-size:12.5px;color:var(--muted)}.info-panel .fld input{border:1px solid transparent;border-radius:6px;padding:5px 7px;font-size:13.5px;min-width:0;background:transparent}.info-panel .fld input:hover{border-color:#e1e6ea}.info-panel .fld input:focus{border-color:var(--wa);outline:0;background:#fff}.fld select{border:1px solid #e1e6ea;border-radius:6px;padding:5px 7px;font-size:13.5px;min-width:0;background:#fff;font-family:inherit}.info-panel .kv{display:grid;grid-template-columns:110px 1fr;gap:8px;padding:4px 16px;font-size:13px}.info-panel .kv span{color:var(--muted);font-size:12.5px}.info-panel .sum{margin:4px 16px;padding:10px;border-radius:8px;background:#f5f3ff;color:#3b2f73;font-size:13px;white-space:pre-wrap;line-height:1.45}.info-panel .nt{margin:4px 16px;padding:8px 10px;border-radius:7px;background:#fff5c4;color:#665c32;font-size:12.5px}.info-panel .nt small{display:block;color:#8b7c45;margin-top:2px}.info-panel .row-btn{margin:6px 16px;border:1px solid #d1d7db;background:#fff;border-radius:16px;padding:5px 12px;font-size:12.5px;color:#3b4a54}.info-panel .prev{display:block;width:calc(100% - 32px);margin:3px 16px;text-align:left;border:1px solid var(--line);border-radius:8px;background:#fff;padding:7px 10px;font-size:13px}.info-panel .prev small{display:block;color:var(--muted)}.info-panel .add-note{display:flex;gap:6px;margin:6px 16px}.info-panel .add-note input{flex:1;border:1px solid #d1d7db;border-radius:8px;padding:6px 9px;font-size:13px;min-width:0}
 .suggest-row{display:flex;gap:6px;overflow-x:auto;padding:6px 12px 0;background:var(--header);flex:none;scrollbar-width:none}.suggest-row button{flex:none;max-width:320px;border:1px solid #c6f0d2;background:#fff;color:#0b6b57;border-radius:14px;padding:5px 11px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.suggest-row .lbl{background:transparent;color:var(--muted);padding:5px 0;border:0;font-size:12px}
+.sg-head{display:flex;align-items:center;gap:6px;flex:none}.sg-x,.sg-t{display:none}
+/* Phones: suggestions as readable cards (two lines each, full width) instead of one cut-off row. */
+@media(max-width:700px){
+ .suggest-row{flex-direction:column;gap:6px;padding:8px 12px 2px;overflow:visible}
+ .sg-head{justify-content:space-between}.sg-head .lbl{flex:1;white-space:nowrap;overflow:visible}.sg-t{display:inline}.sg-head .lbl{font-size:12.5px;font-weight:600;color:var(--muted)}
+ .sg-x{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;color:var(--muted);font-size:14px;cursor:pointer}
+ .suggest-row button{max-width:none;width:100%;text-align:left;white-space:normal;border-radius:14px;padding:9px 13px;font-size:14px;line-height:1.4;background:#f3fbf6}
+ .suggest-row button>span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+ .suggest-row button:active{background:#e3f6ea}
+}
 .ai-undo{background:#f5f3ff;color:#3b2f73;font-size:12.5px;padding:6px 12px;display:flex;gap:10px;align-items:center;flex:none}.ai-undo button{border:0;background:transparent;color:#5b3fd1;font-weight:650;padding:0}
 .tr{margin-top:5px;padding-top:5px;border-top:1px dashed rgba(0,0,0,.15);font-size:13px;color:#3b4a54;white-space:pre-wrap}.tr small{display:block;color:var(--muted);font-size:11px}
 .opt-btns{clear:both;display:flex;flex-wrap:wrap;gap:5px;margin:6px 0 2px}.opt-btns span{border:1px solid rgba(0,0,0,.12);border-radius:14px;padding:3px 10px;font-size:12.5px;color:#027eb5;background:rgba(255,255,255,.6)}
@@ -1668,7 +1678,8 @@ function showUndo(prev){const u=$('aiUndo');if(!u)return;u.innerHTML=`<span>✨ 
 function undoAi(){const u=$('aiUndo'),b=$('msg');if(!u||!b)return;b.value=u.dataset.prev||'';grow(b);onType();u.classList.add('hidden')}
 // Suggested replies: only when the customer is waiting on a person (last message is theirs and a
 // human is handling it, or it's unassigned and waiting) — never spends AI on chats the bot has.
-const suggestFor={};
+const suggestFor={},suggestHidden={};
+function hideSuggestions(key){suggestHidden[key]=1;$('suggestRow')?.classList.add('hidden')}
 async function maybeSuggest(force=false){
  const row=$('suggestRow'),l=current;if(!row||!l||!V2)return;const r=l._v2||{};
  const want=force||(r.last_message_dir==='in'&&(l.Handover==='Yes'||!!r.waiting_since)&&composeMode==='reply'&&windowOpen(l));
@@ -1677,7 +1688,8 @@ async function maybeSuggest(force=false){
  if(!suggestFor[key]){row.innerHTML='<span class="lbl">💡 Thinking of replies…</span>';row.classList.remove('hidden');try{suggestFor[key]=(await aiCall({op:'suggest',lead_id:l.Id})).suggestions||[]}catch(e){suggestFor[key]=[];if(force)toast('AI: '+e.message)}}
  if(current!==l)return;const list=suggestFor[key];
  if(!list.length){row.classList.add('hidden');return}
- row.innerHTML='<span class="lbl">💡</span>'+list.map((t,i)=>`<button title="${esc(t)}" onclick="useSuggestion(${i},'${esc(key)}')">${esc(t)}</button>`).join('');row.classList.remove('hidden');
+ if(suggestHidden[key]){row.classList.add('hidden');return}
+ row.innerHTML=`<div class="sg-head"><span class="lbl">💡<span class="sg-t"> Suggested replies</span></span><span class="sg-x" role="button" aria-label="Hide suggestions" title="Hide" onclick="hideSuggestions('${esc(key)}')">✕</span></div>`+list.slice(0,3).map((t,i)=>`<button title="${esc(t)}" onclick="useSuggestion(${i},'${esc(key)}')"><span>${esc(t)}</span></button>`).join('');row.classList.remove('hidden');
 }
 function useSuggestion(i,key){const t=suggestFor[key]?.[i];if(!t)return;const b=$('msg');b.value=t;grow(b);onType();b.focus();$('suggestRow').classList.add('hidden')}
 async function translateMsg(m){
