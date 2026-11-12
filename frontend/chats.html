@@ -176,12 +176,14 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
 .stage-chip{font-size:11.5px;border-radius:10px;padding:2px 8px;background:#eef6ff;color:#1d4f91;white-space:nowrap;cursor:pointer;border:0}
 /* Phones: the name, a visible Call button and ⋮ stay on the first header row; the status pills
    (bot/human, assign, labels, priority, window timer, resolve) get their own scrollable row below. */
-.call-btn{color:var(--wa-dark)}.mob-only{display:none!important}
+.call-btn{color:var(--wa-dark)}.wa-btn{color:#25D366}.mob-only{display:none!important}
 @media(max-width:700px){
  .chat-top{height:auto!important;flex-wrap:wrap;row-gap:6px;padding:8px 8px 6px}
  .chat-top .chat-meta{order:1;min-width:0}.chat-top .back{order:0}.chat-top>.avatar{order:0}
  .chat-actions{order:2}
- .chat-actions .call-btn{display:grid;background:#e7fce9;color:var(--wa-dark);width:40px;height:40px}
+ .chat-actions{gap:6px}
+ .chat-actions .call-btn,.chat-actions .wa-btn{display:grid;background:#e7fce9;color:var(--wa-dark);width:40px;height:40px}
+ .chat-actions .wa-btn{background:#e8f9ee;color:#1DA851}
  .hdr-ctl{order:3;flex:1 1 100%;overflow-x:auto;scrollbar-width:none;gap:6px;padding:0 2px 2px}.hdr-ctl::-webkit-scrollbar{display:none}
  .hdr-ctl>*{flex:none}
  .hdr-pill,.hdr-btn,.split button{padding:6px 10px;font-size:13px}
@@ -209,7 +211,7 @@ html.skin-m body{background:#fff}
 .skin-m .avatar{border-radius:16px;background:#ECF0F8;color:#0B2545;font-weight:800}
 .skin-m .contact.active{background:#F4F6F8}
 .skin-m .chat-top{background:#fff;border-bottom:1px solid #ECEEF2}
-.skin-m .chat-actions .call-btn{background:#065F46;color:#fff;border-radius:14px}
+.skin-m .chat-actions .call-btn{background:#065F46;color:#fff;border-radius:14px}.skin-m .chat-actions .wa-btn{background:#25D366;color:#fff;border-radius:14px}
 .skin-m .hdr-pill,.skin-m .hdr-btn{border-color:#ECEEF2;background:#F4F6F8;color:#0B0B0C;font-weight:600}
 .skin-m .split button:first-child,.skin-m .split button:last-child{background:#0B2545;border-color:#0B2545}
 .skin-m .bubble.out{background:#DCEFE6}.skin-m .bubble.tail.out::before{background:#DCEFE6}
@@ -327,7 +329,31 @@ function travelInfoHtml(rec){
 }
 const who=l=>l?.Name||(isIgKey(l?.Phone)?'Instagram user':l?.Phone)||'';
 const svg=(d,s=24)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">${d}</svg>`;
+// Phone numbers for the dialer and WhatsApp, always in international form. Numbers are stored as
+// international digits without "+" (e.g. 919876543210, as WhatsApp sends them); a bare 10-digit
+// number or one with a trunk 0 is a local number typed by hand, so it gets the default code.
+const DEFAULT_CC='91';
+function intlDigits(p){
+ let s=String(p||'').trim();if(!s)return '';
+ const plus=s.startsWith('+');let d=s.replace(/\D/g,'');if(!d)return '';
+ if(!plus&&d.startsWith('00'))d=d.slice(2);
+ else if(!plus&&d.length===11&&d[0]==='0')d=DEFAULT_CC+d.slice(1);
+ else if(!plus&&d.length===10)d=DEFAULT_CC+d;
+ return d.length>=8&&d.length<=15?d:'';
+}
+const intlTel=p=>{const d=intlDigits(p);return d?'+'+d:''};
+// Android: the intent launches the app in place (_top so the wa.me fallback isn't stuck in the
+// m.html iframe); elsewhere wa.me opens in a new tab.
+const waTarget=()=>/Android/i.test(navigator.userAgent)?'target="_top"':'target="_blank" rel="noopener"';
+// WhatsApp link: on Android an intent with no fixed package, so Android lets the person pick
+// WhatsApp or WhatsApp Business (chat from another number); wa.me if WhatsApp isn't installed.
+function waHref(p){
+ const d=intlDigits(p);if(!d)return '';
+ const web='https://wa.me/'+d;
+ return /Android/i.test(navigator.userAgent)?`intent://send/?phone=${d}#Intent;scheme=whatsapp;S.browser_fallback_url=${encodeURIComponent(web)};end`:web;
+}
 const IC={
+  wa:svg('<path fill="currentColor" d="M12 2.2A9.8 9.8 0 0 0 3.6 17l-1.4 4.8 5-1.3A9.8 9.8 0 1 0 12 2.2zm0 17.9a8.1 8.1 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.1 8.1 0 1 1 12 20.1zm4.5-6c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.6 6.6 0 0 1-3.3-2.9c-.2-.4.3-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.2.7a2.7 2.7 0 0 0 1.8-1.3 2.2 2.2 0 0 0 .2-1.3c-.1-.1-.3-.2-.5-.3z"/>',21),
   mic:svg('<path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15zm6.2-3.6a.9.9 0 0 0-1.8 0 4.4 4.4 0 0 1-8.8 0 .9.9 0 0 0-1.8 0 6.2 6.2 0 0 0 5.3 6.1V20H8.6a.9.9 0 0 0 0 1.8h6.8a.9.9 0 0 0 0-1.8h-2.5v-2.5a6.2 6.2 0 0 0 5.3-6.1z"/>'),
   send:svg('<path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6v6.5l12.6 1.9-12.6 1.9z"/>'),
   emoji:svg('<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.2" fill="currentColor"/><circle cx="15" cy="10" r="1.2" fill="currentColor"/><path d="M8 14.2a4.6 4.6 0 0 0 8 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'),
@@ -747,7 +773,7 @@ function fmtText(s){
  h=h.replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:;])/g,'$1<i>$2</i>');
  h=h.replace(/(^|[\s(])~([^~\n]+)~(?=$|[\s).,!?:;])/g,'$1<s>$2</s>');
  // Links, emails and phone numbers in one pass, so a number or @ inside a URL stays part of it.
- h=h.replace(/(\bhttps?:\/\/[^\s<]*[^\s<.,!?;:)'"])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|((?:\+|\b)\d[\d -]{7,}\d\b)/g,(m,u,e,ph)=>{if(u)return `<a href="${u}" target="_blank" rel="noopener">${u}</a>`;if(e)return `<a href="mailto:${e}">${e}</a>`;const d=m.replace(/\D/g,'');return d.length>=9&&d.length<=15?`<a href="tel:${m.trim().startsWith('+')?'+':''}${d}">${m}</a>`:m});
+ h=h.replace(/(\bhttps?:\/\/[^\s<]*[^\s<.,!?;:)'"])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|((?:\+|\b)\d[\d -]{7,}\d\b)/g,(m,u,e,ph)=>{if(u)return `<a href="${u}" target="_blank" rel="noopener">${u}</a>`;if(e)return `<a href="mailto:${e}">${e}</a>`;const t=m.replace(/\D/g,'').length>=9?intlTel(m):'';return t?`<a href="tel:${t}">${m}</a>`:m});
  return h;
 }
 
@@ -915,10 +941,10 @@ function menuTopHtml(l){
   (share?`<button id="menuShare" onclick="menuAct(openShare)">👥 Share${shared.length?` <span class="menu-val">${shared.length===1?esc(agentName(shared[0])):shared.length+' people'}</span>`:''}</button>`:'')+
   `<button id="menuInfo" onclick="toggleMenu(false);toggleInfo()">ⓘ Contact details${l._rec?.Stage?` <span class="menu-val">${esc(l._rec.Stage)}</span>`:''}</button><hr>`;
 }
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return menuTopHtml(l)+`<button onclick="loadFullHistory()" title="Bring in every earlier Chatwoot conversation with this customer">📜 Load full history</button><button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button>${V2?'':`<button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button>`}<button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button>${isIg(l)?'':'<button onclick="copyPhone()">Copy contact number</button>'}${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}${embedded?'<button onclick="toggleMenu(false);toParent(\'meeting\',{leadId:current.Id})">📅 Meeting…</button>':''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
+function menuHtml(){const l=current,wa=waHref(l.Phone);return menuTopHtml(l)+`<button onclick="loadFullHistory()" title="Bring in every earlier Chatwoot conversation with this customer">📜 Load full history</button><button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button>${V2?'':`<button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button>`}<button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button>${isIg(l)?'':'<button onclick="copyPhone()">Copy contact number</button>'}${wa&&!isIg(l)?`<button onclick="window.open(waHref(current.Phone),'_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}${embedded?'<button onclick="toggleMenu(false);toParent(\'meeting\',{leadId:current.Id})">📅 Meeting…</button>':''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
 function buildShell(){
- const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(who(l)||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}<span id="wnHdr">${wnChip(l,true)}</span><span id="fuChip"></span><span id="mtgChip"></span><span id="subMeta" class="sub-meta"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn" id="menuBtn" title="Menu" aria-label="More actions" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ const l=current,ig=isIg(l),tel=intlTel(l.Phone),wa=waHref(l.Phone);
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(who(l)||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(tel||l.Phone||'WhatsApp'))}<span id="wnHdr">${wnChip(l,true)}</span><span id="fuChip"></span><span id="mtgChip"></span><span id="subMeta" class="sub-meta"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${wa&&!ig?`<a class="icon-btn wa-btn" id="waBtn" title="Chat on WhatsApp from your phone (${esc(tel)})" aria-label="Open in WhatsApp" href="${esc(wa)}" ${waTarget()}>${IC.wa}</a>`:''}${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(tel)}" aria-label="Call ${esc(tel)}" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn" id="menuBtn" title="Menu" aria-label="More actions" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="tsIdx=-1;searchThread(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();stepThreadSearch(event.shiftKey?1:-1)}"><span class="ts-nav"><span id="tsCount"></span><button title="Earlier match" onclick="stepThreadSearch(-1)">▲</button><button title="Later match" onclick="stepThreadSearch(1)">▼</button></span></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -976,7 +1002,7 @@ function attHtml(a){
  if(a.kind==='video'&&a.url)return `<video class="media" src="${url}" controls preload="metadata" playsinline></video>`;
  if((a.kind==='voice'||a.kind==='audio')&&a.url){const d=a.duration||durations.get(a.url);return `<div class="vp" data-src="${url}"><div class="vp-mic ${a.kind==='voice'?'voice':''}">${a.kind==='voice'?IC.mic:IC.audio}</div><button class="vp-play" type="button" title="Play">${IC.play}</button><div class="vp-body"><div class="vp-bar"><i></i><b></b></div><div class="vp-row"><span class="vp-time">${d?fmtDur(d):(a.kind==='voice'?'Voice':'Audio')}</span><button class="vp-speed" type="button">${playbackRate}×</button></div></div></div>`}
  if(a.kind==='location'){const href=a.url||(a.lat!=null?`https://maps.google.com/?q=${a.lat},${a.lng}`:'');return `<a class="card" href="${esc(href)}" target="_blank" rel="noopener"><span class="ic">📍</span><div><b>${esc(a.name||'Location')}</b><small>Open in Maps</small></div></a>`}
- if(a.kind==='contacts'){const ph=String(a.phone||'').replace(/[^\d+]/g,'');return `<div class="card"><span class="ic">👤</span><div style="min-width:0"><b>${esc(a.name||'Contact')}</b><small>${esc(a.phone||'')}</small>${ph?`<div><a href="tel:${esc(ph)}">Call</a> · <a href="https://wa.me/${esc(ph.replace('+',''))}" target="_blank" rel="noopener">WhatsApp</a></div>`:''}</div></div>`}
+ if(a.kind==='contacts'){const ph=intlTel(a.phone);return `<div class="card"><span class="ic">👤</span><div style="min-width:0"><b>${esc(a.name||'Contact')}</b><small>${esc(a.phone||'')}</small>${ph?`<div><a href="tel:${esc(ph)}">Call</a> · <a href="${esc(waHref(ph))}" ${waTarget()}>WhatsApp</a></div>`:''}</div></div>`}
  const name=a.name||(a.kind==='voice'?'Voice message':'Attachment'),ext=(String(a.name||'').split('.').pop()||'file').slice(0,4);
  const inner=`<span class="ext">${esc(a.name&&a.name.includes('.')?ext:'file')}</span><div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</div><small>${esc(fmtBytes(a.size))}</small></div>`;
  return a.url?`<a class="doc" href="${url}" target="_blank" rel="noopener" download>${inner}</a>`:`<div class="doc">${inner}</div>`;
@@ -1842,7 +1868,7 @@ function newMacro(btn){
 function addMacroStep(btn){const op=$('macroOp').value,v=($('macroArg').value||'').trim();const args=op==='label_add'?{label:v}:op==='assign'?{email:v}:op==='priority'?{value:Math.max(0,Math.min(4,Number(v)||0))}:op==='handler'?{mode:'human'}:{};if(op==='label_add'&&!v)return toast('Type the label');macroDraft.push({op,args});newMacro(btn)}
 async function saveMacro(){const name=(macroDraft.name||'').trim();if(!name||!macroDraft.length)return toast('Name the macro and add a step');try{await apiJson(WORKER+'/chats/v2/macros',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,ops:macroDraft})});macroDraft=[];closeDd();await loadBootstrap();renderInfo();toast('Macro saved')}catch(e){toast('Could not save: '+e.message)}}
 async function setPending(){closeDd();try{await act('pending');toast('Marked as pending')}catch(e){toast('Could not update: '+e.message)}}
-function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu(false);toast('Number copied')}
+function copyPhone(){navigator.clipboard?.writeText(intlTel(current.Phone)||current.Phone||'');toggleMenu(false);toast('Number copied')}
 function goLead(){toggleMenu(false);if(embedded){toParent('openLead',{leadId:current.Id});return}location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
 function goBack(){if(embedded){toParent('home');return}if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
 let tsHits=[],tsIdx=-1;
