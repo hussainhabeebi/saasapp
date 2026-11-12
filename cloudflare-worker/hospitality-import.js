@@ -117,13 +117,20 @@ function int(v, def){
   const n=parseInt(v, 10);
   return Number.isFinite(n)&&n>=0&&n<1000?n:def;
 }
-function httpUrl(v){
-  const s=String(v||'').trim();
+// `base` (the API link) resolves the relative paths many feeds use for media — "/uploads/a.jpg",
+// "//cdn.example.com/a.jpg", "storage/rooms/a.webp" — which used to be dropped, so those properties
+// arrived with no photos to show in WhatsApp. Only http(s) results are kept.
+function httpUrl(v, base){
+  let s=String(v||'').trim();
+  if(base&&s&&!/^[a-z][a-z0-9+.-]*:/i.test(s)&&(/^\/\/?\S/.test(s)||/^[\w.-]+\/\S*\.(?:jpe?g|png|webp|gif|avif|mp4|mov|webm|m4v)(?:[?#]\S*)?$/i.test(s))){
+    // A path with no leading slash is taken from the site root, as feeds mean it ("storage/a.jpg").
+    try{ s=new URL(s.startsWith('/')?s:`/${s}`, base).toString(); }catch(e){ return ''; }
+  }
   return /^https?:\/\/\S+$/i.test(s)&&s.length<=500?s:'';
 }
-function mediaUrl(v){
-  if(typeof v==='string') return httpUrl(v);
-  if(isObj(v)) return httpUrl(pick(v, ['url','src','href','original','large','full','image_url','image','file','path','link','secure_url']));
+function mediaUrl(v, base){
+  if(typeof v==='string') return httpUrl(v, base);
+  if(isObj(v)) return httpUrl(pick(v, ['url','src','href','original','large','full','image_url','image','file','path','link','secure_url']), base);
   return '';
 }
 const isVideoUrl=u=>/youtu\.?be|vimeo\.com|\.(?:mp4|mov|webm|m4v)(?:$|[?#])/i.test(u);
@@ -132,13 +139,13 @@ function isVideoItem(v){
   return isVideoUrl(mediaUrl(v));
 }
 // {images:[…5], videos:[…2]} from whatever image/video fields the record has.
-export function hiMedia(o){
+export function hiMedia(o, base){
   const images=[], videos=[];
   const add=(v, forceVideo)=>{
     if(Array.isArray(v)){ v.forEach(x=>add(x, forceVideo)); return; }
-    const u=mediaUrl(v);
+    const u=mediaUrl(v, base);
     if(!u) return;
-    const list=forceVideo||isVideoItem(v)?videos:images;
+    const list=forceVideo||isVideoItem(v)||isVideoUrl(u)?videos:images;
     if(!list.includes(u)) list.push(u);
   };
   for(const k of ['cover_image','featured_image','main_image','thumbnail','image','image_url','photo','cover']) add(o?.[k], false);
@@ -165,7 +172,7 @@ export function hiHash(obj){
 // ── Mapping ──────────────────────────────────────────────────────────────────────────────────────
 const UNIT_LIST_KEYS=['units','rooms','room_types','roomTypes','unit_types','room_categories','accommodations','accommodation_types','categories','inventory'];
 
-export function hiMapProperty(raw){
+export function hiMapProperty(raw, base){
   if(!isObj(raw)) return null;
   const name=text(pick(raw, ['name','title','property_name','display_name']), 140);
   const external_id=hiExternalId(raw);
@@ -173,7 +180,7 @@ export function hiMapProperty(raw){
   const loc=pick(raw, ['destination','location','city','town','area','region','place']);
   let location=text(loc, 100);
   if(!location&&isObj(raw.address)) location=text(pick(raw.address, ['city','town','locality','district','state']), 100);
-  const m=hiMedia(raw);
+  const m=hiMedia(raw, base);
   return {
     external_id, name, location,
     description:text(pick(raw, ['description','short_description','summary','about','overview','details']), 1000),
@@ -183,7 +190,7 @@ export function hiMapProperty(raw){
   };
 }
 
-function mapUnit(raw, prop, fallbackName){
+function mapUnit(raw, prop, fallbackName, base){
   if(!isObj(raw)) return null;
   const name=text(pick(raw, ['name','title','room_name','room_type','type','category'])??fallbackName, 140);
   if(!name) return null;
@@ -191,7 +198,7 @@ function mapUnit(raw, prop, fallbackName){
   const adults=int(pick(raw, ['max_adults','capacity_adults','adults','max_occupancy','occupancy','max_guests','guests','sleeps'])??cap, 2)||2;
   const children=int(pick(raw, ['max_children','capacity_children','children'])??(isObj(cap)?cap.children:undefined), 0);
   const priceRaw=pick(raw, ['base_rate','price','base_price','rate','price_per_night','nightly_rate','starting_price','price_from','tariff','min_price','pricing']);
-  const m=hiMedia(raw);
+  const m=hiMedia(raw, base);
   const pm=m.images.length?m:{images:[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean), videos:[prop.video_url_1,prop.video_url_2].filter(Boolean)};
   return {
     name,
@@ -209,14 +216,14 @@ function mapUnit(raw, prop, fallbackName){
 
 // The property's units, each with an external id unique within the source. No rooms list → the
 // property itself as a single unit.
-export function hiMapUnits(raw, prop){
+export function hiMapUnits(raw, prop, base){
   let list=null;
   for(const k of UNIT_LIST_KEYS){ if(Array.isArray(raw?.[k])&&raw[k].length&&raw[k].some(isObj)){ list=raw[k]; break; } }
   const out=[];
   const seen=new Set();
   if(list){
     list.forEach((u, i)=>{
-      const mapped=mapUnit(u, prop);
+      const mapped=mapUnit(u, prop, undefined, base);
       if(!mapped) return;
       let ext=`${prop.external_id}::${hiExternalId(u)||'i'+i}`;
       while(seen.has(ext)) ext+='+';
@@ -225,7 +232,7 @@ export function hiMapUnits(raw, prop){
     });
   }
   if(!out.length){
-    const self=mapUnit(raw, prop, prop.name);
+    const self=mapUnit(raw, prop, prop.name, base);
     if(self) out.push({...self, name:prop.name, external_id:`${prop.external_id}::self`});
   }
   return out;
@@ -407,13 +414,13 @@ export async function hiSyncSource(env, deps, src, {nowMs}={}){
       localIds:{property:await ids('hospitality_properties'), unit:await ids('hospitality_units')}};
     const seenProps=new Set();
     for(const raw of records){
-      const prop=hiMapProperty(raw);
+      const prop=hiMapProperty(raw, src.url);
       if(!prop||seenProps.has(prop.external_id)) continue;
       seenProps.add(prop.external_id);
       counts.properties_seen++;
       const propertyId=await upsert(env, ctx, 'property', prop, PROP_COLS);
       if(propertyId==null) continue; // the property was deleted here — so are its rooms
-      for(const unit of hiMapUnits(raw, prop)){
+      for(const unit of hiMapUnits(raw, prop, src.url)){
         counts.units_seen++;
         await upsert(env, ctx, 'unit', {...unit, property_id:propertyId}, UNIT_COLS);
       }
@@ -510,8 +517,8 @@ export async function hiHandleRoute(request, env, deps, url){
     if(!key&&src?.api_key_enc) key=await deps.decrypt(env, src.api_key_enc)||'';
     try{
       const {records}=await hiFetchAll(deps, {url:urlIn, auth_style:auth}, key, {maxPages:1});
-      const props=records.map(hiMapProperty).filter(Boolean);
-      const sample=records.slice(0,5).map(r=>{ const p=hiMapProperty(r); return p?{name:p.name, location:p.location, photos:[p.image_url_1,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).length, units:hiMapUnits(r, p).map(u=>({name:u.name, base_rate:u.base_rate, currency:u.currency, capacity_adults:u.capacity_adults}))}:null; }).filter(Boolean);
+      const props=records.map(r=>hiMapProperty(r, urlIn)).filter(Boolean);
+      const sample=records.slice(0,5).map(r=>{ const p=hiMapProperty(r, urlIn); return p?{name:p.name, location:p.location, photos:[p.image_url_1,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).length, units:hiMapUnits(r, p, urlIn).map(u=>({name:u.name, base_rate:u.base_rate, currency:u.currency, capacity_adults:u.capacity_adults}))}:null; }).filter(Boolean);
       return deps.json({ok:true, found:props.length, skipped:records.length-props.length, sample});
     }catch(e){ return deps.json({ok:false, error:String(e?.message||e)}, 200); }
   }

@@ -100,6 +100,17 @@ describe('mapping', ()=>{
     assert.equal(units[1].image_url_1, 'https://cdn.example.com/a.jpg'); // falls back to the property's photos
     assert.equal(units[0].external_id, '12::r1');
   });
+  test('relative media paths resolve against the API link', ()=>{
+    const base='https://site.example.com/api/v1/properties?page=1';
+    const raw={id:7, name:'Hill Stay', images:['/uploads/a.jpg', '//cdn.example.com/b.png', 'storage/rooms/c.webp', 'not a url', 'javascript:alert(1)'], video:'/media/tour.mp4',
+      rooms:[{id:'r', name:'Suite', photos:[{url:'/uploads/s.jpg'}]}]};
+    const p=hiMapProperty(raw, base);
+    assert.deepEqual([p.image_url_1, p.image_url_2, p.image_url_3, p.image_url_4], ['https://site.example.com/uploads/a.jpg', 'https://cdn.example.com/b.png', 'https://site.example.com/storage/rooms/c.webp', null]);
+    assert.equal(p.video_url_1, 'https://site.example.com/media/tour.mp4');
+    assert.equal(hiMapUnits(raw, p, base)[0].image_url_1, 'https://site.example.com/uploads/s.jpg');
+    // Without a base, relative paths are still dropped (old behaviour, no guessing).
+    assert.equal(hiMapProperty(raw).image_url_1, null);
+  });
   test('property without rooms becomes one unit', ()=>{
     const p=hiMapProperty(alleppey);
     const [u]=hiMapUnits(alleppey, p);
