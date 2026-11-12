@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { taPropertyClean, taPropertyMediaRequest, taPropertiesInText, taPropertyMediaPlan, taPropertyMediaItems, taPropertyContextLines, taPropertyMediaUrlError, taResortCategoryFromText, taResortLeadCategory } from './ta-properties.js';
+import { taPropertyClean, taPropertyMediaRequest, taPropertiesInText, taPropertyMediaPlan, taPropertyMediaItems, taPropertyContextLines, taPropertyMediaUrlError, taResortCategoryFromText, taResortLeadCategory, taSeasonMonthsClean, taSeasonMonthsLabel, taPropertySeasonOn, taPropertyCaption, taPropertyFolderId } from './ta-properties.js';
 
 const drive = id => `https://drive.google.com/file/d/${id}/view?usp=sharing`;
 const props = [
@@ -140,4 +140,59 @@ test('bot context groups family before couple and labels each, with the recommen
   assert.ok(lines.some((l) => l.startsWith('- Lake Breeze (Family & Couple Resort')));
   assert.ok(lines.some((l) => /honeymoon, anniversary or a couple recommend Couple Resorts/.test(l)));
   assert.ok(!taPropertyContextLines([catProps[3]]).some((l) => /Resort categories/.test(l)));
+});
+
+const folder = 'https://drive.google.com/drive/folders/1AbCdEfGhIjKlMn?usp=sharing';
+
+test('photos folder: only a Drive folder link is accepted there, and it never sneaks into the file fields', () => {
+  assert.equal(taPropertyClean({ name: 'X', photos_folder_url: folder }).values.photos_folder_url, folder);
+  assert.equal(taPropertyFolderId('https://drive.google.com/drive/u/0/folders/1AbCdEfGhIjKlMn'), '1AbCdEfGhIjKlMn');
+  assert.match(taPropertyClean({ name: 'X', photos_folder_url: drive('file1') }).error, /Photos folder: paste a Google Drive folder link/);
+  assert.match(taPropertyClean({ name: 'X', photos_folder_url: 'https://example.com/pics' }).error, /folder link/);
+  assert.match(taPropertyClean({ name: 'X', image_url: folder }).error, /not a folder/);
+});
+
+test('a photos folder counts as media: photo asks expand it after the single photos', () => {
+  const p = { id: 21, name: 'Misty Hills Resort', image_url: drive('cover'), photos_folder_url: folder, pdf_url: drive('p'), status: 'active' };
+  const plan = taPropertyMediaPlan([p], { userText: 'send more pictures of misty hills resort' });
+  assert.equal(plan.explicit, true);
+  const items = taPropertyMediaItems(p, plan.kinds);
+  assert.deepEqual(items.map(i => i.field), ['image_url', 'photos_folder_url']);
+  assert.equal(items[1].folder, true);
+  // folder alone is enough to be sendable, and gets the caption itself
+  const only = { id: 22, name: 'Folder Only Villa', photos_folder_url: folder, status: 'active' };
+  assert.deepEqual(taPropertyMediaPlan([only], { userText: 'photos please' }).properties.map(x => x.id), [22]);
+  assert.match(taPropertyMediaItems(only)[0].caption, /Folder Only Villa/);
+  assert.deepEqual(taPropertyMediaItems(only, { images: false, video: true, pdf: true }), []);
+});
+
+test('season months: cleaned, labelled across the new year, and today placed in season or off-season', () => {
+  assert.equal(taSeasonMonthsClean([12, 1, '11', 10, 13, 0, 1]), '1,10,11,12');
+  assert.equal(taSeasonMonthsClean('Oct, nov dec'), '10,11,12');
+  assert.equal(taSeasonMonthsClean(''), '');
+  assert.equal(taSeasonMonthsLabel([1, 10, 11, 12]), 'Oct–Jan');
+  assert.equal(taSeasonMonthsLabel([4, 5, 12]), 'Apr–May, Dec');
+  assert.equal(taSeasonMonthsLabel([2, 3, 4, 5, 6, 7, 8, 9]), 'Feb–Sep');
+  assert.equal(taSeasonMonthsLabel([...Array(12).keys()].map(i => i + 1)), 'all year');
+  const p = { season_months: '1,10,11,12' };
+  assert.equal(taPropertySeasonOn(p, new Date(2026, 11, 20)), 'season');
+  assert.equal(taPropertySeasonOn(p, new Date(2026, 5, 1)), 'off');
+  assert.equal(taPropertySeasonOn({}, new Date()), null);
+  const { values } = taPropertyClean({ name: 'S', season_price: '12000', off_season_price: '', season_months: ['10', '11'] });
+  assert.equal(values.season_price, 12000);
+  assert.equal(values.off_season_price, null);
+  assert.equal(values.season_months, '10,11');
+});
+
+test('season and off-season rates show in the caption and the bot context, with the rate for now', () => {
+  const p = { id: 31, name: 'Coral Bay Resort', location: 'Goa', price_from: 7000, season_price: 14000, off_season_price: 8000, season_months: '1,10,11,12', currency: 'INR', price_unit: 'per night', image_url: drive('c'), status: 'active' };
+  assert.equal(taPropertyCaption(p), '🏨 Coral Bay Resort — Goa\nSeason (Oct–Jan): INR 14,000 per night\nOff-season (Feb–Sep): INR 8,000 per night');
+  const lines = taPropertyContextLines([p], new Date(2026, 10, 12));
+  assert.ok(lines.some(l => l.includes('Coral Bay Resort') && l.includes('Season (Oct–Jan): INR 14000 per night; Off-season (Feb–Sep): INR 8000 per night (now: season)')));
+  assert.ok(lines.some(l => /quote the rate for the month the customer will travel \(today is Nov 2026\)/.test(l)));
+  assert.match(lines.at(-1), /never say you cannot send photos/);
+  // no seasonal rates → the old "from" price and no season rule
+  const plain = taPropertyContextLines([{ ...p, season_price: null, off_season_price: null }]);
+  assert.ok(plain.some(l => l.includes('from INR 7000 per night')));
+  assert.ok(!plain.some(l => /Season \/ off-season/.test(l)));
 });

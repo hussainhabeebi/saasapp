@@ -92,3 +92,48 @@ test('Family and Couple resorts get their own sections and filter chips; categor
   await expect(page.locator('#savePropMsg')).toHaveText('✓ Saved');
   expect(posts.at(-1)).toMatchObject({ name: 'Tiny Tots Resort', category: 'family' });
 });
+
+test('season / off-season rates and a Drive photos folder: fetched, previewed and saved', async ({ page }) => {
+  const ids = { packages: 'tp', bookings: 'tb', cases: 'tc', itineraries: 'ti', umrah_groups: 'tu' };
+  const patches = [], folderCalls = [];
+  const list = [{ id: 5, name: 'Coral Bay Resort', status: 'active', currency: 'INR', price_unit: 'per night', season_price: 14000, off_season_price: 8000, season_months: '1,10,11,12',
+    photos_folder_url: 'https://drive.google.com/drive/folders/1FolderAbcdef' }];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (!url.startsWith(WORKER)) return route.abort();
+    const u = new URL(url);
+    if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids) } });
+    if (u.pathname === '/ta/properties/folder-photos') { folderCalls.push(u.searchParams.get('url')); return route.fulfill({ json: { count: 37, ids: ['f1', 'f2', 'f3', 'f4'] } }); }
+    if (u.pathname === '/ta/properties' && req.method() === 'GET') return route.fulfill({ json: { list } });
+    if (u.pathname === '/ta/properties' && req.method() === 'PATCH') { patches.push(req.postDataJSON()); return route.fulfill({ json: { ok: true } }); }
+    return route.fulfill({ json: { list: [] } });
+  });
+  await page.goto('file://' + path.resolve(__dirname, '../travel-agency.html') + '?client=7&token=t&embed=1&shell=travel&tab=properties', { waitUntil: 'domcontentloaded' });
+  const content = page.locator('#agencyContent');
+  await expect(content.locator('.prop-season')).toContainText('INR 14,000');
+  await expect(content.locator('.prop-season')).toContainText('Oct–Jan');
+  await expect(content.locator('.prop-season')).toContainText('Feb–Sep');
+  await expect(content).toContainText('📂 Folder');
+
+  await content.locator('text=Coral Bay Resort').click();
+  await expect(page.locator('#propSeasonPrice')).toHaveValue('14000');
+  await expect(page.locator('#propSeasonMonths [data-month="10"]')).toHaveClass(/btn-primary/);
+  await expect(page.locator('#propSeasonHint')).toContainText('Season: Oct–Jan · Off-season: Feb–Sep');
+  await page.locator('#propSeasonMonths [data-month="1"]').click();
+  await page.locator('#propSeasonMonths [data-month="5"]').click();
+  await expect(page.locator('#propSeasonHint')).toContainText('Season: May, Oct–Dec');
+
+  await page.click('#propFolderBtn');
+  await expect(page.locator('#propFolderCount')).toContainText('37 photos found · filled Photo 1, Photo 2, Photo 3');
+  expect(folderCalls).toEqual(['https://drive.google.com/drive/folders/1FolderAbcdef']);
+  await expect(page.locator('#propImg1')).toHaveValue('https://drive.google.com/file/d/f1/view');
+  await expect(page.locator('#propImg3')).toHaveValue('https://drive.google.com/file/d/f3/view');
+  if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
+
+  await page.fill('#propOffSeasonPrice', '7500');
+  await page.click('#savePropBtn');
+  await expect(page.locator('#savePropMsg')).toHaveText('✓ Saved');
+  expect(patches.at(-1)).toMatchObject({ Id: '5', season_price: '14000', off_season_price: '7500', season_months: '5,10,11,12',
+    photos_folder_url: 'https://drive.google.com/drive/folders/1FolderAbcdef', image_url: 'https://drive.google.com/file/d/f1/view' });
+});
