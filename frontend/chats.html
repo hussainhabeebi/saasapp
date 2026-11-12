@@ -267,6 +267,12 @@ const sessionToken=params.get('token')||'';
 // dashboard's own navigation replaces our "← Dashboard" button, and lead details open as the CRM's
 // lead card on top of the chat. See chats.js for the dashboard half of this postMessage channel.
 const embedded=params.get('embed')==='1'&&window.parent!==window;
+// The page itself never scrolls (only the list and thread do), but iPhone scrolls it anyway to bring
+// the message box above the keyboard — inside the phone app's frame that slid the whole chat out of
+// view and left a white screen. Put it back whenever that happens.
+(function(){const pin=()=>{const e=document.scrollingElement;if(e&&(e.scrollTop||e.scrollLeft)){e.scrollTop=0;e.scrollLeft=0}};
+ addEventListener('scroll',pin,{passive:true});addEventListener('focusin',()=>{pin();setTimeout(pin,60);setTimeout(pin,350)});
+ window.visualViewport?.addEventListener('resize',()=>setTimeout(pin,50))})();
 if(embedded)document.documentElement.classList.add('embedded');
 if(params.get('skin')==='m')document.documentElement.classList.add('skin-m');
 function toParent(type,data={}){if(!embedded)return;try{window.parent.postMessage({source:'lv-chats',type,...data},location.protocol==='file:'?'*':location.origin)}catch{}}

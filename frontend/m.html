@@ -250,16 +250,17 @@ const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
   const root=document.documentElement,vv=window.visualViewport;
   const ios=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
   const standalone=navigator.standalone===true||matchMedia('(display-mode: standalone)').matches;
-  let full=0;
+  let full=0;const tall={};
   const fit=()=>{
     let h=window.innerHeight,top=0,kb=false;
     if(ios&&vv){
       const portrait=window.innerWidth<=window.innerHeight||vv.width<=vv.height;
       const screenH=standalone?(portrait?Math.max(screen.width,screen.height):Math.min(screen.width,screen.height)):0;
-      full=Math.max(window.innerHeight,screenH);
+      // Tallest height seen in this orientation: in Safari innerHeight shrinks with the keyboard too.
+      const k=portrait?'p':'l';full=Math.max(window.innerHeight,screenH,tall[k]||0);if(!(vv.height<full-120))tall[k]=full=Math.max(full,vv.height);
       kb=vv.height<full-120;
       if(kb){h=Math.round(vv.height);top=Math.max(0,Math.round(vv.offsetTop));if(window.scrollY)window.scrollTo(0,0)}
-      else h=full;
+      else h=standalone?full:window.innerHeight;
     }
     if(h>0)root.style.setProperty('--app-h',h+'px');
     root.style.setProperty('--app-top',top+'px');
