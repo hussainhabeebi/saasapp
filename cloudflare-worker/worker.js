@@ -38131,6 +38131,36 @@ function hospUnitNameMatch(lower, unitName){
   return false;
 }
 
+// WhatsApp list messages hold at most 10 rows and engineSendChatwootQuickReply drops the rest, so a
+// resort with more than 10 properties (easy after an API import) or a property with more than 10
+// rooms used to lose everything after the 10th name, A–Z, without a trace. Longer lists are paged:
+// 9 names + a "More properties · page 2" row. WhatsApp echoes the tapped row's title back as the
+// message text, so the page number lives in the title (not "(2/3)", which hospitality-pro's date
+// parser reads as 2 March). The last page's "More" row wraps back to page 1.
+const HOSP_PICKER_PAGE=9;
+export function hospPickerItems(names, kind, page=1){
+  const list=(names||[]).filter(Boolean);
+  if(list.length<=10) return list.map(n=>({title:n, value:n}));
+  const pages=Math.ceil(list.length/HOSP_PICKER_PAGE);
+  const p=Math.min(Math.max(1, Math.floor(Number(page))||1), pages);
+  const items=list.slice((p-1)*HOSP_PICKER_PAGE, p*HOSP_PICKER_PAGE).map(n=>({title:n, value:n}));
+  const next=p<pages?p+1:1;
+  let label=`More ${kind} · page ${next}`;
+  if(label.length>24) label=`${kind[0].toUpperCase()}${kind.slice(1)} · page ${next}`;
+  items.push({title:label, value:label});
+  return items;
+}
+// {kind:'properties'|'rooms', page} when the text is a tap on one of hospPickerItems' "More" rows.
+export function hospMoreTap(text){
+  const m=String(text||'').trim().match(/^(?:more\s+)?(properties|rooms)\s*·\s*page\s*(\d+)$/i);
+  return m?{kind:m[1].toLowerCase(), page:Number(m[2])}:null;
+}
+// Destination key for a property's location: its first comma part, so an imported "Munnar, Kerala"
+// and a hand-typed "Munnar" are the same destination, and a customer saying "Munnar" finds both.
+export function hospLocKey(loc){
+  return String(loc||'').split(',')[0].trim().toLowerCase();
+}
+
 // Returns 1-based index if the text is a numeric/ordinal selection ("1", "option 2", "2nd", etc.), else null.
 function resortOrdinalFromText(lower){
   const s=lower.trim();
@@ -38154,6 +38184,8 @@ function resortOrdinalFromText(lower){
 // leadId is null for brand-new leads — that counts as never having received media.
 async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText){
   if(!userText) return false;
+  // A "More properties · page 2" tap — engineMaybeSendHospitalityMedia sends the next page.
+  if(hospMoreTap(userText)) return true;
   const lower=userText.toLowerCase();
   // Specific unit name match — always suppress LLM so the unit media speaks for itself,
   // regardless of whether this lead has received media before.
@@ -38742,8 +38774,7 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
     const linkedRooms=(allUnits||[]).filter(u=>Number(u.property_id)===Number(property.id));
     const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
     if(rooms.length){
-      const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
-      await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+      await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', hospPickerItems(rooms.map(r=>r.name), 'rooms'));
     }
   }
   if(sentAny){
@@ -38771,8 +38802,8 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 // function is the sole responder for those requests.
 
 // Sends a welcome showcase on a new lead's first message:
-//   - For each active property (in name order): up to 3 images with property name caption,
-//     followed by property-picker quick-reply buttons
+//   - For the first few active properties (in name order): up to 3 images with property name
+//     caption, followed by a property picker listing all of them (paged past 10)
 //   - Falls back to same pattern for units when no properties are configured
 // Only fires for brand-new leads (caller gates on isNewLead).
 async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
@@ -38784,56 +38815,71 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
     ]);
     const propList=properties||[];
     const unitList=units||[];
-
-    if(propList.length){
-      for(const prop of propList){
-        const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean).slice(0,3);
-        let captionSent=false;
-        for(let i=0;i<imgUrls.length;i++){
+    const list=propList.length?propList:unitList;
+    if(!list.length) return;
+    const isProp=propList.length>0;
+    // The picker is what lets the customer go on, so the photo showcase must never cost it. A
+    // large catalogue (e.g. an API import of 30 properties) used to run this loop out of time or
+    // subrequests, or one failed upload threw, and the picker never went out. Now: photos for the
+    // first HOSP_GREETING_MAX_ITEMS only, within HOSP_GREETING_BUDGET_MS, each send isolated, and the
+    // picker always follows.
+    const deadline=Date.now()+HOSP_GREETING_BUDGET_MS;
+    for(const item of list.slice(0, HOSP_GREETING_MAX_ITEMS)){
+      if(Date.now()>deadline) break;
+      const imgUrls=[item.image_url_1,item.image_url_2,item.image_url_3,item.image_url_4,item.image_url_5].filter(Boolean).slice(0,3);
+      let captionSent=false;
+      for(let i=0;i<imgUrls.length;i++){
+        if(Date.now()>deadline) break;
+        try{
           const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
           if(!blob) continue;
           const fd=new FormData();
-          fd.append('content', captionSent?'':`*${prop.name}* 🏨`);
+          fd.append('content', captionSent?'':(isProp?`*${item.name}* 🏨`:`*${item.name}* 🏖️`));
           fd.append('message_type','outgoing'); fd.append('private','false');
-          fd.append('attachments[]', blob, `property-${i+1}.jpg`);
+          fd.append('attachments[]', blob, `${isProp?'property':'unit'}-${i+1}.jpg`);
           const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
             {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
           if(r.ok) captionSent=true;
-        }
+        }catch(e){}
       }
-      const propButtons=propList.map(p=>({title:p.name, value:p.name}));
-      if(propButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 👇', propButtons);
-    } else if(unitList.length){
-      for(const unit of unitList){
-        const imgUrls=[unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean).slice(0,3);
-        let captionSent=false;
-        for(let i=0;i<imgUrls.length;i++){
-          const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
-          if(!blob) continue;
-          const fd=new FormData();
-          fd.append('content', captionSent?'':`*${unit.name}* 🏖️`);
-          fd.append('message_type','outgoing'); fd.append('private','false');
-          fd.append('attachments[]', blob, `unit-${i+1}.jpg`);
-          const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
-            {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-          if(r.ok) captionSent=true;
-        }
-      }
-      const unitButtons=unitList.map(u=>({title:u.name, value:u.name}));
-      if(unitButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
     }
+    if(isProp) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 👇', hospPickerItems(propList.map(p=>p.name), 'properties'));
+    else await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', hospPickerItems(unitList.map(u=>u.name), 'rooms'));
   }catch(e){ await reportOpsError(env, 'hospitalitySendGreetingImages', e, {clientId, convId}); }
 }
+const HOSP_GREETING_MAX_ITEMS=5;
+const HOSP_GREETING_BUDGET_MS=12000;
 
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
-    const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all();
     if(!units || !units.length) return;
     const lower=userText.toLowerCase();
 
     if(c.hospitality_style==='resort'){
+      // 0. "More properties · page 2" / "More rooms · page 2" tap — the next page of the same list.
+      const more=hospMoreTap(userText);
+      if(more){
+        if(more.kind==='properties'){
+          const {results:all}=await env.DB.prepare(`SELECT name, location FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all();
+          const loc=hospLocKey(hospContext.selectedLocation);
+          const inLoc=loc?(all||[]).filter(p=>hospLocKey(p.location)===loc):[];
+          const list=inLoc.length?inLoc:(all||[]);
+          if(list.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'More properties 👇', hospPickerItems(list.map(p=>p.name), 'properties', more.page));
+        }else{
+          let rooms=units;
+          if(hospContext.selectedProperty){
+            const {results:props}=await env.DB.prepare(`SELECT id, name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+            const prop=(props||[]).find(p=>hospUnitNameMatch(String(hospContext.selectedProperty).toLowerCase(), p.name));
+            const linked=prop?units.filter(u=>Number(u.property_id)===Number(prop.id)):[];
+            if(linked.length) rooms=linked;
+          }
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'More rooms 👇', hospPickerItems(rooms.map(u=>u.name), 'rooms', more.page));
+        }
+        return;
+      }
       // Resort 2-tier matching (migrations/0066_resort_properties.sql):
       // 1. Specific room name → always send that room's media (no dedup — lead explicitly chose it)
       const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
@@ -38857,8 +38903,9 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       if(properties && properties.length && !hospContext.selectedProperty && !hospContext.selectedUnit){
         const {results:locationRows}=await env.DB.prepare(`SELECT DISTINCT location FROM hospitality_properties WHERE client_id=? AND active=1 AND location!=''`).bind(Number(clientId)).all();
         if(locationRows && locationRows.length){
-          const matchedLocRow=locationRows.find(r=>hospUnitNameMatch(lower, r.location));
-          if(matchedLocRow && matchedLocRow.location!==selectedLocation){
+          // Match the full location or just its city part, so "Munnar" finds "Munnar, Kerala".
+          const matchedLocRow=locationRows.find(r=>hospUnitNameMatch(lower, r.location) || (hospLocKey(r.location).length>=4 && hospLocKey(r.location)!==String(r.location).trim().toLowerCase() && hospUnitNameMatch(lower, hospLocKey(r.location))));
+          if(matchedLocRow && hospLocKey(matchedLocRow.location)!==hospLocKey(selectedLocation)){
             selectedLocation=matchedLocRow.location;
             try{
               await ensureLeadsColumns(env, ['HospSelectedLocation']);
@@ -38868,8 +38915,9 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         }
       }
       // Filter property list to selected location — all pickers and name-matching use this subset.
+      // Compared by city part (hospLocKey) so "Munnar" and "Munnar, Kerala" are one destination.
       const filteredProps=selectedLocation
-        ? (properties||[]).filter(p=>p.location && p.location.toLowerCase()===selectedLocation.toLowerCase())
+        ? (properties||[]).filter(p=>p.location && hospLocKey(p.location)===hospLocKey(selectedLocation))
         : (properties||[]);
 
       // 2a. Photo/image keyword — use stored conversation context to decide what to send.
@@ -38885,11 +38933,9 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         }
         // No unit or property selected yet — ask which one they'd like to see
         if(filteredProps.length){
-          const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
-          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which property would you like to see images of? 👇', propButtons);
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which property would you like to see images of? 👇', hospPickerItems(filteredProps.map(p=>p.name), 'properties'));
         } else if(units.length){
-          const unitButtons=units.map(u=>({title:u.name, value:u.name}));
-          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which room would you like to see images of? 👇', unitButtons);
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which room would you like to see images of? 👇', hospPickerItems(units.map(u=>u.name), 'rooms'));
         }
         return;
       }
@@ -38912,9 +38958,8 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
           const alreadySentMedia=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
           const alreadySentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
           if(!alreadySentMedia && !alreadySentProp){
-            const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
             const pickerPrompt=selectedLocation?`Which property in ${selectedLocation} would you like to explore? 👇`:'Which property would you like to explore? 👇';
-            await engineSendChatwootQuickReply(env, c, clientId, convId, pickerPrompt, propButtons);
+            await engineSendChatwootQuickReply(env, c, clientId, convId, pickerPrompt, hospPickerItems(filteredProps.map(p=>p.name), 'properties'));
           }
         }
       } else {
@@ -38924,8 +38969,7 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         if(c.hospitality_greeting_images==='off' && HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)){
           const alreadySentMedia=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
           if(!alreadySentMedia){
-            const unitButtons=units.map(u=>({title:u.name, value:u.name}));
-            await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+            await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', hospPickerItems(units.map(u=>u.name), 'rooms'));
           }
         }
       }
