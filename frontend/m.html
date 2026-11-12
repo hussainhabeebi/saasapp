@@ -38,7 +38,9 @@ button:active{transform:scale(.98)}
 .tab{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;flex-direction:column;visibility:hidden;background:var(--bg)}
 .tab.on{visibility:visible}
 .thread-open #nav{display:none}
-#tabChats{bottom:calc(var(--nav) + var(--navgap)*2 + var(--sab))}.thread-open #tabChats{bottom:0}
+/* Chats is an iframe, which can't read the safe-area insets — so the gap under the status bar (clock,
+   signal, battery) is kept here, outside the frame, or the chat header is drawn beneath it. */
+#tabChats{top:env(safe-area-inset-top,0px);bottom:calc(var(--nav) + var(--navgap)*2 + var(--sab));background:#fff}.thread-open #tabChats{bottom:env(safe-area-inset-bottom,0px)}
 .top{min-height:64px;display:flex;align-items:center;gap:8px;padding:calc(6px + env(safe-area-inset-top)) 12px 6px 20px;flex:none;background:var(--bg)}
 .top h1{margin:0;font-size:28px;font-weight:800;letter-spacing:-.02em;color:var(--ink);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
