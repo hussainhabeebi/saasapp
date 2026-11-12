@@ -505,7 +505,7 @@ test.describe('on a phone', () => {
     await page.locator('#list .contact', { hasText: 'Asha' }).click();
     const call = page.locator('#callBtn');
     await expect(call).toBeVisible();
-    await expect(call).toHaveAttribute('href', 'tel:919800000001');
+    await expect(call).toHaveAttribute('href', 'tel:+919800000001');
     await expect(call).toBeInViewport({ ratio: 1 });
     await expect(page.locator('.chat-name')).toBeInViewport({ ratio: 1 });
     await expect(page.locator('.chat-actions [title="Menu"]')).toBeInViewport({ ratio: 1 });
@@ -675,7 +675,7 @@ test('the chat header keeps six things; resolve, labels, priority, share and det
   await expect(page.locator('#hdrCtl > *')).toHaveCount(2); // Bot / Human + assignee (category only on travel)
   await expect(page.locator('#botPill')).toBeVisible();
   await expect(page.locator('#assignBtn')).toBeVisible();
-  await expect(page.locator('.chat-actions > button, .chat-actions > a')).toHaveCount(2); // 📞 + ⋮
+  await expect(page.locator('.chat-actions > button, .chat-actions > a')).toHaveCount(3); // WhatsApp + 📞 + ⋮
   await expect(page.locator('#resolveBtn, #labelBtn, #prioBtn, #shareBtn, #infoBtn')).toHaveCount(0);
   // The reply-window timer sits in the name / number line.
   await expect(page.locator('.chat-sub #winTimer')).toBeVisible();
