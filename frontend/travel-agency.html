@@ -853,13 +853,25 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
       <div class="form-group"><label class="form-label">Price Unit</label>
         <select class="form-input" id="propUnit"><option>per night</option><option>per person</option><option>per couple</option><option>per package</option></select>
       </div>
+      <div style="grid-column:1/-1;font-size:12px;color:var(--muted);margin-top:4px">📅 Season &amp; off-season rates — optional. Pick the months that count as season; every other month is off-season. The bot quotes the rate for the customer's travel month.</div>
+      <div class="form-group"><label class="form-label">Season Rate</label><input class="form-input" type="number" id="propSeasonPrice" placeholder="e.g. 12000"></div>
+      <div class="form-group"><label class="form-label">Off-season Rate</label><input class="form-input" type="number" id="propOffSeasonPrice" placeholder="e.g. 8000"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Season Months</label>
+        <div id="propSeasonMonths" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        <div id="propSeasonHint" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+      </div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Room Types (one per line)</label><textarea class="form-input" id="propRooms" rows="2" placeholder="Deluxe Room&#10;Pool Villa"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Amenities (one per line)</label><textarea class="form-input" id="propAmenities" rows="2" placeholder="Swimming pool&#10;Breakfast included&#10;Free Wi-Fi"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Description</label><textarea class="form-input" id="propDesc" rows="2"></textarea></div>
-      <div style="grid-column:1/-1;font-size:12px;color:var(--muted)">📁 Media — paste Google Drive <strong>file</strong> links (not folders), shared as <em>Anyone with the link can view</em>. Videos must be under 16 MB, photos under 5 MB for WhatsApp.</div>
+      <div style="grid-column:1/-1;font-size:12px;color:var(--muted)">📁 Media — for Photo 1–3, Video and PDF paste Google Drive <strong>file</strong> links (folders go in Photos Folder), shared as <em>Anyone with the link can view</em>. Videos must be under 16 MB, photos under 5 MB for WhatsApp.</div>
       <div class="form-group"><label class="form-label">Photo 1</label><input class="form-input" id="propImg1" placeholder="https://drive.google.com/file/d/…/view"></div>
       <div class="form-group"><label class="form-label">Photo 2</label><input class="form-input" id="propImg2" placeholder="https://drive.google.com/file/d/…/view"></div>
       <div class="form-group"><label class="form-label">Photo 3</label><input class="form-input" id="propImg3" placeholder="https://drive.google.com/file/d/…/view"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">📂 Photos Folder (Google Drive folder — bulk photos)</label>
+        <div style="display:flex;gap:8px"><input class="form-input" id="propFolder" placeholder="https://drive.google.com/drive/folders/…" style="flex:1"><button type="button" class="btn btn-secondary btn-sm" id="propFolderBtn" onclick="fetchPropertyFolderPhotos()">📥 Fetch photos</button></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Share the folder as <em>Anyone with the link can view</em>. When a lead asks for photos the bot sends up to 10 from it (4 when it recommends the property), a fresh pick each time.</div>
+        <div id="propFolderResult" style="margin-top:8px"></div>
+      </div>
       <div class="form-group"><label class="form-label">Video</label><input class="form-input" id="propVideo" placeholder="https://drive.google.com/file/d/…/view"></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">PDF Brochure / Tariff</label><input class="form-input" id="propPdf" placeholder="https://drive.google.com/file/d/…/view"></div>
     </div>
@@ -5161,7 +5173,8 @@ function renderTaProperties(){
   const card=p=>{
     const thumb=propThumb(p);
     const photos=[p.image_url,p.image_url_2,p.image_url_3].filter(Boolean).length;
-    const media=[photos?`📷 ${photos}`:'',p.video_url?'🎬 Video':'',p.pdf_url?'📄 PDF':''].filter(Boolean).join(' · ');
+    const media=[photos?`📷 ${photos}`:'',p.photos_folder_url?'📂 Folder':'',p.video_url?'🎬 Video':'',p.pdf_url?'📄 PDF':''].filter(Boolean).join(' · ');
+    const seasonal=propSeasonLines(p);
     return `
     <div class="ta-card" style="padding:0;overflow:hidden;cursor:pointer;margin:0" onclick="openPropertyModal('${p.id}')">
       <div style="height:140px;background:var(--bg) center/cover no-repeat;${thumb?`background-image:url('${escAttr(thumb)}')`:''};display:flex;align-items:center;justify-content:center;font-size:36px">${thumb?'':'🏨'}</div>
@@ -5172,7 +5185,8 @@ function renderTaProperties(){
         </div>
         ${PROP_CAT_BADGE[p.category]?`<div class="prop-cat" style="display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;background:${p.category==='couple'?'#FCE7F3;color:#9D174D':p.category==='family'?'#DBEAFE;color:#1E40AF':'#EDE9FE;color:#5B21B6'}">${PROP_CAT_BADGE[p.category]}</div>`:''}
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(PROP_TYPE_LABELS[p.property_type]||'Resort')}${p.star_rating?' · '+'⭐'.repeat(p.star_rating):''}${p.location?' · '+esc(p.location):''}</div>
-        <div style="font-family:var(--mono);font-size:13px;margin-top:6px">${Number(p.price_from)>0?`From ${esc(p.currency||'INR')} ${fmtMoney(p.price_from)} <span style="color:var(--muted)">${esc(p.price_unit||'per night')}</span>`:'<span style="color:var(--muted)">Price on request</span>'}</div>
+        ${seasonal.length?`<div class="prop-season" style="font-family:var(--mono);font-size:12.5px;margin-top:6px;line-height:1.6">${seasonal.join('<br>')}</div>`:''}
+        <div style="font-family:var(--mono);font-size:13px;margin-top:6px;${seasonal.length&&!(Number(p.price_from)>0)?'display:none':''}">${Number(p.price_from)>0?`From ${esc(p.currency||'INR')} ${fmtMoney(p.price_from)} <span style="color:var(--muted)">${esc(p.price_unit||'per night')}</span>`:'<span style="color:var(--muted)">Price on request</span>'}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">${media||'No media yet'}</div>
       </div>
     </div>`;
@@ -5196,20 +5210,74 @@ function renderTaProperties(){
     <button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button>
   </div>
   ${_taProperties.length?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${chips}</div>${sections}`
-    :'<div class="ta-card" style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No resorts or hotels yet — click <strong>+ Add Property</strong> to add one with its photos, video and PDF brochure.</div>'}
+    :'<div class="ta-card" style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No resorts or hotels yet — click <strong>+ Add Property</strong> to add one with its photos (or a Drive photos folder), season / off-season rates, video and PDF brochure.</div>'}
   <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
-    💡 The bot sends a property's photos, video and PDF straight to the lead when they name it, ask for its photos/video/brochure, or the bot recommends it. It suggests Family Resorts for trips with kids or family and Couple Resorts for honeymoons and couples, and files the lead under that category in the CRM.
+    💡 The bot sends a property's photos (plus a batch from its Drive photos folder), video and PDF straight to the lead when they name it, ask for its photos/video/brochure, or the bot recommends it. It suggests Family Resorts for trips with kids or family and Couple Resorts for honeymoons and couples, and files the lead under that category in the CRM.
   </div>`;
 }
 
 let _editPropId=null;
-const PROP_INPUTS={name:'propName',property_type:'propType',category:'propCategory',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',video_url:'propVideo',pdf_url:'propPdf'};
+const PROP_INPUTS={name:'propName',property_type:'propType',category:'propCategory',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',season_price:'propSeasonPrice',off_season_price:'propOffSeasonPrice',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',photos_folder_url:'propFolder',video_url:'propVideo',pdf_url:'propPdf'};
+const PROP_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let _propSeasonMonths=new Set();
+const propSeasonSet=v=>new Set(String(v||'').split(',').map(Number).filter(n=>n>=1&&n<=12));
+// "Oct–Jan" / "Apr–May, Dec" — same wrap-around labelling as the worker's taSeasonMonthsLabel.
+function propMonthsLabel(set){
+  if(!set.size) return '';
+  if(set.size===12) return 'all year';
+  const prev=m=>m===1?12:m-1;
+  const start=[1,2,3,4,5,6,7,8,9,10,11,12].find(m=>set.has(m)&&!set.has(prev(m)));
+  const runs=[];
+  for(let i=0,m=start;i<12;i++,m=m%12+1){ if(!set.has(m)) continue; if(set.has(prev(m))&&runs.length) runs[runs.length-1][1]=m; else runs.push([m,m]); }
+  return runs.map(([a,b])=>a===b?PROP_MONTHS[a-1]:`${PROP_MONTHS[a-1]}–${PROP_MONTHS[b-1]}`).join(', ');
+}
+const propOffSet=set=>new Set([1,2,3,4,5,6,7,8,9,10,11,12].filter(m=>!set.has(m)));
+// Season / off-season rate lines for a property card, or [] when it has neither rate.
+function propSeasonLines(p){
+  const on=propSeasonSet(p.season_months), off=on.size?propOffSet(on):new Set(), cur=esc(p.currency||'INR'), unit=esc(p.price_unit||'per night');
+  const thisMonth=new Date().getMonth()+1;
+  const out=[];
+  if(Number(p.season_price)>0) out.push(`<span title="Season">🌞 ${cur} ${fmtMoney(p.season_price)}</span> <span style="color:var(--muted)">${unit}${on.size?' · '+propMonthsLabel(on):''}${on.has(thisMonth)?' · now':''}</span>`);
+  if(Number(p.off_season_price)>0) out.push(`<span title="Off-season">🍃 ${cur} ${fmtMoney(p.off_season_price)}</span> <span style="color:var(--muted)">${unit}${off.size?' · '+propMonthsLabel(off):''}${off.has(thisMonth)?' · now':''}</span>`);
+  return out;
+}
+function renderPropSeasonMonths(){
+  $id('propSeasonMonths').innerHTML=PROP_MONTHS.map((m,i)=>`<button type="button" class="btn btn-sm ${_propSeasonMonths.has(i+1)?'btn-primary':'btn-secondary'}" data-month="${i+1}" onclick="togglePropSeasonMonth(${i+1})" style="min-width:48px">${m}</button>`).join('');
+  $id('propSeasonHint').textContent=_propSeasonMonths.size?`Season: ${propMonthsLabel(_propSeasonMonths)}${_propSeasonMonths.size<12?` · Off-season: ${propMonthsLabel(propOffSet(_propSeasonMonths))}`:''}`:'No season months picked — both rates are shown to the lead without months.';
+}
+function togglePropSeasonMonth(m){ _propSeasonMonths.has(m)?_propSeasonMonths.delete(m):_propSeasonMonths.add(m); renderPropSeasonMonths(); }
+
+// "Fetch photos": lists the Drive folder's images (proves it's public), previews them, and fills
+// any empty Photo 1–3 slots with the first ones so the card gets a cover photo.
+async function fetchPropertyFolderPhotos(){
+  const out=$id('propFolderResult'), btn=$id('propFolderBtn'), link=$id('propFolder').value.trim();
+  if(!/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(link)){ out.innerHTML='<span class="save-msg err">Paste a Google Drive folder link (drive.google.com/drive/folders/…)</span>'; return; }
+  btn.disabled=true; out.innerHTML='<span style="font-size:12px;color:var(--muted)">Fetching photos…</span>';
+  try{
+    const res=await fetch(`${WORKER_BASE}/ta/properties/folder-photos?client_id=${encodeURIComponent(clientId)}&url=${encodeURIComponent(link)}`);
+    const d=await res.json().catch(()=>({}));
+    if(!res.ok||d.error) throw new Error(d.error||'Could not read the folder');
+    const ids=d.ids||[];
+    const filled=[];
+    [['propImg1','Photo 1'],['propImg2','Photo 2'],['propImg3','Photo 3']].forEach(([el,label])=>{
+      if($id(el).value.trim()) return;
+      const used=new Set(['propImg1','propImg2','propImg3'].map(x=>propDriveId($id(x).value)));
+      const next=ids.find(id=>!used.has(id));
+      if(next){ $id(el).value=`https://drive.google.com/file/d/${next}/view`; filled.push(label); }
+    });
+    out.innerHTML=`<div style="font-size:12px;margin-bottom:6px" id="propFolderCount">✓ ${d.count} photo${d.count===1?'':'s'} found${filled.length?` · filled ${filled.join(', ')}`:''}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px;max-height:220px;overflow:auto">${ids.slice(0,24).map(id=>`<div style="aspect-ratio:1;border-radius:6px;background:var(--bg) center/cover no-repeat;background-image:url('https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w200')"></div>`).join('')}</div>`;
+  }catch(e){ out.innerHTML=`<span class="save-msg err">${esc(e.message)}</span>`; }
+  finally{ btn.disabled=false; }
+}
 const PROP_DEFAULTS={property_type:'resort',category:'',status:'active',currency:'INR',price_unit:'per night'};
 function openPropertyModal(id){
   _editPropId=id||null;
   const p=id?(_taProperties.find(x=>String(x.id)===String(id))||{}):{};
   $id('propModalTitle').textContent=id?'Edit Property':'New Resort / Hotel';
   for(const [f,el] of Object.entries(PROP_INPUTS)) $id(el).value=p[f]??PROP_DEFAULTS[f]??'';
+  _propSeasonMonths=propSeasonSet(p.season_months); renderPropSeasonMonths();
+  $id('propFolderResult').innerHTML='';
   $id('savePropMsg').textContent='';
   $id('deletePropBtn').style.display=id?'':'none';
   openModal('modalProperty');
@@ -5220,6 +5288,7 @@ async function saveProperty(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   const body={client_id:clientId};
   for(const [f,el] of Object.entries(PROP_INPUTS)) body[f]=$id(el).value.trim();
+  body.season_months=[..._propSeasonMonths].sort((a,b)=>a-b).join(',');
   if(!body.name){msg.textContent='Property name required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     const res=await fetch(`${WORKER_BASE}/ta/properties`,{method:_editPropId?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_editPropId?{...body,Id:_editPropId}:body)});

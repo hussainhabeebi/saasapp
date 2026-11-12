@@ -16,7 +16,7 @@ import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
-import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory} from './ta-properties.js';
+import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory,taPropertyFolderId,TA_PROPERTY_FOLDER_SEND_EXPLICIT,TA_PROPERTY_FOLDER_SEND_VOLUNTEERED} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory} from './travel-crm.js';
@@ -11334,11 +11334,15 @@ async function taPropertyEnsureSchema(env){
     price_from REAL,
     currency TEXT DEFAULT 'INR',
     price_unit TEXT DEFAULT 'per night',
+    season_price REAL,
+    off_season_price REAL,
+    season_months TEXT DEFAULT '',
     amenities TEXT,
     description TEXT,
     image_url TEXT,
     image_url_2 TEXT,
     image_url_3 TEXT,
+    photos_folder_url TEXT,
     video_url TEXT,
     pdf_url TEXT,
     status TEXT DEFAULT 'active',
@@ -11356,9 +11360,13 @@ async function taPropertyEnsureSchema(env){
     sent_at TEXT NOT NULL,
     PRIMARY KEY(client_id, lead_id, property_id, sent_date)
   )`).run();
-  // category (Family / Couple Resort) came after the table did — add it to an existing table.
+  // Columns that came after the table did — category (Family / Couple Resort), the bulk-photos
+  // Drive folder and season / off-season rates — are added to an existing table.
   const {results:cols}=await env.DB.prepare(`PRAGMA table_info(ta_properties)`).all();
-  if(cols&&!cols.some(c=>c.name==='category')) await env.DB.prepare(`ALTER TABLE ta_properties ADD COLUMN category TEXT DEFAULT ''`).run();
+  const have=new Set((cols||[]).map(c=>c.name));
+  for(const [name,type] of [['category',`TEXT DEFAULT ''`],['photos_folder_url','TEXT'],['season_price','REAL'],['off_season_price','REAL'],['season_months',`TEXT DEFAULT ''`]]){
+    if(cols&&!have.has(name)) await env.DB.prepare(`ALTER TABLE ta_properties ADD COLUMN ${name} ${type}`).run();
+  }
   _taPropertySchemaEnsured=true;
 }
 
@@ -11424,6 +11432,41 @@ async function handleTaPropertyDelete(request, env){
   return json({ok:true});
 }
 
+// "Fetch photos" in the property editor: lists the images in a property's Drive folder so the
+// agency can see the folder is public and how many photos the bot will draw from.
+async function handleTaPropertyFolderPhotos(request, env){
+  const url=new URL(request.url);
+  if(!url.searchParams.get('client_id')) return json({error:'client_id required'},400);
+  const folderId=taPropertyFolderId(url.searchParams.get('url'));
+  if(!folderId) return json({error:'Paste a Google Drive folder link (drive.google.com/drive/folders/…)'},400);
+  const ids=await driveListFolderImageIds(env, folderId);
+  if(!ids.length) return json({error:'No photos found — check the folder has images and is shared as "Anyone with the link can view."', ids:[]},404);
+  return json({count:ids.length, ids:ids.slice(0,60)});
+}
+
+// Sends up to `limit` photos from a property's Drive folder as inline WhatsApp images, a fresh
+// random pick each time; the property caption goes on the first one. Returns how many were sent.
+async function taSendPropertyFolderPhotos(env, c, convId, folderUrl, caption, limit){
+  const folderId=taPropertyFolderId(folderUrl);
+  const pool=folderId?[...await driveListFolderImageIds(env, folderId)]:[];
+  if(!pool.length) throw new Error('photos folder empty or not public');
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+  let sent=0;
+  for(const fileId of pool.slice(0,limit*2)){
+    if(sent>=limit) break;
+    const blob=await driveFetchChatImage(fileId);
+    if(!blob) continue;
+    const fd=new FormData();
+    fd.append('content', sent===0?(caption||''):'');
+    fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, `photo-${sent+1}.${blob.type==='image/png'?'png':'jpg'}`);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(r.ok) sent++;
+    else console.error('[taSendPropertyFolderPhotos] Chatwoot attach failed', r.status);
+  }
+  return sent;
+}
+
 async function taClaimPropertyMediaForToday(env, clientId, leadId, propertyId){
   if(!leadId) return true;
   try{
@@ -11449,6 +11492,12 @@ async function travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText,
       const claimed=await taClaimPropertyMediaForToday(env, clientId, leadId, p.id);
       if(!claimed&&!plan.explicit) continue;
       for(const item of taPropertyMediaItems(p, plan.kinds)){
+        if(item.folder){
+          const limit=plan.explicit?TA_PROPERTY_FOLDER_SEND_EXPLICIT:TA_PROPERTY_FOLDER_SEND_VOLUNTEERED;
+          await taSendPropertyFolderPhotos(env, c, convId, item.url, item.caption||'', limit)
+            .catch(e=>reportOpsError(env, 'taSendPropertyFolderPhotos', e, {clientId, propertyId:p.id}));
+          continue;
+        }
         await sendDriveMediaToChatwoot(c, convId, item.url, item.caption||'', item.filename||'');
       }
     }
@@ -42512,6 +42561,7 @@ export default {
       else if(url.pathname==='/ta/properties' && request.method==='POST'){ res=await handleTaPropertyCreate(request, env); }
       else if(url.pathname==='/ta/properties' && request.method==='PATCH'){ res=await handleTaPropertyUpdate(request, env); }
       else if(url.pathname==='/ta/properties' && request.method==='DELETE'){ res=await handleTaPropertyDelete(request, env); }
+      else if(url.pathname==='/ta/properties/folder-photos' && request.method==='GET'){ res=await handleTaPropertyFolderPhotos(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }

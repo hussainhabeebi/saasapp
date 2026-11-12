@@ -10,9 +10,14 @@ export const TA_RESORT_CATEGORIES=['family','couple','both'];
 export const TA_RESORT_CATEGORY_LABEL={family:'Family Resort',couple:'Couple Resort',both:'Family & Couple Resort'};
 // The lead's CRM Service Category for each (the CRM's built-in category list has both).
 export const TA_RESORT_SERVICE_CATEGORY={family:'Family Resort',couple:'Couple Resort'};
-export const TA_PROPERTY_FIELDS=['name','property_type','category','location','star_rating','room_types','price_from','currency','price_unit','amenities','description','image_url','image_url_2','image_url_3','video_url','pdf_url','status'];
-export const TA_PROPERTY_MEDIA_FIELDS=['image_url','image_url_2','image_url_3','video_url','pdf_url'];
-const MEDIA_LABEL={image_url:'Photo 1',image_url_2:'Photo 2',image_url_3:'Photo 3',video_url:'Video',pdf_url:'PDF brochure'};
+export const TA_PROPERTY_FIELDS=['name','property_type','category','location','star_rating','room_types','price_from','currency','price_unit','season_price','off_season_price','season_months','amenities','description','image_url','image_url_2','image_url_3','photos_folder_url','video_url','pdf_url','status'];
+export const TA_PROPERTY_MEDIA_FIELDS=['image_url','image_url_2','image_url_3','photos_folder_url','video_url','pdf_url'];
+const MEDIA_LABEL={image_url:'Photo 1',image_url_2:'Photo 2',image_url_3:'Photo 3',photos_folder_url:'Photos folder',video_url:'Video',pdf_url:'PDF brochure'};
+// Photos pulled from a property's Drive folder per send: more when the lead asked for photos, a
+// few when the bot volunteers them alongside a recommendation.
+export const TA_PROPERTY_FOLDER_SEND_EXPLICIT=10;
+export const TA_PROPERTY_FOLDER_SEND_VOLUNTEERED=4;
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 // Words that say what kind of property it is rather than which one — "the beach resort" must not
 // match every property whose name ends in "Resort".
@@ -29,9 +34,71 @@ export function taPropertyMediaUrlError(field, value){
   if(!url) return '';
   const label=MEDIA_LABEL[field]||field;
   if(!/^https?:\/\//i.test(url)) return `${label}: paste a full link starting with https://`;
+  // The bulk-photos field is the one place a folder belongs.
+  if(field==='photos_folder_url') return taPropertyFolderId(url)?'':`${label}: paste a Google Drive folder link (drive.google.com/drive/folders/…), shared as "Anyone with the link can view."`;
   if(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(url)) return `${label}: paste the Google Drive link of the file itself, not a folder. Share it as "Anyone with the link can view."`;
   if(/(?:drive|docs)\.google\.com/i.test(url)&&!/\/(?:file|document|presentation|spreadsheets)\/d\/[\w-]+|[?&]id=[\w-]+/.test(url)) return `${label}: this doesn't look like a Google Drive file share link.`;
   return '';
+}
+
+// The folder id of a Drive folder link (…/drive/folders/<id>, incl. /drive/u/0/folders/<id>), or ''.
+export function taPropertyFolderId(url){
+  const m=String(url||'').trim().match(/^https?:\/\/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([\w-]{10,})/i);
+  return m?m[1]:'';
+}
+
+// Season months arrive as [10,11,12,1] or "10,11,12,1" (or "Oct, Nov"); stored as "1,10,11,12".
+export function taSeasonMonthsClean(v){
+  const parts=Array.isArray(v)?v:String(v??'').split(/[\s,;]+/);
+  const set=new Set();
+  for(const raw of parts){
+    const t=String(raw).trim();
+    if(!t) continue;
+    const n=/^\d+$/.test(t)?Number(t):MONTHS.findIndex(m=>t.slice(0,3).toLowerCase()===m.toLowerCase())+1;
+    if(n>=1&&n<=12) set.add(n);
+  }
+  return [...set].sort((a,b)=>a-b).join(',');
+}
+
+export function taSeasonMonths(p){
+  return String(p?.season_months||'').split(',').map(Number).filter(n=>n>=1&&n<=12);
+}
+
+// "Oct–Jan" / "Apr–May, Dec" / "all year" — wraps across the new year.
+export function taSeasonMonthsLabel(months){
+  const set=new Set(months||[]);
+  if(!set.size) return '';
+  if(set.size===12) return 'all year';
+  const start=[...Array(12).keys()].map(i=>i+1).find(m=>!set.has(m===1?12:m-1)&&set.has(m));
+  const runs=[];
+  for(let i=0,m=start;i<12;i++,m=m%12+1){
+    if(!set.has(m)) continue;
+    const prev=m===1?12:m-1;
+    if(set.has(prev)&&runs.length) runs[runs.length-1][1]=m; else runs.push([m,m]);
+  }
+  return runs.map(([a,b])=>a===b?MONTHS[a-1]:`${MONTHS[a-1]}–${MONTHS[b-1]}`).join(', ');
+}
+
+export function taPropertyHasSeasonRates(p){
+  return Number(p?.season_price)>0||Number(p?.off_season_price)>0;
+}
+
+// 'season' / 'off' for a date (default today), or null when the property has no season months.
+export function taPropertySeasonOn(p, date=new Date()){
+  const months=taSeasonMonths(p);
+  if(!months.length) return null;
+  return months.includes(date.getMonth()+1)?'season':'off';
+}
+
+// Season / off-season rate lines, e.g. "Season (Oct–Jan): INR 12,000 per night".
+export function taPropertySeasonRateLines(p, fmt=n=>Number(n).toLocaleString('en-IN')){
+  const months=taSeasonMonths(p);
+  const offMonths=months.length?[...Array(12).keys()].map(i=>i+1).filter(m=>!months.includes(m)):[];
+  const cur=p?.currency||'INR', unit=p?.price_unit||'per night';
+  const out=[];
+  if(Number(p?.season_price)>0) out.push(`Season${months.length?` (${taSeasonMonthsLabel(months)})`:''}: ${cur} ${fmt(p.season_price)} ${unit}`);
+  if(Number(p?.off_season_price)>0) out.push(`Off-season${offMonths.length?` (${taSeasonMonthsLabel(offMonths)})`:''}: ${cur} ${fmt(p.off_season_price)} ${unit}`);
+  return out;
 }
 
 // Cleans a create/update body into column values. `partial` keeps only the keys that were sent
@@ -42,7 +109,8 @@ export function taPropertyClean(body, partial=false){
     if(partial&&!(f in (body||{}))) continue;
     let v=body?.[f];
     if(f==='star_rating'){ const n=Number(v); v=Number.isFinite(n)&&n>=1&&n<=7?Math.round(n):null; }
-    else if(f==='price_from'){ const n=Number(v); v=v!==''&&v!=null&&Number.isFinite(n)&&n>=0?n:null; }
+    else if(f==='price_from'||f==='season_price'||f==='off_season_price'){ const n=Number(v); v=v!==''&&v!=null&&Number.isFinite(n)&&n>=0?n:null; }
+    else if(f==='season_months') v=taSeasonMonthsClean(v);
     else if(f==='status') v=v==='inactive'?'inactive':'active';
     else if(f==='property_type') v=TA_PROPERTY_TYPES.includes(v)?v:'resort';
     else if(f==='category') v=TA_RESORT_CATEGORIES.includes(v)?v:'';
@@ -162,6 +230,8 @@ export function taPropertyMediaPlan(properties, {userText='', replyText='', prev
 export function taPropertyMediaItems(p, kinds={images:true,video:true,pdf:true}){
   const items=[];
   if(kinds.images) ['image_url','image_url_2','image_url_3'].forEach(f=>{ if(String(p?.[f]||'').trim()) items.push({field:f, url:String(p[f]).trim()}); });
+  // The Drive folder is expanded into a batch of its photos by the sender (worker.js).
+  if(kinds.images&&taPropertyFolderId(p?.photos_folder_url)) items.push({field:'photos_folder_url', url:String(p.photos_folder_url).trim(), folder:true});
   if(kinds.video&&String(p?.video_url||'').trim()) items.push({field:'video_url', url:String(p.video_url).trim()});
   if(kinds.pdf&&String(p?.pdf_url||'').trim()) items.push({field:'pdf_url', url:String(p.pdf_url).trim(), filename:taPropertyNormalize(p.name).replace(/ /g,'-').slice(0,60)+'-brochure.pdf'});
   if(items.length) items[0].caption=taPropertyCaption(p);
@@ -171,14 +241,16 @@ export function taPropertyMediaItems(p, kinds={images:true,video:true,pdf:true})
 export function taPropertyCaption(p){
   const stars=Number(p?.star_rating)>0?' '+'⭐'.repeat(Math.min(7,Number(p.star_rating))):'';
   const where=p?.location?` — ${p.location}`:'';
-  const price=Number(p?.price_from)>0?`\nFrom ${p.currency||'INR'} ${Number(p.price_from).toLocaleString('en-IN')} ${p.price_unit||'per night'}`:'';
+  const seasonal=taPropertySeasonRateLines(p);
+  const price=seasonal.length?'\n'+seasonal.join('\n')
+    :Number(p?.price_from)>0?`\nFrom ${p.currency||'INR'} ${Number(p.price_from).toLocaleString('en-IN')} ${p.price_unit||'per night'}`:'';
   return `🏨 ${p?.name||''}${stars}${where}${price}`;
 }
 
 // Lines for the bot's grounded travel context. Media itself is never described to the model — it
 // only needs to know that real files exist and are sent by the system, so it doesn't apologise for
 // "not being able to send photos".
-export function taPropertyContextLines(properties){
+export function taPropertyContextLines(properties, now=new Date()){
   const active=(properties||[]).filter(p=>p&&p.status!=='inactive'&&p.name).slice(0,30);
   if(!active.length) return [];
   const lines=['## Resorts & Hotels'];
@@ -187,17 +259,24 @@ export function taPropertyContextLines(properties){
   active.slice().sort((a,b)=>rank(a)-rank(b)).forEach(p=>{
     let line=`- ${p.name} (${TA_RESORT_CATEGORY_LABEL[p.category]||p.property_type||'resort'}${Number(p.star_rating)>0?`, ${p.star_rating}-star`:''})`;
     if(p.location) line+=` — ${p.location}`;
-    line+=Number(p.price_from)>0?` — from ${p.currency||'INR'} ${p.price_from} ${p.price_unit||'per night'}`:' — price on request';
+    const seasonal=taPropertySeasonRateLines(p, n=>String(n));
+    if(seasonal.length){
+      line+=` — ${seasonal.join('; ')}`;
+      const on=taPropertySeasonOn(p, now);
+      if(on) line+=` (now: ${on==='season'?'season':'off-season'})`;
+    }
+    else line+=Number(p.price_from)>0?` — from ${p.currency||'INR'} ${p.price_from} ${p.price_unit||'per night'}`:' — price on request';
     if(p.room_types) line+=` — rooms: ${String(p.room_types).replace(/\s*\n\s*/g,', ').slice(0,150)}`;
     if(p.amenities) line+=` — amenities: ${String(p.amenities).replace(/\s*\n\s*/g,', ').slice(0,150)}`;
     if(p.description) line+=` — ${String(p.description).replace(/\s+/g,' ').slice(0,200)}`;
     const media=[];
-    if(p.image_url||p.image_url_2||p.image_url_3) media.push('photos');
+    if(p.image_url||p.image_url_2||p.image_url_3||taPropertyFolderId(p.photos_folder_url)) media.push('photos');
     if(p.video_url) media.push('video');
     if(p.pdf_url) media.push('PDF brochure');
     if(media.length) line+=` — ${media.join(', ')} available`;
     lines.push(line);
   });
+  if(active.some(taPropertyHasSeasonRates)) lines.push(`Season / off-season rates: quote the rate for the month the customer will travel (today is ${MONTHS[now.getMonth()]} ${now.getFullYear()}); if their dates aren't known yet, give both rates and ask when they plan to travel.`);
   if(active.some(p=>p.category)) lines.push('Resort categories: for a family trip (kids, parents) recommend Family Resorts; for a honeymoon, anniversary or a couple recommend Couple Resorts ("Family & Couple" suits both). Ask who is travelling if it is not clear, and only recommend from this list.');
   lines.push('When a resort/hotel above has photos, video or a PDF brochure, the system sends those files to the customer automatically whenever you name that property or the customer asks for them — always use the property\'s exact name, never say you cannot send photos/videos, and never write image placeholders.');
   return lines;
