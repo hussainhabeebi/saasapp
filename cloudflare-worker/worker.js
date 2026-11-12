@@ -22239,7 +22239,7 @@ async function taAiGeminiCall(env,system,user,opts){
     return text?{text}:{error:`empty reply (${cand?.finishReason||data?.promptFeedback?.blockReason||'unknown reason'})`};
   }catch(e){return {error:e.name==='TimeoutError'?'timed out':String(e.message||e).slice(0,160)};}
 }
-// POST /travel/ai-itinerary {package} → {days}. Agency → Packages → "✨ AI Itinerary": a draft
+// POST /travel/ai-itinerary {package|package_id, traveller?} → {days}. Agency → Packages → "✨ AI Itinerary": a draft
 // day-by-day plan (with place photos) that opens in the itinerary builder for the agent to review
 // and save — nothing is stored here. Uses the account's own AI provider, else shared Gemini.
 async function handleTravelAiItinerary(request,env){
@@ -22262,7 +22262,8 @@ async function handleTravelAiItinerary(request,env){
     if(shared.text)return shared.text;
     return {error:(own?`your AI provider failed (${own.error||'no reply'}); `:'')+`shared Gemini: ${shared.error}`};
   };
-  const out=await taAiItinerary(pkg,generate);
+  // Optional traveller profile (pax mix, kids' ages, pace, interests, route) — see taAiTraveller.
+  const out=await taAiItinerary(pkg,generate,{traveller:body?.traveller});
   if(out.error){
     await reportOpsError(env,'travel/ai-itinerary — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
     return json({error:out.error},422);

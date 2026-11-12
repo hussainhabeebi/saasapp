@@ -376,6 +376,28 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     </div>
   </div>
 
+  <!-- TA: AI ITINERARY — TRAVELLER PROFILE -->
+  <div class="modal" id="modalAiItin" style="width:520px">
+    <span class="modal-drag"></span>
+    <div class="modal-hd"><div class="modal-title" id="aiItinTitle">✨ AI Itinerary</div><button class="icon-btn" onclick="closeModal('modalAiItin')">✕</button></div>
+    <div class="modal-body">
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Tell the AI who is travelling so it can tailor the plan. Every field is optional.</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="form-group"><label class="form-label">Adults</label><input class="form-input" type="number" min="0" id="aiItinAdults"></div>
+        <div class="form-group"><label class="form-label">Children</label><input class="form-input" type="number" min="0" id="aiItinChildren"></div>
+        <div class="form-group"><label class="form-label">Infants</label><input class="form-input" type="number" min="0" id="aiItinInfants"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Kids' ages</label><input class="form-input" id="aiItinAges" placeholder="e.g. 4, 9"></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Pace</label><select class="form-input" id="aiItinPace"><option value="">— Not set —</option><option value="relaxed">🐢 Relaxed — 1-2 things a day</option><option value="balanced">⚖️ Balanced — 2-3 things a day</option><option value="packed">⚡ Packed — 3-5 things a day</option></select></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Interests</label><div id="aiItinInterests" style="display:flex;flex-wrap:wrap;gap:6px"></div><input class="form-input" id="aiItinInterestsMore" placeholder="Other interests, comma separated" style="margin-top:8px"></div>
+        <div class="form-group" style="grid-column:1/-1;margin-bottom:0"><label class="form-label">Destinations (route, one per line)</label><textarea class="form-input" id="aiItinDests" rows="3" placeholder="Dubai 3N&#10;Abu Dhabi 2N"></textarea><div style="font-size:11.5px;color:var(--muted);margin-top:4px">For multi-city trips, in travel order. Leave empty to use the package destination.</div></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="aiItinDraftBtn" onclick="pkgAiItineraryDraft()">✨ Draft itinerary</button>
+      <button class="btn btn-secondary" onclick="closeModal('modalAiItin')">Cancel</button>
+    </div>
+  </div>
+
   <!-- TA: ITINERARY MODAL -->
   <div class="modal" id="modalItin" style="width:760px">
     <span class="modal-drag"></span>
@@ -1871,7 +1893,7 @@ function renderPkgCard(p) {
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
       <span style="display:flex;gap:4px;flex-wrap:wrap"><span class="pkg-type-badge">${esc(p.type||'tour')}</span>${pkgRegion(p)?`<span class="pkg-type-badge" style="background:#EEF3F5;color:#334155;text-transform:none">${PKG_REGIONS[pkgRegion(p)].emoji} ${PKG_REGIONS[pkgRegion(p)].label}</span>`:''}</span>
       <div style="display:flex;gap:2px;flex-shrink:0;align-items:center">
-        <button onclick="event.stopPropagation();pkgAiItinerary('${p.Id}',this)" style="background:none;border:1px solid var(--line);border-radius:6px;cursor:pointer;color:var(--accent-ink);font-size:11px;font-weight:600;padding:1px 6px;margin-right:2px;white-space:nowrap" title="AI Itinerary — draft the day-by-day plan with photos, then review and save">✨ AI Itinerary</button>
+        <button onclick="event.stopPropagation();pkgAiItinerary('${p.Id}')" style="background:none;border:1px solid var(--line);border-radius:6px;cursor:pointer;color:var(--accent-ink);font-size:11px;font-weight:600;padding:1px 6px;margin-right:2px;white-space:nowrap" title="AI Itinerary — draft the day-by-day plan with photos, then review and save">✨ AI Itinerary</button>
         <button onclick="event.stopPropagation();pkgCreateItin('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Create Itinerary">🗺️</button>
         <button onclick="event.stopPropagation();deletePkg('${p.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 2px" title="Delete">✕</button>
       </div>
@@ -2190,28 +2212,55 @@ function pkgCreateItin(id){
   if(p) openItinModal(null,pkgToItinPrefill(p));
 }
 
-// "✨ AI Itinerary" (Packages only): the worker drafts the day-by-day plan from the package and
-// adds one place photo per day plus the package's own photos; it opens in the itinerary builder
-// as a new, unsaved itinerary for the agent to review and save.
-async function pkgAiItinerary(id,btn){
+// "✨ AI Itinerary" (Packages only): a short traveller profile first (pax mix, kids' ages, pace,
+// interests, route — all optional), then the worker drafts the day-by-day plan from the package and
+// that profile, adds one place photo per day plus the package's own photos, and it opens in the
+// itinerary builder as a new, unsaved itinerary for the agent to review and save.
+const AI_ITIN_INTERESTS=['Sightseeing','Beaches','Adventure','Nature','Culture & history','Food','Shopping','Nightlife','Theme parks','Religious sites'];
+let _aiItinPkgId=null;
+function pkgAiItinerary(id){
   const p=_taPackages.find(x=>String(x.Id)===String(id));
   if(!p) return;
-  const label=btn?btn.textContent:'';
-  if(btn){ btn.disabled=true; btn.textContent='⏳ Drafting…'; }
+  _aiItinPkgId=p.Id;
+  $id('aiItinTitle').textContent='✨ AI Itinerary — '+(p.name||p.destination||'Package');
+  $id('aiItinAdults').value=Math.max(1,parseInt(p.pax_min)||2);
+  ['aiItinChildren','aiItinInfants','aiItinAges','aiItinInterestsMore','aiItinDests'].forEach(f=>{$id(f).value='';});
+  $id('aiItinPace').value='';
+  $id('aiItinInterests').innerHTML=AI_ITIN_INTERESTS.map(x=>`<label class="chip" style="cursor:pointer;display:inline-flex;gap:5px;align-items:center;font-size:12px"><input type="checkbox" value="${escAttr(x)}" style="margin:0">${esc(x)}</label>`).join('');
+  openModal('modalAiItin');
+}
+function aiItinTraveller(){
+  const v=f=>$id(f).value.trim();
+  return {adults:v('aiItinAdults'),children:v('aiItinChildren'),infants:v('aiItinInfants'),child_ages:v('aiItinAges'),pace:v('aiItinPace'),
+    interests:[...$id('aiItinInterests').querySelectorAll('input:checked')].map(c=>c.value).concat(v('aiItinInterestsMore').split(',').map(x=>x.trim()).filter(Boolean)),
+    destinations:v('aiItinDests').split('\n').map(x=>x.trim()).filter(Boolean)};
+}
+async function pkgAiItineraryDraft(){
+  const p=_taPackages.find(x=>String(x.Id)===String(_aiItinPkgId));
+  if(!p) return;
+  const btn=$id('aiItinDraftBtn'),label=btn.textContent;
+  btn.disabled=true; btn.textContent='⏳ Drafting…';
   try{
     const pkg={name:p.name,type:p.type,destination:p.destination,nights:p.nights,inclusions:p.inclusions,exclusions:p.exclusions,notes:p.notes,
       image_url:p.image_url,image_url_2:p.image_url_2,image_url_3:p.image_url_3};
-    const r=await fetch(`${CONFIG.WORKER_BASE}/travel/ai-itinerary`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({package:pkg})});
+    const traveller=aiItinTraveller();
+    const r=await fetch(`${CONFIG.WORKER_BASE}/travel/ai-itinerary`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({package:pkg,traveller})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||!Array.isArray(d.days)) throw new Error(d.error||('HTTP '+r.status));
     // Photos the worker couldn't find are looked up from the browser, plus a destination cover;
     // AI drafts default to the Photo layout so those photos show large on the PDF.
-    if(btn) btn.textContent='📷 Adding photos…';
+    btn.textContent='📷 Adding photos…';
     const dest=String(p.destination||p.name||'').trim();
     const [,cover]=await Promise.all([itinFindPhotos(d.days,dest).catch(()=>0),dest?itinWikiThumb(dest,'',1000).catch(()=>''):'']);
-    openItinModal(null,{...pkgToItinPrefill(p),days:d.days,pdf_format:{layout:'photo',color:'',cover:cover||''}});
+    closeModal('modalAiItin');
+    const pre=pkgToItinPrefill(p);
+    const pax=n=>parseInt(n)||0;
+    if(pax(traveller.adults)) pre.adults=pax(traveller.adults);
+    if(pax(traveller.children)) pre.children=pax(traveller.children);
+    if(pax(traveller.infants)) pre.infants=pax(traveller.infants);
+    openItinModal(null,{...pre,days:d.days,pdf_format:{layout:'photo',color:'',cover:cover||''}});
   }catch(e){ alert('AI Itinerary failed: '+e.message); }
-  finally{ if(btn){ btn.disabled=false; btn.textContent=label; } }
+  finally{ btn.disabled=false; btn.textContent=label; }
 }
 // Place photos the AI added are saved as image links (keeps the `days` column small); jsPDF needs
 // the bytes, so they're fetched (Wikimedia allows it from the browser) and shrunk to ≤640px JPEG

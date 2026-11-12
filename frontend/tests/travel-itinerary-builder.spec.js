@@ -153,15 +153,29 @@ test('✨ AI Itinerary on a package opens the builder with the drafted days and 
     document.body.insertAdjacentHTML('beforeend', `<div id="cardHost">${renderPkgCard(_taPackages[0])}</div>`);
   });
   await page.locator('#cardHost button:has-text("AI Itinerary")').click();
+  // Traveller profile first: pax mix, kids' ages, pace, interests and the route go to the AI.
+  await expect(page.locator('#aiItinTitle')).toHaveText('✨ AI Itinerary — Hyderabad Bus Package');
+  await page.locator('#aiItinAdults').fill('2');
+  await page.locator('#aiItinChildren').fill('1');
+  await page.locator('#aiItinAges').fill('7');
+  await page.locator('#aiItinPace').selectOption('relaxed');
+  await page.locator('#aiItinInterests label', { hasText: 'Food' }).click();
+  await page.locator('#aiItinInterestsMore').fill('Biryani, Pearls');
+  await page.locator('#aiItinDests').fill('Hyderabad 1N\n');
+  await page.locator('#aiItinDraftBtn').click();
   await expect(page.locator('#itinModalTitle')).toHaveText('New Itinerary');
+  await expect(page.locator('#modalAiItin')).not.toHaveClass(/open/);
   await expect(page.locator('#itinTitle')).toHaveValue('Hyderabad Bus Package');
+  await expect(page.locator('#itinChildren')).toHaveValue('1');
   expect(sent.package).toMatchObject({ name: 'Hyderabad Bus Package', destination: 'Hyderabad', nights: 1 });
+  expect(sent.traveller).toEqual({ adults: '2', children: '1', infants: '', child_ages: '7', pace: 'relaxed',
+    interests: ['Food', 'Biryani', 'Pearls'], destinations: ['Hyderabad 1N'] });
   const days = await page.evaluate(() => _itinDays);
   expect(days.map((d) => d.title)).toEqual(['Arrival & Charminar', 'Departure']);
   expect(days[0].items[0].image).toBe('https://upload.wikimedia.org/charminar.png');
   expect(days[0].image_links).toEqual(['https://drive.google.com/file/d/PKG1/view']);
   await expect(page.locator('#itinDaysList input[placeholder^="e.g. flight"]').first()).toHaveValue('Visit Charminar');
-  await expect(page.locator('#cardHost button:has-text("AI Itinerary")')).toBeEnabled();
+  await expect(page.locator('#aiItinDraftBtn')).toBeEnabled();
 });
 
 test('a rejected itinerary save shows NocoDB\'s reason, not just the status', async ({ page }) => {

@@ -51,10 +51,27 @@ test('pick a package, review the AI draft, approve and send the PDF into the cha
   await page.locator('#aiItinSearch').fill('bali');
   await expect(ov.locator('.tpl-item')).toHaveCount(1);
   await ov.locator('.tpl-item', { hasText: 'Bali 4N/5D' }).click();
+  // Traveller profile first; it goes to the AI with the package.
+  await expect(page.locator('#aiItinAdults')).toHaveValue('2');
+  await page.locator('#aiItinChildren').fill('2');
+  await page.locator('#aiItinAges').fill('5, 11');
+  await page.locator('#aiItinPace').selectOption('balanced');
+  await page.locator('#aiItinInterests label', { hasText: 'Beaches' }).click();
+  await page.locator('#aiItinDests').fill('Kuta 2N\nUbud 2N');
+  expect(calls.draft).toEqual([]);
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
   await expect(ov.locator('.ai-itin-day')).toHaveCount(2);
   await expect(ov.locator('.ai-itin-day').first()).toContainText('Kuta Beach sunset');
   await expect(ov.locator('.ai-itin-day').first()).toContainText('Dinner · 🌙 Kuta');
-  expect(calls.draft).toEqual([{ package_id: '3' }]);
+  expect(calls.draft).toEqual([{ package_id: '3', traveller: { adults: '2', children: '2', infants: '', child_ages: '5, 11', pace: 'balanced',
+    interests: ['Beaches'], destinations: ['Kuta 2N', 'Ubud 2N'] } }]);
+  // ✏️ Profile reopens the form with what was entered.
+  await page.getByRole('button', { name: '✏️ Profile' }).click();
+  await expect(page.locator('#aiItinAges')).toHaveValue('5, 11');
+  await expect(page.locator('#aiItinInterests input[value="Beaches"]')).toBeChecked();
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  await expect(ov.locator('.ai-itin-day')).toHaveCount(2);
+  expect(calls.draft).toHaveLength(2);
   await page.getByRole('button', { name: '✅ Approve & send' }).click();
   await expect(ov).toBeHidden();
   expect(calls.send).toHaveLength(1);
@@ -67,6 +84,7 @@ test('a failed draft says why and can be retried', async ({ page }) => {
   await open(page, { draftFails: true });
   await page.evaluate(() => openAiItin());
   await page.locator('#aiItinOv .tpl-item', { hasText: 'Kashmir' }).click();
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
   await expect(page.locator('#aiItinDetail')).toContainText('AI timed out');
   await expect(page.getByRole('button', { name: '↻ Try again' })).toBeVisible();
 });

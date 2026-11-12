@@ -20,8 +20,38 @@ export function taAiDayCount(pkg){
   return Math.min(TA_AI_MAX_DAYS,Math.max(1,(Number.isFinite(n)&&n>0?n:1)+1));
 }
 
-export function taAiItineraryPrompt(pkg){
+// Optional traveller profile from the agent (who is travelling and how they like to travel); every
+// field is optional and each one only adds a line to the prompt when it is filled in.
+export const TA_AI_PACES={relaxed:'relaxed — 1-2 items a day, late starts, free time',balanced:'balanced — 2-3 items a day',packed:'packed — 3-5 items a day, early starts'};
+const count=(v,max)=>{const n=parseInt(v,10);return Number.isFinite(n)&&n>0?Math.min(n,max):0;};
+export function taAiTraveller(t){
+  t=t&&typeof t==='object'?t:{};
+  const ages=(Array.isArray(t.child_ages)?t.child_ages:String(t.child_ages??'').split(/[,;\s]+/))
+    .map(a=>parseInt(a,10)).filter(a=>Number.isFinite(a)&&a>=0&&a<18).slice(0,10);
+  const pace=String(t.pace||'').toLowerCase().trim();
+  return {adults:count(t.adults,50),children:Math.max(count(t.children,20),ages.length),infants:count(t.infants,10),child_ages:ages,
+    pace:TA_AI_PACES[pace]?pace:'',interests:list(t.interests).slice(0,15).map(x=>x.slice(0,60)),
+    destinations:list(t.destinations).slice(0,10).map(x=>x.slice(0,120))};
+}
+function travellerFacts(t){
+  const pax=[t.adults&&`${t.adults} adult${t.adults>1?'s':''}`,
+    t.children&&`${t.children} child${t.children>1?'ren':''}${t.child_ages.length?` (age${t.child_ages.length>1?'s':''} ${t.child_ages.join(', ')})`:''}`,
+    t.infants&&`${t.infants} infant${t.infants>1?'s':''}`].filter(Boolean).join(', ');
+  return [['Travellers',pax],['Pace',t.pace?TA_AI_PACES[t.pace]:''],['Interests',t.interests.join('; ')],
+    ['Route (in this order)',t.destinations.join(' → ')]];
+}
+function travellerRules(t){
+  const r=[];
+  if(t.destinations.length)r.push('- Follow the Route in the given order, splitting the nights as written (e.g. "Dubai 3N"); if nights per stop are not given, split them sensibly, with travel between stops on its own transfer item. "overnight" is the stop for that night.');
+  if(t.pace)r.push(`- Pace: ${TA_AI_PACES[t.pace]}.`);
+  if(t.interests.length)r.push('- Favour activities matching the Interests; still include the destination\'s must-sees.');
+  if(t.children||t.infants)r.push('- Travellers include children/infants: keep days family-friendly, avoid long drives without breaks and late nights, and note age/height limits where an attraction has them.');
+  return r.length?'\n'+r.join('\n'):'';
+}
+
+export function taAiItineraryPrompt(pkg,traveller){
   const days=taAiDayCount(pkg);
+  const t=taAiTraveller(traveller);
   const system=`You are a senior travel consultant writing a customer-facing, day-by-day tour itinerary for a travel agency. Write in clear, friendly English. Respond with ONLY compact JSON, no commentary, in exactly this shape:
 {"days":[{"title":"short day title, max 8 words","description":"1-2 short sentences describing the day","overnight":"city or hotel for the night, or empty string on the last day","meals":["B","L","D" — only the meals included that day],"items":[{"type":"one of: ${TYPES.join(', ')}","time":"HH:MM 24h or empty string","description":"one line, max 15 words","place":"name of the landmark/attraction for a photo search, or empty string"}]}]}
 Rules:
@@ -30,11 +60,13 @@ Rules:
 - Otherwise plan realistic, well-known sightseeing for the destination at a comfortable pace (2-4 items a day).
 - Use only facts from the package for hotels, flights, transport and meals; never invent hotel names, flight numbers, prices or phone numbers. Use the city name for "overnight" unless a hotel is given.
 - Meals: follow the package's inclusions / meal plan; if unknown, use breakfast from day 2.
-- "place" is set for every "activity" item that is a real, named attraction or area (e.g. "Golconda Fort", "Calangute Beach"), using its well-known English name — it is used to find a photo.`;
+- "place" is set for every "activity" item that is a real, named attraction or area (e.g. "Golconda Fort", "Calangute Beach"), using its well-known English name — it is used to find a photo.
+- Tailor the plan to the traveller profile (Travellers, Pace, Interests, Route) when it is given; the agency's notes still win where they describe specific days.${travellerRules(t)}`;
   const facts=[
     ['Package',str(pkg?.name,200)],['Type',str(pkg?.type,40)],['Destination',str(pkg?.destination,200)],
     ['Nights',String(days-1)],['Inclusions',list(pkg?.inclusions).join('; ')],['Exclusions',list(pkg?.exclusions).join('; ')],
     ['Agency notes',String(pkg?.notes||'').trim().slice(0,3000)],
+    ...travellerFacts(t),
   ].filter(([,v])=>v).map(([k,v])=>`${k}: ${v}`).join('\n');
   return {system,user:facts};
 }
@@ -138,7 +170,7 @@ export async function taAiItineraryPhotos(days,pkg,{fetchImpl=globalThis.fetch,t
 // the AI gave no reply (the error is passed on so the agent sees why).
 export async function taAiItinerary(pkg,generate,opts={}){
   if(!str(pkg?.name,200)&&!str(pkg?.destination,200))return {error:'Add a package name or destination first.'};
-  const {system,user}=taAiItineraryPrompt(pkg);
+  const {system,user}=taAiItineraryPrompt(pkg,opts.traveller);
   const why=[];
   const ask=async sys=>{
     const r=await generate(sys,user);
