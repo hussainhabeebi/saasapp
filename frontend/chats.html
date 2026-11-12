@@ -61,6 +61,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .tpl-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px}.tpl-empty{padding:40px 20px;text-align:center;color:var(--muted)}
 .ai-itin-pkg{background:#fff;border-radius:10px;padding:14px}.ai-itin-pkg h3{margin:0 0 4px;font-size:16px}.ai-itin-pkg small{color:var(--muted)}
 .ai-itin-day{background:#fff;border-radius:10px;padding:12px 14px;border-left:4px solid #0d9c93}.ai-itin-day b{display:block;margin-bottom:4px}.ai-itin-day p{margin:0 0 6px;font-size:13.5px;color:#3b4a54}.ai-itin-day ul{margin:0;padding-left:18px;font-size:13.5px}.ai-itin-day .facts{font-size:12.5px;color:var(--muted);margin-top:6px}
+.ai-itin-prof{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.ai-itin-prof .full{grid-column:1/-1}.tpl-form select,.tpl-form textarea{width:100%;border:1px solid #d1d7db;border-radius:8px;padding:8px 12px;outline:0;font-size:14px;font-family:inherit;background:#fff}.tpl-form select{height:40px}.ai-itin-chips{display:flex;flex-wrap:wrap;gap:6px}.ai-itin-chips label{display:inline-flex!important;align-items:center;gap:5px;border:1px solid #d1d7db;border-radius:16px;padding:4px 10px;color:#111!important;cursor:pointer}.ai-itin-chips input{width:auto!important;height:auto!important;margin:0}
 .ai-itin-btn{height:40px;border-radius:20px;border:0;padding:0 18px;font-weight:600;cursor:pointer;background:#0d9c93;color:#fff}.ai-itin-btn.sec{background:#fff;color:#0d9c93;border:1px solid #0d9c93}.ai-itin-btn:disabled{opacity:.55;cursor:default}
 @media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
@@ -1293,20 +1294,43 @@ function drawAiItinPkgs(){
 }
 function pickAiItinPkg(id){
  const p=(aiItin.pkgs||[]).find(x=>String(x.id)===String(id));if(!p||aiItin.busy)return;
- aiItin.sel=p;aiItin.days=null;$('aiItinMain')?.classList.add('picked');drawAiItinPkgs();aiItinGenerate();
+ aiItin.sel=p;aiItin.days=null;aiItin.traveller=null;$('aiItinMain')?.classList.add('picked');drawAiItinPkgs();drawAiItinDetail('profile');
 }
+// Traveller profile (all optional) sent with the draft so the AI tailors it: pax mix, kids' ages,
+// pace, interests and the route for multi-city trips. Kept for ↻ Regenerate; ✏️ Profile edits it.
+const AI_ITIN_INTERESTS=['Sightseeing','Beaches','Adventure','Nature','Culture & history','Food','Shopping','Nightlife','Theme parks','Religious sites'];
+function aiItinProfileForm(){
+ const t=aiItin.traveller||{adults:2,children:'',infants:'',child_ages:'',pace:'',interests:[],destinations:[]};
+ const custom=(t.interests||[]).filter(x=>!AI_ITIN_INTERESTS.includes(x)).join(', ');
+ const paces=[['','— Not set —'],['relaxed','🐢 Relaxed — 1-2 things a day'],['balanced','⚖️ Balanced — 2-3 things a day'],['packed','⚡ Packed — 3-5 things a day']];
+ return `<div class="tpl-form"><div style="font-size:13px;color:var(--muted)">Who is travelling? The AI tailors the plan to this — every field is optional.</div><div class="ai-itin-prof">
+  <label>Adults<input type="number" min="0" id="aiItinAdults" value="${esc(t.adults??'')}"></label><label>Children<input type="number" min="0" id="aiItinChildren" value="${esc(t.children??'')}"></label><label>Infants<input type="number" min="0" id="aiItinInfants" value="${esc(t.infants??'')}"></label>
+  <label class="full">Kids' ages<input id="aiItinAges" placeholder="e.g. 4, 9" value="${esc(t.child_ages||'')}"></label>
+  <label class="full">Pace<select id="aiItinPace">${paces.map(([v,l])=>`<option value="${v}" ${t.pace===v?'selected':''}>${l}</option>`).join('')}</select></label>
+  <div class="full" style="display:grid;gap:4px;font-size:12px;color:var(--muted)">Interests<div class="ai-itin-chips" id="aiItinInterests">${AI_ITIN_INTERESTS.map(x=>`<label><input type="checkbox" value="${esc(x)}" ${(t.interests||[]).includes(x)?'checked':''}>${esc(x)}</label>`).join('')}</div><input id="aiItinInterestsMore" placeholder="Other interests, comma separated" value="${esc(custom)}" style="width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px"></div>
+  <label class="full">Destinations (route, one per line)<textarea id="aiItinDests" rows="3" placeholder="Dubai 3N&#10;Abu Dhabi 2N">${esc((t.destinations||[]).join('\n'))}</textarea></label>
+ </div></div><div class="tpl-actions"><button class="ai-itin-btn" id="aiItinDraftBtn" onclick="aiItinDraft()">✨ Draft itinerary</button></div>`;
+}
+function aiItinReadProfile(){
+ const v=id=>($(id)?.value||'').trim();
+ return {adults:v('aiItinAdults'),children:v('aiItinChildren'),infants:v('aiItinInfants'),child_ages:v('aiItinAges'),pace:v('aiItinPace'),
+  interests:[...document.querySelectorAll('#aiItinInterests input:checked')].map(c=>c.value).concat(v('aiItinInterestsMore').split(',').map(x=>x.trim()).filter(Boolean)),
+  destinations:v('aiItinDests').split('\n').map(x=>x.trim()).filter(Boolean)};
+}
+function aiItinDraft(){aiItin.traveller=aiItinReadProfile();aiItinGenerate()}
 function drawAiItinDetail(state,msg){
  const el=$('aiItinDetail'),p=aiItin.sel;if(!el||!p)return;
  const head=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc([p.destination,p.nights?`${p.nights} nights`:'',aiItinPrice(p)?aiItinPrice(p)+' per person':''].filter(Boolean).join(' · '))}</small></div>`;
+ if(state==='profile'){el.innerHTML=head+aiItinProfileForm();return}
  if(state==='loading'){el.innerHTML=head+`<div class="tpl-empty"><div class="spinner"></div>Drafting the itinerary… this can take up to a minute.</div>`;return}
- if(state==='error'){el.innerHTML=head+`<div class="tpl-empty">AI could not draft this itinerary.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiItinGenerate()">↻ Try again</button></div>`;return}
+ if(state==='error'){el.innerHTML=head+`<div class="tpl-empty">AI could not draft this itinerary.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawAiItinDetail('profile')">✏️ Profile</button><button class="ai-itin-btn sec" onclick="aiItinGenerate()">↻ Try again</button></div>`;return}
  const meals={B:'Breakfast',L:'Lunch',D:'Dinner'};
  const days=(aiItin.days||[]).map(d=>`<div class="ai-itin-day"><b>Day ${esc(d.day_no)}${d.title?' — '+esc(d.title):''}</b>${d.description?`<p>${esc(d.description)}</p>`:''}${(d.items||[]).filter(i=>i.description).length?`<ul>${d.items.filter(i=>i.description).map(i=>`<li>${i.time?`<b style="display:inline">${esc(i.time)}</b> `:''}${esc(i.description)}</li>`).join('')}</ul>`:''}${(d.meals||[]).length||d.overnight?`<div class="facts">${[(d.meals||[]).map(m=>meals[m]).filter(Boolean).join(', '),d.overnight?'🌙 '+d.overnight:''].filter(Boolean).map(esc).join(' · ')}</div>`:''}</div>`).join('');
- el.innerHTML=head+days+`<div class="tpl-form"><label>Message with the PDF<input id="aiItinCaption" value="${esc(`📄 Here is the itinerary for *${p.name}*.`)}"></label><div id="aiItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiItinSendBtn" onclick="aiItinSend()">✅ Approve &amp; send</button></div>`;
+ el.innerHTML=head+days+`<div class="tpl-form"><label>Message with the PDF<input id="aiItinCaption" value="${esc(`📄 Here is the itinerary for *${p.name}*.`)}"></label><div id="aiItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawAiItinDetail('profile')">✏️ Profile</button><button class="ai-itin-btn sec" onclick="aiItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiItinSendBtn" onclick="aiItinSend()">✅ Approve &amp; send</button></div>`;
 }
 async function aiItinGenerate(){
  const p=aiItin.sel;if(!p)return;const seq=++aiItin.seq;aiItin.busy=true;drawAiItinDetail('loading');
- try{const d=await apiJson(WORKER+'/travel/ai-itinerary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package_id:p.id})});
+ try{const d=await apiJson(WORKER+'/travel/ai-itinerary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package_id:p.id,...(aiItin.traveller?{traveller:aiItin.traveller}:{})})});
   if(seq!==aiItin.seq)return;if(!Array.isArray(d.days)||!d.days.length)throw new Error('The draft had no days.');aiItin.days=d.days;drawAiItinDetail('ready')}
  catch(e){if(seq===aiItin.seq)drawAiItinDetail('error',e.message)}
  finally{if(seq===aiItin.seq)aiItin.busy=false}

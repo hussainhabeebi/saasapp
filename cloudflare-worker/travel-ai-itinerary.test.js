@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taAiItinerary,taAiItineraryParse,taAiItineraryPrompt,taAiDayCount} from './travel-ai-itinerary.js';
+import {taAiItinerary,taAiItineraryParse,taAiItineraryPrompt,taAiDayCount,taAiTraveller} from './travel-ai-itinerary.js';
 
 const pkg={name:'Hyderabad Bus Package',destination:'Hyderabad',nights:2,inclusions:'["Hotel","Breakfast"]',notes:'DAY 1 - Charminar',
   image_url:'https://drive.google.com/file/d/PKGPHOTO1/view',image_url_2:''};
@@ -70,4 +70,30 @@ test('a reply cut off mid-way keeps the days that closed; the AI error reason is
   assert.equal(days[1].title,'');
   const bad=await taAiItinerary(pkg,async()=>({error:'shared Gemini: HTTP 429 quota'}),{fetchImpl:fakeFetch([])});
   assert.match(bad.error,/HTTP 429 quota/);
+});
+
+test('traveller profile adds pax mix, kids ages, pace, interests and route to the prompt', ()=>{
+  const {system,user}=taAiItineraryPrompt({...pkg,nights:5},{adults:'2',children:1,child_ages:'4, 9',infants:1,pace:'Relaxed',
+    interests:['Beaches','Food'],destinations:'Dubai 3N\nAbu Dhabi 2N'});
+  assert.match(user,/Travellers: 2 adults, 2 children \(ages 4, 9\), 1 infant/);
+  assert.match(user,/Pace: relaxed — 1-2 items a day/);
+  assert.match(user,/Interests: Beaches; Food/);
+  assert.match(user,/Route \(in this order\): Dubai 3N → Abu Dhabi 2N/);
+  assert.match(system,/Follow the Route in the given order/);
+  assert.match(system,/family-friendly/);
+  assert.match(system,/Pace: relaxed/);
+});
+
+test('no traveller profile leaves the prompt as package facts only', ()=>{
+  const {system,user}=taAiItineraryPrompt(pkg,{pace:'warp',child_ages:'x, 30',interests:''});
+  assert.doesNotMatch(user,/Travellers|Pace|Interests|Route/);
+  assert.doesNotMatch(system,/Follow the Route|family-friendly|- Pace:/);
+  assert.deepEqual(taAiTraveller(null),{adults:0,children:0,infants:0,child_ages:[],pace:'',interests:[],destinations:[]});
+});
+
+test('the traveller profile reaches the model', async ()=>{
+  let seen='';
+  await taAiItinerary(pkg,async(s,u)=>{seen=u;return reply;},{fetchImpl:fakeFetch([]),traveller:{adults:3,interests:'Shopping'}});
+  assert.match(seen,/Travellers: 3 adults/);
+  assert.match(seen,/Interests: Shopping/);
 });
