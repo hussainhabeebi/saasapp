@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { taPropertyClean, taPropertyMediaRequest, taPropertiesInText, taPropertyMediaPlan, taPropertyMediaItems, taPropertyContextLines, taPropertyMediaUrlError, taResortCategoryFromText, taResortLeadCategory, taSeasonMonthsClean, taSeasonMonthsLabel, taPropertySeasonOn, taPropertyCaption, taPropertyFolderId } from './ta-properties.js';
+import { taPropertyClean, taPropertyMediaRequest, taPropertiesInText, taPropertyMediaPlan, taPropertyMediaItems, taPropertyContextLines, taPropertyMediaUrlError, taResortCategoryFromText, taResortLeadCategory, taSeasonMonthsClean, taSeasonMonthsLabel, taPropertySeasonOn, taPropertyCaption, taPropertyFolderId, taPropertiesSorted } from './ta-properties.js';
 
 const drive = id => `https://drive.google.com/file/d/${id}/view?usp=sharing`;
 const props = [
@@ -195,4 +195,16 @@ test('season and off-season rates show in the caption and the bot context, with 
   const plain = taPropertyContextLines([{ ...p, season_price: null, off_season_price: null }]);
   assert.ok(plain.some(l => l.includes('from INR 7000 per night')));
   assert.ok(!plain.some(l => /Season \/ off-season/.test(l)));
+});
+
+test('properties list A–Z first, then names starting with numbers; manual order wins once set', () => {
+  const list = [
+    { id: 1, name: '7 Hills Resort' }, { id: 2, name: 'zen garden' }, { id: 3, name: 'Villa 10' },
+    { id: 4, name: '#1 Homestay' }, { id: 5, name: 'Amber Bay' }, { id: 6, name: 'Villa 2' }, { id: 7, name: '12 Palms' },
+  ];
+  assert.deepEqual(taPropertiesSorted(list).map(p => p.name), ['Amber Bay', 'Villa 2', 'Villa 10', 'zen garden', '7 Hills Resort', '12 Palms', '#1 Homestay']);
+  assert.equal(list[0].name, '7 Hills Resort'); // input untouched
+  const manual = list.map(p => ({ ...p, sort_order: { 7: 1, 2: 2, 5: 3 }[p.id] ?? null }));
+  // ordered ones first in their saved order, then the rest A–Z then numbers
+  assert.deepEqual(taPropertiesSorted(manual).map(p => p.id), [7, 2, 5, 6, 3, 1, 4]);
 });

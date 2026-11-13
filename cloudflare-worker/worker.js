@@ -16,7 +16,7 @@ import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
-import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory,taPropertyFolderId,TA_PROPERTY_FOLDER_SEND_EXPLICIT,TA_PROPERTY_FOLDER_SEND_VOLUNTEERED} from './ta-properties.js';
+import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory,taPropertyFolderId,TA_PROPERTY_FOLDER_SEND_EXPLICIT,TA_PROPERTY_FOLDER_SEND_VOLUNTEERED,taPropertiesSorted} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
@@ -11337,6 +11337,7 @@ async function taPropertyEnsureSchema(env){
     season_price REAL,
     off_season_price REAL,
     season_months TEXT DEFAULT '',
+    sort_order INTEGER,
     amenities TEXT,
     description TEXT,
     image_url TEXT,
@@ -11364,7 +11365,7 @@ async function taPropertyEnsureSchema(env){
   // Drive folder and season / off-season rates — are added to an existing table.
   const {results:cols}=await env.DB.prepare(`PRAGMA table_info(ta_properties)`).all();
   const have=new Set((cols||[]).map(c=>c.name));
-  for(const [name,type] of [['category',`TEXT DEFAULT ''`],['photos_folder_url','TEXT'],['season_price','REAL'],['off_season_price','REAL'],['season_months',`TEXT DEFAULT ''`]]){
+  for(const [name,type] of [['category',`TEXT DEFAULT ''`],['photos_folder_url','TEXT'],['season_price','REAL'],['off_season_price','REAL'],['season_months',`TEXT DEFAULT ''`],['sort_order','INTEGER']]){
     if(cols&&!have.has(name)) await env.DB.prepare(`ALTER TABLE ta_properties ADD COLUMN ${name} ${type}`).run();
   }
   _taPropertySchemaEnsured=true;
@@ -11376,7 +11377,22 @@ async function taPropertiesForClient(env, clientId, includeInactive=false){
     ?`SELECT * FROM ta_properties WHERE client_id=? ORDER BY name`
     :`SELECT * FROM ta_properties WHERE client_id=? AND status='active' ORDER BY name`;
   const {results}=await env.DB.prepare(q).bind(String(clientId)).all();
-  return results||[];
+  return taPropertiesSorted(results||[]);
+}
+
+// Saves the agency's manual order: ids in display order get sort_order 1..n. An empty list
+// clears it, back to A–Z then numbers. Ids of another client's properties are ignored.
+async function handleTaPropertiesReorder(request, env){
+  await taPropertyEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  if(!Array.isArray(body.ids)) return json({error:'ids must be a list'},400);
+  const ids=[...new Set(body.ids.map(x=>parseInt(x,10)).filter(n=>n>0))].slice(0,1000);
+  const stmts=[env.DB.prepare(`UPDATE ta_properties SET sort_order=NULL WHERE client_id=?`).bind(clientId)];
+  ids.forEach((id,i)=>stmts.push(env.DB.prepare(`UPDATE ta_properties SET sort_order=? WHERE id=? AND client_id=?`).bind(i+1,id,clientId)));
+  await env.DB.batch(stmts);
+  return json({ok:true, manual:ids.length>0});
 }
 
 async function handleTaPropertiesList(request, env){
@@ -42678,6 +42694,7 @@ export default {
       else if(url.pathname==='/ta/properties' && request.method==='PATCH'){ res=await handleTaPropertyUpdate(request, env); }
       else if(url.pathname==='/ta/properties' && request.method==='DELETE'){ res=await handleTaPropertyDelete(request, env); }
       else if(url.pathname==='/ta/properties/folder-photos' && request.method==='GET'){ res=await handleTaPropertyFolderPhotos(request, env); }
+      else if(url.pathname==='/ta/properties/reorder' && request.method==='POST'){ res=await handleTaPropertiesReorder(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }

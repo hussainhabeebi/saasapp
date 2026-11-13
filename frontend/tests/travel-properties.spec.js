@@ -137,3 +137,48 @@ test('season / off-season rates and a Drive photos folder: fetched, previewed an
   expect(patches.at(-1)).toMatchObject({ Id: '5', season_price: '14000', off_season_price: '7500', season_months: '5,10,11,12',
     photos_folder_url: 'https://drive.google.com/drive/folders/1FolderAbcdef', image_url: 'https://drive.google.com/file/d/f1/view' });
 });
+
+test('properties list A–Z then numbers; Manual sort saves the order and ◀ ▶ moves cards', async ({ page }) => {
+  const ids = { packages: 'tp', bookings: 'tb', cases: 'tc', itineraries: 'ti', umrah_groups: 'tu' };
+  const reorders = [];
+  const list = [
+    { id: 1, name: '7 Hills Resort', status: 'active' }, { id: 2, name: 'Zen Garden', status: 'active' },
+    { id: 3, name: 'Villa 10', status: 'active' }, { id: 4, name: 'amber bay', status: 'active' }, { id: 5, name: 'Villa 2', status: 'active' },
+  ];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (!url.startsWith(WORKER)) return route.abort();
+    const u = new URL(url);
+    if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids) } });
+    if (u.pathname === '/ta/properties/reorder') { reorders.push(req.postDataJSON().ids); return route.fulfill({ json: { ok: true } }); }
+    if (u.pathname === '/ta/properties' && req.method() === 'GET') return route.fulfill({ json: { list } });
+    return route.fulfill({ json: { list: [] } });
+  });
+  page.on('dialog', (d) => d.accept());
+  await page.goto('file://' + path.resolve(__dirname, '../travel-agency.html') + '?client=7&token=t&embed=1&shell=travel&tab=properties', { waitUntil: 'domcontentloaded' });
+  const content = page.locator('#agencyContent');
+  const names = () => content.locator('.prop-sec[data-sec="other"] .prop-card div[style*="font-weight:700"]').allTextContents();
+  await expect(content).toContainText('Zen Garden');
+  expect(await names()).toEqual(['amber bay', 'Villa 2', 'Villa 10', 'Zen Garden', '7 Hills Resort']);
+  await expect(content.locator('[data-move]')).toHaveCount(0);
+
+  await content.locator('[data-propsort="manual"]').click();
+  expect(reorders.at(-1)).toEqual([4, 5, 3, 2, 1]);
+  await expect(content.locator('[data-propsort="manual"]')).toHaveClass(/btn-primary/);
+  await expect(content.locator('.prop-card[data-id="4"] [data-move="prev"]')).toBeDisabled();
+
+  await content.locator('.prop-card[data-id="1"] [data-move="prev"]').click();
+  expect(reorders.at(-1)).toEqual([4, 5, 3, 1, 2]);
+  expect(await names()).toEqual(['amber bay', 'Villa 2', 'Villa 10', '7 Hills Resort', 'Zen Garden']);
+  await expect(page.locator('#modalProperty.open, #modalProperty.show')).toHaveCount(0); // the arrow didn't open the editor
+
+  await content.locator('.prop-card[data-id="2"]').dragTo(content.locator('.prop-card[data-id="4"]'));
+  expect(reorders.at(-1)).toEqual([2, 4, 5, 3, 1]);
+  expect((await names())[0]).toBe('Zen Garden');
+  if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
+
+  await content.locator('[data-propsort="alpha"]').click();
+  expect(reorders.at(-1)).toEqual([]);
+  expect(await names()).toEqual(['amber bay', 'Villa 2', 'Villa 10', 'Zen Garden', '7 Hills Resort']);
+});
