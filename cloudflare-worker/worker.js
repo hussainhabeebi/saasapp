@@ -21275,7 +21275,10 @@ function ltParseConversationalFlightDate(value,now=new Date()){
   m=text.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
   if(m){let y=m[3]?Number(m[3]):now.getUTCFullYear();if(y<100)y+=2000;let dt=valid(y,Number(m[2]),Number(m[1]));if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,Number(m[2]),Number(m[1]));return iso(dt);}
   const months={jan:1,january:1,feb:2,february:2,mar:3,march:3,apr:4,april:4,may:5,jun:6,june:6,jul:7,july:7,aug:8,august:8,sep:9,sept:9,september:9,oct:10,october:10,nov:11,november:11,dec:12,december:12};
-  m=text.match(/\b([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(20\d{2}))?\b/)||text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})(?:[,\s]+(20\d{2}))?\b/);
+  // Every "word number" / "number word" pair is tried until one names a month, so "flight 24 dec"
+  // is not stopped at "flight 24" (which used to return no date at all).
+  const pairs=[...text.matchAll(/\b([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(20\d{2}))?\b/g),...text.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})(?:[,\s]+(20\d{2}))?\b/g)];
+  m=pairs.find(x=>months[String(/^[A-Za-z]/.test(x[1])?x[1]:x[2]).toLowerCase()]);
   if(m){const monthFirst=/^[A-Za-z]/.test(m[1]),month=months[String(monthFirst?m[1]:m[2]).toLowerCase()],day=Number(monthFirst?m[2]:m[1]);if(!month)return '';let y=Number(m[3]||now.getUTCFullYear()),dt=valid(y,month,day);if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,month,day);return iso(dt);}
   return '';
 }
@@ -21319,8 +21322,20 @@ function ltAirportCodeFromText(value){
   for(const [code,pattern] of LT_AIRPORT_ALIASES)if(pattern.test(text))return code;
   return text.match(/\b[A-Z]{3}\b/)?.[0]||'';
 }
+// One side of a typed route. Besides city names and upper-case codes, a lower-case code typed
+// right next to the separator ("sin - trichy", "need sin to trz") is read when it is a known airport.
+function ltRouteSideCode(side,which){
+  const named=ltAirportCodeFromText(side);if(named)return named;
+  const words=String(side||'').trim().split(/\s+/).filter(Boolean);
+  const w=(which==='origin'?words[words.length-1]:words[0])||'';
+  const code=/^[a-z]{3}$/i.test(w)?w.toUpperCase():'';
+  return code&&LT_AIRPORT_ALIASES.some(([c])=>c===code)?code:'';
+}
 export function ltParseFlightRoute(value){
-  const text=ltLocalTravelText(value).trim(),parts=text.split(/\s+to\s+|\s*→\s*/i);
+  const text=ltLocalTravelText(value).trim();
+  // "SIN to TRZ", "sin → trichy", "sin - trichy", "SIN-TRZ".
+  let parts=text.split(/\s+to\s+|\s*→\s*/i);
+  if(parts.length<2){const dash=text.split(/\s+[-–—]+\s+|(?<=\b[A-Za-z]{3})[-–—](?=[A-Za-z]{3}\b)/);if(dash.length===2)parts=dash;}
   if(parts.length<2){
     // "ഷാർജ കോഴിക്കോട് ഫ്ലൈറ്റ്", "dubai calicut ticket": exactly two named cities, in the order
     // written, unless "from" marks the second one as the origin ("calicut from dubai").
@@ -21331,7 +21346,7 @@ export function ltParseFlightRoute(value){
     const fromSecond=/\bfrom\s*$/i.test(text.slice(0,found[1].at));
     return fromSecond?{origin:found[1].code,destination:found[0].code}:{origin:found[0].code,destination:found[1].code};
   }
-  const origin=ltAirportCodeFromText(parts[0]),destination=ltAirportCodeFromText(parts.slice(1).join(' to '));
+  const origin=ltRouteSideCode(parts[0],'origin'),destination=ltRouteSideCode(parts.slice(1).join(' to '),'destination');
   return origin&&destination&&origin!==destination?{origin,destination}:null;
 }
 
