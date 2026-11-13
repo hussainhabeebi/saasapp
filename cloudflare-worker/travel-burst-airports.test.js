@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { ltParseFlightRoute, ltChatFlightIntent, ltUnknownRouteCities, engineCoalesceBurst, engineBurstWaitMs, engineJoinBurstTexts } from './worker.js';
+import { ltParseFlightRoute, ltChatFlightIntent, ltUnknownRouteCities, engineCoalesceBurst, engineBurstWaitMs, engineJoinBurstTexts, TRAVEL_CRM_PARSERS, ltChatRouteAttempt, ltSerpApiChatFare, ltChatOfferFromSupplier } from './worker.js';
 
 class D1Statement {
   constructor(db,sql,args=[]){this.db=db;this.sql=sql;this.args=args;}
@@ -76,4 +76,35 @@ test('consecutive messages: the older turn stands down, the newest answers both 
 test('burst coalescing fails open when D1 errors',async()=>{
   const env={DB:{prepare(){throw new Error('d1 down');}}};
   assert.deepEqual(await engineCoalesceBurst(env,7,'+1','m1','hello','text',{},async()=>{}),{text:'hello',coalesced:false});
+});
+
+test('"sin - trichy flight 24 dec": dash routes, lower-case codes and the date after "flight 24"', () => {
+  assert.deepEqual(ltParseFlightRoute('sin - trichy flight 24 dec'), { origin: 'SIN', destination: 'TRZ' });
+  assert.deepEqual(ltParseFlightRoute('need sin - trichy flight 24 dec'), { origin: 'SIN', destination: 'TRZ' });
+  assert.deepEqual(ltParseFlightRoute('SIN-TRZ'), { origin: 'SIN', destination: 'TRZ' });
+  assert.equal(ltParseFlightRoute('2 adults - 1 child'), null);
+  assert.equal(ltParseFlightRoute('the - and'), null);
+  const now = new Date('2026-11-13T00:00:00Z');
+  assert.equal(TRAVEL_CRM_PARSERS.parseDate('sin - trichy flight 24 dec', now), '2026-12-24');
+  assert.equal(TRAVEL_CRM_PARSERS.parseDate('flight on dec 24', now), '2026-12-24');
+});
+
+test('a typed route that cannot be read is never replaced by an older route from the chat', () => {
+  for (const t of ['sin - trichy flight 24 dec', 'Salem to Trichy', 'SIN-TRZ', 'abc → xyz']) assert.equal(ltChatRouteAttempt(t), true, t);
+  for (const t of ['I want to book a flight', 'need to travel on 24 dec', 'hi', '2 adults']) assert.equal(ltChatRouteAttempt(t), false, t);
+  assert.deepEqual(ltUnknownRouteCities('salem - trichy', { destination: 'TRZ' }), ['Salem']);
+});
+
+test('SerpApi Google Flights results become chat fares the team books', () => {
+  const fare = ltSerpApiChatFare({ flights: [
+    { departure_airport: { id: 'SIN', time: '2026-12-24 08:55' }, arrival_airport: { id: 'MAA', time: '2026-12-24 10:30' }, airline: 'Singapore Airlines', flight_number: 'SQ 528', travel_class: 'Economy' },
+    { departure_airport: { id: 'MAA', time: '2026-12-24 13:00' }, arrival_airport: { id: 'TRZ', time: '2026-12-24 14:00' }, airline: 'IndiGo', flight_number: '6E 7001' }],
+    total_duration: 365, price: 820, booking_token: 'T1' });
+  assert.deepEqual(fare.itinerary, [{ origin: 'SIN', destination: 'TRZ', departureTime: '2026-12-24T08:55:00', arrivalTime: '2026-12-24T14:00:00', duration: 365, stops: 1 }]);
+  assert.equal(fare.airline_code, 'SQ');
+  const offer = ltChatOfferFromSupplier('serpapi', { flights: fare && [{ departure_airport: { id: 'SIN', time: '2026-12-24 08:55' }, arrival_airport: { id: 'TRZ', time: '2026-12-24 12:55' }, airline: 'Scoot', flight_number: 'TR 568' }], price: 500 }, { currency: 'SGD', markup_type: 'fixed', markup_value: 20 });
+  assert.equal(offer.manual, true);
+  assert.equal(offer.bookable, true);
+  assert.equal(offer.total_amount, 520);
+  assert.match(offer.supplier_offer_id, /^serp:TR568:/);
 });
