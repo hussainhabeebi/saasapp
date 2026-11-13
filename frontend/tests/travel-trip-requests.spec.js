@@ -17,8 +17,12 @@ const TRIPS = [
     adults: '', children: '0', pax: 1, status: 'requested', source: 'whatsapp_bot', lead_id: '43', requested_at: ago(5), missing_info: 'exact date, travellers' },
   { Id: 3, client_name: 'Meera', package_name: 'Dubai 5N', departure_date: '2027-01-10', pax: 2, status: 'quoted', sell_price: 2000, deposit: 0, currency: 'AED' },
 ];
+// An anticipated trip picked up from the chat (worker tripChatSync) — an air ticket, not a package.
+const CHAT_TRIP = { Id: 4, client_name: 'Fathima', client_phone: '919811111111', package_name: 'Air Ticket · Calicut → Dubai', destination: 'Dubai',
+  departure_city: 'Calicut', departure_date: '2027-03-15', return_date: '2027-03-22', travel_month: '2027-03', service: 'Air Ticket', pax: 1,
+  status: 'requested', source: 'whatsapp_chat', lead_id: '44', requested_at: ago(2), missing_info: 'travellers' };
 
-async function open(page, { patches = [], leadPatches = [] } = {}) {
+async function open(page, { patches = [], leadPatches = [], trips = TRIPS } = {}) {
   await page.route('**/*', async (route) => {
     const req = route.request(), url = req.url();
     if (url.startsWith('file://')) return route.continue();
@@ -27,7 +31,7 @@ async function open(page, { patches = [], leadPatches = [] } = {}) {
     if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids), sla_minutes: '30', team_emails: 'rep@x.com,ops@x.com', authentik_email: 'boss@x.com' } });
     if (u.pathname.endsWith('/meta/tables/tb')) return route.fulfill({ json: { columns: ['client_name', 'status', 'lead_id', 'source', 'destination', 'travel_month', 'adults', 'children', 'children_ages', 'departure_city', 'assigned_to', 'requested_at', 'status_changed_at', 'missing_info', 'lost_reason', 'duplicate_of', 'created_at', 'alerted_at'].map(title => ({ title })) } });
     if (u.pathname.includes('/meta/')) return route.fulfill({ json: { columns: [] } });
-    if (u.pathname.endsWith('/tables/tb/records') && req.method() === 'GET') return route.fulfill({ json: { list: TRIPS } });
+    if (u.pathname.endsWith('/tables/tb/records') && req.method() === 'GET') return route.fulfill({ json: { list: trips } });
     if (u.pathname.endsWith('/tables/tb/records') && req.method() === 'PATCH') { patches.push(req.postDataJSON()); return route.fulfill({ json: { Id: 1 } }); }
     if (u.pathname.includes('/records') && req.method() === 'PATCH') { leadPatches.push(req.postDataJSON()); return route.fulfill({ json: { Id: 42 } }); }
     return route.fulfill({ json: { list: [] } });
@@ -92,4 +96,21 @@ test('💰 Quote opens the trip on Quoted, 💬 Chat opens the lead in the dashb
   await asha.locator('button:has-text("Quote")').click();
   await expect(page.locator('#bookingStatus')).toHaveValue('quoted');
   await expect(page.locator('#bookingModalTitle')).toHaveText('Trip request');
+});
+
+test('anticipated trips from the chat (ticket, visa…) show with their service, a From chat filter and their details', async ({ page }) => {
+  await open(page, { trips: [...TRIPS, CHAT_TRIP] });
+  const list = page.locator('#bookingList');
+  const row = list.locator('.booking-row', { hasText: 'Fathima' });
+  await expect(row).toContainText('💬 From chat');
+  await expect(row).toContainText('Air Ticket · Calicut → Dubai');
+  await expect(row).toContainText('2027-03-15');
+  await page.click('.ta-trip-chip:has-text("From chat")');
+  await expect(list.locator('.booking-row')).toHaveCount(1);
+  await row.click();
+  const info = page.locator('#bookingReqInfo');
+  await expect(info).toContainText('Picked up from the chat');
+  await expect(info).toContainText('Air Ticket');
+  await expect(info).toContainText('2027-03-22');
+  await expect(info).toContainText('Calicut');
 });

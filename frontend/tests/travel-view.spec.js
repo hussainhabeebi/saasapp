@@ -61,6 +61,16 @@ test.describe('travel workspace', () => {
     await expect(home).toContainText('Dubai');
   });
 
+  test('departures calendar shows a booking\'s return day', async ({ page }) => {
+    await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
+    // @ts-ignore
+    await page.evaluate((ret) => { _taBookings[1].return_date = ret; }, iso(6));
+    await page.locator('#travelNav .dnTab[data-page="departures"]').click();
+    // @ts-ignore
+    await page.evaluate((m) => { _tvCalMonth = m; renderDepartures(); }, iso(6).slice(0, 7));
+    await expect(page.locator('#tvDepBody .tv-cal .tv-ev.return', { hasText: 'John' })).toContainText('Baku 4N');
+  });
+
   test('departures calendar shows trips and inquiry travel dates', async ({ page }) => {
     await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
     await page.locator('#travelNav .dnTab[data-page="departures"]').click();

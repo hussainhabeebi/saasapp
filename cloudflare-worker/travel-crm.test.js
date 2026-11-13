@@ -249,3 +249,36 @@ test('a chat message is saved on its lead after the turn (worker path)', async (
     assert.equal(await engineTravelCrmDetectLater(env, 7, {conversation:{id:900}}, 'thanks', {wait:0}), null);
   }finally{ globalThis.fetch=realFetch; }
 });
+
+test('a ticket enquiry in the chat also files an anticipated trip on Trips (worker path)', async ()=>{
+  const realFetch=globalThis.fetch, trips=[];
+  globalThis.fetch=async (url, opts={})=>{
+    const u=new URL(String(url)), m=opts.method||'GET';
+    if(u.pathname.includes('/api/v2/meta/tables/trips')) return Response.json({columns:[{title:'client_id'},{title:'status'}]});
+    if(u.pathname.includes('/api/v2/meta/tables/')) return Response.json({columns:[], fields:[]});
+    if(u.pathname.includes('/tables/trips/records')){
+      if(m==='POST'){ const r={...JSON.parse(opts.body), Id:500+trips.length}; trips.push(r); return Response.json({Id:r.Id}); }
+      if(m==='PATCH'){ const b=JSON.parse(opts.body); Object.assign(trips.find(t=>t.Id===b.Id), b); return Response.json({Id:b.Id}); }
+      return Response.json({list:trips});
+    }
+    if(u.pathname.includes('/records') && m==='PATCH') return Response.json({Id:41});
+    if(u.pathname.includes('/records')) return Response.json({list:[{Id:41, ClientId:'7', ConversationID:'900', Name:'Ravi', Phone:'971500000001'}]});
+    return Response.json({});
+  };
+  try{
+    const env={NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t'};
+    const c={Id:7, industry:'travel', ta_table_ids:JSON.stringify({bookings:'trips'})};
+    const when=new Date(Date.now()+30*864e5), d=`${when.getUTCDate()} ${when.toLocaleString('en-GB',{month:'short', timeZone:'UTC'})}`;
+    await engineTravelCrmDetectLater(env, 7, {conversation:{id:900}}, `Calicut to Dubai ticket ${d}`, {wait:0, c});
+    assert.equal(trips.length, 1);
+    assert.equal(trips[0].source, 'whatsapp_chat');
+    assert.equal(trips[0].status, 'requested');
+    assert.equal(trips[0].service, 'Air Ticket');
+    assert.equal(trips[0].destination, 'Dubai');
+    assert.equal(trips[0].departure_city, 'Calicut');
+    assert.equal(trips[0].lead_id, '41');
+    // Without the account (older callers) nothing is filed.
+    await engineTravelCrmDetectLater(env, 7, {conversation:{id:900}}, `Kochi to Doha ${d}`, {wait:0});
+    assert.equal(trips.length, 1);
+  }finally{ globalThis.fetch=realFetch; }
+});
