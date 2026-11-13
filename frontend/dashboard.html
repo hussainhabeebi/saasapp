@@ -3978,9 +3978,20 @@ const ROLES = {
                 <option value="hotel">Hotel / General</option>
                 <option value="resort">Resort</option>
                 <option value="houseboat">Houseboat</option>
+                <option value="h3">H3 — Location guided</option>
               </select>
               <button class="save-btn" id="saveHospitalityStyle">Save</button>
               <span class="save-msg" id="saveHospitalityStyleMsg"></span>
+            </div>
+
+            <div id="hospH3SettingsRow" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 48px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ H3 · Location step</b><div class="s-note" style="margin:2px 0 0">H3 bot flow: Location → Property → Room (with photos) → Book. When on, the intro lists your locations as buttons first (set each property's Location in Hospitality → Properties). Skipped automatically when there are fewer than 2 locations. When off, the bot starts at the property list.</div></div>
+              <select class="form-input" id="cfgHospitalityH3Locations" style="max-width:160px">
+                <option value="on">Enabled</option>
+                <option value="off">Disabled</option>
+              </select>
+              <button class="save-btn" id="saveHospitalityH3Locations">Save</button>
+              <span class="save-msg" id="saveHospitalityH3LocationsMsg"></span>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
@@ -14312,6 +14323,14 @@ async function ensureHospitalityStyleColumn(){
   }catch(e){}
 }
 
+async function ensureHospitalityH3LocationsColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_h3_locations')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/columns`,{column_name:'hospitality_h3_locations',title:'hospitality_h3_locations',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
 async function ensureHospitalityGreetingImagesColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
@@ -23686,6 +23705,8 @@ function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
   const styleSel=$id('cfgHospitalityStyle'); if(styleSel) styleSel.value=clientRecord.hospitality_style||'hotel';
+  const h3Sel=$id('cfgHospitalityH3Locations'); if(h3Sel) h3Sel.value=clientRecord.hospitality_h3_locations==='off'?'off':'on';
+  _hospH3RowVisibility(clientRecord.hospitality_style||'hotel');
   const greetSel=$id('cfgHospitalityGreetingImages'); if(greetSel) greetSel.value=clientRecord.hospitality_greeting_images||'on';
   const proSel=$id('cfgHospitalityProEnabled'); if(proSel) proSel.value=clientRecord.hospitality_pro_enabled==='Yes'?'Yes':'No';
   updateHospitalityTabVisibility();
@@ -23715,7 +23736,25 @@ $id('saveHospitalityStyle').addEventListener('click',async()=>{
     clientRecord.hospitality_style=val;
     _hospLoaded=false; hospProperties=[];
     const propTab=$id('hospPropertiesTab');
-    if(propTab) propTab.style.display=val==='resort'?'':'none';
+    if(propTab) propTab.style.display=(val==='resort'||val==='h3')?'':'none';
+    _hospH3RowVisibility(val);
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+// H3 style only: the Location-step row shows while H3 is the saved style.
+function _hospH3RowVisibility(style){
+  const row=$id('hospH3SettingsRow'); if(row) row.style.display=style==='h3'?'flex':'none';
+}
+$id('saveHospitalityH3Locations').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityH3Locations'),msg=$id('saveHospitalityH3LocationsMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityH3Locations').value==='off'?'off':'on';
+  try{
+    await ensureHospitalityH3LocationsColumn();
+    await patchClient({hospitality_h3_locations:val});
+    clientRecord.hospitality_h3_locations=val;
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
@@ -24412,7 +24451,9 @@ let hospUnits=[], hospBookings=[], hospProperties=[];
 let _hospEditBookingId=null;
 let _hospCalUnitId=null, _hospCalYear=null, _hospCalMonth=null, _hospCalDays=[];
 
-function _hospIsResort(){ return clientRecord.hospitality_style==='resort'; }
+// H3 uses the same Properties → Units structure as Resort.
+function _hospIsResort(){ return clientRecord.hospitality_style==='resort' || clientRecord.hospitality_style==='h3'; }
+function _hospIsH3(){ return clientRecord.hospitality_style==='h3'; }
 
 async function renderHospitality(){
   const el=$id('hospContent');
@@ -24499,7 +24540,7 @@ async function renderHospDashboard(){
 // (which already supports partial single-field updates).
 function hospStyleLabel(){
   const s=clientRecord.hospitality_style||'hotel';
-  if(s==='resort') return {icon:'🌴',heading:'Units & Villa Types',addLabel:'+ Add Unit',typeLabel:'Villa/Unit Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first villa or unit type.'};
+  if(s==='resort'||s==='h3') return {icon:'🌴',heading:'Units & Villa Types',addLabel:'+ Add Unit',typeLabel:'Villa/Unit Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first villa or unit type.'};
   if(s==='houseboat') return {icon:'🛶',heading:'Boats & Houseboat Types',addLabel:'+ Add Boat',typeLabel:'Houseboat Type',emptyMsg:'No boats yet. Click "+ Add Boat" to create your first houseboat type.'};
   return {icon:'🏠',heading:'Units & Room Types',addLabel:'+ Add Unit',typeLabel:'Room Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first room/unit type.'};
 }
@@ -24735,6 +24776,17 @@ const HOSP_PROPERTY_FIELDS=[
   {field:'amenities', label:'Amenities', type:'text', width:200, placeholder:'Pool, Spa, Restaurant…'},
   {field:'description', label:'Description', type:'text', width:220, placeholder:'Short description'},
 ];
+// H3 only: Location column (type-ahead from locations already used) + a location filter.
+let _hospPropLocFilter='';
+function _hospLocKey(loc){ return String(loc||'').split(',')[0].trim().toLowerCase(); }
+function _hospPropLocations(){
+  const m=new Map();
+  hospProperties.forEach(p=>{ const k=_hospLocKey(p.location); if(k && !m.has(k)) m.set(k, String(p.location).split(',')[0].trim()); });
+  return [...m.values()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'}));
+}
+function hospPropertyLocationCell(p){
+  return `<td><input type="text" list="hospLocList" class="form-input hosp-cell" style="width:140px" value="${esc(p.location||'')}" placeholder="e.g. Munnar" data-field="location" onblur="hospPropertyCellChange(${p.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
+}
 function hospPropertyRow(p){
   const cells=HOSP_PROPERTY_FIELDS.map(f=>{
     const val=p[f.field]==null?'':p[f.field];
@@ -24742,31 +24794,46 @@ function hospPropertyRow(p){
   }).join('');
   return `<tr data-prop-row="${p.Id}" style="${p.active?'':'opacity:.55'}">
     <td style="text-align:center"><input type="checkbox" ${p.active?'checked':''} data-field="active" onchange="hospPropertyCellChange(${p.Id},this)"></td>
-    ${cells}
+    ${_hospIsH3()?cells.replace('</td>','</td>'+hospPropertyLocationCell(p)):cells}
     <td>${hospPropertyMediaCellHtml(p)}</td>
     <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospProperty(${p.Id})" title="Delete">🗑</button></td>
   </tr>`;
 }
 function renderHospProperties(){
   const el=$id('hospContent');
+  const h3=_hospIsH3();
+  const locs=h3?_hospPropLocations():[];
+  if(_hospPropLocFilter && _hospPropLocFilter!=='__none' && !locs.some(l=>_hospLocKey(l)===_hospPropLocFilter)) _hospPropLocFilter='';
+  const shown=!h3||!_hospPropLocFilter ? hospProperties
+    : hospProperties.filter(p=>_hospPropLocFilter==='__none' ? !_hospLocKey(p.location) : _hospLocKey(p.location)===_hospPropLocFilter);
+  const noLoc=h3?hospProperties.filter(p=>!_hospLocKey(p.location)).length:0;
+  const filterHtml=h3?`<select class="form-input" style="max-width:200px" onchange="_hospPropLocFilter=this.value;renderHospProperties()" title="Filter by location">
+      <option value="">📍 All locations (${locs.length})</option>
+      ${locs.map(l=>`<option value="${esc(_hospLocKey(l))}"${_hospLocKey(l)===_hospPropLocFilter?' selected':''}>${esc(l)}</option>`).join('')}
+      ${noLoc?`<option value="__none"${_hospPropLocFilter==='__none'?' selected':''}>No location (${noLoc})</option>`:''}
+    </select>`:'';
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏨 Resort Properties <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospProperties.length})</span></div>
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏨 Resort Properties <span style="color:var(--muted);font-size:13px;font-weight:500">(${h3&&_hospPropLocFilter?`${shown.length} of `:''}${hospProperties.length})</span></div>
+      ${filterHtml}
       <button class="btn btn-primary btn-sm" onclick="hospAddPropertyRow()">+ Add Property</button>
     </div>
+    ${h3?`<datalist id="hospLocList">${locs.map(l=>`<option value="${esc(l)}">`).join('')}</datalist>`:''}
+    ${h3&&noLoc?`<div style="font-size:12px;color:var(--muted);margin-bottom:8px">📍 ${noLoc} propert${noLoc===1?'y has':'ies have'} no location — the H3 bot lists ${noLoc===1?'it':'them'} under “Other”.</div>`:''}
     ${hospProperties.length?`
     <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
       <thead><tr>
-        <th>Active</th><th>Name</th><th>Amenities</th><th>Description</th><th>Photos &amp; Videos (5+2)</th><th></th>
+        <th>Active</th><th>Name</th>${h3?'<th>Location</th>':''}<th>Amenities</th><th>Description</th><th>Photos &amp; Videos (5+2)</th><th></th>
       </tr></thead>
-      <tbody>${hospProperties.map(hospPropertyRow).join('')}</tbody>
+      <tbody>${shown.map(hospPropertyRow).join('')}</tbody>
     </table></div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">Each property holds up to 5 photos and 2 videos. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view"). Rooms are assigned to a property in the Units tab.</div>`
     :'<div class="empty-state"><div class="ei">🏨</div>No properties yet. Click "+ Add Property" to create your first resort property.</div>'}`;
 }
 async function hospAddPropertyRow(){
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:'New property'})});
+    const loc=_hospIsH3()&&_hospPropLocFilter&&_hospPropLocFilter!=='__none'?(_hospPropLocations().find(l=>_hospLocKey(l)===_hospPropLocFilter)||''):'';
+    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(loc?{name:'New property',location:loc}:{name:'New property'})});
     const created=await r.json();
     hospProperties.push(created);
     renderHospProperties();
@@ -24789,6 +24856,7 @@ async function hospPropertyCellChange(id, el){
   if(field==='active'){ const row=el.closest('tr'); if(row) row.style.opacity=value?'':'.55'; }
   try{
     await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id,[field]:value})});
+    if(field==='location' && _hospIsH3()){ const dl=$id('hospLocList'); if(dl) dl.innerHTML=_hospPropLocations().map(l=>`<option value="${esc(l)}">`).join(''); }
   }catch(e){
     p[field]=prev;
     alert('Failed to save: '+e.message);
