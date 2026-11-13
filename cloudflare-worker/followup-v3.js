@@ -33,6 +33,9 @@
 //   orderPhones(env,c)→{digits10:{date,total}}|null, objectionPlaybook(c)→[{category,approved_response}],
 //   leadColumns(env)→[column titles of the leads table] }
 
+import {FP_DEFAULTS, fpAccountHour, fpParseLater, fpScriptLang, fpLeadLanguage, fpLangName, fpTemplateLanguages, fpObjectionFor, FP_OBJECTION_GUIDE,
+  fpNbaScore, fpMatchProducts, fpQuoteItem, fpQuoteTotals, fpQuoteNumber, fpQuoteFileName, fpFetchQuoteAssets, fpBuildQuotePdf} from './followup-pro.js';
+
 const H=3600000, D=24*H;
 
 export const FV3_DEFAULTS={
@@ -55,6 +58,8 @@ export const FV3_DEFAULTS={
   ai_variant_b:true,          // AI writes a Variant B for nudges 1-2 so A/B testing starts on day one
   attribution_hours:72,       // a reply within this many hours of a follow-up counts for it
   weekly_digest:true,         // Monday email to the account owner
+  // Pro add-ons (followup-pro.js) — every one off until the account switches it on.
+  ...FP_DEFAULTS,
 };
 
 // Mirrors worker.js PIPELINE_TERMINAL_STAGES — a closed lead never gets another follow-up.
@@ -91,6 +96,10 @@ export function fv3Config(raw){
     auto_templates:b('auto_templates'), ai_variant_b:b('ai_variant_b'),
     attribution_hours:clampInt(o.attribution_hours, 1, 336, d.attribution_hours),
     weekly_digest:b('weekly_digest'),
+    pro_smart_send:b('pro_smart_send'), pro_nba_home:b('pro_nba_home'), pro_objections:b('pro_objections'),
+    pro_quote_pdf:b('pro_quote_pdf'), pro_auto_language:b('pro_auto_language'),
+    pro_quote_valid_days:clampInt(o.pro_quote_valid_days, 1, 90, d.pro_quote_valid_days),
+    pro_quote_note:String(o.pro_quote_note||'').slice(0, 500),
   };
 }
 
@@ -238,8 +247,14 @@ export function fv3Decide(input){
     return out('stopped', 'no_engagement', `No reply to ${sorted.length} follow-ups — pausing outreach to this lead until they write back.`);
 
   const gapFloor=(t)=>lastSent?Math.max(t, lastSent+cfg.min_gap_hours*H):t;
-  const deferUntil=ms(state?.defer_until);
-  const prefHour=cfg.smart_send_time?fv3PreferredHour(state?.hours_json):null;
+  // Pro objections: "talk to me next week" (fv3OnInbound → snooze_until) holds the sequence until then.
+  const snoozeAt=cfg.pro_objections?ms(state?.snooze_until):null;
+  const snooze=snoozeAt && lastCust && snoozeAt>lastCust ? snoozeAt : null;
+  const deferUntil=Math.max(ms(state?.defer_until)||0, snooze||0)||null;
+  const snoozeInfo=snooze && snooze>now ? {snooze_until:new Date(snooze).toISOString()} : {};
+  // Smart send time: the lead's own usual hour; Pro falls back to the account's busiest hour.
+  let prefHour=(cfg.smart_send_time||cfg.pro_smart_send)?fv3PreferredHour(state?.hours_json):null;
+  if(prefHour===null && cfg.pro_smart_send && Number.isInteger(input.accountHour)) prefHour=input.accountHour;
   let pendingTemplate=null;
   for(let s=1; s<=5; s++){
     const row=steps[s];
@@ -250,10 +265,17 @@ export function fv3Decide(input){
     if(isSession && !String(row.message||'').trim() && !row.ai_mode){ stepState[s]='not_set'; continue; }
     if(!isSession && !String(row.template_name||'').trim()){ stepState[s]='pending_template'; if(!pendingTemplate) pendingTemplate=s; continue; }
     const thr=isSession?(Number(row.hours)||SESSION_THRESHOLD_DEFAULT[s]):TEMPLATE_THRESHOLD[s];
-    const base=lastCust+thr*H;
+    let base=lastCust+thr*H;
+    // A snooze past the day-1 template moves the whole day 1 / 3 / 7 run to start on that date.
+    if(!isSession && snooze){ const firstTpl=lastCust+TEMPLATE_THRESHOLD[3]*H; if(snooze>firstTpl) base+=snooze-firstTpl; }
     let due=fv3NextAllowedMs(Math.max(gapFloor(base),staffFloor), tz, cfg.quiet_start, cfg.quiet_end);
     if(isSession){
       if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
+      // Smart send time+: nudge 2 also waits for the usual hour, when that still fits the 24h window.
+      if(cfg.pro_smart_send && s===2 && prefHour!==null){
+        const t=fv3NextAllowedMs(fv3AlignToHour(due, tz, prefHour), tz, cfg.quiet_start, cfg.quiet_end);
+        if(t<lastCust+D-SESSION_WINDOW_MARGIN-30*60000) due=t;
+      }
       if(due>=lastCust+D-SESSION_WINDOW_MARGIN || now>=lastCust+D-SESSION_WINDOW_MARGIN){ stepState[s]='expired'; continue; }
     } else {
       if(now>base+STALE_TEMPLATE_HOURS*H){ stepState[s]='expired'; continue; }
@@ -264,8 +286,8 @@ export function fv3Decide(input){
     const next={step:s, kind:'ladder', type:isSession?'session':'template', label:fv3StepLabel(s, row), due_at:new Date(due).toISOString()};
     const isDue=due<=now;
     return {status:isDue?'due':'scheduled', reason:isDue?'due':'scheduled',
-      text:isDue?`Follow-up ${s} (${next.label}) is going out now.`:`Next: follow-up ${s} (${next.label}).`,
-      next, steps:stepRows(s), cycle:new Date(lastCust).toISOString()};
+      text:isDue?`Follow-up ${s} (${next.label}) is going out now.`:snoozeInfo.snooze_until?`Customer asked to talk later — next: follow-up ${s} (${next.label}).`:`Next: follow-up ${s} (${next.label}).`,
+      next, steps:stepRows(s), cycle:new Date(lastCust).toISOString(), ...snoozeInfo};
   }
   // Ladder done for this silence — re-engage, if switched on.
   const reSends=sorted.filter(s=>s.kind==='reengage');
@@ -283,7 +305,7 @@ export function fv3Decide(input){
     const isDue=due<=now;
     return {status:isDue?'due':'scheduled', reason:isDue?'due':'reengage',
       text:isDue?'Re-engage message is going out now.':`All follow-ups sent with no reply — re-engage message ${reAfterLast.length+1} of ${cfg.reengage_max} is scheduled.`,
-      next, steps:stepRows(null), cycle:new Date(lastCust).toISOString()};
+      next, steps:stepRows(null), cycle:new Date(lastCust).toISOString(), ...snoozeInfo};
   }
   if(pendingTemplate) return out('waiting_template', 'template_pending', `Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`, {steps:stepRows(null)});
   return out('completed', 'ladder_done', ladderSent.size?'All follow-ups sent — no reply yet.':'No follow-up could go out in this silence window (24h session closed or steps not set).', {steps:stepRows(null)});
@@ -437,6 +459,8 @@ const SCHEMA=[
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_followup_v3_templates_kind ON followup_v3_templates(client_id, kind)`,
   `CREATE TABLE IF NOT EXISTS followup_sends (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, step INTEGER NOT NULL, variant TEXT NOT NULL, sent_at TEXT NOT NULL, replied_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS followup_send_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, step INTEGER NOT NULL, error_message TEXT NOT NULL DEFAULT '', error_code INTEGER, source TEXT NOT NULL DEFAULT 'cron', failed_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS followup_v3_quotes (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, quote_no TEXT NOT NULL, items_json TEXT NOT NULL DEFAULT '[]', total REAL, currency TEXT NOT NULL DEFAULT '', via TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_followup_v3_quotes_lead ON followup_v3_quotes(client_id, lead_id, created_at)`,
 ];
 const SEND_COLUMNS=[
   `ALTER TABLE followup_sends ADD COLUMN v3 INTEGER NOT NULL DEFAULT 0`,
@@ -456,6 +480,10 @@ const SEND_COLUMNS=[
   `ALTER TABLE followup_sends ADD COLUMN delivered_at TEXT`,
   `ALTER TABLE followup_sends ADD COLUMN read_at TEXT`,
   `ALTER TABLE followup_sends ADD COLUMN delivery_error TEXT`,
+  // Pro add-ons: the latest customer message (objection / snooze / language) and a snooze date.
+  `ALTER TABLE followup_v3_leads ADD COLUMN last_text TEXT`,
+  `ALTER TABLE followup_v3_leads ADD COLUMN last_lang TEXT`,
+  `ALTER TABLE followup_v3_leads ADD COLUMN snooze_until TEXT`,
 ];
 const schemaReady=new WeakMap();
 export async function fv3EnsureSchema(env){
@@ -660,7 +688,7 @@ async function checklist(env, deps, c, settings){
 // ── Inbound hook (engine webhook) ────────────────────────────────────────────────────────────────
 // Returns true when V3 handled reply tracking for this client (so the classic "credit every open
 // send" UPDATE is skipped).
-export async function fv3OnInbound(env, c, leadId, {optOut=false, at=Date.now()}={}){
+export async function fv3OnInbound(env, c, leadId, {optOut=false, at=Date.now(), text='', lang=''}={}){
   if(!leadId || !await fv3IsEnabled(env, c?.Id)) return false;
   const settings=await fv3GetSettings(env, c.Id);
   const nowIso=new Date(at).toISOString();
@@ -677,6 +705,15 @@ export async function fv3OnInbound(env, c, leadId, {optOut=false, at=Date.now()}
     await env.DB.prepare(`INSERT INTO followup_v3_leads (lead_id, client_id, hours_json, retries, defer_until, updated_at) VALUES (?,?,?,0,NULL,?)
       ON CONFLICT(lead_id) DO UPDATE SET hours_json=excluded.hours_json, retries=0, defer_until=NULL, updated_at=excluded.updated_at`)
       .bind(Number(leadId), Number(c.Id), JSON.stringify(hours), nowIso).run();
+    // Pro add-ons only: keep the latest message (objection / language) and any "talk later" date.
+    const cfg=settings.cfg;
+    if(cfg.pro_objections || cfg.pro_auto_language || cfg.pro_nba_home){
+      const msg=String(text||'').slice(0, 500);
+      const detected=fpScriptLang(msg)||(/^[a-z]{2}$/i.test(String(lang||'').trim())?String(lang).trim().toLowerCase():null);
+      const snooze=cfg.pro_objections?fpParseLater(msg, at, clientTz(c)):null;
+      await env.DB.prepare(`UPDATE followup_v3_leads SET last_text=?, last_lang=COALESCE(?, last_lang), snooze_until=? WHERE lead_id=?`)
+        .bind(msg||null, detected, snooze?new Date(snooze).toISOString():null, Number(leadId)).run();
+    }
   }catch(e){ /* best-effort — never break the live reply path */ }
   return true;
 }
@@ -684,7 +721,9 @@ export async function fv3OnInbound(env, c, leadId, {optOut=false, at=Date.now()}
 // ── Sweep (every 15 min) ─────────────────────────────────────────────────────────────────────────
 const LEAD_FIELDS=['Id', 'Name', 'Phone', 'Stage', 'Handover', 'OptOut', 'LastMsgAt', 'LastCustomerMsgAt', 'LastAgentMsgAt', 'Date', 'CreatedAt', 'Language',
   'ConversationID', 'conv_id', 'ConversationId', 'chatwoot_conv_id', 'InboxId', 'InterestedProduct', 'LastObjectionCategory', 'DealValue',
-  'Follow up 1', 'Follow up 2', 'Follow up 3', 'Follow up 4', 'Follow up 5'];
+  'Follow up 1', 'Follow up 2', 'Follow up 3', 'Follow up 4', 'Follow up 5',
+  // Pro add-ons: quote product matching and the next-best-action score.
+  'LastProductSku', 'Brand', 'ProductCategory', 'Sentiment', 'WinProbability', 'Score', 'Owner', 'AssignedTo', 'SharedWith'];
 const digits10=(p)=>String(p||'').replace(/\D/g, '').slice(-10);
 // NocoDB refuses a whole read when `fields` names a column the table doesn't have, and most of
 // LEAD_FIELDS are optional (conv_id, DealValue, LastObjectionCategory… exist only on some bases).
@@ -703,14 +742,80 @@ export function fv3OrderCounts(order, lead){
   return placed===null ? true : placed>=lastCust-D;
 }
 
-async function objectionText(env, deps, c, lead){
-  const cat=String(lead.LastObjectionCategory||'').trim(); if(!cat) return null;
+// Classic (objection_branching): only the Playbook's approved answer for the classifier's category.
+// Pro (pro_objections): also the keyword fallback + "family", and a built-in approach per objection
+// when the Playbook has no answer; `lang` writes it in the lead's language, `quote` mentions the PDF.
+async function objectionText(env, deps, c, lead, {pro=false, state=null, lang=null, quote=false, category=null}={}){
+  const cat=category||(pro?fpObjectionFor(lead, state):String(lead.LastObjectionCategory||'').trim()); if(!cat) return null;
   const entry=(deps.objectionPlaybook?.(c)||[]).find(o=>String(o.category||'').toLowerCase()===cat.toLowerCase());
-  const approved=String(entry?.approved_response||'').trim(); if(!approved) return null;
-  const sys=`You write one short WhatsApp follow-up for "${c.client_name||'us'}" to ${lead.Name||'a customer'}, who hesitated because of: ${cat}. Use this approved answer as the substance: "${approved}". 1-2 friendly sentences, end with a light question, no "Dear", no quotes.`;
-  const ai=await deps.ai?.(env, c, sys, '(write it now)', {temperature:0.6, maxOutputTokens:140, caller:'followup-v3-objection'}).catch(()=>null);
+  const approved=String(entry?.approved_response||'').trim();
+  const guide=approved?`Use this approved answer as the substance: "${approved}".`:(pro?FP_OBJECTION_GUIDE[cat]:'');
+  if(!guide) return null;
+  const langName=lang&&lang!=='en'?fpLangName(lang):'';
+  const langLine=langName?` Write it in ${langName}${state?.last_text&&!fpScriptLang(state.last_text)?' using English letters, the way the customer writes':''}.`:'';
+  const quoteLine=quote?' A quotation PDF with the products and prices is attached to this message — mention it briefly.':'';
+  const sys=pro
+    ?`You write one short WhatsApp follow-up for "${c.client_name||'us'}" to ${lead.Name||'a customer'}, who hesitated because of: ${cat}. ${guide}${quoteLine} 1-2 friendly sentences, end with a light question, no "Dear", no quotes. Never invent prices, offers or policies.${langLine}`
+    :`You write one short WhatsApp follow-up for "${c.client_name||'us'}" to ${lead.Name||'a customer'}, who hesitated because of: ${cat}. ${guide} 1-2 friendly sentences, end with a light question, no "Dear", no quotes.${langLine}`;
+  const ai=await deps.ai?.(env, c, sys, '(write it now)', {temperature:0.6, maxOutputTokens:pro?160:140, caller:'followup-v3-objection'}).catch(()=>null);
   const t=String(ai||'').trim();
-  return t || `Hi ${String(lead.Name||'').split(' ')[0]||'there'}, ${approved}`.slice(0, 600);
+  const text=t || (approved?`Hi ${String(lead.Name||'').split(' ')[0]||'there'}, ${approved}`.slice(0, 600):'');
+  return text?{text, category:cat}:null;
+}
+
+// Pro auto-language: the nudge in the lead's language (null = leave it as written).
+async function translateTo(env, deps, c, text, lang, sample=''){
+  const t=String(text||'').trim(), name=fpLangName(lang);
+  if(!t || !name || !deps.ai) return null;
+  const script=fpScriptLang(t);
+  if(script===lang || (lang==='en' && !script)) return null;
+  const latinSample=lang!=='en' && sample && !fpScriptLang(sample) && /[a-z]/i.test(sample);
+  const sys=`Translate the WhatsApp follow-up below into ${name}. Keep it short, warm and natural, the way a local salesperson writes on WhatsApp. Keep names, product names, prices, numbers, links and emojis exactly as they are.${latinSample?` The customer writes ${name} in English letters, so write ${name} in English letters too (no ${name} script).`:''} Reply with only the translated message.`;
+  const user=`${latinSample?`Customer's last message, for style only: «${String(sample).slice(0, 160)}»\n\n`:''}Message to translate:\n${t}`;
+  const out=await deps.ai(env, c, sys, user, {temperature:0.3, maxOutputTokens:320, caller:'followup-v3-translate'}).catch(()=>null);
+  const clean=String(out||'').trim().replace(/^["'“«]+|["'”»]+$/g, '');
+  return clean && clean.length<=t.length*4+200 ? clean : null;
+}
+
+// Pro auto-language for template steps: the same template name approved in the lead's language.
+async function templateInLanguage(env, creds, name, current, lang, cache){
+  if(!creds?.waba_id || !creds?.wa_token || !name) return null;
+  for(const code of fpTemplateLanguages(lang, current)){
+    const key=name+'|'+code;
+    if(!cache.has(key)) cache.set(key, pollTemplate(env, creds, {name, language:code, status:'UNKNOWN'}).then(t=>t.status==='APPROVED').catch(()=>false));
+    if(await cache.get(key)) return code;
+  }
+  return null;
+}
+
+// ── Quote PDF (pro_quote_pdf) ────────────────────────────────────────────────────────────────────
+// Catalog rows from deps.quoteProducts (ecom products / travel packages), normalised.
+async function quoteCatalog(env, deps, c){
+  const rows=await Promise.resolve(deps.quoteProducts?.(env, c)).catch(()=>[])||[];
+  return rows.map(p=>({...fpQuoteItem(p, {currency:c.deal_currency||''}), category:p.category||p.destination||'', key:String(p.id??p.Id??p.name)}));
+}
+// Builds the PDF for `items` (fpQuoteItem shape). Returns {bytes, name, quote_no, totals, items}.
+export async function fv3BuildLeadQuote(env, deps, c, lead, items, {discount=0, note='', validDays=7, fetchImpl=globalThis.fetch, now=Date.now()}={}){
+  const quoteNo=fpQuoteNumber(lead.Id, now);
+  const assets=await fpFetchQuoteAssets(items, {logoUrl:c.logo_url||c.brand_logo_url||'', fetchImpl}).catch(()=>({}));
+  const bytes=fpBuildQuotePdf({items, business:c.client_name||'', phone:c.business_phone||c.contact_phone||c.wa_display_phone||'', email:c.business_email||'',
+    address:c.business_address||'', leadName:lead.Name||'', leadPhone:lead.Phone||'', quoteNo, date:now, validDays, currency:c.deal_currency||'', discount, note,
+    accent:c.brand_color||'#0F7377', assets});
+  return {bytes, name:fpQuoteFileName(quoteNo), quote_no:quoteNo, totals:fpQuoteTotals(items, discount), items};
+}
+async function logQuote(env, cid, leadId, q, via){
+  await env.DB.prepare(`INSERT INTO followup_v3_quotes (client_id, lead_id, quote_no, items_json, total, currency, via, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(cid), Number(leadId), q.quote_no, JSON.stringify(q.items.map(i=>({id:i.id, name:i.name, qty:i.qty, price:i.price}))), q.totals.total, q.items[0]?.currency||'', via, new Date().toISOString()).run().catch(()=>null);
+}
+// Auto-attach for a price / family follow-up: the lead's matched products, at most one quote per
+// lead every 3 days so the same PDF isn't sent on every nudge.
+async function followupQuote(env, deps, c, lead, cfg){
+  const recent=await env.DB.prepare(`SELECT id FROM followup_v3_quotes WHERE client_id=? AND lead_id=? AND created_at>=? LIMIT 1`)
+    .bind(Number(c.Id), Number(lead.Id), new Date(Date.now()-3*D).toISOString()).first().catch(()=>null);
+  if(recent) return null;
+  const items=fpMatchProducts(await quoteCatalog(env, deps, c), lead, 3);
+  if(!items.length) return null;
+  return fv3BuildLeadQuote(env, deps, c, lead, items, {validDays:cfg.pro_quote_valid_days, note:cfg.pro_quote_note});
 }
 
 async function logFailure(env, cid, leadId, step, e){
@@ -740,6 +845,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
   const stateByLead={}; (stateRows||[]).forEach(r=>{ stateByLead[r.lead_id]=r; });
   const {results:held}=await env.DB.prepare(`SELECT lead_id FROM followup_v3_jobs WHERE client_id=? AND status IN ('sending','uncertain')`).bind(cid).all();
   for(const r of held||[]) stateByLead[r.lead_id]={...stateByLead[r.lead_id],delivery_hold:true};
+  const accountHour=cfg.pro_smart_send?fpAccountHour(stateRows):null;
+  const tplLangCache=new Map();
   let orders=null, ordersLoaded=false;
   const getOrders=async()=>{ if(!ordersLoaded){ ordersLoaded=true; orders=cfg.exit_on_order&&deps.orderPhones?await deps.orderPhones(env, c):null; } return orders; };
   if(!preview) await deps.ensureLeadsColumns?.(env, ['LastCustomerMsgAt', 'LastAgentMsgAt', 'InterestedProduct', 'Follow up 4', 'Follow up 5']).catch(()=>null);
@@ -763,7 +870,7 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       // Only look up orders for leads it can matter for (ecom, and either due or recently followed up).
       const recent=sends.some(s=>(ms(s.sent_at)||0)>now-CONVERSION_WINDOW_DAYS*D);
       const hasOrder=lead.Phone?fv3OrderCounts((await getOrders())?.[digits10(lead.Phone)], lead):false;
-      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id))});
+      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id)), accountHour});
       checked++; reasons[d.reason]=(reasons[d.reason]||0)+1;
       if(sample.length<100) sample.push({lead_id:lead.Id,name:lead.Name,status:d.status,reason:d.reason,next:d.next});
       if(!preview && d.status==='goal_reached' && recent) stateWrites.push(markConversion(env, cid, lead, sends, now, hasOrder?orders?.[digits10(lead.Phone)]:null));
@@ -803,7 +910,7 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       if(String(live.ClientId)!==String(cid)) throw new Error('Pre-send lead ownership mismatch');
       const latestSettings=await fv3GetSettings(env,cid);
       if(!latestSettings?.enabled || latestSettings.cfg.paused) return;
-      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reTpl});
+      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reTpl,accountHour});
       if(latest.status!=='due' || latest.cycle!==d.cycle || latest.next.step!==step) return;
       lead=live;
       const leadSteps=fv3StepsForLead(steps,latestSettings.cfg,lead);
@@ -813,12 +920,29 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       const selectedVariant=stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
       const selectedTemplate=selectedVariant==='B'&&stepCfg.template_name_b?{name:stepCfg.template_name_b,language:stepCfg.template_language_b||stepCfg.template_language}:{name:stepCfg.template_name,language:stepCfg.template_language};
       const opts={selectedVariant:stepCfg.type==='template'?selectedVariant:undefined,v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
+      const pro=latestSettings.cfg;
+      const lang=pro.pro_auto_language?fpLeadLanguage(lead, state, c):null;
+      let stepToSend=stepCfg;
       if(stepCfg.type==='template'){
         const t=tplByName[selectedTemplate.name];
         if(t){ let params=[]; try{ params=JSON.parse(t.params||'[]'); }catch(e){} opts.templateParams=fv3TemplateParams(params, lead, c, c.industry||settings.industry); }
+        // Pro auto-language: the same template approved in the lead's language, when WhatsApp has one.
+        if(lang){
+          const alt=await templateInLanguage(env, opts.creds, selectedTemplate.name, selectedTemplate.language, lang, tplLangCache);
+          if(alt){ selectedTemplate.language=alt; stepToSend={...stepCfg, [selectedVariant==='B'&&stepCfg.template_name_b?'template_language_b':'template_language']:alt}; }
+        }
       } else {
         opts.fill={product:String(lead.InterestedProduct||'').trim()||fv3InterestFallback(c.industry||settings.industry), business:c.client_name||'us'};
-        if(cfg.objection_branching){ const t=await objectionText(env, deps, c, lead).catch(()=>null); if(t){ opts.overrideText=t; opts.variant='OBJ'; opts.kind='objection'; } }
+        if(cfg.objection_branching || pro.pro_objections){
+          const cat=pro.pro_objections?fpObjectionFor(lead, state):null;
+          const quote=pro.pro_objections && pro.pro_quote_pdf && (cat==='price'||cat==='family') ? await followupQuote(env, deps, c, lead, pro).catch(()=>null) : null;
+          const o=await objectionText(env, deps, c, lead, {pro:pro.pro_objections, state, lang, quote:!!quote, category:cat}).catch(()=>null);
+          if(o){
+            opts.overrideText=o.text; opts.variant='OBJ'; opts.kind='objection';
+            if(quote){ opts.attachment={bytes:quote.bytes, name:quote.name, type:'application/pdf'}; opts.quote=quote; }
+          }
+        }
+        if(lang){ opts.lang=lang; if(!opts.overrideText) opts.translate=txt=>translateTo(env, deps, c, txt, lang, state?.last_text||''); }
       }
       let claimed=false;
       const jobCycle=step===REENGAGE_STEP?d.next.due_at:d.cycle;
@@ -833,7 +957,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
           .bind(cid,Number(lead.Id),jobCycle,step,new Date().toISOString()).run();
         if(!claim?.meta?.changes) return;
         claimed=true;
-        await deps.sendStep(env, c, lead, step, stepCfg, opts);
+        await deps.sendStep(env, c, lead, step, stepToSend, opts);
+        if(opts.quote) await logQuote(env, cid, lead.Id, opts.quote, 'followup');
         await env.DB.prepare(`UPDATE followup_v3_jobs SET status='accepted',updated_at=? WHERE client_id=? AND lead_id=? AND cycle=? AND step=?`).bind(new Date().toISOString(),cid,Number(lead.Id),jobCycle,step).run();
         sent++;
         if(state?.retries || state?.defer_until) await env.DB.prepare(`UPDATE followup_v3_leads SET retries=0, defer_until=NULL WHERE lead_id=?`).bind(Number(lead.Id)).run().catch(()=>null);
@@ -952,11 +1077,25 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
     hasOrder=fv3OrderCounts(o?.[digits10(lead.Phone)], lead);
   }
   const hasMeeting=!!(await deps.leadHasMeeting?.(env, c.Id, lead.Id).catch(()=>false));
-  const d=fv3Decide({lead, steps, cfg:settings.cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates), hasMeeting});
+  const cfg=settings.cfg;
+  let accountHour=null;
+  if(cfg.pro_smart_send){ const {results:hr}=await env.DB.prepare(`SELECT hours_json FROM followup_v3_leads WHERE client_id=?`).bind(Number(c.Id)).all(); accountHour=fpAccountHour(hr||[]); }
+  const d=fv3Decide({lead, steps, cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates), hasMeeting, accountHour});
   const lastFail=await env.DB.prepare(`SELECT error_message, error_code, failed_at, step FROM followup_send_failures WHERE lead_id=? AND failed_at>=? ORDER BY failed_at DESC LIMIT 1`)
     .bind(Number(lead.Id), new Date(now-3*D).toISOString()).first().catch(()=>null);
+  // Pro add-ons on the lead card — only the parts the account switched on.
+  const pro={};
+  if(cfg.pro_auto_language){ const l=fpLeadLanguage(lead, state, c); pro.language=l; pro.language_name=fpLangName(l)||l; }
+  if(cfg.pro_objections){ pro.objection=fpObjectionFor(lead, state); const sz=ms(state?.snooze_until); if(sz && sz>now) pro.snooze_until=new Date(sz).toISOString(); }
+  if(cfg.pro_nba_home) pro.nba=fpNbaScore({lead, state, sends:sends||[], now});
+  if(cfg.pro_quote_pdf){
+    pro.quote_pdf=true;
+    const q=await env.DB.prepare(`SELECT quote_no, total, currency, via, created_at FROM followup_v3_quotes WHERE client_id=? AND lead_id=? ORDER BY created_at DESC LIMIT 1`).bind(Number(c.Id), Number(lead.Id)).first().catch(()=>null);
+    pro.last_quote=q||null;
+  }
   return {enabled:true, ...d,
-    paused:settings.cfg.paused,
+    pro,
+    paused:cfg.paused,
     defer_until:state?.defer_until||null,
     last_failure:lastFail?{...lastFail, ...fv3FailureHint(lastFail.error_code, lastFail.error_message)}:null,
     history:(sends||[]).slice(0, 12).map(s=>({step:s.step, kind:s.kind||'ladder', label:fv3StepLabel(Number(s.step)), variant:s.variant, sent_at:s.sent_at, replied_at:s.replied_at, converted_at:s.converted_at, opted_out_at:s.opted_out_at,delivery_status:s.delivery_status,delivered_at:s.delivered_at,read_at:s.read_at,delivery_error:s.delivery_error}))};
@@ -1011,6 +1150,9 @@ export async function fv3HandleRoute(request, env, deps, url){
     const s=await fv3SaveSettings(env, cid, {enabled:body.enabled, config:body.config, industry:c.industry||''});
     let setup=null;
     if(s.enabled && !before.enabled) setup=await fv3Setup(env, deps, c, s).catch(e=>({error:e.message}));
+    // Home reads this flag from the client record, so accounts without the add-on make no extra call.
+    const nbaOn=!!(s.enabled && s.cfg.pro_nba_home);
+    if(nbaOn!==(c.followup_pro_nba==='Yes')) await deps.setClientFlag?.(env, cid, 'followup_pro_nba', nbaOn?'Yes':'No').catch(e=>deps.reportOpsError?.(env, 'followup v3 nba flag', e, {clientId:cid}));
     await fv3Schedule(env,cid);
     return json({ok:true, health:fv3Health(await fv3GetSettings(env,cid)), enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, setup, checklist:s.enabled?await checklist(env, deps, c, s):[]});
   }
@@ -1131,5 +1273,91 @@ export async function fv3HandleRoute(request, env, deps, url){
       .bind(cid, new Date(Date.now()-days*D).toISOString()).all();
     return json({list:results||[]});
   }
+
+  // ── Pro: next-best-action list for Home ──
+  if(path==='/nba' && method==='GET'){
+    const s=await fv3GetSettings(env, cid);
+    if(!s?.enabled || !s.cfg.pro_nba_home) return json({enabled:false});
+    const limit=clampInt(url.searchParams.get('limit'), 1, 50, 12);
+    const fields=fv3LeadFields(await deps.leadColumns?.(env).catch(()=>null));
+    const leads=[];
+    for(let page=1; page<=3; page++){
+      const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(`(ClientId,eq,${cid})`)}&sort=-Id&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent(fields.join(','))}`);
+      if(!r.ok) return json({error:'Could not read leads'}, 502);
+      const list=(await r.json().catch(()=>({})))?.list||[];
+      leads.push(...list);
+      if(list.length<200) break;
+    }
+    // Staff see the leads they own or that are shared with them; owner / admins see everyone's.
+    const full=deps.seesAllLeads?deps.seesAllLeads(c, payload.email):true;
+    const me=String(payload.email||'').trim().toLowerCase();
+    const mine=l=>full || (!!me && ([l.Owner, l.AssignedTo].some(v=>String(v||'').trim().toLowerCase()===me) || String(l.SharedWith||'').toLowerCase().includes(','+me+',')));
+    const {results:stateRows}=await env.DB.prepare(`SELECT lead_id, hours_json, last_text, snooze_until FROM followup_v3_leads WHERE client_id=?`).bind(cid).all();
+    const stateBy={}; (stateRows||[]).forEach(r=>{ stateBy[r.lead_id]=r; });
+    const {results:sendRows}=await env.DB.prepare(`SELECT lead_id, sent_at, replied_at FROM followup_sends WHERE client_id=? AND sent_at>=?`).bind(cid, new Date(Date.now()-30*D).toISOString()).all();
+    const sendsBy={}; (sendRows||[]).forEach(r=>{ (sendsBy[r.lead_id]||(sendsBy[r.lead_id]=[])).push(r); });
+    const now=Date.now();
+    const rows=leads.filter(mine).map(l=>{
+      const n=fpNbaScore({lead:l, state:stateBy[l.Id], sends:sendsBy[l.Id]||[], now});
+      return n&&{lead_id:l.Id, name:String(l.Name||'').slice(0, 80), phone:l.Phone||'', stage:l.Stage||'', ...n};
+    }).filter(Boolean).sort((a, b)=>b.score-a.score);
+    const counts={critical:0, warm:0, nurture:0, cold:0};
+    rows.forEach(r=>{ counts[r.band]++; });
+    return json({enabled:true, counts, list:rows.slice(0, limit), scanned:leads.length});
+  }
+
+  // ── Pro: quote / proposal PDF ──
+  if((path==='/quote/catalog' && method==='GET') || (path==='/quote' && method==='POST')){
+    const s=await fv3GetSettings(env, cid);
+    if(!s?.enabled || !s.cfg.pro_quote_pdf) return json({error:'Turn on "Quote PDF in one tap" in Follow-ups → Settings → Pro add-ons first.'}, 400);
+    const body=method==='POST'?await request.json().catch(()=>({})):{};
+    const leadId=Number(method==='POST'?body.lead_id:url.searchParams.get('lead_id'));
+    if(!leadId) return json({error:'lead_id required'}, 400);
+    const r=await deps.ncFetch(env, `api/v2/tables/${deps.leadsTable}/records/${leadId}`);
+    const lead=r.ok?await r.json().catch(()=>null):null;
+    if(!lead || String(lead.ClientId)!==String(cid)) return json({error:'Not your lead'}, 403);
+    const catalog=await quoteCatalog(env, deps, c);
+    const lastCust=fv3LastCustomerMs(lead);
+    const windowOpen=!!lastCust && Date.now()-lastCust<D-SESSION_WINDOW_MARGIN;
+    if(method==='GET'){
+      const suggested=fpMatchProducts(catalog, lead, 3).map(p=>p.key);
+      return json({catalog:catalog.slice(0, 300).map(p=>({key:p.key, name:p.name, sku:p.sku, price:p.price, currency:p.currency||c.deal_currency||'', image:p.images[0]||'', description:p.description.slice(0, 160), category:p.category})),
+        suggested, window_open:windowOpen, lead:{id:lead.Id, name:lead.Name||'', interested:lead.InterestedProduct||''},
+        valid_days:s.cfg.pro_quote_valid_days, note:s.cfg.pro_quote_note, currency:c.deal_currency||''});
+    }
+    const byKey=new Map(catalog.map(p=>[p.key, p]));
+    const items=[];
+    for(const it of (Array.isArray(body.items)?body.items:[]).slice(0, 20)){
+      const qty=Math.max(1, Math.min(999, Math.round(Number(it?.qty)||1)));
+      if(it?.key && byKey.has(String(it.key))) items.push({...byKey.get(String(it.key)), qty, ...(Number(it.price)>0?{price:Number(it.price)}:{})});
+      else if(String(it?.name||'').trim() && Number(it?.price)>=0) items.push(fpQuoteItem({name:it.name, price:Number(it.price)||0, description:it.description||''}, {qty, currency:c.deal_currency||''}));
+    }
+    if(!items.length) return json({error:'Pick at least one product for the quote.'}, 400);
+    const q=await fv3BuildLeadQuote(env, deps, c, lead, items, {discount:Number(body.discount)||0, note:String(body.note??s.cfg.pro_quote_note??'').slice(0, 500), validDays:clampInt(body.valid_days, 1, 90, s.cfg.pro_quote_valid_days)});
+    if(!body.send) return new Response(q.bytes, {status:200, headers:{'Content-Type':'application/pdf', 'Content-Disposition':`inline; filename="${q.name}"`, 'X-Quote-No':q.quote_no, 'Access-Control-Expose-Headers':'X-Quote-No'}});
+    if(!windowOpen) return json({error:'The customer\'s 24-hour WhatsApp window is closed, so WhatsApp won\'t deliver a file now. Download the PDF and send it after they write again (or send a template first).', window_open:false}, 409);
+    const lang=s.cfg.pro_auto_language?fpLeadLanguage(lead, await env.DB.prepare(`SELECT last_text, last_lang FROM followup_v3_leads WHERE lead_id=?`).bind(leadId).first().catch(()=>null), c):null;
+    const first=String(lead.Name||'').trim().split(/\s+/)[0]||'there';
+    const until=new Date(Date.now()+clampInt(body.valid_days, 1, 90, s.cfg.pro_quote_valid_days)*D).toLocaleDateString('en-GB', {day:'numeric', month:'short'});
+    const total=`${items[0]?.currency||c.deal_currency||''} ${q.totals.total.toLocaleString('en-US', {maximumFractionDigits:2})}`.trim();
+    let caption=String(body.message||'').trim().slice(0, 900)||`Hi ${first}, here is your quotation ${q.quote_no} for ${items.map(i=>i.name).slice(0, 3).join(', ')}${items.length>3?' and more':''}. Total: ${total}, valid until ${until}. Reply here with any questions 😊`;
+    if(lang && !String(body.message||'').trim()) caption=await translateTo(env, deps, c, caption, lang).catch(()=>null)||caption;
+    try{ await sendQuoteToChat(c, lead, q, caption); }
+    catch(e){ return json({error:e.message||'Could not send the quote'}, 502); }
+    await logQuote(env, cid, leadId, q, 'manual');
+    return json({ok:true, sent:true, quote_no:q.quote_no, total:q.totals.total, caption});
+  }
   return json({error:'Not found'}, 404);
+}
+
+// The quote PDF into the lead's chat (Chatwoot → WhatsApp), with a short caption.
+async function sendQuoteToChat(c, lead, q, caption){
+  if(!c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) throw new Error('WhatsApp chat is not connected (Settings → Channels).');
+  const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
+  if(!convId) throw new Error('This lead has no chat conversation yet.');
+  const fd=new FormData();
+  fd.append('content', caption); fd.append('message_type', 'outgoing'); fd.append('private', 'false');
+  fd.append('attachments[]', new Blob([q.bytes], {type:'application/pdf'}), q.name);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  if(!r.ok) throw new Error('Chat send failed: HTTP '+r.status);
 }

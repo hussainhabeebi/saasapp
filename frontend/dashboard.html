@@ -1837,6 +1837,9 @@ const ROLES = {
           </div>
         </div>
 
+        <!-- Follow-up V3 Pro: who to contact now (followup-pro-ui.js) — only when switched on -->
+        <div id="homeNbaV3" style="display:none;margin-bottom:18px"></div>
+
         <!-- Reminders / alerts -->
         <div id="remindersPanel" style="display:none;margin-bottom:18px"></div>
 
@@ -7107,6 +7110,8 @@ function renderHomeScoped(){
     bizUpdateUsageBadge(used,10);
   }catch(e){}
   try{renderNbaStrip(allLeads);}catch(e){}
+  // Follow-up V3 Pro "who to contact now" — only accounts that switched it on (no request otherwise).
+  try{ if(clientRecord?.followup_pro_nba==='Yes') window.FollowupPro?.renderHome($id('homeNbaV3'), CONFIG.WORKER_BASE, sessionToken, {openLead:'openLeadFromAlert'}); else $id('homeNbaV3').style.display='none'; }catch(e){}
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
   try{renderOnboardingChecklist();}catch(e){}
@@ -24416,7 +24421,7 @@ async function renderFollowupV3Status(lead){
   try{
     const d=await FollowupStatus.load(CONFIG.WORKER_BASE, sessionToken, lead.Id);
     if(currentLead!==lead||!d.enabled) return;
-    $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', leadId:lead.Id});
+    $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', onQuote:'openFollowupQuote', leadId:lead.Id});
     wrap.style.display='';
   }catch(e){ /* endpoint unavailable — leave the card hidden */ }
 }
@@ -24424,8 +24429,13 @@ async function skipFollowupV3Step(leadId, step){
   if(!confirm('Skip this follow-up for this lead?')) return;
   try{
     const d=await FollowupStatus.skip(CONFIG.WORKER_BASE, sessionToken, leadId, step);
-    if(currentLead&&currentLead.Id===leadId) $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', leadId});
+    if(currentLead&&currentLead.Id===leadId) $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', onQuote:'openFollowupQuote', leadId});
   }catch(e){ alert('Could not skip: '+e.message); }
+}
+// Follow-up V3 Pro — 📄 Quote PDF builder (followup-pro-ui.js); refreshes the card once sent.
+function openFollowupQuote(leadId){
+  if(!window.FollowupPro) return;
+  FollowupPro.openQuote(CONFIG.WORKER_BASE, sessionToken, leadId, {onSent:()=>{ if(currentLead&&currentLead.Id===leadId) renderFollowupV3Status(currentLead); }});
 }
 function renderRecoveryChip(lead){
   const wrap=$id('recoveryChipWrap');
@@ -25138,7 +25148,8 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
-<script src="followup-status.js?v=1"></script>
+<script src="followup-status.js?v=2"></script>
+<script src="followup-pro-ui.js?v=1"></script>
 <script src="travel-status.js?v=10"></script>
 <script src="travel-view.js?v=9"></script>
 <script src="travel-crm.js?v=4"></script>

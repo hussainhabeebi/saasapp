@@ -4000,6 +4000,15 @@ function fv3Render(){
     chk('auto_templates','Create templates for me','Submit and plug in the day 1 / 3 / 7 and re-engage templates'),
     chk('ai_variant_b','AI-written B version','A second wording for nudges 1-2; the better one gets sent more'),
     chk('weekly_digest','Monday email summary','To the account owner\'s email'),
+    // Pro add-ons (cloudflare-worker/followup-pro.js) — every one is off until switched on here.
+    `<div style="grid-column:1/-1;margin-top:6px"><h4 style="margin:0">✨ Pro add-ons <span style="font-size:11px;font-weight:500;color:var(--muted)">— optional, off until you switch them on</span></h4></div>`,
+    chk('pro_smart_send','Smart send time+','New leads with no history yet get the hour your customers reply most; nudge 2 also waits for that hour when it still fits the 24-hour window'),
+    chk('pro_nba_home','Next-best-action on Home','Scores every open lead 0-100 and shows who to contact now, and what to do, on the Home page'),
+    chk('pro_objections','Objection-aware follow-ups','"Talk next week / after salary / tomorrow" pauses follow-ups until that date. Price, family, trust, competitor and timing objections get a reply written for them, even without a Playbook answer'),
+    chk('pro_quote_pdf','Quote PDF in one tap','📄 Quote button on the lead card and in Chats: a branded PDF with the products the lead chose and their photos. With objection-aware follow-ups on, a price or "ask my family" nudge carries the quote too (at most one every 3 days)'),
+    chk('pro_auto_language','Reply in the lead\'s language','Nudges 1-2 are written in the language of the lead\'s latest message (Manglish / Hinglish stay in English letters). Day 1/3/7 use the same template approved in that language, if you have one'),
+    num('pro_quote_valid_days','Quote valid for (days)',1,90,'Shown on the PDF'),
+    `<div class="form-field" style="grid-column:span 2"><label>Note printed on every quote</label><input id="fv3c_pro_quote_note" maxlength="500" value="${escAttr(cfg.pro_quote_note||'')}" placeholder="e.g. 30% advance confirms the booking. Prices include GST."></div>`,
   ].join('');
   fv3LoadUpcoming();
   fv3LoadReport();
@@ -4025,8 +4034,9 @@ async function fv3EnableSetting(key, btn){
 }
 async function fv3SaveConfig(){
   const cfg={};
-  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours','staff_reply_hours'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
-  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','auto_templates','ai_variant_b','weekly_digest'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours','staff_reply_hours','pro_quote_valid_days'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
+  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','auto_templates','ai_variant_b','weekly_digest','pro_smart_send','pro_nba_home','pro_objections','pro_quote_pdf','pro_auto_language'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  cfg.pro_quote_note=$id('fv3c_pro_quote_note').value.trim();
   cfg.stage_sequences={};
   document.querySelectorAll('[data-fv3-stage]').forEach(el=>{
     if(!el.querySelector('[data-enabled]').checked) return;

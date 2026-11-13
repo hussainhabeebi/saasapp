@@ -55,6 +55,7 @@
       <div style="margin-top:6px">${last?`Last follow-up: <b>${esc(last.label)}</b> accepted ${esc(rel(last.sent_at))}${last.delivery_status?' · '+esc(last.delivery_status):''}${last.replied_at?' — <b>customer replied</b>':' — no reply yet'}`:'<b>No follow-up sent yet</b> in this conversation.'}</div>
       ${nextLine}${fail}
       <div style="margin-top:8px;border-top:1px solid var(--line,#e5e7eb);padding-top:6px">${stepRows}${reRows}</div>
+      ${window.FollowupPro?FollowupPro.chipsHtml(d.pro, {onQuote:opts.onQuote, leadId:opts.leadId||d.lead_id}):''}
     </div>`;
   }
   async function load(workerBase, token, leadId){

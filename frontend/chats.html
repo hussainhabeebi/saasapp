@@ -264,7 +264,8 @@ button:active:not(:disabled){transform:scale(.96);filter:brightness(.94)}
 <input type="file" id="fileInput" tabindex="-1" aria-hidden="true" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
 <div id="toast" class="toast hidden"></div>
 <script src="twa.js?v=2"></script>
-<script src="followup-status.js?v=1"></script>
+<script src="followup-status.js?v=2"></script>
+<script src="followup-pro-ui.js?v=1"></script>
 <script>
 'use strict';
 try{performance.mark('lv-start')}catch{}
@@ -1745,7 +1746,7 @@ const fuCache={};
 function paintFollowup(l){
  if(!l||current!==l)return;const d=fuCache[String(l.Id)];
  const chip=$('fuChip');if(chip){const t=window.FollowupStatus&&d?FollowupStatus.shortText(d):'';chip.textContent=t?' · '+t:'';chip.title=t}
- const box=$('fuInfo');if(box)box.innerHTML=d&&d.enabled&&window.FollowupStatus?`<h4>Follow-ups</h4><div style="margin:0 16px">${FollowupStatus.html(d,{onSkip:'skipFollowup',leadId:l.Id})}</div>`:'';
+ const box=$('fuInfo');if(box)box.innerHTML=d&&d.enabled&&window.FollowupStatus?`<h4>Follow-ups</h4><div style="margin:0 16px">${FollowupStatus.html(d,{onSkip:'skipFollowup',onQuote:'openFollowupQuote',leadId:l.Id})}</div>`:'';
 }
 // Meeting status in the chat header (worker.js /meetings/lead → mtgLeadState) — so nobody asks a
 // lead to schedule a meeting they already booked. Actions live in ⋮ → 📅 Meeting… (dashboard).
@@ -1761,6 +1762,11 @@ async function loadFollowup(l){
  if(!l||!window.FollowupStatus||isIg(l))return;
  try{fuCache[String(l.Id)]=await FollowupStatus.load(WORKER,sessionToken,l.Id)}catch{return}
  paintFollowup(l);
+}
+// Follow-up V3 Pro — 📄 Quote PDF builder (followup-pro-ui.js), then refresh the card.
+function openFollowupQuote(leadId){
+ if(!window.FollowupPro)return;
+ FollowupPro.openQuote(WORKER,sessionToken,leadId,{onSent:()=>{toast('Quote sent');if(current&&String(current.Id)===String(leadId))loadFollowup(current)}});
 }
 async function skipFollowup(leadId,step){
  if(!confirm('Skip this follow-up for this lead?'))return;
