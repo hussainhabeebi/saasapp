@@ -149,8 +149,11 @@ export function h3MoreTap(text){
 
 // Tap / typed text that names exactly this item (whole text, ignoring emoji and a trailing count),
 // including a WhatsApp-cut title.
+function firstLine(text){
+  return String(text||'').trim().split(/\r?\n/)[0];
+}
 function tapCore(text){
-  return h3Norm(String(text||'').replace(/\s*\(\d+\)\s*$/, '').replace(/(?:…|\.\.\.)\s*$/, ''));
+  return h3Norm(firstLine(text).replace(/\s*\(\d+\)\s*$/, '').replace(/(?:…|\.\.\.)\s*$/, ''));
 }
 export function h3ExactName(text, name){
   const core=tapCore(text), n=h3Norm(name);
@@ -167,6 +170,20 @@ export function h3MentionsName(text, name){
   const n=h3Norm(name);
   if(n.length<4) return false;
   return ` ${h3Norm(text)} `.includes(` ${n} `);
+}
+// Typed short form of a name: every meaningful word the guest typed is (the start of) a word of
+// the name — "bay view" / "bluebell" → "Bay View Suites" / "Bluebell Resort" — or the name
+// without spaces starts with what they typed ("bayview").
+const H3_FILLER=new Set(['the','a','an','at','in','of','show','me','please','pls','plz','want','see','i','to','for','details','about','info','tell','more','on','is','it','this','that','one','what','how','resort','resorts','hotel','hotels','property','properties','room','rooms','stay','stays','villa','villas','cottage','cottages','photos','photo','pics','pictures','images','rate','rates','price','prices','tariff','book','booking','available','availability','option','options','check','ok','okay']);
+export function h3WordsMatch(text, name){
+  const nameWords=h3Norm(name).split(' ').filter(Boolean);
+  if(!nameWords.length) return false;
+  const all=h3Norm(firstLine(text));
+  const words=all.split(' ').filter(w=>w && !H3_FILLER.has(w));
+  if(!words.length || words.join('').length<4) return false;
+  if(words.every(w=>nameWords.some(n=>n===w || (w.length>=3 && n.startsWith(w))))) return true;
+  const joined=words.join('');
+  return joined.length>=5 && nameWords.join('').startsWith(joined);
 }
 function navIs(text, key){
   const t=h3Norm(text);
@@ -189,6 +206,44 @@ function longestBy(list, pred){
   const hits=(list||[]).filter(pred);
   if(!hits.length) return null;
   return hits.sort((a, b)=>String(b.name).length-String(a.name).length)[0];
+}
+
+// The lead's saved choice, checked against what still exists (deactivated / renamed → dropped).
+export function h3Resolve({ctx={}, properties=[], units=[], locationStep=true}){
+  const props=properties||[], rooms=units||[];
+  const locs=h3Locations(props);
+  const useLoc=h3UseLocationStep(locationStep, locs);
+  const curProp=ctx.property ? props.find(p=>h3Norm(p.name)===h3Norm(ctx.property)) || null : null;
+  let curLocKey=null;
+  if(curProp) curLocKey=h3LocKey(curProp.location);
+  else if(ctx.location){
+    const k=h3Norm(ctx.location)===h3Norm(H3_OTHER_LOCATION) && !locs.some(l=>l.key===h3LocKey(ctx.location)) ? '' : h3LocKey(ctx.location);
+    if(locs.some(l=>l.key===k)) curLocKey=k;
+  }
+  const scopeRooms=curProp?h3RoomsOf(rooms, curProp):(props.length?[]:rooms);
+  const curUnit=ctx.unit ? (scopeRooms.find(u=>h3Norm(u.name)===h3Norm(ctx.unit)) || uniqueBy(rooms, u=>h3Norm(u.name)===h3Norm(ctx.unit))) : null;
+  return {locs, useLoc, curProp, curLocKey, scopeRooms, curUnit};
+}
+
+// Options the guest can be pointing at right now, for the AI resolver (worker.js) when the rules
+// in h3Decide found nothing: the rooms of the chosen property, the properties of the chosen
+// location (all properties when none is chosen), and the locations. Labels carry the kind so the
+// AI's answer maps back to exactly one action.
+export function h3AiCandidates({ctx={}, properties=[], units=[], locationStep=true, max=150}){
+  const r=h3Resolve({ctx, properties, units, locationStep});
+  const out=[];
+  for(const u of r.scopeRooms) out.push({label:`Room: ${u.name}`, action:{type:'room', unitId:u.id}});
+  const props=r.curLocKey!=null ? h3PropertiesIn(properties, r.curLocKey) : [];
+  const others=h3PropertiesIn(properties, null).filter(p=>!props.includes(p));
+  for(const p of [...props, ...others]) out.push({label:`Property: ${p.name}`, action:{type:'rooms', propertyId:p.id, page:1}});
+  if(r.useLoc) for(const l of r.locs.filter(l=>l.key)) out.push({label:`Location: ${l.label}`, action:{type:'properties', locKey:l.key, page:1}});
+  return out.slice(0, max);
+}
+// The candidate the AI picked (exact label, case-insensitive; the kind prefix may be dropped).
+export function h3PickCandidate(candidates, answer){
+  const a=h3Norm(answer);
+  if(!a) return null;
+  return (candidates||[]).find(c=>h3Norm(c.label)===a) || uniqueBy(candidates, c=>h3Norm(c.label.replace(/^\w+:\s*/, ''))===a);
 }
 
 // Decides this turn's H3 step. Returns null when the message isn't part of the guided flow (the
@@ -216,15 +271,7 @@ export function h3Decide({text, isNewLead=false, ctx={}, properties=[], units=[]
   };
 
   // What the lead picked before — ignored when it no longer exists (deactivated / renamed).
-  const curProp=ctx.property ? props.find(p=>h3Norm(p.name)===h3Norm(ctx.property)) || null : null;
-  let curLocKey=null;
-  if(curProp) curLocKey=h3LocKey(curProp.location);
-  else if(ctx.location){
-    const k=h3Norm(ctx.location)===h3Norm(H3_OTHER_LOCATION) && !locs.some(l=>l.key===h3LocKey(ctx.location)) ? '' : h3LocKey(ctx.location);
-    if(locs.some(l=>l.key===k)) curLocKey=k;
-  }
-  const scopeRooms=curProp?h3RoomsOf(rooms, curProp):(props.length?[]:rooms);
-  const curUnit=ctx.unit ? (scopeRooms.find(u=>h3Norm(u.name)===h3Norm(ctx.unit)) || uniqueBy(rooms, u=>h3Norm(u.name)===h3Norm(ctx.unit))) : null;
+  const {curProp, curLocKey, scopeRooms, curUnit}=h3Resolve({ctx, properties:props, units:rooms, locationStep});
 
   // 1. "More … · page N" rows.
   const more=h3MoreTap(t);
@@ -265,6 +312,17 @@ export function h3Decide({text, isNewLead=false, ctx={}, properties=[], units=[]
   if(useLoc){
     const locMention=locs.filter(l=>l.key).find(l=>h3MentionsName(t, l.label));
     if(locMention) return toProps(locMention.key);
+  }
+
+  // 4b. Short forms — "bay view", "bluebell", "bayview" — when they fit exactly one name, looking
+  // in the chosen property's rooms, then the chosen location's properties, then everything.
+  const roomShort=uniqueBy(scopeRooms, u=>h3WordsMatch(t, u.name));
+  if(roomShort) return {type:'room', unitId:roomShort.id};
+  const propShort=uniqueBy(inLoc, p=>h3WordsMatch(t, p.name)) || uniqueBy(props, p=>h3WordsMatch(t, p.name));
+  if(propShort) return {type:'rooms', propertyId:propShort.id, page:1};
+  if(useLoc){
+    const locShort=uniqueBy(locs.filter(l=>l.key), l=>h3WordsMatch(t, l.label));
+    if(locShort) return toProps(locShort.key);
   }
 
   // 5. Greetings and first enquiries start (or resume) the flow.
