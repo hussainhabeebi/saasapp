@@ -23900,6 +23900,11 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
+  // Observed real failure (AI-consulting client): asked for a "demo video" the business prompt
+  // mentions but gives no URL for, the bot sent "https://www.youtube.com/watch?v=your-demo-video-link-here"
+  // plus "(Please note: I'm an AI and cannot actually provide a live video link…)". The only
+  // "never invent a link" rule lived in the ecom/education prompts, so every other industry had none.
+  sys+=ENGINE_NO_INVENTED_LINK_RULE;
   // Inject Google Maps URL so the LLM can share the actual link when a customer asks for
   // directions or the shop location — without this, it knows the address text but has no URL.
   if(c.google_maps_url && c.google_maps_url.trim()){
@@ -24901,6 +24906,35 @@ async function engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens){
 // isn't a guarantee" gap engineCallLlmAvoidingRepeat exists to close for repeats. A returned URL
 // counts as allowed if it exactly matches, or is a prefix/suffix match of, one of allowedLinks —
 // tolerates trailing slashes/punctuation without requiring byte-exact equality.
+export const ENGINE_NO_INVENTED_LINK_RULE='\n\nLINK & VIDEO RULE (strict): Only share a link, video, brochure or document URL if that exact URL is written in the information above. Never invent, guess, or write a placeholder URL (e.g. "your-link-here", "example.com"). If the customer asks for a demo video, brochure or link you do not have, say the team will share it with them shortly. Never say you are an AI that cannot share links, and never add notes like "in a real scenario".';
+
+// Every URL the model was actually handed this turn (prompt, customer message, the full business
+// prompt and KB in case a builder trimmed them). Used as allowedLinks when a caller passes none, so
+// a link copied from the Knowledge Base still passes while a made-up one is caught.
+export function engineLinksInSource(...texts){
+  const out=new Set();
+  for(const t of texts) for(const m of (String(t||'').match(/https?:\/\/[^\s)\]>"']+/g)||[])) out.add(m.replace(/[.,;:!?]+$/,''));
+  return [...out];
+}
+
+// Detects the model breaking character to say it is an AI that cannot do the thing it was asked
+// ("I'm an AI and cannot actually provide a live video link… In a real scenario, I would…").
+const ENGINE_AI_META_RE=/(\b(?:as an ai|i(?:'|’)?m an ai|i am an ai)\b[^.\n]{0,80}\b(?:cannot|can(?:'|’)?t|unable|don(?:'|’)?t have)|\bin a real scenario\b)/i;
+export function engineFindAiMeta(replyText){
+  const m=String(replyText||'').match(ENGINE_AI_META_RE);
+  return m?m[0]:null;
+}
+// Removes any sentence or bracketed note that carries such a disclaimer.
+export function engineStripAiMeta(replyText){
+  let out=String(replyText||'').replace(/\s*\((?:[^()]*)\)/g, m=>ENGINE_AI_META_RE.test(m)?'':m);
+  out=out.split('\n').map(line=>line.split(/(?<=[.!?])\s+/).filter(p=>!ENGINE_AI_META_RE.test(p)).join(' ')).join('\n');
+  return out.replace(/\n{3,}/g,'\n\n').trim();
+}
+// Removes a hallucinated URL plus the markdown/bracket wrapper around it ("[https://…]", "(https://…)").
+export function engineStripLink(replyText, url){
+  return String(replyText||'').split(url).join('').replace(/\[\s*\]|\(\s*\)/g,'').replace(/[ \t]{2,}/g,' ').replace(/ +([.,!?])/g,'$1').trim();
+}
+
 export function engineFindHallucinatedLink(replyText, allowedLinks){
   const urls=(replyText.match(/https?:\/\/[^\s)\]]+/g))||[];
   for(const raw of urls){
@@ -24981,12 +25015,15 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
   botTrace(c,'ai_draft',{result:!reply||reply==='One moment 🙏'?'no usable AI reply':'ok',draft:reply});
   if(!reply || reply==='One moment 🙏') return reply;
   const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
-  const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
+  // No explicit list → any URL actually present in what the model was given is allowed.
+  if(!allowedLinks) allowedLinks=engineLinksInSource(systemPrompt, userText, c?.main_prompt, c?.kb_summary, c?.google_maps_url, c?.external_store_link);
+  const badLink=engineFindHallucinatedLink(reply, allowedLinks);
+  const aiMeta=engineFindAiMeta(reply);
   const badPrice=priceGuard ? engineFindHallucinatedPrice(reply, priceGuard.priceSource) : null;
   const badContact=contactSource!=null ? bcFindInventedContact(reply, contactSource) : null;
   if(badContact) await reportOpsError(env, 'Bot reply invented a phone number or email; regenerated', new Error(badContact), {clientId:c?.Id}).catch(()=>{});
-  if(!isRepeat && !badLink && !badPrice && !badContact) return reply;
-  botTrace(c,'checks_failed',{repeat:isRepeat?'same as the last bot message':undefined,invented_link:badLink||undefined,invented_price:badPrice||undefined,invented_contact:badContact||undefined,action:'regenerating once'});
+  if(!isRepeat && !badLink && !badPrice && !badContact && !aiMeta) return reply;
+  botTrace(c,'checks_failed',{repeat:isRepeat?'same as the last bot message':undefined,invented_link:badLink||undefined,ai_meta:aiMeta||undefined,invented_price:badPrice||undefined,invented_contact:badContact||undefined,action:'regenerating once'});
   let correction='';
   if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
   if(badLink){
@@ -24994,6 +25031,7 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
     correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
   }
   if(badContact) correction+=bcCorrection(badContact, contacts);
+  if(aiMeta) correction+=`\n\nIMPORTANT: your draft reply said "${aiMeta}". Never say you are an AI that cannot do something, and never write "in a real scenario" or placeholder notes. You are this business's assistant: if you lack something the customer asked for, say the team will share it shortly.`;
   if(badPrice) correction+=`\n\nIMPORTANT: your draft reply quoted a price that does not exist in the Product Catalog or business prompt: "${badPrice}". Never invent, estimate, round, total, discount or convert a price. Quote only a price written exactly in the data above for that exact product; if there isn't one, say the team will confirm the exact price.`;
   const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
   // When the only problem was a made-up price, the original reply must not go out as the fallback.
@@ -25001,10 +25039,13 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
   if(!retryReply || retryReply==='One moment 🙏'){
     out=badPrice ? await engineStripHallucinatedPrices(env, c, reply, priceGuard.priceSource, priceGuard.replyLang) : reply;
   }else{
-    const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
-    out=retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
+    out=retryReply;
     if(priceGuard && engineFindHallucinatedPrice(out, priceGuard.priceSource)) out=await engineStripHallucinatedPrices(env, c, out, priceGuard.priceSource, priceGuard.replyLang);
   }
+  // Never knowingly send a made-up URL or an "I'm an AI" disclaimer, even when the retry failed.
+  for(let i=0, bad; i<5 && (bad=engineFindHallucinatedLink(out, allowedLinks)); i++) out=engineStripLink(out, bad);
+  if(engineFindAiMeta(out)) out=engineStripAiMeta(out);
+  if(!out.trim()) out=await engineLocalizeReply(env, c, 'Our team will share that with you shortly.', c.language||'en');
   // Never knowingly send an invented phone number or email: drop the line that carries it.
   if(contactSource!=null && bcFindInventedContact(out, contactSource)){
     botTrace(c,'contact_stripped',{invented:bcFindInventedContact(out, contactSource)});
