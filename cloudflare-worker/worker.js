@@ -1,6 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
+import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3Decide} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -23763,14 +23764,25 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
 
 // Builds verified resort property + room data for injection into the LLM system prompt so
 // follow-up questions are answered from real D1 records — no hallucinated prices or names.
-async function engineBuildResortContext(env, clientId){
+// opts.location (H3 only): keep just that location's properties and their rooms, when any match.
+async function engineBuildResortContext(env, clientId, opts={}){
   const lines=['\n\n## VERIFIED RESORT DATA (use ONLY these facts for prices, names, descriptions, amenities — never invent or infer anything not listed here)'];
   const [{results:properties},{results:units}]=await Promise.all([
     env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
     env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
   ]);
-  const propList=properties||[];
-  const unitList=units||[];
+  let propList=properties||[];
+  let unitList=units||[];
+  const locKey=opts.location?h3LocKey(opts.location):'';
+  if(locKey){
+    const inLoc=propList.filter(p=>h3LocKey(p.location)===locKey);
+    if(inLoc.length){
+      const ids=new Set(inLoc.map(p=>String(p.id)));
+      propList=inLoc;
+      unitList=unitList.filter(u=>u.property_id && ids.has(String(u.property_id)));
+      lines.push(`(Only properties in ${String(opts.location).trim()} are listed — the location this guest chose.)`);
+    }
+  }
   for(const prop of propList){
     lines.push(`\n### ${prop.name}`);
     if(prop.description && String(prop.description).trim()) lines.push(`Description: ${String(prop.description).trim()}`);
@@ -23898,7 +23910,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   const defaultUnit=industry==='ecommerce'?'item':'person';
   // Resort: suppress c.services — all property/room/rate facts come exclusively from VERIFIED RESORT
   // DATA injected via contextBlock; a services list here would add a second, potentially stale source.
-  const isResort=c.hospitality_enabled==='Yes' && c.hospitality_style==='resort';
+  const isResort=c.hospitality_enabled==='Yes' && (c.hospitality_style==='resort' || h3IsStyle(c));
   if(services.length && !isResort){
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
@@ -25585,7 +25597,8 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     // for an unusually long product name — 200 (the smaller of the two real limits) covers both
     // shapes regardless of which one isList ends up picking.
     const item={title, value:String(it?.value||it?.title||'').slice(0,200)};
-    if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
+    if(isList && it?.desc && String(it.desc).trim()) item.description=engineTruncateButtonTitle(String(it.desc), 72);
+    else if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
     return item;
   }).filter(it=>it.title);
   if(!trimmedItems.length){ const sent=await engineSendChatwootReply(env, c, clientId, convId, text); return sent?null:false; }
@@ -30551,6 +30564,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(await engineCheckResortFirstInquiry(env, c, clientId, state.leadId, userText)) orderHandledInline=true;
       }catch(e){}
     }
+    // Hospitality style H3 (hospitality-h3.js) — Location → Property → Room → Book. Decided here
+    // (before the AI) and sent after the lead upsert below, once a brand-new lead has an id.
+    let h3Plan=null;
+    if(!orderHandledInline && h3IsStyle(c) && convId && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && routing.route!=='human'){
+      try{
+        h3Plan=await hospH3Plan(env, c, clientId, userText, state, isNewLead);
+        if(h3Plan) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env, 'hospH3Plan', e, {clientId, convId}); }
+    }
 
     // Education enrollment flow — deterministic name/phone collection + D1 insert.
     // Intercepts BEFORE the LLM so the bot never says "recorded" without actually saving.
@@ -30707,6 +30729,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
       if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
         const resortCtx=await engineBuildResortContext(env, clientId);
+        if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
+      }
+      // H3: same verified data, limited to the location the guest chose (when one is chosen).
+      if(h3IsStyle(c)){
+        const resortCtx=await engineBuildResortContext(env, clientId, {location:state.lead?.HospSelectedLocation||''});
         if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
       }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
@@ -31016,6 +31043,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // background promise risks being killed before R2/image fetches and Chatwoot uploads finish.
       await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
     }
+    if(h3Plan && !hpTurnHandled) await hospH3Execute(env, c, clientId, convId, resolvedLeadId, h3Plan);
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -38990,9 +39018,173 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
 const HOSP_GREETING_MAX_ITEMS=5;
 const HOSP_GREETING_BUDGET_MS=12000;
 
+// ── Hospitality style "H3" (hospitality-h3.js): Location → Property → Room → Book ──────────────
+// Only for hospitality_style==='h3'. h3Decide (pure) picks the step in handleEngineWebhook before
+// the AI runs; hospH3Execute sends it once the lead row exists. Hotel / Resort / Houseboat never
+// reach this code.
+const H3_PHOTO_BUDGET_MS=12000;
+const H3_MAX_COVER_PHOTOS=5;
+async function hospH3LoadData(env, clientId){
+  const [{results:properties},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+  ]);
+  const props=properties||[];
+  const activeIds=new Set(props.map(p=>Number(p.id)));
+  // A room linked to a deactivated property is hidden with it; unlinked rooms only matter when
+  // no properties are set up at all (then the flow is just a room list).
+  const rooms=(units||[]).filter(u=>u.property_id ? activeIds.has(Number(u.property_id)) : !props.length);
+  return {properties:props, units:rooms};
+}
+// Returns the H3 step for this message, or null to let the normal bot / AI answer.
+async function hospH3Plan(env, c, clientId, userText, state, isNewLead){
+  const data=await hospH3LoadData(env, clientId);
+  if(!data.properties.length && !data.units.length) return null;
+  const action=h3Decide({text:userText, isNewLead, properties:data.properties, units:data.units,
+    locationStep:h3LocationStepOn(c),
+    ctx:{location:state.lead?.HospSelectedLocation||'', property:state.lead?.HospSelectedProperty||'', unit:state.lead?.HospSelectedUnit||''}});
+  return action?{action, data}:null;
+}
+async function hospH3SaveCtx(env, leadId, patch){
+  const body={Id:Number(leadId)};
+  if(patch.location!==undefined) body.HospSelectedLocation=patch.location;
+  if(patch.property!==undefined) body.HospSelectedProperty=patch.property;
+  if(patch.unit!==undefined) body.HospSelectedUnit=patch.unit;
+  try{
+    await ensureLeadsColumns(env, ['HospSelectedLocation','HospSelectedProperty','HospSelectedUnit']);
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body});
+  }catch(e){}
+}
+async function hospH3SendImage(env, c, convId, url, caption, name){
+  try{
+    const blob=await hospitalityFetchMediaBlob(env, url, false);
+    if(!blob) return false;
+    const fd=new FormData();
+    fd.append('content', caption||''); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, name||'photo.jpg');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+      {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    return r.ok;
+  }catch(e){ return false; }
+}
+function hospH3Rows(list, titleOf, descOf){
+  return list.map(x=>({title:titleOf(x), value:titleOf(x), desc:descOf?descOf(x):''}));
+}
+async function hospH3Execute(env, c, clientId, convId, leadId, plan){
+  if(!plan || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  const {action:a, data}=plan;
+  const {properties, units}=data;
+  const locs=h3Locations(properties);
+  const useLoc=h3UseLocationStep(h3LocationStepOn(c), locs);
+  const photosOn=c.hospitality_greeting_images!=='off';
+  const biz=String(c.business_name||c.client_name||'').trim();
+  const say=(text, rows)=>engineSendChatwootQuickReply(env, c, clientId, convId, text, rows);
+  try{
+    if(a.type==='locations'){
+      const paged=h3PageRows(hospH3Rows(locs, h3LocationTitle, l=>`${l.count} propert${l.count===1?'y':'ies'}`), 'locations', a.page);
+      const head=a.intro ? `Hi! 👋 Welcome${biz?` to *${biz}*`:''}.\n\n` : '';
+      await say(`${head}📍 Which location would you like to stay in? Choose one below 👇`, paged.rows);
+      if(leadId) await hospH3SaveCtx(env, leadId, {location:'', property:'', unit:''});
+      return;
+    }
+    if(a.type==='properties'){
+      const loc=a.locKey!=null ? locs.find(l=>l.key===a.locKey) : null;
+      const list=h3PropertiesIn(properties, a.locKey);
+      if(!list.length){ if(useLoc) await hospH3Execute(env, c, clientId, convId, leadId, {action:{type:'locations', page:1}, data}); return; }
+      const nav=useLoc?[{title:H3_NAV.changeLocation, value:H3_NAV.changeLocation}]:[];
+      const paged=h3PageRows(hospH3Rows(list, p=>p.name, p=>h3PropertyDesc(p, units)), 'properties', a.page, nav);
+      if(photosOn && paged.page===1 && !a.resume){
+        const deadline=Date.now()+H3_PHOTO_BUDGET_MS;
+        for(const p of list.slice(0, H3_MAX_COVER_PHOTOS)){
+          if(Date.now()>deadline) break;
+          const url=p.image_url_1||p.image_url_2||p.image_url_3;
+          if(url) await hospH3SendImage(env, c, convId, url, `*${p.name}* 🏨`, 'property.jpg');
+        }
+      }
+      const where=loc?` in *${loc.label}*`:'';
+      const head=a.resume ? `Welcome back! 👋 Here are our stays${where} again.\n\n` : (a.intro ? `Hi! 👋 Welcome${biz?` to *${biz}*`:''}.\n\n` : '');
+      await say(`${head}🏨 ${list.length} propert${list.length===1?'y':'ies'}${where} — tap one to see its rooms & photos 👇`, paged.rows);
+      if(leadId) await hospH3SaveCtx(env, leadId, {location:loc?loc.label:'', property:'', unit:''});
+      return;
+    }
+    if(a.type==='rooms'){
+      const prop=a.propertyId!=null ? properties.find(p=>Number(p.id)===Number(a.propertyId)) : null;
+      const rooms=h3RoomsOf(units, prop);
+      const nav=[];
+      if(prop) nav.push({title:H3_NAV.otherProperties, value:H3_NAV.otherProperties});
+      if(prop && useLoc) nav.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
+      const paged=h3PageRows(hospH3Rows(rooms, u=>u.name, h3RoomDesc), 'rooms', a.page, nav);
+      if(paged.page===1 && prop){
+        const info=[`*${prop.name}*${prop.location?` · 📍 ${String(prop.location).trim()}`:''}`];
+        if(prop.description && String(prop.description).trim()) info.push(String(prop.description).trim());
+        if(prop.amenities && String(prop.amenities).trim()) info.push(`✨ *Amenities:* ${String(prop.amenities).trim()}`);
+        await hospitalityChatwootText(c, convId, info.join('\n\n'));
+      }
+      if(paged.page===1){
+        // One photo per room (the rooms on this page), captioned with capacity and rate.
+        const deadline=Date.now()+H3_PHOTO_BUDGET_MS;
+        const shown=paged.rows.filter(r=>rooms.some(u=>u.name===r.title));
+        for(const r of shown){
+          if(Date.now()>deadline) break;
+          const u=rooms.find(x=>x.name===r.title);
+          const url=u.image_url_1||u.image_url_2||u.image_url_3;
+          if(url) await hospH3SendImage(env, c, convId, url, h3RoomCaption(u), 'room.jpg');
+        }
+      }
+      if(!rooms.length){
+        await say(`Room details for *${prop?prop.name:'this property'}* are being updated — our team will share options shortly. Would you like to see another property? 👇`, nav.length?nav:[{title:H3_NAV.changeLocation, value:H3_NAV.changeLocation}]);
+      }else{
+        await say(`🛏️ ${rooms.length} room type${rooms.length===1?'':'s'}${prop?` at *${prop.name}*`:''} — tap one for photos & booking 👇`, paged.rows);
+      }
+      if(leadId) await hospH3SaveCtx(env, leadId, prop
+        ? {location:h3LocKey(prop.location)?String(prop.location).split(',')[0].trim():(useLoc?H3_OTHER_LOCATION:''), property:prop.name, unit:''}
+        : {unit:''});
+      return;
+    }
+    if(a.type==='room'){
+      const u=units.find(x=>Number(x.id)===Number(a.unitId));
+      if(!u) return;
+      const prop=u.property_id ? properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
+      const info=[`*${u.name}*${prop?` · ${prop.name}`:''}`];
+      const d=h3RoomDesc(u); if(d) info.push(d);
+      if(u.weekend_rate) info.push(`Weekend: ${u.currency||'INR'} ${u.weekend_rate}/night`);
+      if(u.amenities && String(u.amenities).trim()) info.push(`✨ ${String(u.amenities).trim()}`);
+      if(u.description && String(u.description).trim()) info.push(String(u.description).trim());
+      await hospitalityChatwootText(c, convId, info.join('\n'));
+      const deadline=Date.now()+H3_PHOTO_BUDGET_MS;
+      let sent=false;
+      for(const url of [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean).slice(0,3)){
+        if(Date.now()>deadline) break;
+        if(await hospH3SendImage(env, c, convId, url, sent?'':`Here's a look at ${u.name} 📸`, 'room.jpg')) sent=true;
+      }
+      if(sent) await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+        .bind(Number(clientId), leadId, u.id, new Date().toISOString()).run().catch(()=>{});
+      const btns=[{title:H3_NAV.book, value:H3_NAV.book}];
+      if(prop) btns.push({title:H3_NAV.otherRooms, value:H3_NAV.otherRooms});
+      if(prop && useLoc) btns.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
+      else if(prop) btns.push({title:H3_NAV.otherProperties, value:H3_NAV.otherProperties});
+      await say(`Would you like to book *${u.name}*? 👇`, btns);
+      if(leadId) await hospH3SaveCtx(env, leadId, prop
+        ? {location:h3LocKey(prop.location)?String(prop.location).split(',')[0].trim():(useLoc?H3_OTHER_LOCATION:''), property:prop.name, unit:u.name}
+        : {unit:u.name});
+      return;
+    }
+    if(a.type==='book'){
+      const u=units.find(x=>Number(x.id)===Number(a.unitId));
+      if(!u) return;
+      const prop=u.property_id ? properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
+      await hospitalityChatwootText(c, convId,
+        `Great choice! 🎉 To check availability for *${u.name}*${prop?` at *${prop.name}*`:''}, please share:\n\n1️⃣ Check-in date\n2️⃣ Check-out date\n3️⃣ Number of guests (adults & children)`);
+      if(leadId) await hospH3SaveCtx(env, leadId, {unit:u.name});
+      return;
+    }
+  }catch(e){ await reportOpsError(env, 'hospH3Execute', e, {clientId, convId, step:a?.type}); }
+}
+
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  if(h3IsStyle(c)) return; // H3 sends its own photos and pickers (hospH3Execute)
   try{
     const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all();
     if(!units || !units.length) return;
