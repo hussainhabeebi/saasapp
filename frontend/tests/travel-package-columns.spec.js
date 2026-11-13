@@ -32,7 +32,7 @@ test('saving a package adds missing price columns via /columns, then saves', asy
   await page.fill('#pkgChildPrice', '500');
   await page.click('#savePkgBtn');
   await expect(page.locator('#savePkgMsg')).toHaveText('✓ Saved');
-  expect(addedColumns.sort()).toEqual(['child_nobed_price', 'child_price', 'image_url', 'image_url_2', 'image_url_3', 'infant_price', 'pdf_url']);
+  expect(addedColumns.sort()).toEqual(['child_nobed_price', 'child_price', 'image_url', 'image_url_2', 'image_url_3', 'infant_price', 'keywords', 'pdf_url', 'region']);
   expect(created).toMatchObject({ name: 'Bali 5N', child_price: 500, client_id: '7' });
 });
 
@@ -45,7 +45,7 @@ test('package photo / PDF links: a Drive folder is refused, a file link saves', 
     if (!url.startsWith(WORKER)) return route.abort();
     const u = new URL(url);
     if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids) } });
-    if (u.pathname.endsWith('/meta/tables/tp')) return route.fulfill({ json: { columns: ['name', 'child_price', 'child_nobed_price', 'infant_price', 'image_url', 'image_url_2', 'image_url_3', 'pdf_url'].map(title => ({ title })) } });
+    if (u.pathname.endsWith('/meta/tables/tp')) return route.fulfill({ json: { columns: ['name', 'child_price', 'child_nobed_price', 'infant_price', 'image_url', 'image_url_2', 'image_url_3', 'pdf_url', 'region', 'keywords'].map(title => ({ title })) } });
     if (u.pathname.includes('/meta/')) return route.fulfill({ status: 404, json: { msg: 'Not found' } });
     if (u.pathname.endsWith('/tables/tp/records') && req.method() === 'POST') { created = req.postDataJSON(); return route.fulfill({ json: { Id: 1 } }); }
     return route.fulfill({ json: { list: [] } });

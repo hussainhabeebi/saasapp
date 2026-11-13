@@ -74,7 +74,7 @@ test('after 24h the composer offers a template; sending one fills {{1}} with the
   const sent = page.locator('#thread .bubble.out').last();
   await expect(sent.locator('.tpl-tag')).toContainText('order_update');
   await expect(sent).toContainText('your order #1042 is ready');
-  await expect(sent.locator('.checks')).toBeVisible();
+  await expect(sent.locator('.tick')).toBeVisible();
 });
 
 test('a template to a contact with no Chatwoot conversation goes straight to Meta', async ({ page }) => {
