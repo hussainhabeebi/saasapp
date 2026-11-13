@@ -514,3 +514,34 @@ test('Contextual answers: a flight question after a package is answered from tha
     assert.match(step.reply,/Where are you flying from and to/);
   }finally{globalThis.fetch=realFetch;}
 });
+
+test('WhatsApp search shows fares from every enabled supplier: POOMAS and SerpApi together; SerpApi fares are booked by the team',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',LIVE_TRAVEL_CREDENTIALS_KEY:'creds-key',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY);
+  const realFetch=globalThis.fetch,hits=[];
+  const leg=(no,dep,arr)=>({departure_airport:{id:'SIN',time:dep},arrival_airport:{id:'TRZ',time:arr},airline:no.startsWith('SQ')?'Singapore Airlines':'IndiGo',flight_number:no,travel_class:'Economy',duration:240});
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u==='https://api.flypoomas.com/api/search'){hits.push('poomas');return new Response(JSON.stringify({fares:[
+      {id:'P1',isBookable:true,supplier:'DUFFEL',displayPrice:900,totalFare:900,currency:'AED',airline:'6E',airlineName:'IndiGo',flightNumber:'6E 1032',origin:'SIN',destination:'TRZ',departureTime:'2026-12-24T22:10:00',arrivalTime:'2026-12-25T00:05:00',duration:265,stops:0}]}));}
+    if(u.startsWith('https://serpapi.com/search.json?')){hits.push('serpapi');assert.match(u,/departure_id=SIN&arrival_id=TRZ&outbound_date=2026-12-24/);return new Response(JSON.stringify({
+      best_flights:[{flights:[leg('SQ 528','2026-12-24 08:55','2026-12-24 10:30')],total_duration:245,price:700,booking_token:'SERP-TOKEN-1'}],
+      // The same IndiGo flight POOMAS sells: shown once, from POOMAS (bookable online).
+      other_flights:[{flights:[leg('6E 1032','2026-12-24 22:10','2026-12-25 00:05')],total_duration:265,price:650,booking_token:'SERP-TOKEN-2'}]}));}
+    return new Response('{}',{status:404});
+  };
+  try{
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    const r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'serpapi',enabled:true,mode:'production',priority:20,credentials:{api_key:'serp-key'},endpoints:{search:'https://serpapi.com/search.json'}});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    const c={Id:7,industry:'travel',language:'en'},phone='+6590000001';
+    const step=await engineHandleLiveTicketingChat(env,c,7,'SIN to TRZ on 2026-12-24, 1 adult',[],phone);
+    assert.deepEqual(hits.sort(),['poomas','serpapi']);
+    assert.match(step.reply,/Singapore Airlines/);
+    assert.match(step.reply,/IndiGo/);
+    const stored=JSON.parse((await DB.prepare('SELECT offers_json FROM live_travel_chat_checkout_state WHERE client_id=7').first()).offers_json);
+    assert.equal(stored.length,2,'the IndiGo flight is listed once');
+    const sq=stored.find(o=>/SQ/.test(o.flightNumber)),indigo=stored.find(o=>/6E/.test(o.flightNumber));
+    assert.equal(sq.manual,true);assert.equal(sq.supplier,'SERPAPI');assert.equal(sq.fareId,'SERP-TOKEN-1');assert.equal(sq.origin,'SIN');assert.equal(sq.departureTime,'2026-12-24T08:55:00');
+    assert.equal(indigo.manual,undefined);assert.equal(indigo.fareId,'P1');
+  }finally{globalThis.fetch=realFetch;}
+});
