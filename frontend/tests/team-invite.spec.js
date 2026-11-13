@@ -47,7 +47,7 @@ test('owner invites a teammate by name and email and gets a shareable link', asy
   // The invite form comes before the password-based one.
   const card = page.locator('#userMgmtCard2');
   const headings = await card.locator('div[style*="font-weight:700;font-size:13px"]').allTextContents();
-  expect(headings.indexOf('✉️ Invite Teammate')).toBeLessThan(headings.indexOf('Or Create User With a Password'));
+  expect(headings.indexOf('✉️ Invite Teammate')).toBeLessThan(headings.indexOf('🔑 Or Create a Login With a Password'));
 
   await page.locator('#teamInviteName').fill('Sara K');
   await page.locator('#teamInviteEmail').fill('Sara@X.com');

@@ -73,7 +73,7 @@ test('mic turns into send when typing; a reply carries the quoted message', asyn
   await page.locator('#msg').fill('Yes, it is!');
   await expect(action).toHaveAttribute('data-state', 'send');
   await action.click();
-  await expect(page.locator('#thread .bubble.out', { hasText: 'Yes, it is!' }).locator('.checks')).toBeVisible();
+  await expect(page.locator('#thread .bubble.out', { hasText: 'Yes, it is!' }).locator('.tick')).toBeVisible();
   expect(calls.send[0]).toMatchObject({ conv_id: '55', lead_id: 7, text: 'Yes, it is!', reply_to: { who: 'Asha' } });
   await expect(page.locator('#replyBox')).toBeHidden();
   await expect(action).toHaveAttribute('data-state', 'mic');
@@ -86,7 +86,7 @@ test('a failed send stays in the thread with Retry, and retrying delivers it', a
   const retry = page.locator('#thread .tick-failed');
   await expect(retry).toBeVisible();
   await retry.click();
-  await expect(page.locator('#thread .bubble.out', { hasText: 'Are you there?' }).locator('.checks')).toBeVisible();
+  await expect(page.locator('#thread .bubble.out', { hasText: 'Are you there?' }).locator('.tick')).toBeVisible();
   expect(calls.send).toHaveLength(2);
 });
 
@@ -100,7 +100,7 @@ test('attachments open a preview with a caption before sending', async ({ page }
   await expect.poll(() => calls.upload.length).toBe(1);
   expect(calls.upload[0]).toContain('name="lead_id"\r\n\r\n7');
   expect(calls.upload[0]).toContain('Latest photo');
-  await expect(page.locator('#thread .bubble.out', { hasText: 'Latest photo' }).locator('.checks')).toBeVisible();
+  await expect(page.locator('#thread .bubble.out', { hasText: 'Latest photo' }).locator('.tick')).toBeVisible();
 });
 
 test('tap the mic to record, then send a voice note', async ({ page }) => {

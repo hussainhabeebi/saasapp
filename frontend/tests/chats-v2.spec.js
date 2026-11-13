@@ -141,7 +141,7 @@ test('the list comes from the v2 API with row badges, never the NocoDB lead list
   const binu = page.locator('#list .contact', { hasText: 'Binu' });
   await expect(binu.locator('.hnd')).toHaveText('🤖');
   await expect(binu.locator('.wait')).toHaveClass(/warn/);
-  await expect(binu.locator('.preview')).toContainText('🤖 Our price is AED 375');
+  await expect(binu.locator('.preview')).toContainText('🤖✓ Our price is AED 375');
   await expect(page.locator('#filters .pill')).toHaveText(['All3', 'Unread1', 'Needs you1', 'Mine0', 'Unassigned1', 'Pending0', 'Snoozed0', 'Resolved1', 'Hot leads']);
 });
 
