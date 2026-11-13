@@ -23,6 +23,28 @@ const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov',
 // match every property whose name ends in "Resort".
 const GENERIC=new Set(['resort','resorts','hotel','hotels','villa','villas','homestay','houseboat','apartment','apartments','camp','spa','and','the','a','an','of','by','at','in','&']);
 
+// Default order: names starting with a letter A–Z, then names starting with a number, then
+// anything else ("#1 Villa"); numbers inside names compare naturally ("Villa 2" < "Villa 10").
+const nameGroup=name=>{ const c=String(name||'').trim().charAt(0); return /\p{L}/u.test(c)?0:/\p{N}/u.test(c)?1:2; };
+export function taPropertyAlphaCompare(a, b){
+  return nameGroup(a?.name)-nameGroup(b?.name)
+    ||String(a?.name||'').trim().localeCompare(String(b?.name||'').trim(), 'en', {numeric:true, sensitivity:'base'})
+    ||(Number(a?.id)||0)-(Number(b?.id)||0);
+}
+// Manual order wins once the agency has set one (any sort_order saved); properties added after
+// that go to the end, A–Z among themselves. Returns a new array.
+export function taPropertiesSorted(properties){
+  const list=[...(properties||[])];
+  const pos=p=>p?.sort_order==null||p.sort_order===''?null:Number(p.sort_order);
+  if(!list.some(p=>pos(p)!=null)) return list.sort(taPropertyAlphaCompare);
+  return list.sort((a,b)=>{
+    const x=pos(a), y=pos(b);
+    if(x!=null&&y!=null&&x!==y) return x-y;
+    if((x==null)!==(y==null)) return x==null?1:-1;
+    return taPropertyAlphaCompare(a,b);
+  });
+}
+
 export function taPropertyNormalize(v){
   return String(v||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
 }

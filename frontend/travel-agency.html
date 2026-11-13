@@ -5224,14 +5224,79 @@ const PROP_CAT_BADGE={family:'👨‍👩‍👧 Family',couple:'💑 Couple',bo
 let _propCat='all';
 const propInCat=(p,cat)=>cat==='all'?true:cat==='other'?!['family','couple','both'].includes(p.category):(p.category===cat||p.category==='both');
 function setPropCat(cat){ _propCat=cat; renderAgencySubPage('properties'); }
+// Order: A–Z, then names starting with a number, then anything else — same as the worker's
+// taPropertiesSorted. Once the agency sets a manual order (any sort_order saved) that wins, and
+// properties added later go to the end.
+const propNameGroup=n=>{ const c=String(n||'').trim().charAt(0); return /\p{L}/u.test(c)?0:/\p{N}/u.test(c)?1:2; };
+const propAlphaCompare=(a,b)=>propNameGroup(a.name)-propNameGroup(b.name)
+  ||String(a.name||'').trim().localeCompare(String(b.name||'').trim(),'en',{numeric:true,sensitivity:'base'})
+  ||(Number(a.id)||0)-(Number(b.id)||0);
+const propPos=p=>p.sort_order==null||p.sort_order===''?null:Number(p.sort_order);
+const propIsManual=()=>_taProperties.some(p=>propPos(p)!=null);
+function propSorted(){
+  const list=[..._taProperties];
+  if(!propIsManual()) return list.sort(propAlphaCompare);
+  return list.sort((a,b)=>{ const x=propPos(a),y=propPos(b);
+    if(x!=null&&y!=null&&x!==y) return x-y;
+    if((x==null)!==(y==null)) return x==null?1:-1;
+    return propAlphaCompare(a,b); });
+}
+async function savePropOrder(ids){
+  const prev=_taProperties.map(p=>({id:p.id,sort_order:p.sort_order}));
+  const pos=new Map(ids.map((id,i)=>[String(id),i+1]));
+  _taProperties.forEach(p=>{ p.sort_order=pos.get(String(p.id))??null; });
+  renderAgencySubPage('properties');
+  try{
+    const res=await fetch(`${WORKER_BASE}/ta/properties/reorder`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,ids})});
+    const d=await res.json().catch(()=>({}));
+    if(!res.ok||d.error) throw new Error(d.error||'Could not save the order');
+  }catch(e){
+    const back=new Map(prev.map(x=>[String(x.id),x.sort_order]));
+    _taProperties.forEach(p=>{ p.sort_order=back.get(String(p.id))??null; });
+    renderAgencySubPage('properties');
+    alert(e.message);
+  }
+}
+function setPropSort(mode){
+  if(mode==='manual'){ if(!propIsManual()) savePropOrder(propSorted().map(p=>p.id)); return; }
+  if(propIsManual()&&confirm('Switch back to A–Z order? Your manual order will be cleared.')) savePropOrder([]);
+}
+// ◀ / ▶ on a card: swap with its neighbour as shown in that section.
+function moveProp(id, sec, dir){
+  const all=propSorted();
+  const list=all.filter(p=>propInCat(p,sec));
+  const i=list.findIndex(p=>String(p.id)===String(id)), j=i+dir;
+  if(i<0||j<0||j>=list.length) return;
+  const a=all.indexOf(list[i]), b=all.indexOf(list[j]);
+  [all[a],all[b]]=[all[b],all[a]];
+  savePropOrder(all.map(p=>p.id));
+}
+// Drag a card onto another to put it in that card's place.
+let _dragPropId=null;
+function propDrop(targetId){
+  const from=_dragPropId; _dragPropId=null;
+  if(!from||String(from)===String(targetId)) return;
+  const all=propSorted();
+  const a=all.findIndex(p=>String(p.id)===String(from)), b=all.findIndex(p=>String(p.id)===String(targetId));
+  if(a<0||b<0) return;
+  const [moved]=all.splice(a,1);
+  all.splice(b,0,moved);
+  savePropOrder(all.map(p=>p.id));
+}
 function renderTaProperties(){
-  const card=p=>{
+  const manual=propIsManual();
+  const sorted=propSorted();
+  const card=(p,sec,i,n)=>{
     const thumb=propThumb(p);
     const photos=[p.image_url,p.image_url_2,p.image_url_3].filter(Boolean).length;
     const media=[photos?`📷 ${photos}`:'',p.photos_folder_url?'📂 Folder':'',p.video_url?'🎬 Video':'',p.pdf_url?'📄 PDF':''].filter(Boolean).join(' · ');
     const seasonal=propSeasonLines(p);
     return `
-    <div class="ta-card" style="padding:0;overflow:hidden;cursor:pointer;margin:0" onclick="openPropertyModal('${p.id}')">
+    <div class="ta-card prop-card" data-id="${p.id}" style="padding:0;overflow:hidden;cursor:pointer;margin:0;position:relative" onclick="openPropertyModal('${p.id}')"${manual?` draggable="true" ondragstart="_dragPropId='${p.id}'" ondragover="event.preventDefault()" ondrop="event.preventDefault();propDrop('${p.id}')"`:''}>
+      ${manual?`<div class="prop-move" style="position:absolute;top:8px;right:8px;display:flex;gap:4px;z-index:1" onclick="event.stopPropagation()">
+        <button class="btn btn-sm btn-secondary" data-move="prev" title="Move earlier" ${i===0?'disabled':''} onclick="moveProp('${p.id}','${sec}',-1)" style="padding:2px 8px">◀</button>
+        <button class="btn btn-sm btn-secondary" data-move="next" title="Move later" ${i===n-1?'disabled':''} onclick="moveProp('${p.id}','${sec}',1)" style="padding:2px 8px">▶</button>
+      </div>`:''}
       <div style="height:140px;background:var(--bg) center/cover no-repeat;${thumb?`background-image:url('${escAttr(thumb)}')`:''};display:flex;align-items:center;justify-content:center;font-size:36px">${thumb?'':'🏨'}</div>
       <div style="padding:12px 14px">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
@@ -5246,24 +5311,28 @@ function renderTaProperties(){
       </div>
     </div>`;
   };
-  const grid=list=>`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">${list.map(card).join('')}</div>`;
+  const grid=(list,sec)=>`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">${list.map((p,i)=>card(p,sec,i,list.length)).join('')}</div>`;
   const count=cat=>_taProperties.filter(p=>propInCat(p,cat)).length;
+  const sortBtns=`<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Sort:
+    <button class="btn btn-sm ${manual?'btn-secondary':'btn-primary'}" data-propsort="alpha" onclick="setPropSort('alpha')" title="A–Z, then names starting with numbers">🔤 A–Z</button>
+    <button class="btn btn-sm ${manual?'btn-primary':'btn-secondary'}" data-propsort="manual" onclick="setPropSort('manual')" title="Arrange cards yourself">✋ Manual</button></div>`;
   const chips=[['all','','All'],...PROP_CATS].map(([k,icon,label])=>
     `<button class="btn btn-sm ${_propCat===k?'btn-primary':'btn-secondary'}" data-propcat="${k}" onclick="setPropCat('${k}')">${icon?icon+' ':''}${label} <span style="opacity:.75">${count(k)}</span></button>`).join('');
   // All: one section per category; a chip: just that category.
   const sections=(_propCat==='all'?PROP_CATS:PROP_CATS.filter(([k])=>k===_propCat)).map(([k,icon,label])=>{
-    const list=_taProperties.filter(p=>propInCat(p,k));
+    const list=sorted.filter(p=>propInCat(p,k));
     if(!list.length&&_propCat==='all') return '';
     return `<div class="prop-sec" data-sec="${k}" style="margin-bottom:18px">
       <div style="font-family:var(--disp);font-size:14px;font-weight:700;margin:4px 2px 10px">${icon} ${label} <span style="color:var(--muted);font-weight:500">(${list.length})</span></div>
-      ${list.length?grid(list):`<div class="ta-card" style="text-align:center;padding:30px;color:var(--muted);font-size:13px">No ${label.toLowerCase()} yet — set <strong>Resort Category</strong> on a property to list it here.</div>`}
+      ${list.length?grid(list,k):`<div class="ta-card" style="text-align:center;padding:30px;color:var(--muted);font-size:13px">No ${label.toLowerCase()} yet — set <strong>Resort Category</strong> on a property to list it here.</div>`}
     </div>`;
   }).join('');
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🏨 Resorts &amp; Hotels</div>
-    <button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${_taProperties.length>1?sortBtns:''}<button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button></div>
   </div>
+  ${manual?'<div style="font-size:12px;color:var(--muted);margin:-4px 2px 10px">✋ Manual order — use ◀ ▶ on a card or drag it onto another. New properties go to the end. The bot lists them in this order too.</div>':''}
   ${_taProperties.length?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${chips}</div>${sections}`
     :'<div class="ta-card" style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No resorts or hotels yet — click <strong>+ Add Property</strong> to add one with its photos (or a Drive photos folder), season / off-season rates, video and PDF brochure.</div>'}
   <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
