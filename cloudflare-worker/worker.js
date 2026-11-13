@@ -14,12 +14,12 @@ import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
-import {TRIP_REQUEST_COLUMNS,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine} from './trip-requests.js';
+import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory,taPropertyFolderId,TA_PROPERTY_FOLDER_SEND_EXPLICIT,TA_PROPERTY_FOLDER_SEND_VOLUNTEERED} from './ta-properties.js';
 import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
-import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory} from './travel-crm.js';
+import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -19140,7 +19140,7 @@ async function travelCrmSaveLeadPatch(env, clientId, leadId, patch){
 }
 // A customer message → route / travel dates on the lead. Waits for the turn to create or update the
 // lead first (a brand-new lead only exists once the reply is out), then merges what was found.
-export async function engineTravelCrmDetectLater(env, clientId, body, text, {wait=10000}={}){
+export async function engineTravelCrmDetectLater(env, clientId, body, text, {wait=10000, c=null}={}){
   let det=travelCrmDetectText(text);
   // A bare "10/12" only counts once we know the enquiry already has a route — check the lead for it.
   const bareDate=!det && /\b\d{1,2}[-\/.]\d{1,2}\b/.test(String(text||''));
@@ -19155,6 +19155,9 @@ export async function engineTravelCrmDetectLater(env, clientId, body, text, {wai
   if(!det) return null;
   const patch=travelCrmMergeDetection(lead, det);
   if(patch) await travelCrmSaveLeadPatch(env, clientId, lead.Id, patch);
+  // The trip it found → an anticipated trip on Trips (air ticket, visa, hotel, Umrah, car… — the
+  // package bots file their own). Never fails the detection.
+  if(patch?.TravelTrips && c) await tripChatSync(env, c, clientId, {...lead, ...patch}, text).catch(e=>console.error('[trips] chat sync', e.message));
   return patch;
 }
 // POST /travel-crm/detect {lead_id} — 🔎 Find in chat: read the lead's whole conversation for a
@@ -22812,10 +22815,78 @@ export async function tripRequestSync(env,c,clientId,leadId,state,leadBody,qual,
     const cur=String(state.lead?.[k]??'').trim();
     if(cur!==v&&(!cur||cur===String(prev[k]??''))) leadPatch[k]=v;
   }
+  // The bot's travel date → the lead's 🧳 travel profile too (TravelTrips), so the trip shows on
+  // Departures and reads Upcoming / Travelling / Completed like any other enquiry's.
+  if(f.travel_date&&travelCrmTripsOn(c)){
+    const route=f.departure_city&&f.destination?`${f.departure_city} → ${f.destination}`:'';
+    // (Read against the lead as it was: the TravelDates just written above is this same date.)
+    const tp=travelCrmMergeDetection({Id:leadId,...(state.lead||{})},{...(route?{route}:{}),depart:f.travel_date});
+    if(tp){
+      await ensureLeadsColumns(env,TCRM_TRIP_COLUMNS).catch(()=>{});
+      Object.assign(leadPatch,tp);
+    }
+  }
   if(Object.keys(leadPatch).length){
     await ensureLeadsColumns(env,Object.keys(leadPatch)).catch(()=>{});
     await engineUpsertLead(env,'PATCH',leadId,leadPatch).catch(()=>{});
   }
+  return result;
+}
+
+// ── Anticipated trips from the chat (trip-requests.js tripChat*): the lead's auto-detected trip
+// (route + travel date, travel-crm.js) → a `requested` trip on Trips for any service, so a ticket,
+// visa, hotel, Umrah or car enquiry lands on the same pipeline as the package bots' requests.
+// The trip is linked to the lead's auto trip (lead_trip_id), so a new date or place from the
+// customer moves the same trip on while it is still before its quote. Returns {tripId, created} or null.
+export async function tripChatSync(env,c,clientId,lead,text,{now=new Date()}={}){
+  if(!c||!tripAutoOn(c)||!lead?.Id) return null;
+  const tableId=taResolveTable(c,'bookings');
+  if(!tableId) return null;
+  const today=now.toISOString().slice(0,10);
+  const auto=travelCrmParseTrips(lead.TravelTrips).find(t=>t.auto&&t.depart&&t.depart>=today);
+  if(!auto) return null;
+  const service=tripChatService(lead,text,{hasRoute:!!(auto.route||String(lead.TravelRoute||'').includes('→'))});
+  const f=tripChatFields(lead,auto,service);
+  if(!tripChatEligible(f)) return null;
+  await tripEnsureColumns(env,tableId);
+  const phone=String(lead.Phone||'').replace(/\D/g,'');
+  const trips=await tripReadForCustomer(env,tableId,clientId,lead.Id,phone);
+  const lid=String(lead.Id);
+  const open=trips.filter(t=>!TRIP_CLOSED.includes(String(t.status||'quoted')));
+  // A package enquiry already on Trips from the booking bot is the bot's to keep up to date.
+  if(tripChatIsPackage(service)&&open.some(t=>String(t.lead_id)===lid&&t.source===TRIP_SOURCE_BOT)) return null;
+  const linked=open.find(t=>String(t.lead_id)===lid&&String(t.lead_trip_id||'')===auto.id);
+  const plan=linked?{action:'update',trip:linked}:tripRequestPlan(trips,{leadId:lid,phone,destination:f.destination});
+  const summary=tripChatSummary(f);
+  const write=async(method,body)=>{
+    const r=await ncFetch(env,`api/v2/tables/${tableId}/records`,{method,body:{...body,client_id:String(clientId)}});
+    if(!r.ok) throw new Error(`Trips ${method} HTTP ${r.status}: ${(await r.text().catch(()=>'')).slice(0,200)}`);
+    return r.json().catch(()=>({}));
+  };
+  const note=(trip,line)=>[String(trip?.notes||'').trim(),tripNoteLine(line,now)].filter(Boolean).join('\n').slice(-8000);
+  let result;
+  if(plan.action==='create'){
+    const leadOwner=String(lead.Owner||'').trim().toLowerCase();
+    const staff=engineRoutableStaffEmails(c);
+    const owner=leadOwner||tripRouteOwner(engineGetLeadRouting(c),f.destination,e=>staff.has(e));
+    const rec=tripChatRecord(f,{name:lead.Name||'',phone,leadId:lid,owner,currency:c.deal_currency||'',now});
+    rec.lead_trip_id=auto.id;
+    rec.notes=note(null,`Picked up from the chat: ${summary}${plan.duplicateOf?` · possible duplicate of trip #${plan.duplicateOf}`:''}`);
+    if(plan.duplicateOf) rec.duplicate_of=plan.duplicateOf;
+    const made=await write('POST',rec);
+    result={tripId:made?.Id||null,created:true,summary,owner};
+  }else{
+    const trip=plan.trip;
+    const {patch,changes,applied}=tripChatDiff(trip,f);
+    const body={Id:trip.Id,...patch};
+    if(applied&&(patch.destination||patch.service||patch.departure_city)) body.package_name=tripChatTitle({...f});
+    if(String(trip.source||'')==='whatsapp_chat'&&!trip.lead_trip_id) body.lead_trip_id=auto.id;
+    if(changes.length) body.notes=note(trip,`Customer ${applied?'updated in chat':'changed in chat (not applied — check the trip)'}: ${changes.join('; ')}`);
+    if(Object.keys(body).length>1) await write('PATCH',body);
+    result={tripId:trip.Id,created:false,summary,owner:String(trip.assigned_to||lead.Owner||'')};
+  }
+  if(result.tripId) await engineBroadcastUpdate(env,clientId,{type:'trip_request',lead_id:lead.Id,trip_id:result.tripId,created:result.created,complete:result.created,
+    lead_name:lead.Name||lead.Phone||'',summary,owner:result.owner||'',at:now.toISOString()}).catch(()=>{});
   return result;
 }
 
@@ -28100,7 +28171,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(parsed.igId) state.igId=parsed.igId;
     // 🧳 Route & travel dates from what the customer wrote (travel-crm.js) — in the background, after
     // the turn has saved the lead, whichever path below answers this message.
-    if(text && ctx?.waitUntil && travelCrmTripsOn(c)) ctx.waitUntil(engineTravelCrmDetectLater(env, clientId, body, text).catch(e=>console.error('[travel-crm] detect', e.message)));
+    if(text && ctx?.waitUntil && travelCrmTripsOn(c)) ctx.waitUntil(engineTravelCrmDetectLater(env, clientId, body, text, {c}).catch(e=>console.error('[travel-crm] detect', e.message)));
     if(engineV2On(c)){
       state.staffNotes=engineActiveStaffNotes(state.lead?.StaffNotes);
       state.winExamples=await engineLoadWinExamples(env, clientId).catch(()=>[]);

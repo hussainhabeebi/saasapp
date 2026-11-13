@@ -589,6 +589,8 @@ function tvDepartureEvents(){
   tvBookings().filter(tvBookingLive).forEach(b=>{
     const d=tvDay(b.departure_date); if(!d) return;
     ev.push({d,kind:'booking',label:`🛫 ${b.client_name||'Traveler'}${b.package_name?' · '+b.package_name:''}`,meta:`${tvNum(b.pax)||1} pax · ${b.status||'quoted'}`,go:"navigate('tvtrips')"});
+    const r=tvDay(b.return_date);
+    if(r&&r>d) ev.push({d:r,kind:'return',label:`🛬 ${b.client_name||'Traveler'}${b.package_name?' · '+b.package_name:''}`,meta:'returns',go:"navigate('tvtrips')"});
   });
   tvUmrah().forEach(g=>{
     const n=Array.isArray(g.pilgrims)?g.pilgrims.length:0;

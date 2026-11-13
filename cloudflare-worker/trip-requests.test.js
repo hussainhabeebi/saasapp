@@ -2,8 +2,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { tripRequestFields, tripRequestEligible, tripRequestMissing, tripRequestRecord, tripRequestDiff, tripRequestPlan,
-  tripRouteOwner, tripLeadFields, tripSummaryLine, tripPaxLabel, samePhone, sameDestination } from './trip-requests.js';
-import { tripRequestSync, hotLeadAlertReasonText } from './worker.js';
+  tripRouteOwner, tripLeadFields, tripSummaryLine, tripPaxLabel, samePhone, sameDestination,
+  tripChatService, tripChatFields, tripChatEligible, tripChatRecord, tripChatSummary, tripChatDiff, TRIP_SOURCE_CHAT } from './trip-requests.js';
+import { tripRequestSync, tripChatSync, hotLeadAlertReasonText } from './worker.js';
 import { flyindoQualAnswers } from './flyindo-flow.js';
 
 const NOW=new Date('2026-11-08T10:00:00Z');
@@ -171,5 +172,109 @@ describe('tripRequestSync', ()=>{
       assert.equal(await tripRequestSync(env,{},7,42,{phone:'1'},{},{destination:'Goa',adults:'2'}),null);
     });
     assert.equal(stub.calls.length,0);
+  });
+});
+
+// Anticipated trips from the chat, for every service (tripChat* + tripChatSync).
+describe('chat trips — helpers', ()=>{
+  test('service: the lead says, else the message, else a ticket for a route', ()=>{
+    assert.equal(tripChatService({ServiceCategory:'Visa'},'Calicut to Dubai 15 Dec'),'Visa');
+    assert.equal(tripChatService({EnquiryType:'Hotel Booking'},'x'),'Hotel Booking');
+    assert.equal(tripChatService({},'need dubai visit visa from 20 dec'),'Visa');
+    assert.equal(tripChatService({},'umrah in january'),'Umrah / Hajj');
+    assert.equal(tripChatService({},'hotel in dubai 3 nights from 12 dec'),'Hotel Booking');
+    assert.equal(tripChatService({},'Calicut to Dubai 15 Dec',{hasRoute:true}),'Air Ticket');
+    assert.equal(tripChatService({},'15 Dec'),'');
+  });
+  test('fields from the auto trip: route split into from / to, return kept', ()=>{
+    const f=tripChatFields({},{route:'Calicut → Dubai',depart:'2026-12-15',ret:'2026-12-22'},'Air Ticket');
+    assert.equal(f.destination,'Dubai'); assert.equal(f.departure_city,'Calicut'); assert.equal(f.route,'Calicut → Dubai');
+    assert.equal(f.travel_date,'2026-12-15'); assert.equal(f.return_date,'2026-12-22'); assert.equal(f.travel_month,'2026-12');
+    assert.ok(tripChatEligible(f));
+    // No route: the lead's destination.
+    const g=tripChatFields({Destination:'Baku'},{depart:'2026-12-20'},'Visa');
+    assert.equal(g.destination,'Baku'); assert.equal(g.departure_city,''); assert.ok(tripChatEligible(g));
+    assert.equal(tripChatEligible(tripChatFields({},{depart:'2026-12-20'},'Visa')),false,'nowhere to go');
+    assert.equal(tripChatEligible(tripChatFields({},{route:'Calicut → Dubai'},'Air Ticket')),false,'no date');
+  });
+  test('record and summary', ()=>{
+    const f=tripChatFields({},{route:'Calicut → Dubai',depart:'2026-12-15',ret:'2026-12-22'},'Air Ticket');
+    const r=tripChatRecord(f,{name:'Ravi',phone:'971500000001',leadId:9,now:NOW});
+    assert.equal(r.source,TRIP_SOURCE_CHAT); assert.equal(r.status,'requested');
+    assert.equal(r.package_name,'Air Ticket · Calicut → Dubai'); assert.equal(r.service,'Air Ticket');
+    assert.equal(r.departure_date,'2026-12-15'); assert.equal(r.return_date,'2026-12-22'); assert.equal(r.departure_city,'Calicut');
+    assert.equal(r.missing_info,'travellers');
+    assert.equal(tripChatSummary(f),'Air Ticket · Calicut → Dubai · 15 Dec 2026 → 22 Dec 2026');
+  });
+  test('diff: own chat trip follows the chat; others only get blanks; quoted gets a note', ()=>{
+    const f=tripChatFields({},{route:'Calicut → Dubai',depart:'2026-12-18'},'Air Ticket');
+    const own=tripChatDiff({source:TRIP_SOURCE_CHAT,status:'requested',departure_date:'2026-12-15',destination:'Dubai',departure_city:'Calicut',service:'Air Ticket'},f);
+    assert.deepEqual(own.patch,{departure_date:'2026-12-18',travel_month:'2026-12'}); assert.deepEqual(own.changes,['Travel date: 2026-12-15 → 2026-12-18']);
+    const bot=tripChatDiff({source:'whatsapp_bot',status:'requested',departure_date:'2026-12-15',destination:'Dubai'},f);
+    assert.deepEqual(bot.patch,{departure_city:'Calicut',service:'Air Ticket'}); assert.equal(bot.applied,false);
+    const quoted=tripChatDiff({source:TRIP_SOURCE_CHAT,status:'quoted',departure_date:'2026-12-15',destination:'Dubai',departure_city:'Calicut',service:'Air Ticket'},f);
+    assert.deepEqual(quoted.patch,{}); assert.equal(quoted.changes.length,1);
+  });
+});
+
+describe('tripChatSync', ()=>{
+  const AUTO=JSON.stringify([{id:'a1',route:'Calicut → Dubai',depart:'2026-12-15',ret:'',note:'',auto:true}]);
+  const lead={Id:9,Name:'Ravi',Phone:'971500000001',TravelTrips:AUTO,TravelRoute:'Calicut → Dubai'};
+  test('a ticket enquiry from the chat becomes a requested trip; a new date moves the same trip', async()=>{
+    const stub=nocoStub();
+    await withStub(stub,async()=>{
+      const r=await tripChatSync(env,client,7,lead,'Calicut to Dubai 15 Dec ticket',{now:NOW});
+      assert.equal(r.created,true);
+      assert.equal(stub.rows.length,1);
+      const t=stub.rows[0];
+      assert.equal(t.source,'whatsapp_chat'); assert.equal(t.status,'requested'); assert.equal(t.lead_id,'9');
+      assert.equal(t.service,'Air Ticket'); assert.equal(t.destination,'Dubai'); assert.equal(t.departure_date,'2026-12-15');
+      assert.equal(t.lead_trip_id,'a1'); assert.match(t.notes,/Picked up from the chat/);
+      // Customer moves the date — and the place: the linked trip follows.
+      const moved={...lead,TravelTrips:JSON.stringify([{id:'a1',route:'Calicut → Sharjah',depart:'2026-12-18',ret:'2026-12-28',note:'',auto:true}])};
+      const r2=await tripChatSync(env,client,7,moved,'make it sharjah 18 dec back 28',{now:NOW});
+      assert.equal(r2.created,false); assert.equal(stub.rows.length,1);
+      assert.equal(t.departure_date,'2026-12-18'); assert.equal(t.return_date,'2026-12-28'); assert.equal(t.destination,'Sharjah');
+      assert.equal(t.package_name,'Air Ticket · Calicut → Sharjah'); assert.match(t.notes,/updated in chat/);
+    });
+  });
+  test('visa / hotel enquiries are filed too, under their service', async()=>{
+    const stub=nocoStub();
+    await withStub(stub,async()=>{
+      await tripChatSync(env,client,7,{Id:11,Phone:'919800000011',Destination:'Baku',TravelTrips:JSON.stringify([{id:'v1',depart:'2026-12-20',auto:true}])},'baku visa for 20 dec',{now:NOW});
+    });
+    assert.equal(stub.rows[0].service,'Visa'); assert.equal(stub.rows[0].package_name,'Visa · Baku');
+  });
+  test('a package already filed by the booking bot is left to the bot', async()=>{
+    const stub=nocoStub([{Id:5,client_id:'7',lead_id:'9',destination:'Kashmir',status:'requested',source:'whatsapp_bot'}]);
+    await withStub(stub,async()=>{
+      assert.equal(await tripChatSync(env,client,7,{...lead,ServiceCategory:'Package'},'x',{now:NOW}),null);
+    });
+    assert.equal(stub.rows.length,1);
+  });
+  test('off switch, no Trips table, past or missing auto trip', async()=>{
+    const stub=nocoStub();
+    await withStub(stub,async()=>{
+      assert.equal(await tripChatSync(env,{...client,ta_auto_trips:'No'},7,lead,'x',{now:NOW}),null);
+      assert.equal(await tripChatSync(env,{},7,lead,'x',{now:NOW}),null);
+      assert.equal(await tripChatSync(env,client,7,{...lead,TravelTrips:JSON.stringify([{id:'a',depart:'2026-01-02',auto:true}])},'x',{now:NOW}),null);
+      assert.equal(await tripChatSync(env,client,7,{...lead,TravelTrips:JSON.stringify([{id:'m',depart:'2026-12-15'}])},'x',{now:NOW}),null,'a trip staff added by hand is theirs');
+    });
+    assert.equal(stub.calls.length,0);
+  });
+});
+
+describe('tripRequestSync → travel profile', ()=>{
+  test("the bot's travel date lands on the lead's TravelTrips for Departures", async()=>{
+    const stub=nocoStub();
+    const c={...client,industry:'travel'};
+    await withStub(stub,async()=>{
+      await tripRequestSync(env,c,7,42,{phone:'919876543210',lead:{Name:'Asha'}},{Name:'Asha'},{destination:'Kashmir',departure_city:'Kochi',travel_date:'2027-04-29',adults:'2'},{complete:true});
+    });
+    const lp=stub.leads.find(l=>l?.TravelTrips);
+    assert.ok(lp,'lead patched with TravelTrips');
+    const trips=JSON.parse(lp.TravelTrips);
+    assert.equal(trips[0].depart,'2027-04-29'); assert.equal(trips[0].route,'Kochi → Kashmir'); assert.equal(trips[0].auto,true);
+    assert.equal(lp.TripStatus,'Upcoming');
   });
 });

@@ -1222,7 +1222,8 @@ const TA_ADDED_COLUMNS={
   // Trip requests: the WhatsApp booking bot files what it collected as a `requested` trip
   // (worker: trip-requests.js / tripRequestSync, which adds the same columns on its side).
   bookings:['lead_id','source','destination','travel_month','adults','children','children_ages','departure_city',
-    'assigned_to','requested_at','status_changed_at','missing_info','lost_reason','duplicate_of','created_at','alerted_at']
+    'assigned_to','requested_at','status_changed_at','missing_info','lost_reason','duplicate_of','created_at','alerted_at',
+    'service','return_date','lead_trip_id']
     .map(title=>({title,uidt:'SingleLineText'})),
   packages:[
     {title:'child_price',uidt:'Decimal'},{title:'child_nobed_price',uidt:'Decimal'},{title:'infant_price',uidt:'Decimal'},
@@ -4307,7 +4308,9 @@ async function savePilgrim(){
 
 /* ── TA: BOOKINGS (Trips) ──
    One pipeline for trips: requests the WhatsApp booking bot files on its own (status `requested`,
-   source whatsapp_bot, linked to the lead — worker trip-requests.js) and trips the team adds by hand.
+   source whatsapp_bot, linked to the lead — worker trip-requests.js), anticipated trips picked up
+   from what the customer wrote for any service — ticket, visa, hotel, Umrah, car (source
+   whatsapp_chat, worker tripChatSync) — and trips the team adds by hand.
    Status order below; quoted / confirmed / completed / cancelled are the values Trips always had. */
 let _editBookingId=null;
 const TA_TRIP_STATUSES=[
@@ -4362,6 +4365,7 @@ const TA_TRIP_FILTERS=[
   ['overdue','⏰ Waiting too long',b=>{ const w=taTripWaitingMin(b); return w!==null&&w>taSlaMinutes(); }],
   ['incomplete','Incomplete',b=>taTripIsRequest(b)&&!!String(b.missing_info||'').trim()],
   ['bot','🤖 From bot',b=>b.source==='whatsapp_bot'],
+  ['chat','💬 From chat',b=>b.source==='whatsapp_chat'],
   ['all','All',()=>true],
 ];
 function taSetTripFilter(f){ _taTripFilter=f; renderAgencySubPage('bookings'); }
@@ -4409,6 +4413,8 @@ function renderBookingRow(b){
   const id=escAttr(String(b.Id));
   const badges=[
     b.source==='whatsapp_bot'?'<span class="ta-tb ta-tb-bot">🤖 Bot</span>':'',
+    b.source==='whatsapp_chat'?'<span class="ta-tb ta-tb-bot" title="Route and travel date picked up from the chat">💬 From chat</span>':'',
+    b.service&&b.source!=='whatsapp_bot'?`<span class="ta-tb">${esc(b.service)}</span>`:'',
     wait!==null?`<span class="ta-tb ${late?'ta-tb-late':'ta-tb-wait'}">${late?'⏰ ':''}${taAgo(wait)}</span>`:'',
     taTripIsRequest(b)&&b.missing_info?`<span class="ta-tb ta-tb-inc" title="Still to ask">Incomplete: ${esc(b.missing_info)}</span>`:'',
     b.duplicate_of?`<span class="ta-tb ta-tb-dup" title="Same phone and destination as trip #${esc(b.duplicate_of)}">Possible duplicate</span>`:'',
@@ -4423,7 +4429,7 @@ function renderBookingRow(b){
   ].filter(Boolean).join('');
   return `
   <div class="booking-row${late?' late':''}" onclick="openBookingModal('${id}')">
-    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">${b.source==='whatsapp_bot'?'🤖':'🎫'}</div>
+    <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">${b.source==='whatsapp_bot'?'🤖':b.source==='whatsapp_chat'?'💬':'🎫'}</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.client_name||'—')}</div>
       <div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(b.package_name||b.destination||'Custom')} · ${esc(taTripDateText(b))} · ${esc(taTripPaxText(b))}</div>
@@ -4498,9 +4504,9 @@ function openBookingModal(id,focus){
   $id('bookingLostReason').value=b.lost_reason||'';
   bookingStatusChanged();
   const info=$id('bookingReqInfo');
-  if(b.source==='whatsapp_bot'||b.destination){
-    const rows=[['Destination',b.destination],['Travel',b.departure_date?String(b.departure_date).slice(0,10):b.travel_month],['Adults',b.adults],['Children',b.children],["Children's ages",b.children_ages],['From',b.departure_city],['Still to ask',b.missing_info],['Requested',b.requested_at?new Date(b.requested_at).toLocaleString():'']].filter(r=>r[1]);
-    info.innerHTML=`<div class="ta-req-box"><div style="font-weight:700;margin-bottom:6px">${b.source==='whatsapp_bot'?'🤖 Collected by the WhatsApp bot':'Trip details'}</div>${rows.map(([k,v])=>`<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}
+  if(b.source==='whatsapp_bot'||b.source==='whatsapp_chat'||b.destination){
+    const rows=[['Service',b.service],['Destination',b.destination],['Travel',b.departure_date?String(b.departure_date).slice(0,10):b.travel_month],['Return',b.return_date?String(b.return_date).slice(0,10):''],['Adults',b.adults],['Children',b.children],["Children's ages",b.children_ages],['From',b.departure_city],['Still to ask',b.missing_info],['Requested',b.requested_at?new Date(b.requested_at).toLocaleString():'']].filter(r=>r[1]);
+    info.innerHTML=`<div class="ta-req-box"><div style="font-weight:700;margin-bottom:6px">${b.source==='whatsapp_bot'?'🤖 Collected by the WhatsApp bot':b.source==='whatsapp_chat'?'💬 Picked up from the chat':'Trip details'}</div>${rows.map(([k,v])=>`<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}
       ${b.lead_id&&isEmbedded?`<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="taOpenTripChat('${escAttr(String(b.Id))}')">💬 Open chat</button>`:''}</div>`;
     info.style.display='';
   }else{ info.innerHTML=''; info.style.display='none'; }
