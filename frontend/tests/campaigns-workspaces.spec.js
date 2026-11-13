@@ -135,3 +135,23 @@ test('dashboard: Campaigns and Follow-ups open inside Leadvyne, one shared embed
   await expect(page.frameLocator('#campaignsFrame').locator('#gErr')).toContainText('try again');
   expect(page.url()).toBe(dashboardUrl);
 });
+
+test('Follow-up V3 settings: Pro add-ons are listed, off by default, and saved when switched on', async ({ page }) => {
+  await open(page, { v3: true, query: '?view=followups' });
+  const posts = [];
+  page.on('request', (req) => { if (req.method() === 'POST' && req.url().includes('/followups/v3/settings')) posts.push(JSON.parse(req.postData() || '{}')); });
+  await page.waitForFunction(() => !!document.getElementById('fv3c_pro_quote_pdf'));
+  const flags = ['pro_smart_send', 'pro_nba_home', 'pro_objections', 'pro_quote_pdf', 'pro_auto_language'];
+  for (const k of flags) expect(await page.locator('#fv3c_' + k).isChecked()).toBe(false);
+  await expect(page.locator('#fv3Settings')).toContainText('Pro add-ons');
+  await page.evaluate(() => {
+    document.getElementById('fv3c_pro_quote_pdf').checked = true;
+    document.getElementById('fv3c_pro_auto_language').checked = true;
+    document.getElementById('fv3c_pro_quote_valid_days').value = '10';
+    document.getElementById('fv3c_pro_quote_note').value = '30% advance confirms the booking.';
+    return window.fv3SaveConfig();
+  });
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].config).toMatchObject({ pro_quote_pdf: true, pro_auto_language: true, pro_smart_send: false, pro_nba_home: false, pro_objections: false,
+    pro_quote_valid_days: 10, pro_quote_note: '30% advance confirms the booking.' });
+});

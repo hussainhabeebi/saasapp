@@ -5646,15 +5646,18 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
       ecomFollowupScarcityLine(env, c, lead),
     ]);
     if(aiGenerated) staticText=aiGenerated;
+    // Follow-up V3 Pro auto-language (followup-v3.js translateTo) — only when V3 passes it.
+    if(opts.translate){ const translated=await opts.translate(staticText).catch(()=>null); if(translated) staticText=translated; }
     sentText=staticText+(scarcityLine||'');
 
     // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
     // voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording is
     // fixed by Meta, so there is no text to speak in its place for steps 3-5.
-    if(c.voice_followup_enabled==='Yes'){
-      const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
+    // A Follow-up V3 Pro quote PDF goes as a document with the text as its caption, never as voice.
+    if(c.voice_followup_enabled==='Yes' && !opts.attachment){
+      const bcp47=ENGINE_TTS_LANG_MAP[(opts.lang||lead.Language||c.language||'en').toLowerCase()];
       if(bcp47){
-        const audioBuf=await engineTtsWithFallback(env, sentText, (lead.Language||c.language||'en'), c.voice_tts_provider);
+        const audioBuf=await engineTtsWithFallback(env, sentText, (opts.lang||lead.Language||c.language||'en'), c.voice_tts_provider);
         if(audioBuf){
           const vfd=new FormData();
           vfd.append('content', engineExtractLinkPriceCaption(sentText));
@@ -5671,6 +5674,7 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
     if(!sentViaVoice){
       const fd=new FormData();
       fd.append('content', sentText); fd.append('message_type','outgoing'); fd.append('private','false');
+      if(opts.attachment?.bytes) fd.append('attachments[]', new Blob([opts.attachment.bytes], {type:opts.attachment.type||'application/pdf'}), opts.attachment.name||'quotation.pdf');
       const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
       if(!r.ok){ const err=new Error('HTTP '+r.status); err.definiteFailure=r.status<500; throw err; }
       const accepted=await r.json(); providerMessageId='cw:'+accepted.id;
@@ -31040,7 +31044,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Follow-up V3 (followup-v3.js fv3OnInbound) credits only the latest follow-up within its
     // attribution window, notes opt-outs and the lead's usual writing hour instead.
     if(userText && resolvedLeadId && await fv3IsEnabled(env,c.Id)) await fv3Schedule(env,c.Id).catch(e=>reportOpsError(env,'followup alarm',e,{clientId:c.Id}));
-    if(userText && resolvedLeadId && !await fv3OnInbound(env, c, resolvedLeadId, {optOut:leadBody?.OptOut==='Yes'})){
+    if(userText && resolvedLeadId && !await fv3OnInbound(env, c, resolvedLeadId, {optOut:leadBody?.OptOut==='Yes', text:userText, lang:routing?.customerLanguage||''})){
       try{
         await env.DB.prepare(`UPDATE followup_sends SET replied_at=? WHERE lead_id=? AND replied_at IS NULL`)
           .bind(new Date().toISOString(), resolvedLeadId).run();
@@ -38689,6 +38693,21 @@ const FOLLOWUP_V3_DEPS={
   leadHasMeeting:(env,cid,leadId)=>mtgLeadHasActiveMeeting(env,cid,leadId,new Date(),true),
   leadColumns:async env=>(await ncTableMeta(env, DEFAULT_LEADS_TABLE)).names,
   objectionPlaybook:c=>{ try{ const p=JSON.parse(c?.objection_playbook||'[]'); return Array.isArray(p)?p:[]; }catch(e){ return []; } },
+  // Follow-up V3 Pro: staff scope for the Home next-best-action list, and the catalog a quote PDF
+  // is built from — ecom products, plus travel packages for travel agencies.
+  seesAllLeads:(c, email)=>seesAllChannelLeads(c, email),
+  setClientFlag:async(env, cid, field, value)=>{ await ensureClientColumns(env, [field]); await patchClientFields(env, cid, {[field]:value}); },
+  quoteProducts:async(env, c)=>{
+    const out=[];
+    const products=await ecomListActiveProducts(env, c.Id).catch(()=>[]);
+    (products||[]).forEach(p=>out.push({...p, id:'p'+(p.id??p.Id??p.sku??p.name)}));
+    if(taIsTravelClient(c)){
+      const pkgs=await taReadRecords(env, c, c.Id, 'packages').catch(()=>[]);
+      (pkgs||[]).forEach(p=>out.push({...p, id:'t'+taPkgId(p), price:taPackagePrice(p), category:p.destination||'',
+        description:[p.destination, p.nights?`${p.nights} nights`:'', String(p.notes||'').slice(0, 200)].filter(Boolean).join(' · ')}));
+    }
+    return out;
+  },
 };
 // Reports → 💸 Ads ROI (meta-ads-report.js): Meta spend synced per ad per day, joined with the CRM's
 // own leads, sales and calls in the dashboard; daily summary/alerts on staff WhatsApp + email;
