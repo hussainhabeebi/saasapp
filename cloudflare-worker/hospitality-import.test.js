@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import {
   hiUrlError, hiAuthHeaders, hiMoney, hiMedia, hiMapProperty, hiMapUnits, hiExtractList, hiPageInfo, hiFetchAll,
-  hiSyncSource, hiRunDue, hiDue, hiHandleRoute,
+  hiSyncSource, hiRunDue, hiDue, hiHandleRoute, hiLocation, hiTownFromAddress,
 } from './hospitality-import.js';
 
 function d1(db){
@@ -189,6 +189,21 @@ describe('sync', ()=>{
     assert.equal(db.prepare(`SELECT base_rate FROM hospitality_units WHERE name='Deluxe Room'`).get().base_rate, 5000);
   });
 
+  test('a location typed in Properties is kept when the feed has none, replaced when it has one', async()=>{
+    props[1].location='';
+    const id=addSource();
+    await hiSyncSource(env, deps, src(id));
+    db.prepare(`UPDATE hospitality_properties SET location='Alleppey' WHERE name='Lake Houseboat'`).run();
+    props[1].price_from=9500; // a feed change forces the property row to be rewritten
+    props[1].description='Now with a sun deck';
+    await hiSyncSource(env, deps, src(id), {nowMs:NOW+3600e3});
+    const row=()=>db.prepare(`SELECT location, description FROM hospitality_properties WHERE name='Lake Houseboat'`).get();
+    assert.deepEqual({...row()}, {location:'Alleppey', description:'Now with a sun deck'});
+    props[1].location='Kuttanad';
+    await hiSyncSource(env, deps, src(id), {nowMs:NOW+7200e3});
+    assert.equal(row().location, 'Kuttanad');
+  });
+
   test('records leaving the feed are switched off, and back on when they return', async()=>{
     const id=addSource();
     await hiSyncSource(env, deps, src(id));
@@ -281,4 +296,25 @@ describe('dashboard API', ()=>{
     r=await call('POST', '/sync', {id:1});
     assert.equal(r.status, 404);
   });
+});
+
+test('location is read from the many shapes feeds use', ()=>{
+  const cases=[
+    [{location:'Munnar'}, 'Munnar'],
+    [{location:{name:'Wayanad'}}, 'Wayanad'],
+    [{location:{city:'Thekkady', state:'Kerala', lat:9.6}}, 'Thekkady'],
+    [{location:{lat:9.6, lng:77.1}, address:{district:'Idukki', state:'Kerala'}}, 'Idukki'],
+    [{city_name:'Kovalam'}, 'Kovalam'],
+    [{district:'Wayanad'}, 'Wayanad'],
+    [{locality:'Vagamon'}, 'Vagamon'],
+    [{destinations:[], destination:['Alleppey']}, 'Alleppey'],
+    [{attributes:{location_name:'Varkala'}}, 'Varkala'],
+    [{address:'Pallivasal, Munnar, Kerala 685612, India'}, 'Munnar'],
+    [{address:'Munnar, Kerala'}, 'Munnar'],
+    [{location:'685612', city:'Munnar'}, 'Munnar'],
+    [{name:'No location'}, ''],
+  ];
+  for(const [raw, want] of cases) assert.equal(hiLocation(raw), want, JSON.stringify(raw));
+  assert.equal(hiTownFromAddress('Near Bus Stand, Kumily'), 'Near Bus Stand');
+  assert.equal(hiMapProperty({id:1, name:'Bay View Suites', location:{city:'Wayanad'}}).location, 'Wayanad');
 });

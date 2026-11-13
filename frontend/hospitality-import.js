@@ -104,7 +104,10 @@ async function hiTest(){
     if(!d.ok){ out.innerHTML=`<div style="color:#dc2626;font-size:13px">✗ ${esc(d.error||'The link did not work')}</div>`; return; }
     if(!d.found){ out.innerHTML='<div style="color:var(--warn,#b45309);font-size:13px">The link works but returned no properties.</div>'; return; }
     const money=u=>u.base_rate?`${esc(u.currency||'')} ${Number(u.base_rate).toLocaleString()}`:'price —';
-    out.innerHTML=`<div style="color:var(--green,#16a34a);font-size:13px;font-weight:700;margin-bottom:6px">✓ Found ${d.found} propert${d.found===1?'y':'ies'} on the first page. A sample:</div>
+    const locNote=d.with_location==null?'':(d.with_location===d.found
+      ?`<div style="font-size:12px;color:var(--muted);margin-bottom:6px">📍 All have a location.</div>`
+      :`<div style="font-size:12px;color:var(--warn,#b45309);margin-bottom:6px">📍 ${d.with_location} of ${d.found} have a location in the feed — set the rest in Properties (kept on every sync).</div>`);
+    out.innerHTML=`<div style="color:var(--green,#16a34a);font-size:13px;font-weight:700;margin-bottom:6px">✓ Found ${d.found} propert${d.found===1?'y':'ies'} on the first page. A sample:</div>${locNote}
       ${d.sample.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:13px">
         <b>${esc(p.name)}</b>${p.location?` — ${esc(p.location)}`:''} <span style="color:var(--muted)">· ${p.photos} photo${p.photos===1?'':'s'}</span>
         <div style="color:var(--muted);font-size:12px;margin-top:2px">${p.units.map(u=>`${esc(u.name)} (${money(u)}, ${u.capacity_adults} adults)`).join(' · ')}</div>

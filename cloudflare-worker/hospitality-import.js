@@ -172,14 +172,56 @@ export function hiHash(obj){
 // ── Mapping ──────────────────────────────────────────────────────────────────────────────────────
 const UNIT_LIST_KEYS=['units','rooms','room_types','roomTypes','unit_types','room_categories','accommodations','accommodation_types','categories','inventory'];
 
+// A property's location (destination / city) from whatever shape the feed uses:
+//   "Munnar" · {name:"Munnar"} · {city:"Munnar", state:"Kerala"} · ["Munnar"] ·
+//   district / locality / city_name / location_name … · address:{city|district…} ·
+//   address:"Pallivasal, Munnar, Kerala 685612" (the town part) · the same under
+//   attributes / details / property.
+const HI_LOC_KEYS=['destination','location','city','town','area','region','place','district','locality','city_name','town_name','location_name','destination_name','area_name','place_name','region_name','district_name','locality_name','resort_location','property_location','geo_location'];
+const HI_LOC_PARTS=['name','title','label','city','town','locality','district','area','destination','place','region','city_name','location_name','value','text','en'];
+const HI_ADDR_PARTS=['city','town','locality','district','area','region','city_name','district_name','state','province'];
+const HI_COUNTRIES=/^(india|bharat|uae|united arab emirates|sri lanka|nepal|maldives|bhutan|usa|united states|uk|united kingdom)$/i;
+function locValue(v, depth=0){
+  if(v==null||v==='') return '';
+  if(Array.isArray(v)) return locValue(v.find(x=>locValue(x, depth+1)), depth+1);
+  if(isObj(v)){
+    if(depth>2) return '';
+    for(const k of HI_LOC_PARTS){ const x=locValue(v[k], depth+1); if(x) return x; }
+    return '';
+  }
+  if(typeof v!=='string'&&typeof v!=='number') return '';
+  const t=text(v, 100);
+  return /[\p{L}]/u.test(t)?t:''; // a bare number / pincode is not a place
+}
+// "Pallivasal, Munnar, Kerala 685612, India" → "Munnar"; "Munnar, Kerala" → "Munnar".
+export function hiTownFromAddress(addr){
+  const parts=String(addr||'').split(/[,\n]/).map(x=>x.replace(/\b\d{5,6}\b/g,'').replace(/[-–\s]+$/,'').trim())
+    .filter(x=>x && /[\p{L}]/u.test(x) && !HI_COUNTRIES.test(x));
+  if(!parts.length) return '';
+  const town=parts.length>=3?parts[parts.length-2]:parts[0];
+  return text(town, 100);
+}
+export function hiLocation(raw){
+  if(!isObj(raw)) return '';
+  for(const o of [raw, raw.attributes, raw.details, raw.property, raw.info]){
+    if(!isObj(o)) continue;
+    for(const k of HI_LOC_KEYS){ const v=locValue(o[k]); if(v) return v; }
+    const addr=o.address??o.full_address??o.address_line??o.addr;
+    if(isObj(addr)){
+      for(const k of HI_ADDR_PARTS){ const v=locValue(addr[k]); if(v) return v; }
+    }else if(typeof addr==='string'){
+      const v=hiTownFromAddress(addr); if(v) return v;
+    }
+  }
+  return '';
+}
+
 export function hiMapProperty(raw, base){
   if(!isObj(raw)) return null;
   const name=text(pick(raw, ['name','title','property_name','display_name']), 140);
   const external_id=hiExternalId(raw);
   if(!name||!external_id) return null;
-  const loc=pick(raw, ['destination','location','city','town','area','region','place']);
-  let location=text(loc, 100);
-  if(!location&&isObj(raw.address)) location=text(pick(raw.address, ['city','town','locality','district','state']), 100);
+  const location=hiLocation(raw);
   const m=hiMedia(raw, base);
   return {
     external_id, name, location,
@@ -364,8 +406,10 @@ async function upsert(env, ctx, kind, rec, cols){
     if(!ctx.localIds[kind].has(Number(link.local_id))){ ctx.counts.skipped++; return null; } // deleted here on purpose — keep it deleted
     const changed=link.hash!==hash;
     if(!changed&&!Number(link.removed)) return Number(link.local_id);
-    const sets=changed?cols.map(c=>`${c}=?`):[];
-    const vals=changed?cols.map(c=>values[c]):[];
+    // A location typed in Hospitality → Properties is kept when the feed itself has none.
+    const setCols=changed?cols.filter(c=>!(kind==='property'&&c==='location'&&!values[c])):[];
+    const sets=setCols.map(c=>`${c}=?`);
+    const vals=setCols.map(c=>values[c]);
     if(Number(link.removed)) sets.push('active=1');
     await run(env, `UPDATE ${table} SET ${sets.join(', ')} WHERE id=? AND client_id=?`, ...vals, link.local_id, ctx.cid);
     await run(env, `UPDATE hospitality_api_links SET hash=?, removed=0, seen_at=? WHERE id=?`, hash, ctx.nowIso, link.id);
@@ -519,7 +563,7 @@ export async function hiHandleRoute(request, env, deps, url){
       const {records}=await hiFetchAll(deps, {url:urlIn, auth_style:auth}, key, {maxPages:1});
       const props=records.map(r=>hiMapProperty(r, urlIn)).filter(Boolean);
       const sample=records.slice(0,5).map(r=>{ const p=hiMapProperty(r, urlIn); return p?{name:p.name, location:p.location, photos:[p.image_url_1,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).length, units:hiMapUnits(r, p, urlIn).map(u=>({name:u.name, base_rate:u.base_rate, currency:u.currency, capacity_adults:u.capacity_adults}))}:null; }).filter(Boolean);
-      return deps.json({ok:true, found:props.length, skipped:records.length-props.length, sample});
+      return deps.json({ok:true, found:props.length, skipped:records.length-props.length, with_location:props.filter(p=>p.location).length, sample});
     }catch(e){ return deps.json({ok:false, error:String(e?.message||e)}, 200); }
   }
 
