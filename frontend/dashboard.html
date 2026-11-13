@@ -1379,6 +1379,19 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
   .bp-sticky .bp-btn{width:100%;padding:13px}
 }
 @media (min-width:641px){ .bp-sticky{display:none!important} }
+
+/* 🔔 Assignment popups (showAssignPopup) */
+#asgPopups{position:fixed;top:112px;right:16px;z-index:10050;display:flex;flex-direction:column;gap:10px;width:340px;max-width:calc(100vw - 32px);pointer-events:none}
+.asg-pop{pointer-events:auto;position:relative;display:flex;gap:12px;align-items:flex-start;background:var(--card,#fff);color:var(--ink,#0C1E16);border:1px solid var(--line,#E4EBE7);border-left:4px solid var(--accent,#0D9C93);border-radius:12px;padding:12px 34px 12px 12px;box-shadow:0 10px 30px rgba(0,0,0,.18);animation:asgIn .25s ease-out}
+.asg-ic{font-size:22px;line-height:1;flex-shrink:0}
+.asg-tx{min-width:0;flex:1}
+.asg-t{font-weight:700;font-size:14px}
+.asg-s{font-size:13px;margin-top:3px;overflow-wrap:anywhere}
+.asg-by{color:var(--muted,#6B7280)}
+.asg-btns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.asg-close{position:absolute;top:6px;right:8px;background:none;border:0;font-size:14px;cursor:pointer;color:var(--muted,#6B7280);padding:4px}
+@keyframes asgIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+@media (max-width:640px){#asgPopups{top:auto;bottom:84px;right:16px;left:16px;width:auto;max-width:none}}
 </style>
 </head>
 <body>
@@ -6537,6 +6550,7 @@ function _rerenderVisibleLeads(){
 const _leadEdits=new Map(); // Id -> {at, fields:{name:value}}
 const LEAD_EDIT_HOLD_MS=120000;
 function _noteLeadEdits(body){
+  try{ const own=[].concat(body||[]).filter(x=>x&&('Owner' in x||'SharedWith' in x)).map(x=>x.Id); if(own.length) asgMarkKnown(own); }catch(e){}
   const at=Date.now(), rows=[].concat(body||[]).filter(x=>x&&x.Id!=null);
   for(const x of rows){ const {Id,ConvHistory,...f}=x; const e=_leadEdits.get(Number(Id))||{at,fields:{}}; e.at=at; e.doneAt=0; Object.assign(e.fields,f); _leadEdits.set(Number(Id),e); }
   return rows.map(x=>Number(x.Id));
@@ -6682,6 +6696,7 @@ async function loadAll(silent=false, force=false){
     // A save made while this fetch was on the way is put back over the (older) server copy.
     allLeads=_splitPersonal(_applyLeadEdits(_carryConvHistory(list), fetchStartedAt));
     _cacheLeads(allLeads.concat(_personalLeads));
+    try{ asgCheckNewlyMine(); }catch(e){ console.error(e); }
     loadEcomOrderPhones();
     mtgLoadLeadStates();
     renderHome();
@@ -6917,9 +6932,12 @@ async function onLiveLeadUpdatedEvent(msg){
 // hotReallocProcessClient, idleReallocProcessClient, assignUnassignedProcessClient) — only the
 // new owner is alerted.
 async function onLiveReassignEvent(msg){
+  const mine=!!myEmail && sameEmail(msg.to,myEmail);
+  if(mine) asgMarkKnown([msg.lead_id]); // the popup below covers it; the catch-up must not repeat it
   await liveRefresh();
-  if(!myEmail || !sameEmail(msg.to,myEmail)) return;
+  if(!mine) return;
   notifyNewLead({...msg, reassigned:true});
+  showAssignPopup({kind:'assigned', lead_id:msg.lead_id, lead_name:msg.lead_name, by_name:msg.by_name, reason:msg.reason});
   // Given by hand (Leads / Edit Lead / Chats → Assign): also kept in the 🔔 bell.
   if(msg.reason==='manual'){
     _liveAssignNotifs=[{id:'asg_'+msg.lead_id+'_'+(msg.at||''),icon:'👤',text:`Assigned to you${msg.by_name?' by '+msg.by_name:''}: ${msg.lead_name||'Lead #'+msg.lead_id}`,time:String(msg.at||'').slice(0,19).replace('T',' '),lead_id:msg.lead_id},..._liveAssignNotifs].slice(0,20);
@@ -6931,11 +6949,79 @@ async function onLiveReassignEvent(msg){
 // A lead was shared with someone (Edit Lead → 👥 Shared with, Chats → 👥 Share): refresh, and tell
 // the teammate it was shared with (🔔 bell + toast).
 async function onLiveSharedEvent(msg){
+  const mine=!!myEmail && sameEmail(msg.to,myEmail);
+  if(mine) asgMarkKnown([msg.lead_id]);
   await liveRefresh();
-  if(!myEmail || !sameEmail(msg.to,myEmail)) return;
+  if(!mine) return;
+  showAssignPopup({kind:'shared', lead_id:msg.lead_id, lead_name:msg.lead_name, by_name:msg.by_name});
+  if('Notification' in window && Notification.permission==='granted'){
+    try{
+      const n=new Notification(`👥 Lead shared with you: ${msg.lead_name||'Lead #'+msg.lead_id}`,{body:`${msg.by_name?msg.by_name+' shared it with you':'Shared with you'} — you can view and reply in Chats`,tag:'lv-shared-'+msg.lead_id});
+      n.onclick=()=>{ window.focus(); navigate('leads'); if(msg.lead_id) openDetail(msg.lead_id); };
+    }catch(e){}
+  }
   _liveAssignNotifs=[{id:'shr_'+msg.lead_id+'_'+(msg.at||''),icon:'👥',text:`Shared with you${msg.by_name?' by '+msg.by_name:''}: ${msg.lead_name||'Lead #'+msg.lead_id}`,time:String(msg.at||'').slice(0,19).replace('T',' '),lead_id:msg.lead_id},..._liveAssignNotifs].slice(0,20);
   pollNotifications();
   if(typeof showToast==='function') showToast(`👥 ${msg.lead_name||'A lead'} was shared with you${msg.by_name?' by '+msg.by_name:''}`);
+}
+/* ── 🔔 Assignment popups ──────────────────────────────────────────────────────────────────────────
+   A lead given to me (assigned by hand, by Lead routing / round robin, reallocated) or shared with
+   me pops up a card that stays until I open or dismiss it — a toast is too easy to miss.
+   Live: onLiveReassignEvent / onLiveSharedEvent / onLiveNewLeadEvent (via the catch-up below).
+   Offline: the leads that are mine (owner or shared) are remembered per user in localStorage;
+   after each load, any that became mine since are shown — one card each, or one summary card for
+   many. The first load on a device only remembers, so nobody gets a popup for their whole book.
+   My own edits (Edit Lead → Owner / Shared with) never pop up for me. */
+const ASG_MAX_KNOWN=4000;
+function _asgKey(){ return `lv_asg_known_${clientId}_${String(myEmail||'').trim().toLowerCase()}`; }
+function _asgLoad(){ try{ const v=JSON.parse(localStorage.getItem(_asgKey())||'null'); return Array.isArray(v?.ids)?new Set(v.ids.map(Number)):null; }catch(e){ return null; } }
+function _asgSave(set){ try{ localStorage.setItem(_asgKey(), JSON.stringify({ids:[...set].slice(-ASG_MAX_KNOWN), at:new Date().toISOString()})); }catch(e){} }
+function asgMarkKnown(ids){
+  if(!myEmail||!clientId) return;
+  const set=_asgLoad(); if(!set) return; // not seeded yet — the first load seeds with everything
+  for(const id of ids||[]) if(Number(id)) set.add(Number(id));
+  _asgSave(set);
+}
+function asgLeadIsMine(l){ return !!myEmail && (sameEmail(l?.Owner,myEmail) || leadSharedWithMe(l)); }
+function asgCheckNewlyMine(){
+  if(!myEmail||!clientId||!Array.isArray(allLeads)) return;
+  const mine=allLeads.filter(asgLeadIsMine);
+  const known=_asgLoad();
+  if(!known){ _asgSave(new Set(mine.map(l=>Number(l.Id)))); return; }
+  const fresh=mine.filter(l=>!known.has(Number(l.Id)) && !sameEmail(l.CreatedBy,myEmail));
+  mine.forEach(l=>known.add(Number(l.Id)));
+  _asgSave(known);
+  if(!fresh.length) return;
+  if(fresh.length>3){ showAssignPopup({kind:'many', count:fresh.length}); return; }
+  fresh.forEach(l=>showAssignPopup({kind:sameEmail(l.Owner,myEmail)?'assigned':'shared', lead_id:l.Id, lead_name:(typeof leadDisplayName==='function'?leadDisplayName(l):'')||l.Name||l.Phone}));
+}
+function showAssignPopup(p){
+  let box=$id('asgPopups');
+  if(!box){ box=document.createElement('div'); box.id='asgPopups'; box.setAttribute('role','region'); box.setAttribute('aria-label','Lead notifications'); document.body.appendChild(box); }
+  const key=p.kind==='many'?'many':'lead_'+Number(p.lead_id);
+  box.querySelector(`.asg-pop[data-key="${key}"]`)?.remove();
+  const name=String(p.lead_name||'').trim()||(p.lead_id?'Lead #'+p.lead_id:'A lead');
+  const icon=p.kind==='shared'?'👥':p.kind==='many'?'🔔':'👤';
+  const title=p.kind==='shared'?'Lead shared with you':p.kind==='many'?`${p.count} leads are now yours`:'New lead assigned to you';
+  const sub=p.kind==='many'?'Assigned to you or shared with you while you were away.'
+    :`${esc(name)}${p.by_name?` <span class="asg-by">· by ${esc(p.by_name)}</span>`:''}`;
+  const card=document.createElement('div');
+  card.className='asg-pop'; card.dataset.key=key; card.setAttribute('role','alert');
+  card.innerHTML=`<div class="asg-ic">${icon}</div><div class="asg-tx"><div class="asg-t">${esc(title)}</div><div class="asg-s">${sub}</div>
+    <div class="asg-btns"><button class="btn btn-primary btn-sm asg-open">${p.kind==='many'?'View my leads':'Open lead'}</button><button class="btn btn-secondary btn-sm asg-x">Dismiss</button></div></div>
+    <button class="asg-close" aria-label="Close">✕</button>`;
+  const close=()=>card.remove();
+  card.querySelector('.asg-x').onclick=close;
+  card.querySelector('.asg-close').onclick=close;
+  card.querySelector('.asg-open').onclick=()=>{
+    close();
+    navigate('leads');
+    if(p.kind==='many'){ try{ if(_leadsOwnerScope!=='mine') toggleLeadsOwnerScope(); }catch(e){} }
+    else if(p.lead_id) openDetail(Number(p.lead_id));
+  };
+  box.prepend(card);
+  [...box.querySelectorAll('.asg-pop')].slice(4).forEach(x=>x.remove());
+  try{ playChime([[660,0,0.25],[880,0.18,0.25]], 0.18); }catch(e){}
 }
 function notifyNewLead(msg){
   // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
