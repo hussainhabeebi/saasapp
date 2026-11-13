@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3Decide} from './hospitality-h3.js';
+import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -21083,8 +21083,12 @@ async function engineBuildTravelContext(env, c, clientId){
       lines.push(line);
     });
   }
-  const properties=await taPropertiesForClient(env, clientId).catch(()=>[]);
-  lines.push(...taPropertyContextLines(properties));
+  // H3 hospitality clients: the Hospitality module (hospH3BuildAiContext) is the stays catalogue,
+  // so this separate Resorts & Hotels list is left out — two lists made the AI deny real stays.
+  if(!h3IsStyle(c)){
+    const properties=await taPropertiesForClient(env, clientId).catch(()=>[]);
+    lines.push(...taPropertyContextLines(properties));
+  }
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
@@ -30772,10 +30776,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const resortCtx=await engineBuildResortContext(env, clientId);
         if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
       }
-      // H3: same verified data, limited to the location the guest chose (when one is chosen).
+      // H3: the Hospitality module's live stays catalogue — every location, full details for the
+      // one the guest is browsing.
       if(h3IsStyle(c)){
-        const resortCtx=await engineBuildResortContext(env, clientId, {location:state.lead?.HospSelectedLocation||''});
-        if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
+        const h3Ctx=await hospH3BuildAiContext(env, c, clientId, state.lead).catch(()=>'');
+        if(h3Ctx) contextBlock=(contextBlock||'')+h3Ctx;
       }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
@@ -39081,10 +39086,80 @@ async function hospH3LoadData(env, clientId){
 async function hospH3Plan(env, c, clientId, userText, state, isNewLead){
   const data=await hospH3LoadData(env, clientId);
   if(!data.properties.length && !data.units.length) return null;
-  const action=h3Decide({text:userText, isNewLead, properties:data.properties, units:data.units,
-    locationStep:h3LocationStepOn(c),
-    ctx:{location:state.lead?.HospSelectedLocation||'', property:state.lead?.HospSelectedProperty||'', unit:state.lead?.HospSelectedUnit||''}});
+  const ctx={location:state.lead?.HospSelectedLocation||'', property:state.lead?.HospSelectedProperty||'', unit:state.lead?.HospSelectedUnit||''};
+  const args={properties:data.properties, units:data.units, locationStep:h3LocationStepOn(c), ctx};
+  let action=h3Decide({text:userText, isNewLead, ...args});
+  // No rule matched: let the AI read a short message ("blue bel", "that bay one", Malayalam /
+  // Manglish) against the options the guest can see now. Questions and longer messages go to the
+  // normal AI reply instead.
+  if(!action) action=await hospH3AiResolve(env, c, userText, h3AiCandidates(args));
   return action?{action, data}:null;
+}
+const H3_AI_MAX_WORDS=6;
+async function hospH3AiResolve(env, c, userText, candidates){
+  const text=String(userText||'').trim();
+  if(!text || !candidates.length || text.split(/\s+/).length>H3_AI_MAX_WORDS || /[?؟]/.test(text)) return null;
+  if(text.replace(/[\s\p{P}\p{S}]/gu, '').length<3) return null; // "ok", "👍"
+  if(!env.GEMINI_API_KEY && !c.openrouter_key && !env.AI) return null;
+  const system='You map a hotel guest\'s short WhatsApp message to ONE of the listed options when the message clearly names or picks that option — allow typos, partial names, spacing differences, nicknames and other languages or scripts (e.g. Malayalam, Manglish). If the message is a question, a date, a greeting, a general request, or could fit more than one option, answer null. Reply with JSON only: {"option": "<the option text exactly as listed>"} or {"option": null}.';
+  const user=`Options:\n${candidates.map(x=>`- ${x.label}`).join('\n')}\n\nGuest message: ${text}`;
+  try{
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, user, {temperature:0, maxOutputTokens:80, json:true, caller:'h3-resolve'})
+      || await engineCfAiGenerate(env, system, user, {temperature:0, maxOutputTokens:80, caller:'h3-resolve'}))||'';
+    const m=String(raw).replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(!m) return null;
+    const hit=h3PickCandidate(candidates, JSON.parse(m[0]).option);
+    return hit?hit.action:null;
+  }catch(e){ return null; }
+}
+// The AI's verified stays data for H3 clients, straight from the Hospitality module: every
+// location with its property names, and full room details for the location the guest chose (or for
+// everything when the catalogue is small). Marked VERIFIED RESORT DATA so the hospitality lock in
+// engineBuildFaqSystemPrompt applies.
+const H3_AI_FULL_DETAIL_MAX=15;
+function hospH3RoomLine(r){
+  let line=`  - **${r.name}**`;
+  if(r.unit_type) line+=` (${r.unit_type})`;
+  line+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+  if(r.base_rate) line+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+  if(r.weekend_rate) line+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+  if(r.amenities && String(r.amenities).trim()) line+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+  if(r.description && String(r.description).trim()) line+=` | ${String(r.description).trim().slice(0,200)}`;
+  return line;
+}
+async function hospH3BuildAiContext(env, c, clientId, lead){
+  const {properties, units}=await hospH3LoadData(env, clientId);
+  if(!properties.length && !units.length) return '';
+  const ctx={location:lead?.HospSelectedLocation||'', property:lead?.HospSelectedProperty||'', unit:lead?.HospSelectedUnit||''};
+  const r=h3Resolve({ctx, properties, units, locationStep:h3LocationStepOn(c)});
+  const lines=['\n\n## VERIFIED RESORT DATA (from this business\'s live Hospitality records — the complete list of stays it offers; use ONLY these facts for locations, property names, rooms, prices, descriptions and amenities)'];
+  const detail=p=>{
+    lines.push(`\n### ${p.name}${p.location?` — ${String(p.location).trim()}`:''}`);
+    if(p.description && String(p.description).trim()) lines.push(`Description: ${String(p.description).trim().slice(0,400)}`);
+    if(p.amenities && String(p.amenities).trim()) lines.push(`Amenities: ${String(p.amenities).trim().slice(0,300)}`);
+    const rooms=h3RoomsOf(units, p);
+    if(rooms.length){ lines.push('Rooms:'); rooms.forEach(u=>lines.push(hospH3RoomLine(u))); }
+  };
+  if(properties.length){
+    lines.push(`Locations with stays: ${r.locs.map(l=>`${l.label} (${l.count})`).join(', ')}`);
+    const full=properties.length<=H3_AI_FULL_DETAIL_MAX;
+    for(const l of r.locs){
+      const list=h3PropertiesIn(properties, l.key);
+      if(full || l.key===r.curLocKey){
+        lines.push(`\n## Stays in ${l.label}`);
+        list.forEach(detail);
+      }else{
+        lines.push(`- ${l.label}: ${list.map(p=>p.name).join(', ').slice(0,600)}`);
+      }
+    }
+    if(r.curProp && !full && h3LocKey(r.curProp.location)!==r.curLocKey) detail(r.curProp);
+  }else{
+    lines.push('Rooms:');
+    units.forEach(u=>lines.push(hospH3RoomLine(u)));
+  }
+  const browsing=[r.curLocKey!=null?`location ${(r.locs.find(l=>l.key===r.curLocKey)||{}).label}`:'', r.curProp?`property ${r.curProp.name}`:'', r.curUnit?`room ${r.curUnit.name}`:''].filter(Boolean).join(', ');
+  lines.push(`\nSTAYS RULE: These locations and properties are live data and override anything else about which destinations or resorts this business offers (including the business prompt). Never tell the guest a location or property listed here is not offered. Properties listed only by name do exist — answer what you can and offer to share details.${browsing?` The guest is currently looking at: ${browsing}.`:''}`);
+  return lines.join('\n');
 }
 async function hospH3SaveCtx(env, leadId, patch){
   const body={Id:Number(leadId)};

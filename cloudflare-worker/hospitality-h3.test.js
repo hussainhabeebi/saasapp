@@ -134,3 +134,37 @@ test('list row descriptions: starting rate + amenities; room capacity + rate', (
   assert.equal(h3RoomDesc(units[0]), '2 adults · ₹4,500/night');
   assert.equal(h3RoomDesc(U(9, 'X', 1, {capacity_adults:2, capacity_children:1, base_rate:0, unit_type:'Villa'})), '2 adults + 1 child · Villa');
 });
+
+test('short forms of names match within the chosen location ("bay view" after tapping Wayanad)', async ()=>{
+  const { h3WordsMatch } = await import('./hospitality-h3.js');
+  const props=[P(1, 'Bay View Suites', 'Wayanad'), P(2, 'Bluebell Resort', 'Wayanad'), P(3, 'Ambady Estate', 'Munnar'), P(4, 'Bay Leaf Inn', 'Munnar')];
+  const d=(text, ctx={})=>h3Decide({text, properties:props, units:[], locationStep:true, ctx});
+  assert.equal(h3WordsMatch('bay view', 'Bay View Suites'), true);
+  assert.equal(h3WordsMatch('bayview', 'Bay View Suites'), true);
+  assert.equal(h3WordsMatch('bluebell', 'Bluebell Resort'), true);
+  assert.equal(h3WordsMatch('is breakfast included', 'Bluebell Resort'), false);
+  assert.deepEqual(d('bay view', {location:'Wayanad'}), {type:'rooms', propertyId:1, page:1});
+  assert.deepEqual(d('bluebell', {location:'Wayanad'}), {type:'rooms', propertyId:2, page:1});
+  // Outside the chosen location still works when the name is unique.
+  assert.deepEqual(d('bay leaf', {location:'Wayanad'}), {type:'rooms', propertyId:4, page:1});
+  // Too short to trust ("bay" fits two properties) → left to the AI resolver.
+  assert.equal(d('bay', {}), null);
+  assert.deepEqual(d('wayanad'), {type:'properties', locKey:'wayanad', page:1});
+});
+
+test('a list tap echoed with its description line still resolves', ()=>{
+  assert.deepEqual(decide('Munnar (2)\n2 properties'), {type:'properties', locKey:'munnar', page:1});
+  assert.deepEqual(decide('Bay View Suites\nFrom ₹5,000', {ctx:{location:'Munnar'}}), {type:'rooms', propertyId:2, page:1});
+});
+
+test('AI candidates: current rooms, then this location\'s properties, then the rest, then locations', async ()=>{
+  const { h3AiCandidates, h3PickCandidate } = await import('./hospitality-h3.js');
+  const c=h3AiCandidates({properties, units, locationStep:true, ctx:{location:'Munnar', property:'Aadhisakthi Resort'}});
+  assert.deepEqual(c.map(x=>x.label), ['Room: Deluxe Room', 'Room: Pool Villa',
+    'Property: Aadhisakthi Resort', 'Property: Bay View Suites', 'Property: Calinz Thekkady', 'Property: Cinnamon Stay',
+    'Location: Munnar', 'Location: Thekkady']);
+  assert.deepEqual(h3PickCandidate(c, 'Property: Bay View Suites').action, {type:'rooms', propertyId:2, page:1});
+  assert.deepEqual(h3PickCandidate(c, 'pool villa').action, {type:'room', unitId:12});
+  assert.equal(h3PickCandidate(c, null), null);
+  assert.equal(h3PickCandidate(c, 'Kovalam'), null);
+});
