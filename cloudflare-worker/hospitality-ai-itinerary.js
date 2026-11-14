@@ -34,8 +34,15 @@ export function hospAiCheckOut(checkIn,nights){
 }
 export const hospAiPhotos=row=>HOSP_AI_IMAGE_FIELDS.map(f=>str(row?.[f],1000)).filter(u=>/^https?:\/\//i.test(u));
 
+// Optional Inclusions / Exclusions typed in the Chats form: one per line (or ; separated),
+// at most 25 lines of 200 characters. They go on the PDF and, for the stay plan, to the AI.
+export function hospAiList(v){
+  const raw=Array.isArray(v)?v:String(v??'').split(/\n|;/);
+  const seen=new Set();
+  return raw.map(x=>str(String(x??'').replace(/^\s*[-•*✓✔✗✘]\s*/,''),200)).filter(x=>{const k=x.toLowerCase();if(!x||seen.has(k))return false;seen.add(k);return true;}).slice(0,25);
+}
 // The property (+ room) as the package shape the travel itinerary code reads. No price fields.
-export function hospAiStayPkg(property,room,nights){
+export function hospAiStayPkg(property,room,nights,{inclusions,exclusions}={}){
   const loc=str(property?.location,200);
   return {
     name:str(property?.name,200),
@@ -44,7 +51,8 @@ export function hospAiStayPkg(property,room,nights){
     type:'stay',
     // Amenities go to the AI in the prompt and on the PDF's "Your Stay" cards — not as a
     // "What's Included" list, since an amenity isn't necessarily part of the guest's booking.
-    inclusions:'',exclusions:'',notes:'',
+    // Only what the agent typed in the form's Inclusions / Exclusions.
+    inclusions:hospAiList(inclusions).join('\n'),exclusions:hospAiList(exclusions).join('\n'),notes:'',
   };
 }
 
@@ -55,7 +63,8 @@ export function hospAiGuest(g){
   return {...t,destinations:[]};
 }
 
-export function hospAiItineraryPrompt(property,room,{nights,guest,checkIn}={}){
+export function hospAiItineraryPrompt(property,room,opts={}){
+  const {nights,guest,checkIn}=opts;
   const n=hospAiNights(nights),days=n+1;
   const t=hospAiGuest(guest);
   const pname=str(property?.name,200)||'the property';
@@ -70,6 +79,7 @@ Rules:
 - Exactly ${days} days (${n} night${n>1?'s':''}). Day 1 is arrival and check-in at ${pname}; the last day is check-out and departure.
 - Every night is spent at ${pname} — never suggest another hotel, resort or property.
 - Mix relaxed time at the property (use ONLY the amenities listed — never invent a spa, pool, restaurant or activity it doesn't list) with real, well-known sightseeing, nature and food experiences in and around ${loc||'the property\'s area'} within an easy day trip.
+- Meals and services: when "Included in the stay" is given, include only those meals/services as part of the stay, and never present anything under "Not included" as included.
 - Never give any price, rate, discount or total — the booking team gives the price personally. Never invent phone numbers, opening hours or ticket prices.
 - "place" is set for every "activity" item that is a real, named attraction or area near the property (e.g. "Eravikulam National Park"), using its well-known English name — it is used to find a photo. Leave it empty for on-property items.
 - Tailor the plan to the guest profile (Guests, Pace, Interests) when it is given.${rules.length?'\n'+rules.join('\n'):''}`;
@@ -84,6 +94,7 @@ Rules:
     ['Room amenities',str(room?.amenities,800)],['About the room',str(room?.description,800)],
     ['Nights',String(n)],['Check-in date',hospAiDate(checkIn)],
     ['Guests',pax],['Pace',t.pace?TA_AI_PACES[t.pace]:''],['Interests',t.interests.join('; ')],
+    ['Included in the stay',hospAiList(opts.inclusions).join('; ')],['Not included',hospAiList(opts.exclusions).join('; ')],
   ].filter(([,v])=>v).map(([k,v])=>`${k}: ${v}`).join('\n');
   return {system,user:facts};
 }
@@ -91,7 +102,7 @@ Rules:
 // The whole draft: (system,user) → model text generator injected, like taAiItinerary.
 export async function hospAiItinerary(property,room,generate,opts={}){
   if(!str(property?.name,200))return {error:'This property has no name yet.'};
-  const pkg=hospAiStayPkg(property,room,opts.nights);
+  const pkg=hospAiStayPkg(property,room,opts.nights,opts);
   const prompt=hospAiItineraryPrompt(property,room,opts);
   const out=await taAiItinerary(pkg,generate,{...opts,prompt});
   if(out.error)return out;

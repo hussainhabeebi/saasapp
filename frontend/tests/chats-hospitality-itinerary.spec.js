@@ -141,7 +141,7 @@ test('Resorts & Hotels: no day plan — location, price range and all folder pho
   await ov.locator('.tpl-item', { hasText: 'Bay View Resort' }).click();
   // Every photo from the Drive folder is previewed; no stay form, no AI draft.
   await expect(ov.locator('#hItinPhotos img')).toHaveCount(4);
-  await expect(ov).toContainText('4 photos go into the PDF');
+  await expect(ov).toContainText('4 photos go into the PDF, one per row');
   await expect(ov).toContainText('📍 Wayanad');
   expect(calls.photos).toEqual(['a-7']);
   await expect(page.locator('#hItinNights')).toHaveCount(0);
@@ -151,10 +151,13 @@ test('Resorts & Hotels: no day plan — location, price range and all folder pho
   await expect(page.locator('#hItinPriceFrom')).toHaveValue('5000');
   await expect(page.locator('#hItinPriceTo')).toHaveValue('9000');
   await page.locator('#hItinPriceTo').fill('11000');
+  await page.locator('#hItinInc').fill('Breakfast\n- Welcome drink\n\n');
+  await page.locator('#hItinExc').fill('Lunch and dinner');
   await page.getByRole('button', { name: '📄 Send PDF' }).click();
   await expect(ov).toBeHidden();
   expect(calls.draft).toEqual([]);
-  expect(calls.send).toEqual([{ lead_id: 7, property_id: 'a-7', price: { from: 5000, to: 11000, currency: 'INR', unit: 'per night' } }]);
+  expect(calls.send).toEqual([{ lead_id: 7, property_id: 'a-7', price: { from: 5000, to: 11000, currency: 'INR', unit: 'per night' },
+    inclusions: ['Breakfast', '- Welcome drink'], exclusions: ['Lunch and dinner'] }]);
   await expect(page.locator('#thread .bubble.out')).toContainText('Price range: INR 5,000 - 11,000 per night');
 });
 
@@ -195,4 +198,25 @@ test('price range ticked with no rates asks for one before drafting', async ({ p
   await page.locator('#hItinPriceFrom').fill('3000');
   await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
   await expect.poll(() => calls.draft.length).toBe(1);
+});
+
+test('stay form: optional inclusions and exclusions go to the draft and the send, and survive ✏️ Stay details', async ({ page }) => {
+  const calls = await open(page);
+  await page.evaluate(() => openHospItin());
+  const ov = page.locator('#hospItinOv');
+  await ov.locator('.tpl-item', { hasText: 'Misty Hills Resort' }).click();
+  await expect(page.locator('#hItinInc')).toHaveValue('');
+  await page.locator('#hItinInc').fill('Breakfast\nWelcome drink');
+  await page.locator('#hItinExc').fill('Lunch');
+  // Changing the room re-draws the form; what was typed stays.
+  await page.locator('#hItinRoom').selectOption('9');
+  await expect(page.locator('#hItinInc')).toHaveValue('Breakfast\nWelcome drink');
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  await expect(ov.locator('.ai-itin-day')).toHaveCount(3);
+  expect(calls.draft[0]).toMatchObject({ inclusions: ['Breakfast', 'Welcome drink'], exclusions: ['Lunch'] });
+  await page.getByRole('button', { name: '✏️ Stay details' }).click();
+  await expect(page.locator('#hItinExc')).toHaveValue('Lunch');
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  await page.getByRole('button', { name: '✅ Approve & send' }).click();
+  expect(calls.send[0]).toMatchObject({ inclusions: ['Breakfast', 'Welcome drink'], exclusions: ['Lunch'] });
 });

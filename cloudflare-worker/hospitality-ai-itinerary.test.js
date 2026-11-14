@@ -152,3 +152,30 @@ test('Resorts & Hotels brochure: price pre-fill, photo list, PDF with all photos
   assert.match(pdf, /\(INR 5,000 - 9,000 per night\)/);
   assert.doesNotMatch(pdf, /Day-by-Day|nights \/|About /);
 });
+
+test('inclusions / exclusions: cleaned, on the stay package and in the AI prompt', async ()=>{
+  const {hospAiList}=await import('./hospitality-ai-itinerary.js');
+  assert.deepEqual(hospAiList('Breakfast\n- Welcome drink\n\nbreakfast; ✓ Pool'), ['Breakfast','Welcome drink','Pool']);
+  assert.deepEqual(hospAiList(['A','',' B ']), ['A','B']);
+  assert.equal(hospAiList(Array.from({length:40},(_,i)=>'x'+i)).length, 25);
+  const pkg=hospAiStayPkg(PROP,ROOM,2,{inclusions:['Breakfast','Welcome drink'],exclusions:'Lunch'});
+  assert.equal(pkg.inclusions, 'Breakfast\nWelcome drink');
+  assert.equal(pkg.exclusions, 'Lunch');
+  assert.equal(hospAiStayPkg(PROP,ROOM,2).inclusions, '');
+  const {system,user}=hospAiItineraryPrompt(PROP,ROOM,{nights:2,inclusions:['Breakfast'],exclusions:['Lunch']});
+  assert.match(user, /Included in the stay: Breakfast/);
+  assert.match(user, /Not included: Lunch/);
+  assert.match(system, /never present anything under "Not included" as included/);
+});
+
+test('one photo per row, at its own proportions; inclusions printed before the photos', ()=>{
+  const wide={filter:'DCTDecode',data:new Uint8Array([1]),w:1600,h:900,cs:'DeviceRGB'};
+  const tall={filter:'DCTDecode',data:new Uint8Array([2]),w:900,h:1600,cs:'DeviceRGB'};
+  const pdf=new TextDecoder('latin1').decode(taBuildItineraryPdf({name:'Bay View Resort',destination:'Wayanad',nights:0,inclusions:'Breakfast',exclusions:'Lunch'},{days:[]},
+    {tag:'Stay Itinerary',galleryTitle:'Photos',galleryMax:30,galleryCols:1,incExcFirst:true,assets:{gallery:[{image:wide},{image:tall}]}}));
+  // Full content width (595 - 2×44 = 507): the wide photo keeps 16:9; the tall one is scaled to fit 300pt, uncropped.
+  assert.match(pdf, /507\.00 0 0 285\.19 /);
+  assert.match(pdf, /168\.75 0 0 300\.00 /);
+  assert.ok(pdf.indexOf('(INCLUDED)')<pdf.indexOf('(Photos)'), 'inclusions come before the photos');
+  assert.match(pdf, /\(NOT INCLUDED\)/);
+});

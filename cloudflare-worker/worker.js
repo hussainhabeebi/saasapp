@@ -23,7 +23,7 @@ import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInTex
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
-import {HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
+import {hospAiList,HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
 import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -22522,18 +22522,19 @@ async function hospChatBrochureImage(env,item){
   return await taPrepareImage(new Uint8Array(await blob.arrayBuffer())).catch(()=>null);
 }
 // Resorts & Hotels: the brochure PDF — name, location, price range, every photo. No day plan.
-async function hospChatBuildBrochurePdf(env,c,property,price){
+async function hospChatBuildBrochurePdf(env,c,property,price,{inclusions,exclusions}={}){
   const items=await hospChatBrochurePhotos(env,property);
   const imgs=[];
   for(let i=0;i<items.length;i+=6)imgs.push(...await Promise.all(items.slice(i,i+6).map(x=>hospChatBrochureImage(env,x))));
   const photos=imgs.filter(Boolean);
   const logoUrl=String(bcLogoForPdf(await bcForClient(env,c),c)||'').trim();
   const logo=logoUrl?await hospChatPdfImage(env,logoUrl):null;
-  const pkg={name:property.name,destination:property.location,nights:0};
+  // Optional Inclusions / Exclusions from the form, printed before the photos.
+  const pkg={name:property.name,destination:property.location,nights:0,inclusions:hospAiList(inclusions).join('\n'),exclusions:hospAiList(exclusions).join('\n')};
   const bytes=taBuildItineraryPdf(pkg,{days:[]},{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',
     accent:c.quote_accent_color||'',tag:'Stay Itinerary',facts:property.location?[['Location',property.location]]:[],
     priceBand:price?{label:'Price range',value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null,
-    footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryPhotoH:175,
+    footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryCols:1,incExcFirst:true,
     assets:{logo,cover:photos[0]?{image:photos[0],wiki:false}:null,gallery:photos.slice(photos.length>1?1:0).map(image=>({image}))}});
   return {bytes,photos:photos.length};
 }
@@ -22548,7 +22549,7 @@ async function handleHospitalityAiItinerary(request,env){
   const {property,room}=await hospChatLoad(env,payload.cid,body?.property_id,body?.room_id);
   if(!property)return json({error:'Property not found'},404);
   const out=await hospAiItinerary(property,room,taAiItineraryGenerator(env,c,'hosp-ai-itinerary'),
-    {nights:body?.nights,checkIn:body?.check_in,guest:body?.guest});
+    {nights:body?.nights,checkIn:body?.check_in,guest:body?.guest,inclusions:body?.inclusions,exclusions:body?.exclusions});
   if(out.error){
     await reportOpsError(env,'hospitality/ai-itinerary — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
     return json({error:out.error},422);
@@ -22588,7 +22589,7 @@ async function handleHospitalityChatItinerarySend(request,env){
   // Resorts & Hotels → the PDF only (location, price range, all folder photos); nothing else is sent.
   if(property.source==='agency'){
     let out;
-    try{ out=await hospChatBuildBrochurePdf(env,c,property,price); }
+    try{ out=await hospChatBuildBrochurePdf(env,c,property,price,{inclusions:body?.inclusions,exclusions:body?.exclusions}); }
     catch(e){ await reportOpsError(env,'Chats Resorts & Hotels PDF — build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
     const caption=String(body?.caption||'').trim().slice(0,1000)||`📄 *${property.name}*${property.location?` · ${property.location}`:''}${price?`\n💰 Price range: ${hospAiPriceLine(price)}`:''}`;
     const name=hospAiBrochurePdfName(property);
@@ -22604,7 +22605,7 @@ async function handleHospitalityChatItinerarySend(request,env){
     return json({ok:true,photos_sent:0,pdf_photos:out.photos,name,data});
   }
   const nights=hospAiNights(body?.nights),checkIn=hospAiDate(body?.check_in);
-  const pkg=hospAiStayPkg(property,room,nights);
+  const pkg=hospAiStayPkg(property,room,nights,{inclusions:body?.inclusions,exclusions:body?.exclusions});
   const itin={...taChatDraftItin(pkg,body?.days),...(checkIn?{from_date:checkIn,to_date:hospAiCheckOut(checkIn,nights)}:{})};
   if(!itin.days.length)return json({error:'The itinerary has no days to send.'},400);
   const propPhotos=hospAiPhotos(property),roomPhotos=room?hospAiPhotos(room):[];
@@ -22624,7 +22625,7 @@ async function handleHospitalityChatItinerarySend(request,env){
     ];
     bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||property.name||'',agencyPhone:c.support_phone||c.phone||'',
       accent:c.quote_accent_color||'',assets,tag:'Stay Itinerary',facts:hospAiStayFacts(property,room,{nights,checkIn,guest:body?.guest}),
-      footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,
+      footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryCols:1,
       priceBand:price?{label:`Price range${room?` · ${room.name}`:''}`,value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null});
   }catch(e){ await reportOpsError(env,'Chats hospitality AI itinerary — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
   // Photos first (property, then room — at most 3), so the guest sees the place before the PDF.
