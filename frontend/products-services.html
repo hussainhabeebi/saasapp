@@ -131,7 +131,7 @@ main{padding:20px 16px 40px}
         <label class="s3">Keywords customers use (comma separated)<textarea id="fKeywords" rows="4" maxlength="500" placeholder="geyser, solar heater"></textarea><span class="hint">The bot sends this item when a customer writes its name, code or one of these words.</span></label>
       </div>
       <div class="sec-t">Media (Google Drive links)</div>
-      <div class="tip">Share each file in Google Drive as <b>“Anyone with the link can view”</b> and paste its link. Photos: JPG or PNG under 5 MB. Voice note: MP3, M4A or OGG. Brochure: PDF.</div>
+      <div class="tip">Share each file in Google Drive as <b>“Anyone with the link can view”</b> and paste its link. Photos: JPG or PNG under 5 MB. Video: MP4 under 16 MB is sent as a video (a YouTube or larger video is sent as a link). Voice note: MP3, M4A or OGG. Brochure: PDF.</div>
       <div class="fg">
         <label class="s3">Photo 1<input id="fImg1" placeholder="https://drive.google.com/file/d/…" oninput="drawThumbs()"></label>
         <label class="s3">Photo 2<input id="fImg2" oninput="drawThumbs()"></label>
@@ -139,6 +139,7 @@ main{padding:20px 16px 40px}
         <label class="s2">Photo 4<input id="fImg4" oninput="drawThumbs()"></label>
         <label class="s2">Photo 5<input id="fImg5" oninput="drawThumbs()"></label>
         <div class="thumbs" id="thumbs" style="grid-column:span 6"></div>
+        <label>🎬 Video<input id="fVideo" placeholder="https://drive.google.com/file/d/… or a YouTube link" onblur="checkVideo()" oninput="$('videoHint').textContent=''"><span class="hint" id="videoHint" aria-live="polite"></span></label>
         <label class="s3">🎙️ Voice note<input id="fVoice" placeholder="https://drive.google.com/file/d/…"></label>
         <label class="s3">📄 Brochure (PDF)<input id="fBrochure" placeholder="https://drive.google.com/file/d/…"></label>
       </div>
@@ -185,13 +186,13 @@ function draw(){
   const q=$('q').value.trim().toLowerCase(),k=$('fKind').value,st=$('fStatus').value;
   const act=items.filter(i=>i.status!=='inactive');
   $('stats').innerHTML=[[items.length,'Items'],[act.filter(i=>i.kind!=='service').length,'Active products'],[act.filter(i=>i.kind==='service').length,'Active services'],
-    [items.filter(i=>(i.photos||[]).length||i.voice_note_url||i.brochure_url).length,'With media']].map(([n,l])=>`<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
+    [items.filter(i=>(i.photos||[]).length||i.video_url||i.voice_note_url||i.brochure_url).length,'With media']].map(([n,l])=>`<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
   const list=items.filter(i=>(!k||i.kind===k)&&(!st||i.status===st)&&(!q||`${i.name} ${i.category||''} ${i.sku||''} ${i.keywords||''}`.toLowerCase().includes(q)));
   if(!items.length){$('list').innerHTML=`<div class="empty"><b>No products or services yet</b>Add your first item — the bot starts sending it as soon as it's saved.<div style="margin-top:14px"><button class="btn" onclick="openEditor()">+ Add item</button></div></div>`;return}
   if(!list.length){$('list').innerHTML=`<div class="empty">No items match.</div>`;return}
   $('list').innerHTML=`<div class="grid">${list.map(i=>{
     const ph=(i.photos||[])[0];
-    const media=[(i.photos||[]).length?`📷 ${i.photos.length}`:'',i.voice_note_url?'🎙️ Voice note':'',i.brochure_url?'📄 Brochure':''].filter(Boolean);
+    const media=[(i.photos||[]).length?`📷 ${i.photos.length}`:'',i.video_url?'🎬 Video':'',i.voice_note_url?'🎙️ Voice note':'',i.brochure_url?'📄 Brochure':''].filter(Boolean);
     return `<div class="item ${i.status==='inactive'?'off':''}" data-id="${esc(i.id)}">
       <div class="pic">${ph?`<img src="${esc(ph)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:(i.kind==='service'?'🛠️':'📦')}<span class="tag">${i.kind==='service'?'Service':'Product'}</span></div>
       <div class="body"><h3>${esc(i.name)}</h3><div class="price">${esc(priceText(i))}</div>
@@ -203,7 +204,7 @@ function draw(){
 }
 const FIELDS=[['fKindEd','kind'],['fName','name'],['fCategory','category'],['fSku','sku'],['fPrice','price'],['fCurrency','currency'],['fUnit','price_unit'],
   ['fShort','short_description'],['fDetails','details'],['fFeatures','features'],['fKeywords','keywords'],
-  ['fImg1','image_url_1'],['fImg2','image_url_2'],['fImg3','image_url_3'],['fImg4','image_url_4'],['fImg5','image_url_5'],['fVoice','voice_note_url'],['fBrochure','brochure_url']];
+  ['fImg1','image_url_1'],['fImg2','image_url_2'],['fImg3','image_url_3'],['fImg4','image_url_4'],['fImg5','image_url_5'],['fVideo','video_url'],['fVoice','voice_note_url'],['fBrochure','brochure_url']];
 function openEditor(id){
   editing=id?items.find(i=>String(i.id)===String(id))||null:null;
   const i=editing||{kind:'product',currency:'INR',auto_send:1,status:'active'};
@@ -212,7 +213,24 @@ function openEditor(id){
   $('fAuto').checked=i.auto_send!==0;$('fActive').checked=i.status!=='inactive';
   $('edTitle').textContent=editing?`Edit ${editing.name}`:'Add item';
   $('delBtn').classList.toggle('hidden',!editing);$('edMsg').textContent='';
-  $('editor').classList.remove('hidden');drawThumbs();setTimeout(()=>$('fName').focus(),30);
+  $('videoHint').textContent='';$('editor').classList.remove('hidden');drawThumbs();setTimeout(()=>$('fName').focus(),30);
+}
+// How the bot will send the video: a Drive MP4 under WhatsApp's 16 MB plays in the chat; anything
+// else goes as a link. Same Drive read the bot uses (worker /ecom/drive-file-size).
+const WA_VIDEO_MAX=16*1024*1024;
+async function checkVideo(){
+  const el=$('videoHint'),u=$('fVideo').value.trim();el.style.color='';
+  if(!u){el.textContent='';return}
+  if(!/^https?:\/\//i.test(u)){el.textContent='Paste a full link (https://…).';el.style.color='var(--danger)';return}
+  if(!/^https?:\/\/(drive|docs)\.google\.com\//i.test(u)){el.textContent='Sent as a link the customer taps to watch.';return}
+  el.textContent='Checking the video…';
+  try{
+    const r=await fetch(`${WORKER_BASE}/ecom/drive-file-size?url=${encodeURIComponent(u)}`);const d=await r.json().catch(()=>({}));
+    if($('fVideo').value.trim()!==u)return;
+    if(!r.ok||d.error){el.textContent=d.error||'Could not read this file — share it as “Anyone with the link can view”.';el.style.color='var(--danger)';return}
+    const mb=(d.size_bytes/1048576).toFixed(1),mp4=/video\/(mp4|3gpp)/i.test(d.content_type||'');
+    el.textContent=mp4&&d.size_bytes<=WA_VIDEO_MAX?`✓ ${mb} MB — plays right in the WhatsApp chat.`:`${mb} MB${mp4?'':' ('+(d.content_type||'not MP4')+')'} — too large or not MP4 for WhatsApp, so it's sent as a link to watch.`;
+  }catch(e){el.textContent=''}
 }
 function closeEditor(){$('editor').classList.add('hidden');editing=null}
 function drawThumbs(){$('thumbs').innerHTML=['fImg1','fImg2','fImg3','fImg4','fImg5'].map(id=>thumb($(id).value)).filter(Boolean).map(u=>`<img src="${esc(u)}" alt="" referrerpolicy="no-referrer" onerror="this.style.opacity=.3">`).join('')}
