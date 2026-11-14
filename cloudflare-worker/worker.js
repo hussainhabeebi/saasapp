@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate} from './hospitality-h3.js';
+import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -23957,7 +23957,9 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   }
   if(isResort){
     const hasResortData=contextBlock && contextBlock.includes('VERIFIED RESORT DATA');
-    if(hasResortData){
+    if(hasResortData && h3IsStyle(c)){
+      sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, location/destination, description, amenity and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never invent property/room details, availability or destination names. LOCATION RULE: Never mention, list, or suggest any destination, city, or location that is not explicitly present in VERIFIED RESORT DATA. NUMBERED-LIST RULE: Never present destinations, properties, or rooms as a numbered list — the system sends tappable selection buttons automatically; answer in words and end with OPTIONS: listing verified names. ORDINAL CONTEXT RULE: a bare number ("1", "2") answers the MOST RECENT question you asked. NO-PRICE RULE: Never give any price, rate, tariff, discount, offer amount or total for a stay or room — our booking team gives the price personally at checkout. If asked, say so warmly and suggest tapping 📅 Book now. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA.';
+    } else if(hasResortData){
       sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, location/destination, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, availability, or destination names from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. LOCATION RULE: Never mention, list, or suggest any destination, city, or location that is not explicitly present in VERIFIED RESORT DATA — do not use your training knowledge of popular destinations. NUMBERED-LIST RULE: Never present destinations, properties, or rooms as a numbered list (e.g. "1. Munnar 2. Vagamon") — the system sends tappable selection buttons automatically; your job is only to answer questions in words and end with OPTIONS: listing verified names. ORDINAL CONTEXT RULE: when a customer replies with just a number ("1", "2", "3") always interpret it as their answer to the MOST RECENT question you asked — never map it back to an earlier numbered list in the conversation. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
     } else {
       // No room/property data configured yet — answer general enquiries from the business prompt.
@@ -30590,7 +30592,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         }
       }catch(e){ await reportOpsError(env, 'hospitalitySuiteTurn', e, {clientId, convId}); }
     }
-    if(!orderHandledInline && hpEnabled(c) && state.leadId){
+    // H3 never quotes a price — the human agent does at checkout — so Pro's instant quotes are off.
+    if(!orderHandledInline && hpEnabled(c) && !h3IsStyle(c) && state.leadId){
       try{
         const hp=await hpHandleTurn(env, HP_DEPS, {c, clientId, convId, leadId:state.leadId, phone, name:state.name, userText, rawText:text,
           mediaType, mediaUrl, lang:replyLang, selectedUnit:state.lead?.HospSelectedUnit||'',
@@ -30622,7 +30625,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(!orderHandledInline && h3IsStyle(c) && convId && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && routing.route!=='human'){
       try{
         h3Plan=await hospH3Plan(env, c, clientId, userText, state, isNewLead);
-        if(h3Plan) orderHandledInline=true;
+        if(h3Plan?.action?.type==='book' && c.handover_enabled!=='No'){
+          // Checkout is a person's job in H3: they confirm availability and give the price. The
+          // normal handover branch below sends this, labels the chat and alerts the team.
+          routing.route='human'; routing.humanReason='h3_checkout';
+          routing.reply=hospH3BookText(h3Plan);
+          h3Plan=null;
+        }else if(h3Plan) orderHandledInline=true;
       }catch(e){ await reportOpsError(env, 'hospH3Plan', e, {clientId, convId}); }
     }
 
@@ -30816,6 +30825,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
+      if(h3IsStyle(c)) reply=await hospH3GuardPrices(env, clientId, reply);
       routing.reply=reply; sentText=reply;
       let faqQuickReplies=null;
       // The LLM never creates Ecom navigation. Exact categories/products are handled before this
@@ -30980,6 +30990,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
       }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
+      if(h3IsStyle(c)) reply=await hospH3GuardPrices(env, clientId, reply);
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
       // alongside the LLM's own answer, rather than only ever reachable by typing something a
@@ -39102,6 +39113,14 @@ async function hospH3Plan(env, c, clientId, userText, state, isNewLead){
   if(!action) action=await hospH3AiResolve(env, c, userText, h3AiCandidates(args));
   return action?{action, data}:null;
 }
+// Removes any stay price an AI reply still carries (H3 only) — see h3StripPrices.
+async function hospH3GuardPrices(env, clientId, reply){
+  if(!reply) return reply;
+  try{
+    const {properties, units}=await hospH3LoadData(env, clientId);
+    return h3StripPrices(reply, [...properties.map(p=>p.name), ...units.map(u=>u.name)]);
+  }catch(e){ return h3StripPrices(reply, []); }
+}
 const H3_AI_MAX_WORDS=6;
 async function hospH3AiResolve(env, c, userText, candidates){
   const text=String(userText||'').trim();
@@ -39128,8 +39147,7 @@ function hospH3RoomLine(r){
   let line=`  - **${r.name}**`;
   if(r.unit_type) line+=` (${r.unit_type})`;
   line+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
-  if(r.base_rate) line+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
-  if(r.weekend_rate) line+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+  // No rates: in H3 the price comes from the human agent at checkout.
   if(r.amenities && String(r.amenities).trim()) line+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
   if(r.description && String(r.description).trim()) line+=` | ${String(r.description).trim().slice(0,200)}`;
   return line;
@@ -39165,7 +39183,7 @@ async function hospH3BuildAiContext(env, c, clientId, lead){
     units.forEach(u=>lines.push(hospH3RoomLine(u)));
   }
   const browsing=[r.curLocKey!=null?`location ${(r.locs.find(l=>l.key===r.curLocKey)||{}).label}`:'', r.curProp?`property ${r.curProp.name}`:'', r.curUnit?`room ${r.curUnit.name}`:''].filter(Boolean).join(', ');
-  lines.push(`\nSTAYS RULE: These locations and properties are live data and override anything else about which destinations or resorts this business offers (including the business prompt). Never tell the guest a location or property listed here is not offered. Properties listed only by name do exist — answer what you can and offer to share details.${browsing?` The guest is currently looking at: ${browsing}.`:''}`);
+  lines.push(`\nSTAYS RULE: These locations and properties are live data and override anything else about which destinations or resorts this business offers (including the business prompt). Never tell the guest a location or property listed here is not offered. Properties listed only by name do exist — answer what you can and offer to share details.\nPRICE RULE: Never state, estimate, compare or hint at any price, rate, tariff, discount or total for these stays — even if one appears in the business prompt, knowledge base, earlier messages or anywhere else. If the guest asks about price, say our booking team will share the best price when they book, and suggest tapping 📅 Book now on the room they like.${browsing?` The guest is currently looking at: ${browsing}.`:''}`);
   return lines.join('\n');
 }
 async function hospH3SaveCtx(env, leadId, patch){
@@ -39192,6 +39210,13 @@ async function hospH3SendImage(env, c, convId, url, caption, name){
 }
 function hospH3Rows(list, titleOf, descOf){
   return list.map(x=>({title:titleOf(x), value:titleOf(x), desc:descOf?descOf(x):''}));
+}
+// Book now: a person takes over checkout and gives the price (never the bot).
+function hospH3BookText(plan){
+  const u=plan.data.units.find(x=>Number(x.id)===Number(plan.action.unitId));
+  const prop=u?.property_id ? plan.data.properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
+  const what=u?`*${u.name}*${prop?` at *${prop.name}*`:''}`:'your stay';
+  return `Great choice! 🎉 Our booking team will help you book ${what} and share the price shortly.\n\nTo speed things up, please send:\n1️⃣ Check-in date\n2️⃣ Check-out date\n3️⃣ Number of guests (adults & children)`;
 }
 async function hospH3Execute(env, c, clientId, convId, leadId, plan){
   if(!plan || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
@@ -39270,7 +39295,6 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       const prop=u.property_id ? properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
       const info=[`*${u.name}*${prop?` · ${prop.name}`:''}`];
       const d=h3RoomDesc(u); if(d) info.push(d);
-      if(u.weekend_rate) info.push(`Weekend: ${u.currency||'INR'} ${u.weekend_rate}/night`);
       if(u.amenities && String(u.amenities).trim()) info.push(`✨ ${String(u.amenities).trim()}`);
       if(u.description && String(u.description).trim()) info.push(String(u.description).trim());
       await hospitalityChatwootText(c, convId, info.join('\n'));
@@ -39296,8 +39320,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       const u=units.find(x=>Number(x.id)===Number(a.unitId));
       if(!u) return;
       const prop=u.property_id ? properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
-      await hospitalityChatwootText(c, convId,
-        `Great choice! 🎉 To check availability for *${u.name}*${prop?` at *${prop.name}*`:''}, please share:\n\n1️⃣ Check-in date\n2️⃣ Check-out date\n3️⃣ Number of guests (adults & children)`);
+      await hospitalityChatwootText(c, convId, hospH3BookText(plan));
       if(leadId) await hospH3SaveCtx(env, leadId, {unit:u.name});
       return;
     }

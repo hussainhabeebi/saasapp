@@ -11,9 +11,10 @@
 //   3. Property tap → a photo of each room with its capacity and rate, then the room list.
 //   4. Room tap → the room's photos and details, then "📅 Book now" / "↩ Other rooms" /
 //      "📍 Change location".
-//   5. Book now → Hospitality Pro's quote flow when Pro is on (it catches "book" before this
-//      module runs); otherwise the bot asks for dates and guests and the AI carries on with the
-//      chosen room as context.
+//   5. Book now → the chat is handed to a human agent, who confirms availability and gives the
+//      price at checkout. H3 never shows or quotes a price: not in lists, captions, room details
+//      or AI replies (h3StripPrices is the last guard), and Hospitality Pro's instant quotes are
+//      skipped for H3 clients.
 //
 // Typed text works as well as taps: "Munnar", a property name or a room name jumps straight to
 // that step. Anything this module doesn't recognise returns null and the normal AI reply runs.
@@ -94,33 +95,58 @@ export function h3RoomsOf(units, property){
   return list.sort((a, b)=>natCmp(a.name, b.name));
 }
 
-function money(cur, n){
-  const v=Number(n);
-  if(!(v>0)) return '';
-  const c=String(cur||'INR').toUpperCase();
-  const sym=c==='INR'?'₹':(c==='USD'?'$':(c==='AED'?'AED ':c+' '));
-  return `${sym}${v.toLocaleString('en-IN')}`;
-}
 export function h3LocationTitle(loc){
   const withCount=`${loc.label} (${loc.count})`;
   return withCount.length<=TITLE_MAX ? withCount : h3Truncate(loc.label, TITLE_MAX);
 }
+// No prices in H3 — the human agent gives the price at checkout.
 export function h3PropertyDesc(p, units){
-  const rates=h3RoomsOf(units, p).map(u=>Number(u.base_rate)).filter(v=>v>0);
-  const cur=(h3RoomsOf(units, p).find(u=>Number(u.base_rate)>0)||{}).currency;
+  const n=h3RoomsOf(units, p).length;
   const parts=[];
-  if(rates.length) parts.push(`From ${money(cur, Math.min(...rates))}`);
   if(p.amenities && String(p.amenities).trim()) parts.push(String(p.amenities).trim());
+  else if(n) parts.push(`${n} room type${n===1?'':'s'}`);
   return h3Truncate(parts.join(' · '), DESC_MAX);
 }
 export function h3RoomDesc(u){
   const parts=[];
   const a=Number(u.capacity_adults)||0, k=Number(u.capacity_children)||0;
   if(a) parts.push(`${a} adult${a===1?'':'s'}${k?` + ${k} child${k===1?'':'ren'}`:''}`);
-  const r=money(u.currency, u.base_rate);
-  if(r) parts.push(`${r}/night`);
   if(u.unit_type && String(u.unit_type).trim()) parts.push(String(u.unit_type).trim());
   return h3Truncate(parts.join(' · '), DESC_MAX);
+}
+
+// Last guard on AI replies for H3 clients: drops every sentence that pairs an amount of money
+// with a stay (a stay word, "night", or one of the given property / room names), and says once
+// that the team shares the price at booking. Other prices (e.g. a travel agency's flights or
+// packages) are left alone.
+export const H3_PRICE_NOTE='Our team will share the best price when you book — tap 📅 Book now on the room you like. 😊';
+const H3_MONEY_RE=/(?:₹|\brs\.?|\binr\b|\baed\b|\busd\b|\$|€|£)\s*\d|\d[\d,]*(?:\.\d+)?\s*(?:₹|\/-|\brs\b|\brupees?\b|\binr\b|\baed\b|\bdirhams?\b|\busd\b|\bdollars?\b|k\b\s*(?:per|\/|a)\s*night|\s*(?:per|\/|a)\s*night)/i;
+const H3_PRICE_WORD_RE=/\b(?:price[sd]?|pricing|rates?|tariffs?|costs?|charges?|per\s+night|\/\s*night|a\s+night|starting\s+(?:at|from)|from\s+just)\b/i;
+const H3_STAY_RE=/\b(?:rooms?|villas?|suites?|cottages?|resorts?|stays?|nights?|propert(?:y|ies)|hotels?|homestays?|tents?|tree\s*houses?|houseboats?|chalets?|bungalows?|accommodations?|tariffs?)\b/i;
+export function h3HasStayPrice(sentence, names=[]){
+  const s=String(sentence||'');
+  if(!H3_MONEY_RE.test(s) && !(H3_PRICE_WORD_RE.test(s) && /\d[\d,]{2,}/.test(s))) return false;
+  if(H3_STAY_RE.test(s)) return true;
+  const n=` ${h3Norm(s)} `;
+  return (names||[]).some(x=>{ const k=h3Norm(x); return k.length>=4 && n.includes(` ${k} `); });
+}
+export function h3StripPrices(text, names=[]){
+  const src=String(text||'');
+  if(!src.trim()) return src;
+  let removed=false;
+  const lines=src.split('\n').map(line=>{
+    if(!h3HasStayPrice(line, names)) return line;
+    // Keep the sentences of this line that carry no stay price.
+    const parts=line.match(/[^.!?]+[.!?]*\s*/g)||[line];
+    const kept=parts.filter(p=>!h3HasStayPrice(p, names));
+    removed=true;
+    const out=kept.join('').trim();
+    return (!out || /^\s*(?:[-*•]|\d+[.)])\s*$/.test(out)) ? null : out;
+  }).filter(l=>l!==null);
+  if(!removed) return src;
+  let out=lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if(!out.includes(H3_PRICE_NOTE)) out=out?`${out}\n\n${H3_PRICE_NOTE}`:H3_PRICE_NOTE;
+  return out;
 }
 export function h3RoomCaption(u){
   const lines=[`*${u.name}*`];

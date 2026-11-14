@@ -129,9 +129,11 @@ test('paging keeps every row reachable within 10 rows, nav rows included', ()=>{
   assert.deepEqual(decide('More rooms · page 2', {ctx:{property:'Aadhisakthi Resort'}}), {type:'rooms', propertyId:1, page:2});
 });
 
-test('list row descriptions: starting rate + amenities; room capacity + rate', ()=>{
-  assert.equal(h3PropertyDesc(properties[0], units), 'From ₹4,500 · Pool, Wi-Fi');
-  assert.equal(h3RoomDesc(units[0]), '2 adults · ₹4,500/night');
+test('list row descriptions: amenities; room capacity and type — never a price', ()=>{
+  // No prices anywhere in H3 — the human agent gives the price at checkout.
+  assert.equal(h3PropertyDesc(properties[0], units), 'Pool, Wi-Fi');
+  assert.equal(h3PropertyDesc(properties[1], units), '1 room type');
+  assert.equal(h3RoomDesc(units[0]), '2 adults');
   assert.equal(h3RoomDesc(U(9, 'X', 1, {capacity_adults:2, capacity_children:1, base_rate:0, unit_type:'Villa'})), '2 adults + 1 child · Villa');
 });
 
@@ -167,4 +169,17 @@ test('AI candidates: current rooms, then this location\'s properties, then the r
   assert.deepEqual(h3PickCandidate(c, 'pool villa').action, {type:'room', unitId:12});
   assert.equal(h3PickCandidate(c, null), null);
   assert.equal(h3PickCandidate(c, 'Kovalam'), null);
+});
+
+test('AI replies lose every stay price, keep everything else', async ()=>{
+  const { h3StripPrices, h3HasStayPrice, H3_PRICE_NOTE } = await import('./hospitality-h3.js');
+  const names=['Bay View Suites', 'Pool Villa'];
+  const out=h3StripPrices('Bay View Suites has a pool and Wi-Fi. The Deluxe Room is ₹4,500 per night. Would you like photos?', names);
+  assert.equal(out, `Bay View Suites has a pool and Wi-Fi. Would you like photos?\n\n${H3_PRICE_NOTE}`);
+  for(const s of ['Rooms start from Rs. 3,999', 'Pool Villa: INR 9000', 'Tariff is 5000/- for 2 adults', 'It costs 4,500 a night', 'Our cottages are AED 450', '- Pool Villa — ₹9,000']) assert.equal(h3HasStayPrice(s, names), true, s);
+  for(const s of ['The Munnar package is ₹12,999 per person', 'Flights from Kochi start at ₹4,200', 'Check-in is at 2 PM', 'It sleeps 4 adults', 'Call us on 9876543210']) assert.equal(h3HasStayPrice(s, names), false, s);
+  assert.equal(h3StripPrices('No prices here 😊', names), 'No prices here 😊');
+  assert.equal(h3StripPrices('Pool Villa — ₹9,000/night', names), H3_PRICE_NOTE);
+  // List lines with a price lose the price line only.
+  assert.equal(h3StripPrices('Here are the rooms:\n- Pool Villa — ₹9,000\n- Garden view', names), `Here are the rooms:\n- Garden view\n\n${H3_PRICE_NOTE}`);
 });
