@@ -114,6 +114,30 @@ export function h3RoomRowDesc(u){
   if(r) parts.push(`From ${r}/night`);
   return h3Truncate(parts.join(' · '), DESC_MAX);
 }
+// Starting price of a room / a property (its cheapest priced room), for price answers.
+export function h3FromPrice(u){
+  const r=money(u?.currency, u?.base_rate);
+  return r?`from ${r}/night`:'price on request';
+}
+export function h3PropertyFromPrice(p, units){
+  const priced=h3RoomsOf(units, p).filter(u=>Number(u.base_rate)>0);
+  if(!priced.length) return 'price on request';
+  const min=priced.reduce((a, b)=>Number(b.base_rate)<Number(a.base_rate)?b:a);
+  return h3FromPrice(min);
+}
+export const H3_EXACT_PRICE_NOTE='💬 The exact price for your dates (meal plan, taxes and any offers) is confirmed by our booking team — tap 📅 Book now and they\'ll share it.';
+// Text answer to a price question for the decided target.
+export function h3PriceText({unit=null, property=null, locLabel='', properties=[], units=[]}){
+  if(unit) return `💰 *${unit.name}*${property?` at *${property.name}*`:''} — ${h3FromPrice(unit)}.\n\n${H3_EXACT_PRICE_NOTE}`;
+  if(property || (!properties.length && units.length)){
+    const rooms=h3RoomsOf(units, property);
+    const lines=rooms.slice(0, 15).map(u=>`• ${u.name} — ${h3FromPrice(u)}`);
+    return `💰 Room prices${property?` at *${property.name}*`:''}:\n${lines.join('\n')||'• price on request'}\n\n${H3_EXACT_PRICE_NOTE}`;
+  }
+  const lines=properties.slice(0, 15).map(p=>`• ${p.name} — ${h3PropertyFromPrice(p, units)}`);
+  return `💰 Stays${locLabel?` in *${locLabel}*`:''}:\n${lines.join('\n')}\n\n${H3_EXACT_PRICE_NOTE}`;
+}
+
 // No prices on property rows, captions or room details — staff give the detailed price at checkout.
 export function h3PropertyDesc(p, units){
   const n=h3RoomsOf(units, p).length;
@@ -237,6 +261,10 @@ function navIs(text, key){
   return false;
 }
 const H3_GREETING_RE=/^(hi+|hello+|hey+|hai+|hlo|helo|hola|start|menu|restart|good\s+(morning|afternoon|evening|day)|namaste|namaskaram|salam|assalamu\s*alaikum|as+alam\w*)(\s+(there|team|sir|madam|mam))?[\s!.]*$/i;
+// A price question: "price pls", "rate?", "how much", "tariff", Manglish "ethra", Malayalam.
+export const H3_PRICE_Q_RE=/\b(?:prices?|pricing|rates?|tariffs?|costs?|charges?|how\s+much|hw\s+much|rent|fees?|ethra|etra|enthra)\b|വില|നിരക്ക്|റേറ്റ്|എത്ര/i;
+// A question or request the AI should answer — never a reason to restart the menu.
+const H3_QUESTION_RE=/[?؟]|\b(?:what|which|when|where|why|how|who|is|are|does|do|did|can|could|will|would|should|any|tell|explain|include[sd]?|allowed|near|distance|far)\b/i;
 const H3_ENQUIRY_RE=/\b(rooms?|resorts?|propert(y|ies)|stays?|villas?|cottages?|hotels?|available|availability|options?|locations?|destinations?|packages?|book(ing)?|tariffs?|rates?|prices?|photos?|pictures?|images?)\b/i;
 
 function uniqueBy(list, pred){
@@ -332,6 +360,21 @@ export function h3Decide({text, isNewLead=false, ctx={}, properties=[], units=[]
     return null; // "book" with nothing chosen — let the AI / Pro answer it.
   }
 
+  // 2b. Price questions: the starting prices of what the guest is looking at (or names), and
+  // that staff confirm the exact price for their dates.
+  if(H3_PRICE_Q_RE.test(t) && t.split(/\s+/).length<=14){
+    const roomNamed=scopeRooms.find(u=>h3MentionsName(t, u.name)) || uniqueBy(rooms, u=>h3MentionsName(t, u.name));
+    if(roomNamed) return {type:'price', unitId:roomNamed.id};
+    const inLocP=curLocKey!=null?h3PropertiesIn(props, curLocKey):[];
+    const propNamed=longestBy(inLocP, p=>h3MentionsName(t, p.name)) || longestBy(props, p=>h3MentionsName(t, p.name));
+    if(propNamed) return {type:'price', propertyId:propNamed.id};
+    if(curUnit) return {type:'price', unitId:curUnit.id};
+    if(curProp) return {type:'price', propertyId:curProp.id};
+    if(!props.length && rooms.length) return {type:'price', propertyId:null};
+    if(curLocKey!=null) return {type:'price', locKey:curLocKey};
+    return null; // nothing chosen yet — the AI answers, then the guest picks
+  }
+
   // 3. A tap (or the whole message) naming a location, room or property exactly.
   if(useLoc){
     const loc=locs.find(l=>h3ExactName(t, l.label) || h3ExactName(t, h3LocationTitle(l)));
@@ -344,6 +387,20 @@ export function h3Decide({text, isNewLead=false, ctx={}, properties=[], units=[]
   if(propTap) return {type:'rooms', propertyId:propTap.id, page:1};
   const anyRoomTap=uniqueBy(rooms, u=>h3ExactName(t, u.name));
   if(anyRoomTap) return {type:'room', unitId:anyRoomTap.id};
+
+  // A question is the AI's to answer (even one naming a property) — the menu never replaces an
+  // answer. When it names a property / location, or comes from a new guest, the matching list
+  // follows the AI's answer (aiFirst). Exact taps, navigation and price questions are above.
+  if(H3_QUESTION_RE.test(t) && t.split(/\s+/).length>2){
+    const p=longestBy(inLoc, x=>h3MentionsName(t, x.name)) || longestBy(props, x=>h3MentionsName(t, x.name));
+    if(p) return {type:'rooms', propertyId:p.id, page:1, aiFirst:true};
+    if(useLoc){
+      const l=locs.filter(x=>x.key).find(x=>h3MentionsName(t, x.label));
+      if(l) return {...toProps(l.key), aiFirst:true};
+    }
+    if(isNewLead){ const st=start(false); return st?{...st, aiFirst:true}:null; }
+    return null;
+  }
 
   // 4. Typed text that mentions one by name.
   const propMention=longestBy(inLoc, p=>h3MentionsName(t, p.name)) || longestBy(props, p=>h3MentionsName(t, p.name));
@@ -372,6 +429,6 @@ export function h3Decide({text, isNewLead=false, ctx={}, properties=[], units=[]
     return start(true);
   }
   if(isNewLead) return start(true);
-  if(!ctx.location && !ctx.property && !ctx.unit && H3_ENQUIRY_RE.test(t) && t.split(/\s+/).length<=8) return start();
+  if(!ctx.location && !ctx.property && !ctx.unit && H3_ENQUIRY_RE.test(t) && t.split(/\s+/).length<=4) return start();
   return null;
 }

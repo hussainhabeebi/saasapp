@@ -39,7 +39,8 @@ test('locations group by city part, A–Z, with "Other" last', ()=>{
 
 test('new lead / greeting gets the location list; step off or one location starts at properties', ()=>{
   assert.deepEqual(decide('Hi', {isNewLead:true}), {type:'locations', page:1, intro:true});
-  assert.deepEqual(decide('Is there a pool?', {isNewLead:true}), {type:'locations', page:1, intro:true});
+  // A new guest's question: the AI answers it first, then the location list follows.
+  assert.deepEqual(decide('Is there a pool?', {isNewLead:true}), {type:'locations', page:1, intro:false, aiFirst:true});
   assert.deepEqual(decide('hello', {locationStep:false}), {type:'properties', locKey:null, page:1, intro:true});
   assert.deepEqual(h3Decide({text:'hi', isNewLead:true, properties:[P(1, 'A', 'Munnar')], units:[], ctx:{}}), {type:'properties', locKey:null, page:1, intro:true});
   assert.deepEqual(h3Decide({text:'hi', isNewLead:true, properties:[], units:[U(1, 'Room A', null)], ctx:{}}), {type:'rooms', propertyId:null, page:1, intro:true});
@@ -50,7 +51,7 @@ test('location tap (with count) or typed location → that location\'s propertie
   assert.deepEqual(decide('Munnar (2)'), {type:'properties', locKey:'munnar', page:1});
   assert.deepEqual(decide('Thekkady'), {type:'properties', locKey:'thekkady', page:1});
   assert.deepEqual(decide('Other (1)'), {type:'properties', locKey:'', page:1});
-  assert.deepEqual(decide('any stays in thekkady?'), {type:'properties', locKey:'thekkady', page:1});
+  assert.deepEqual(decide('any stays in thekkady?'), {type:'properties', locKey:'thekkady', page:1, aiFirst:true});
 });
 
 test('property tap → its rooms; room tap → that room (scoped to the chosen property)', ()=>{
@@ -191,4 +192,25 @@ test('room list rows show the starting price; other H3 texts do not', async ()=>
   assert.equal(h3RoomRowDesc(U(9, 'X', 1, {capacity_adults:3, base_rate:0})), '3 adults'); // no price set → none shown
   assert.equal(h3RoomCaption(units[0]), '*Deluxe Room*\n2 adults');
   assert.equal(h3PropertyDesc(properties[0], units), 'Pool, Wi-Fi');
+});
+
+test('questions get the AI; price questions get starting prices; the menu never restarts mid-flow', async ()=>{
+  const { h3PriceText, H3_EXACT_PRICE_NOTE } = await import('./hospitality-h3.js');
+  const ctx={location:'Munnar', property:'Aadhisakthi Resort'};
+  // The screenshot: "Price pls" while looking at a property's rooms.
+  assert.deepEqual(decide('Price pls', {ctx}), {type:'price', propertyId:1});
+  assert.deepEqual(decide('rate?', {ctx:{...ctx, unit:'Pool Villa'}}), {type:'price', unitId:12});
+  assert.deepEqual(decide('how much is the pool villa', {ctx}), {type:'price', unitId:12});
+  assert.deepEqual(decide('price of bay view suites?', {ctx}), {type:'price', propertyId:2});
+  assert.deepEqual(decide('rate ethra', {ctx:{location:'Munnar'}}), {type:'price', locKey:'munnar'});
+  assert.equal(decide('Price pls', {ctx:{}}), null); // nothing chosen yet → AI answers
+  // Questions mid-flow go to the AI, never back to the location menu.
+  assert.equal(decide('is breakfast included?', {ctx}), null);
+  assert.equal(decide('what time is check in', {ctx}), null);
+  assert.deepEqual(decide('is there a pool at bay view suites?', {ctx}), {type:'rooms', propertyId:2, page:1, aiFirst:true});
+  // Price text.
+  const t1=h3PriceText({property:properties[0], properties, units});
+  assert.equal(t1, `💰 Room prices at *Aadhisakthi Resort*:\n• Deluxe Room — from ₹4,500/night\n• Pool Villa — from ₹9,000/night\n\n${H3_EXACT_PRICE_NOTE}`);
+  assert.equal(h3PriceText({unit:U(5, 'Hut', 1), property:properties[0], properties, units}), `💰 *Hut* at *Aadhisakthi Resort* — price on request.\n\n${H3_EXACT_PRICE_NOTE}`);
+  assert.match(h3PriceText({locLabel:'Munnar', properties:properties.slice(0, 2), units}), /• Aadhisakthi Resort — from ₹4,500\/night\n• Bay View Suites — from ₹5,000\/night/);
 });

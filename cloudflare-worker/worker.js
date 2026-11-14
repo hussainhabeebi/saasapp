@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
+import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -30631,7 +30631,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.route='human'; routing.humanReason='h3_checkout';
           routing.reply=hospH3BookText(h3Plan);
           h3Plan=null;
-        }else if(h3Plan) orderHandledInline=true;
+        }else if(h3Plan && !h3Plan.action.aiFirst) orderHandledInline=true;
+        // aiFirst: the AI answers the question as usual; the list is sent after it (hospH3Execute).
       }catch(e){ await reportOpsError(env, 'hospH3Plan', e, {clientId, convId}); }
     }
 
@@ -30795,7 +30796,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // H3: the Hospitality module's live stays catalogue — every location, full details for the
       // one the guest is browsing.
       if(h3IsStyle(c)){
-        const h3Ctx=await hospH3BuildAiContext(env, c, clientId, state.lead).catch(()=>'');
+        const h3Ctx=await hospH3BuildAiContext(env, c, clientId, state.lead, userText).catch(()=>'');
         if(h3Ctx) contextBlock=(contextBlock||'')+h3Ctx;
       }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
@@ -39104,7 +39105,9 @@ async function hospH3LoadData(env, clientId){
 async function hospH3Plan(env, c, clientId, userText, state, isNewLead){
   const data=await hospH3LoadData(env, clientId);
   if(!data.properties.length && !data.units.length) return null;
-  const ctx={location:state.lead?.HospSelectedLocation||'', property:state.lead?.HospSelectedProperty||'', unit:state.lead?.HospSelectedUnit||''};
+  const ctx=await hospH3GetCtx(env, clientId, state.leadId, state.lead);
+  // The AI prompt this turn ("Customer's Hospitality Interest", H3 stays data) reads these.
+  if(state.lead) Object.assign(state.lead, {HospSelectedLocation:ctx.location, HospSelectedProperty:ctx.property, HospSelectedUnit:ctx.unit});
   const args={properties:data.properties, units:data.units, locationStep:h3LocationStepOn(c), ctx};
   let action=h3Decide({text:userText, isNewLead, ...args});
   // No rule matched: let the AI read a short message ("blue bel", "that bay one", Malayalam /
@@ -39152,7 +39155,7 @@ function hospH3RoomLine(r){
   if(r.description && String(r.description).trim()) line+=` | ${String(r.description).trim().slice(0,200)}`;
   return line;
 }
-async function hospH3BuildAiContext(env, c, clientId, lead){
+async function hospH3BuildAiContext(env, c, clientId, lead, userText=''){
   const {properties, units}=await hospH3LoadData(env, clientId);
   if(!properties.length && !units.length) return '';
   const ctx={location:lead?.HospSelectedLocation||'', property:lead?.HospSelectedProperty||'', unit:lead?.HospSelectedUnit||''};
@@ -39178,6 +39181,8 @@ async function hospH3BuildAiContext(env, c, clientId, lead){
       }
     }
     if(r.curProp && !full && h3LocKey(r.curProp.location)!==r.curLocKey) detail(r.curProp);
+    // Properties the guest names in this message get full details too, wherever they are.
+    if(!full) properties.filter(p=>h3MentionsName(userText, p.name) && h3LocKey(p.location)!==r.curLocKey && p!==r.curProp).slice(0, 3).forEach(detail);
   }else{
     lines.push('Rooms:');
     units.forEach(u=>lines.push(hospH3RoomLine(u)));
@@ -39186,7 +39191,35 @@ async function hospH3BuildAiContext(env, c, clientId, lead){
   lines.push(`\nSTAYS RULE: These locations and properties are live data and override anything else about which destinations or resorts this business offers (including the business prompt). Never tell the guest a location or property listed here is not offered. Properties listed only by name do exist — answer what you can and offer to share details.\nPRICE RULE: Never state, estimate, compare or hint at any price, rate, tariff, discount or total for these stays — even if one appears in the business prompt, knowledge base, earlier messages or anywhere else. If the guest asks about price, say our booking team will share the best price when they book, and suggest tapping 📅 Book now on the room they like.${browsing?` The guest is currently looking at: ${browsing}.`:''}`);
   return lines.join('\n');
 }
-async function hospH3SaveCtx(env, leadId, patch){
+// Where the guest is in the H3 flow (location / property / room), kept in D1 so it's always read
+// back on the next message — the lead's HospSelected* fields are a best-effort copy (and the
+// fallback for state saved before this table existed). Created on first use.
+let _h3StateReady=null;
+function hospH3EnsureState(env){
+  if(!_h3StateReady) _h3StateReady=env.DB.prepare(`CREATE TABLE IF NOT EXISTS hosp_h3_state (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, location TEXT NOT NULL DEFAULT '', property TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '', updated_at TEXT, PRIMARY KEY (client_id, lead_id))`).run()
+    .catch(e=>{ _h3StateReady=null; throw e; });
+  return _h3StateReady;
+}
+async function hospH3GetCtx(env, clientId, leadId, lead){
+  const fallback={location:lead?.HospSelectedLocation||'', property:lead?.HospSelectedProperty||'', unit:lead?.HospSelectedUnit||''};
+  if(!leadId || !env.DB) return fallback;
+  try{
+    await hospH3EnsureState(env);
+    const row=await env.DB.prepare(`SELECT location, property, unit FROM hosp_h3_state WHERE client_id=? AND lead_id=?`).bind(Number(clientId), Number(leadId)).first();
+    if(row) return {location:row.location||'', property:row.property||'', unit:row.unit||''};
+  }catch(e){}
+  return fallback;
+}
+async function hospH3SaveCtx(env, clientId, leadId, patch){
+  if(env.DB){
+    try{
+      const cur=await hospH3GetCtx(env, clientId, leadId, null);
+      const next={...cur, ...Object.fromEntries(Object.entries(patch).filter(([,v])=>v!==undefined))};
+      await env.DB.prepare(`INSERT INTO hosp_h3_state (client_id, lead_id, location, property, unit, updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(client_id, lead_id) DO UPDATE SET location=excluded.location, property=excluded.property, unit=excluded.unit, updated_at=excluded.updated_at`)
+        .bind(Number(clientId), Number(leadId), next.location||'', next.property||'', next.unit||'', new Date().toISOString()).run();
+    }catch(e){ await reportOpsError(env, 'hospH3SaveCtx', e, {clientId, leadId}); }
+  }
   const body={Id:Number(leadId)};
   if(patch.location!==undefined) body.HospSelectedLocation=patch.location;
   if(patch.property!==undefined) body.HospSelectedProperty=patch.property;
@@ -39232,7 +39265,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       const paged=h3PageRows(hospH3Rows(locs, h3LocationTitle, l=>`${l.count} propert${l.count===1?'y':'ies'}`), 'locations', a.page);
       const head=a.intro ? `Hi! 👋 Welcome${biz?` to *${biz}*`:''}.\n\n` : '';
       await say(`${head}📍 Which location would you like to stay in? Choose one below 👇`, paged.rows);
-      if(leadId) await hospH3SaveCtx(env, leadId, {location:'', property:'', unit:''});
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:'', property:'', unit:''});
       return;
     }
     if(a.type==='properties'){
@@ -39241,7 +39274,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       if(!list.length){ if(useLoc) await hospH3Execute(env, c, clientId, convId, leadId, {action:{type:'locations', page:1}, data}); return; }
       const nav=useLoc?[{title:H3_NAV.changeLocation, value:H3_NAV.changeLocation}]:[];
       const paged=h3PageRows(hospH3Rows(list, p=>p.name, p=>h3PropertyDesc(p, units)), 'properties', a.page, nav);
-      if(photosOn && paged.page===1 && !a.resume){
+      if(photosOn && paged.page===1 && !a.resume && !a.aiFirst){
         const deadline=Date.now()+H3_PHOTO_BUDGET_MS;
         for(const p of list.slice(0, H3_MAX_COVER_PHOTOS)){
           if(Date.now()>deadline) break;
@@ -39252,7 +39285,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       const where=loc?` in *${loc.label}*`:'';
       const head=a.resume ? `Welcome back! 👋 Here are our stays${where} again.\n\n` : (a.intro ? `Hi! 👋 Welcome${biz?` to *${biz}*`:''}.\n\n` : '');
       await say(`${head}🏨 ${list.length} propert${list.length===1?'y':'ies'}${where} — tap one to see its rooms & photos 👇`, paged.rows);
-      if(leadId) await hospH3SaveCtx(env, leadId, {location:loc?loc.label:'', property:'', unit:''});
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:loc?loc.label:'', property:'', unit:''});
       return;
     }
     if(a.type==='rooms'){
@@ -39262,13 +39295,13 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       if(prop) nav.push({title:H3_NAV.otherProperties, value:H3_NAV.otherProperties});
       if(prop && useLoc) nav.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
       const paged=h3PageRows(hospH3Rows(rooms, u=>u.name, h3RoomRowDesc), 'rooms', a.page, nav);
-      if(paged.page===1 && prop){
+      if(paged.page===1 && prop && !a.aiFirst){
         const info=[`*${prop.name}*${prop.location?` · 📍 ${String(prop.location).trim()}`:''}`];
         if(prop.description && String(prop.description).trim()) info.push(String(prop.description).trim());
         if(prop.amenities && String(prop.amenities).trim()) info.push(`✨ *Amenities:* ${String(prop.amenities).trim()}`);
         await hospitalityChatwootText(c, convId, info.join('\n\n'));
       }
-      if(paged.page===1){
+      if(paged.page===1 && !a.aiFirst){
         // One photo per room (the rooms on this page), captioned with capacity and rate.
         const deadline=Date.now()+H3_PHOTO_BUDGET_MS;
         const shown=paged.rows.filter(r=>rooms.some(u=>u.name===r.title));
@@ -39284,7 +39317,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       }else{
         await say(`🛏️ ${rooms.length} room type${rooms.length===1?'':'s'}${prop?` at *${prop.name}*`:''} — tap one for photos & booking 👇`, paged.rows);
       }
-      if(leadId) await hospH3SaveCtx(env, leadId, prop
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, prop
         ? {location:h3LocKey(prop.location)?String(prop.location).split(',')[0].trim():(useLoc?H3_OTHER_LOCATION:''), property:prop.name, unit:''}
         : {unit:''});
       return;
@@ -39311,9 +39344,38 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       if(prop && useLoc) btns.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
       else if(prop) btns.push({title:H3_NAV.otherProperties, value:H3_NAV.otherProperties});
       await say(`Would you like to book *${u.name}*? 👇`, btns);
-      if(leadId) await hospH3SaveCtx(env, leadId, prop
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, prop
         ? {location:h3LocKey(prop.location)?String(prop.location).split(',')[0].trim():(useLoc?H3_OTHER_LOCATION:''), property:prop.name, unit:u.name}
         : {unit:u.name});
+      return;
+    }
+    if(a.type==='price'){
+      // Starting prices of what the guest asked about; staff confirm the exact price for their dates.
+      const unit=a.unitId!=null ? units.find(x=>Number(x.id)===Number(a.unitId)) : null;
+      const prop=unit?.property_id ? properties.find(p=>Number(p.id)===Number(unit.property_id))
+        : (a.propertyId!=null ? properties.find(p=>Number(p.id)===Number(a.propertyId)) : null);
+      const loc=a.locKey!=null ? locs.find(l=>l.key===a.locKey) : null;
+      const inLoc=loc ? h3PropertiesIn(properties, loc.key) : [];
+      const text=h3PriceText({unit, property:prop, locLabel:loc?.label||'', properties:inLoc, units});
+      if(unit){
+        const btns=[{title:H3_NAV.book, value:H3_NAV.book}];
+        if(prop) btns.push({title:H3_NAV.otherRooms, value:H3_NAV.otherRooms});
+        if(prop && useLoc) btns.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
+        await say(text, btns);
+        if(leadId) await hospH3SaveCtx(env, clientId, leadId, {unit:unit.name, ...(prop?{property:prop.name}:{})});
+      }else if(prop || a.propertyId===null){
+        const rooms=h3RoomsOf(units, prop);
+        const nav=[];
+        if(prop) nav.push({title:H3_NAV.otherProperties, value:H3_NAV.otherProperties});
+        if(prop && useLoc) nav.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
+        await hospitalityChatwootText(c, convId, text);
+        await say(`🛏️ Tap a room for photos & booking 👇`, h3PageRows(hospH3Rows(rooms, u=>u.name, h3RoomRowDesc), 'rooms', 1, nav).rows);
+        if(leadId && prop) await hospH3SaveCtx(env, clientId, leadId, {property:prop.name, unit:''});
+      }else{
+        const nav=useLoc?[{title:H3_NAV.changeLocation, value:H3_NAV.changeLocation}]:[];
+        await hospitalityChatwootText(c, convId, text);
+        await say(`🏨 Tap a property to see its rooms 👇`, h3PageRows(hospH3Rows(inLoc, p=>p.name, p=>`${h3PropertyFromPrice(p, units)}`), 'properties', 1, nav).rows);
+      }
       return;
     }
     if(a.type==='book'){
@@ -39321,7 +39383,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       if(!u) return;
       const prop=u.property_id ? properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
       await hospitalityChatwootText(c, convId, hospH3BookText(plan));
-      if(leadId) await hospH3SaveCtx(env, leadId, {unit:u.name});
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {unit:u.name});
       return;
     }
   }catch(e){ await reportOpsError(env, 'hospH3Execute', e, {clientId, convId, step:a?.type}); }
