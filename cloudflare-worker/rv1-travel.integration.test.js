@@ -19,7 +19,7 @@ class D1Database {
   async batch(list){return Promise.all(list.map(s=>s.run()));}
 }
 
-test('travel agency + Chat Style Resorts V1: lists, buttons and booking from Resorts & Hotels', async()=>{
+test('travel agency + Chat Style Resorts V1: destinations → details form → handover; AI in between', async()=>{
   const DB=new D1Database(), env={DB, NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t'};
   const sent=[];
   const realFetch=globalThis.fetch;
@@ -46,91 +46,50 @@ test('travel agency + Chat Style Resorts V1: lists, buttons and booking from Res
     await add({name:'Lake Palace Houseboat', location:'Alleppey', property_type:'houseboat'});
     await add({name:'Forest Edge', location:'Wayanad', price_range_max:20000, status:'inactive'});
 
-    const state={convId:'55', stage:'new', leadId:'91', lead:{Id:91}};
-    const run=async text=>{ sent.length=0; const r=await engineResortsV1Turn(env,c,'7',state,text,false); if(r?.turn?.deliver) await r.turn.deliver(); return r; };
+    const state={convId:'55', stage:'new', leadId:'91', lead:{Id:91}, phone:'+919800000001', qualAnswers:{}};
+    const run=async (text, st=state, isNew=false)=>{ sent.length=0; const r=await engineResortsV1Turn(env,c,'7',st,text,isNew); if(r?.turn?.deliver) await r.turn.deliver(); return r; };
 
-    // 1. Intro: names the active locations and lists them, plus "All resorts".
+    // 1. A new guest: the destinations (active resorts' locations only) — nothing else.
     let r=await engineResortsV1Turn(env,c,'7',{...state,leadId:null,lead:null},'Hi',true);
     sent.length=0; await r.turn.deliver();
-    const intro=sent.at(-1);
-    assert.match(intro.content, /resorts & hotels in \*Alleppey\* and \*Munnar\*/);
-    assert.doesNotMatch(intro.content, /Wayanad/, 'inactive resorts are not offered');
-    assert.deepEqual(intro.items.map(i=>i.title), ['Alleppey (1)', 'Munnar (2)', '🏨 All resorts']);
-    assert.equal(r.patch()?.location, '', 'brand-new lead: place saved once it has an id');
+    assert.equal(sent.length, 1, 'just the destinations list');
+    assert.match(sent[0].content, /resorts & hotels in \*Alleppey\* and \*Munnar\*/);
+    assert.match(sent[0].content, /Choose your destination 👇/);
+    assert.doesNotMatch(sent[0].content, /Wayanad/, 'inactive resorts are not offered');
+    assert.deepEqual(sent[0].items.map(i=>i.title), ['Alleppey (1)', 'Munnar (2)']);
 
-    // 2. Location → its resorts with ranges, never the exact price.
-    await run('Munnar (2)');
-    const list=sent.find(m=>m.items);
-    assert.deepEqual(list.items.map(i=>i.title), ['Misty Hills Resort', 'Tea Valley Stay', '📍 Change location']);
-    // 3 rows → WhatsApp reply buttons (no description line), so the ranges are in the text.
-    assert.match(list.content, /\*Misty Hills Resort\* — ₹8,000 – ₹15,000 per night/);
-    assert.match(list.content, /\*Tea Valley Stay\* — ₹4,000 – ₹6,000 per night/);
-    assert.doesNotMatch(list.content, /8,500/);
-    // Picking a destination sends the trip details form once (here as a message: no WhatsApp
-    // Cloud credentials in this test, so no Meta Flow).
-    const form=sent.find(m=>/please reply with these details/.test(m.content||''));
-    assert.ok(form, 'details form sent after the destination list');
-    assert.match(form.content, /in \*Munnar\*/);
-    for(const q of ['Name','Phone number','Adults','Kids','Rooms needed','Check-in date','Budget']) assert.match(form.content, new RegExp(q));
-    await run('Alleppey (1)');
-    assert.ok(!sent.some(m=>/please reply with these details/.test(m.content||'')), 'not sent again');
-    await run('Munnar (2)');
+    // 2. A destination → only the trip details form (here as a message: no WhatsApp Cloud
+    // credentials in this test, so no Meta Flow). No resort list, photos or PDF.
+    r=await run('Munnar (2)');
+    assert.equal(sent.length, 1, JSON.stringify(sent.map(m=>String(m.content).slice(0,50))));
+    assert.match(sent[0].content, /To plan your stay in \*Munnar\*, please reply with these details/);
+    for(const q of ['Name','Phone number','Adults','Kids','Rooms needed','Check-in date','Budget']) assert.match(sent[0].content, new RegExp(q));
+    assert.ok(!sent.some(m=>m.items||m.type==='attachment'), 'no resort list or files');
+    assert.equal(r.turn.route, 'faq', 'not handed over yet');
 
-    // 2b. All resorts: every active one.
-    await run('🏨 All resorts');
-    const all=sent.at(-1);
-    assert.deepEqual(all.items.map(i=>i.title), ['Lake Palace Houseboat', 'Misty Hills Resort', 'Tea Valley Stay', '📍 Change location']);
-    assert.match(all.items[1].description, /^₹8,000 – ₹15,000 per night/, '4+ rows → a list with the range under each name');
+    // 3. Before the details come back the AI answers everything else (the early turn steps aside).
+    for(const t of ['is breakfast included?', 'Misty Hills Resort', 'price?', 'book now', 'thanks'])
+      assert.equal(await engineResortsV1Turn(env,c,'7',state,t,false), null, t);
 
-    // 3. Resort → photos then details with the range and every option.
-    await run('Misty Hills Resort');
-    const details=sent.at(-1);
-    assert.match(details.content, /Price range: \*₹8,000 – ₹15,000 per night\*/);
-    assert.doesNotMatch(details.content, /8,500/);
-    assert.deepEqual(details.items.map(i=>i.title), ['📅 Book now', '🎬 Video', '📄 Brochure', '↩ Other resorts', '📍 Change location']);
-    // One brochure PDF (all photos + range + photos link) instead of separate photo messages.
-    const pdfs=sent.filter(m=>m.type==='attachment');
-    assert.equal(pdfs.length, 1, JSON.stringify(sent.map(m=>[m.type, String(m.content).slice(0,40)])));
-    assert.match(pdfs[0].content, /📄 \*Misty Hills Resort\* · Munnar, Kerala/);
-    assert.match(pdfs[0].content, /Price range: ₹8,000 – ₹15,000 per night/);
-    assert.match(pdfs[0].content, /All photos: https:\/\/drive\.google\.com\/drive\/folders\/abcdefghij12/);
-    assert.equal(pdfs[0].file?.type, 'application/pdf');
-    assert.ok(pdfs[0].file.size>1000, 'a real PDF');
+    // 4. Another destination → its form.
+    await run('Alleppey');
+    assert.match(sent[0].content, /stay in \*Alleppey\*/);
 
-    // A resort with no media / range: the short set, "Price on request".
-    await run('Lake Palace Houseboat');
-    assert.match(sent.at(-1).content, /Price on request/);
-    assert.deepEqual(sent.at(-1).items.map(i=>i.title), ['📅 Book now', '↩ Other resorts', '📍 Change location']);
-
-    // 4. Book now → handover turn (the chat is the team's; silence is engineHandoverSilenceTurn's).
-    await run('Misty Hills Resort');
-    r=await engineResortsV1Turn(env,c,'7',state,'📅 Book now',false);
-    assert.equal(r.turn.route, 'human');
-    assert.equal(r.turn.next, 'human_handover');
-    assert.match(r.turn.text, /Misty Hills Resort/);
-
-    // While the form is out, a typed reply with details → handover + a Trip (partial details count).
-    const st2={convId:'56', stage:'new', leadId:'92', lead:{Id:92}, phone:'+919800000002', qualAnswers:{}};
-    sent.length=0; let t=await engineResortsV1Turn(env,c,'7',st2,'Munnar (2)',false); await t.turn.deliver();
-    await DB.prepare(`UPDATE hosp_h3_state SET form='sent' WHERE client_id=7 AND lead_id=92`).run();
-    t=await engineResortsV1Turn(env,c,'7',st2,'Rahul, 2 adults 1 kid, 20 Dec, budget 25000',false);
+    // 5. The guest's details (partial counts) → handover + Trip + "our expert will send details".
+    const t=await engineResortsV1Turn(env,c,'7',state,'Rahul, 2 adults 1 kid, 20 Dec, budget 25000',false);
     assert.equal(t.turn.route, 'human');
     assert.equal(t.turn.next, 'human_handover');
-    assert.match(t.turn.text, /Thank you Rahul! 🙏 We've received your details for \*Munnar\*/);
+    assert.match(t.turn.text, /Thank you Rahul! 🙏 We've received your details for \*Alleppey\*/);
     assert.match(t.turn.text, /travel expert will contact you shortly with further details/);
-    assert.equal(t.turn.qualAnswers.destination, 'Munnar');
+    assert.equal(t.turn.qualAnswers.destination, 'Alleppey');
     assert.equal(t.turn.qualAnswers.adults, '2');
     assert.equal(t.turn.qualAnswers.children, '1');
     assert.match(t.turn.qualAnswers.travel_date, /^\d{4}-12-20$/);
-    assert.deepEqual({...t.turn.tripRequest, notes:undefined}, {complete:true, force:true, notes:undefined, service:'Hotel Booking'});
+    assert.equal(t.turn.tripRequest.force, true);
+    assert.equal(t.turn.tripRequest.service, 'Hotel Booking');
     assert.ok(t.turn.tripRequest.notes.includes('Budget: 25000'));
     assert.deepEqual(t.leadPatch, {Name:'Rahul'});
     assert.deepEqual(t.patch(), {form:'done'});
-    // A tap in the flow is still a tap, not the details.
-    assert.equal((await engineResortsV1Turn(env,c,'7',st2,'Tea Valley Stay',false)).turn.route, 'faq');
-
-    // A question is left to the AI (normal path).
-    assert.equal(await engineResortsV1Turn(env,c,'7',state,'is breakfast included?',false), null);
   }finally{ globalThis.fetch=realFetch; }
 });
 
