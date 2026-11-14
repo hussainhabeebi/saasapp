@@ -180,3 +180,29 @@ test('price guard leaves a travel agency\'s package and flight prices alone', ()
   const named='Aadhisakthi Resort package is ₹9,999 per night.';
   assert.doesNotMatch(rv1StripPrices(named, properties), /9,999/);
 });
+
+test('price range comes from the Resorts & Hotels prices when Range From / To are empty — never invented', async()=>{
+  const { rv1Range, rv1PriceBounds }=await import('./hospitality-resorts-v1.js');
+  const base={currency:'INR', price_unit:'per night'};
+  // Range fields win.
+  assert.equal(rv1Range({...base, price_range_min:8000, price_range_max:15000, price_from:5000}), '₹8,000 – ₹15,000 per night');
+  // Price From + season / off-season rates → lowest – highest of them.
+  assert.equal(rv1Range({...base, price_from:6000, season_price:12000, off_season_price:7000}), '₹6,000 – ₹12,000 per night');
+  assert.equal(rv1Range({...base, season_price:12000, off_season_price:8000}), '₹8,000 – ₹12,000 per night');
+  // Only one price saved → "From …".
+  assert.equal(rv1Range({...base, price_from:9500}), 'From ₹9,500 per night');
+  assert.equal(rv1Range({...base, price_from:'0', season_price:''}), 'Price on request');
+  assert.equal(rv1PriceBounds({}), null);
+  // Details: the derived range, and no "this is the price range" note when there is no price.
+  const d=rv1DetailsText({...base, name:'Ooty 3 Bedroom A5', location:'Ooty', season_price:12000, off_season_price:8000});
+  assert.match(d, /Price range: \*₹8,000 – ₹12,000 per night\*/);
+  assert.match(rv1DetailsText({...base, name:'X'}), /share the price for your dates/);
+  assert.doesNotMatch(rv1DetailsText({...base, name:'X'}), /This is the price range/);
+  // The reply guard accepts exactly those numbers and drops any other.
+  const props=[{...base, id:1, name:'Ooty 3 Bedroom A5', location:'Ooty', status:'active', season_price:12000, off_season_price:8000}];
+  const ok='Ooty 3 Bedroom A5 is ₹8,000 – ₹12,000 per night.';
+  assert.equal(rv1StripPrices(ok, props), ok);
+  assert.doesNotMatch(rv1StripPrices('Ooty 3 Bedroom A5 is around ₹10,000 per night.', props), /10,000/);
+  assert.match(rv1AiContext(props), /Ooty 3 Bedroom A5.*price range: ₹8,000 – ₹12,000 per night/);
+  assert.match(rv1AiContext(props), /ONLY prices you may mention/);
+});
