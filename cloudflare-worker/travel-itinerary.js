@@ -504,6 +504,8 @@ function hexRgb(hex,fallback){
   if(!m)return fallback;
   return [0,2,4].map(i=>parseInt(m[1].slice(i,i+2),16)/255);
 }
+// The PDF text helpers, for other PDFs drawn the same way (product-catalog.js proposals).
+export const taPdf={safe:pdfSafe,esc,wrap,textWidth,hexRgb};
 
 // A4 itinerary PDF (Uint8Array): header band with the agency logo, cover photo with the package
 // title, key facts, an "About <destination>" intro, the day-by-day plan with a photo and short

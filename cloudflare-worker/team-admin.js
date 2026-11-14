@@ -16,7 +16,7 @@ export const TM_INVITE_KINDS=['invite','login','existing'];
 export const TM_ROLE_KEYS=['admin','general_manager','sales_manager','marketing_manager','telecaller'];
 // Same keys as dashboard.html MODULE_PERMISSIONS.
 export const TM_MODULE_KEYS=['home','humandeals','chats','leads','tasks','team','reports','knowledgebase','accounting','billing','ecommerce',
-  'businessservices','saasops','b2b','agency','recruit','appointments','hospitality','realestate','healthcare','matrimonial','evcharging','broadcast','settings'];
+  'businessservices','productsservices','saasops','b2b','agency','recruit','appointments','hospitality','realestate','healthcare','matrimonial','evcharging','broadcast','settings'];
 // Roles that may manage the team (besides the account owner).
 export const TM_MANAGER_ROLES=['admin'];
 export const TM_BULK_MAX=25;

@@ -399,7 +399,7 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 #pageChats:not(.hidden){display:flex}
 #pageChats{padding-bottom:0!important}
 #chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#efeae2}
-#pageEcommerce,#pageEducation,#pageBusinessservices,#pageBroadcast{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageBroadcast{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageBizai:not(.hidden){display:flex;flex-direction:column}
@@ -1604,6 +1604,7 @@ const MODULE_PERMISSIONS = [
   {key:'billing', label:'💳 Billing'},
   {key:'ecommerce', label:'🛒 Ecommerce'},
   {key:'businessservices', label:'🏢 Business Services'},
+  {key:'productsservices', label:'📦 Products & Services'},
   {key:'saasops', label:'🚀 SaaS Ops'},
   {key:'b2b', label:'🤝 B2B'},
   {key:'agency', label:'🏢 Agency / Travel'},
@@ -1757,6 +1758,7 @@ const ROLES = {
     <button class="dnTab" data-page="evcharging" id="dnEvChargingTab" style="display:none">⚡ EV Charging</button>
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
+    <button class="dnTab" id="dnProductsTab" style="display:none" data-page="productsservices">📦 Products &amp; Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="followups" id="dnFollowupsTab">🔁 Follow-ups</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -2428,6 +2430,13 @@ const ROLES = {
          — its /bs/* Worker routes are client_id-based, same trust model as /ecom/*.) -->
     <div class="page hidden" id="pageBusinessservices">
       <iframe id="businessServicesFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- PRODUCTS & SERVICES (General accounts) — products-services.html, iframe-embedded with the
+         session token like Real Estate: its /catalog/* Worker routes are session-gated. The bot sends
+         an item's details and media when a customer names it; Chats → 📑 AI Proposal uses the items. -->
+    <div class="page hidden" id="pageProductsservices">
+      <iframe id="productsServicesFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (iframe-embed pattern, same as Real Estate/B2B above — travel-agency.html
@@ -4829,6 +4838,7 @@ const ROLES = {
       <button class="more-item" data-page="evcharging" id="moreEvChargingTab" style="display:none"><span class="bnIcon">⚡</span><span class="bnLabel">EV Charging</span></button>
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
+      <button class="more-item" id="mbProductsTab" style="display:none" data-page="productsservices"><span class="bnIcon">📦</span><span class="bnLabel">Products &amp; Services</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
   </div>
@@ -6346,6 +6356,7 @@ function navigate(page){
   if(page==='evcharging') renderEvCharging();
   if(page==='education') renderEducation();
   if(page==='businessservices') renderBusinessServices();
+  if(page==='productsservices') renderProductsServices();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
@@ -7674,6 +7685,16 @@ function renderBusinessServices(){
   const frame=$id('businessServicesFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`business-services.html?client=${clientId}&embed=1`;
 }
+
+// Products & Services (General accounts) — session token passed like renderRealEstate: the
+// /catalog/* Worker routes are session-gated.
+function renderProductsServices(){
+  const frame=$id('productsServicesFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`products-services.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+// General accounts — 'general', no industry, or a free-text one the dashboard doesn't know. Every
+// other industry has its own catalogue module. Same rule as the worker's pcIsOn (product-catalog.js).
+function isGeneralIndustry(k){ k=String(k||'').trim().toLowerCase(); return !k||k==='general'||!INDUSTRIES[k]; }
 
 // SaaS Ops needs the session token — its /saas/* routes are requireSession-gated (billing config,
 // account edits, etc.), same reasoning as renderB2b/renderAccounting below.
@@ -20059,6 +20080,7 @@ function applyTheme(industryKey){
     const target=el.dataset.industry;
     el.style.display=(industryKey===target)?'':'none';
   });
+  ['dnProductsTab','mbProductsTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
   // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list
