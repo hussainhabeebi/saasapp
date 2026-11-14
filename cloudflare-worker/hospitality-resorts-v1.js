@@ -21,7 +21,7 @@
 
 import {H3_OTHER_LOCATION,H3_PRICE_Q_RE,h3LocKey,h3Locations,h3LocationTitle,h3Norm,h3Truncate,h3ExactName,
   h3MentionsName,h3WordsMatch,h3PageRows,h3HasStayPrice} from './hospitality-h3.js';
-import {TA_RESORT_CATEGORY_LABEL,taPropertyPriceRange} from './ta-properties.js';
+import {TA_RESORT_CATEGORY_LABEL,taPropertyMoney} from './ta-properties.js';
 
 export const RV1_STYLE='resorts_v1';
 export const RV1_NAV={
@@ -36,6 +36,7 @@ export const RV1_NAV={
 const DESC_MAX=72;
 const DETAILS_DESC_MAX=500;
 export const RV1_PRICE_ON_REQUEST='Price on request';
+export const RV1_NO_PRICE_NOTE='💬 Our booking team will share the price for your dates, room and meal plan when you book.';
 export const RV1_EXACT_PRICE_NOTE='💬 This is the price range — the exact price for your dates, room and meal plan is confirmed by our booking team when you book.';
 export const RV1_PRICE_NOTE='Each resort shows its price range — our booking team confirms the exact price for your dates when you book (tap 📅 Book now). 😊';
 const PROPERTY_TYPE_LABEL={resort:'Resort',hotel:'Hotel',villa:'Villa',homestay:'Homestay',houseboat:'Houseboat',apartment:'Apartment',camp:'Camp',other:'Stay'};
@@ -66,8 +67,34 @@ export function rv1UseLocationStep(locations){
   return (locations||[]).filter(l=>l.key).length>=2;
 }
 
+// The price range, built ONLY from numbers saved on the property in Resorts & Hotels — never
+// made up. Price Range From / To when set; otherwise the lowest and highest of Price From,
+// Season Rate and Off-season Rate. null when the property has no price at all.
+export function rv1PriceBounds(p){
+  const num=f=>{ const n=Number(p?.[f]); return Number.isFinite(n)&&n>0?n:null; };
+  let lo=num('price_range_min'), hi=num('price_range_max');
+  if(lo==null && hi==null){
+    const vals=['price_from','season_price','off_season_price'].map(num).filter(n=>n!=null);
+    if(!vals.length) return null;
+    lo=Math.min(...vals); hi=Math.max(...vals);
+  }
+  return {lo, hi};
+}
+export function rv1RangeText(p){
+  const b=rv1PriceBounds(p);
+  if(!b) return '';
+  const lo=taPropertyMoney(p?.currency, b.lo), hi=taPropertyMoney(p?.currency, b.hi);
+  const unit=String(p?.price_unit||'per night').trim();
+  if(lo&&hi) return lo===hi?`From ${lo} ${unit}`:`${lo} – ${hi} ${unit}`;
+  if(lo) return `From ${lo} ${unit}`;
+  return `Up to ${hi} ${unit}`;
+}
 export function rv1Range(p){
-  return taPropertyPriceRange(p)||RV1_PRICE_ON_REQUEST;
+  return rv1RangeText(p)||RV1_PRICE_ON_REQUEST;
+}
+// The note under a price: range wording only when there is a price to show.
+export function rv1PriceNote(p){
+  return rv1RangeText(p)?RV1_EXACT_PRICE_NOTE:RV1_NO_PRICE_NOTE;
 }
 function stars(p){
   const n=Number(p?.star_rating)||0;
@@ -100,7 +127,7 @@ export function rv1DetailsText(p){
   if(p.amenities && String(p.amenities).trim()) lines.push(`✨ Amenities: ${oneLine(p.amenities, 250)}`);
   const desc=String(p.description||'').replace(/\s+/g, ' ').trim();
   if(desc) lines.push('', desc.length>DETAILS_DESC_MAX?desc.slice(0, DETAILS_DESC_MAX-1).replace(/\s+\S*$/, '')+'…':desc);
-  lines.push('', RV1_EXACT_PRICE_NOTE);
+  lines.push('', rv1PriceNote(p));
   return lines.join('\n');
 }
 
@@ -131,7 +158,7 @@ export function rv1BookText(p){
 }
 // Answer to a price question: ranges only.
 export function rv1PriceText({property=null, list=[], locLabel=''}){
-  if(property) return `💰 *${property.name}* — price range: *${rv1Range(property)}*.\n\n${RV1_EXACT_PRICE_NOTE}`;
+  if(property) return `💰 *${property.name}* — price range: *${rv1Range(property)}*.\n\n${rv1PriceNote(property)}`;
   const lines=(list||[]).slice(0, 15).map(p=>`• ${p.name} — ${rv1Range(p)}`);
   return `💰 Price ranges${locLabel?` in *${locLabel}*`:''}:\n${lines.join('\n')||`• ${RV1_PRICE_ON_REQUEST}`}\n\n${RV1_EXACT_PRICE_NOTE}`;
 }
@@ -334,7 +361,7 @@ export function rv1StripPrices(text, properties=[]){
   const props=rv1Active(properties);
   const names=props.map(p=>p.name);
   const allowed=new Set();
-  for(const p of props) for(const f of ['price_range_min','price_range_max']) if(Number(p[f])>0) allowed.add(Number(p[f]));
+  for(const p of props){ const b=rv1PriceBounds(p); if(b){ if(b.lo) allowed.add(b.lo); if(b.hi) allowed.add(b.hi); } }
   const namesResort=s=>names.some(n=>h3MentionsName(s, n));
   const bad=s=>{
     if(!h3HasStayPrice(s, names)) return false;
@@ -383,6 +410,6 @@ export function rv1AiContext(properties, {location='', property=''}={}){
     if(p.description) line+=` — ${oneLine(p.description, 200)}`;
     lines.push(line);
   }
-  lines.push('PRICE RULE: never give an exact price, a per-night rate or a total. Only quote the price range listed above for a resort (or say "price on request" when it has none) and say our booking team confirms the exact price for the guest\'s dates when they book. Only recommend resorts from this list; it overrides any other source about which stays or destinations we offer. Photos are sent by the system when the guest picks a resort — never say you cannot send photos.');
+  lines.push('PRICE RULE (strict): the price ranges above come straight from our Resorts & Hotels records and are the ONLY prices you may mention. Copy a range exactly as written for the resort it belongs to — never give an exact price, a per-night rate, a total, an estimate, a discount, a currency conversion or a range for a resort not in this list. A resort marked "Price on request" has no price: say our booking team will share it. Say our booking team confirms the exact price for the guest\'s dates when they book. Only recommend resorts from this list; it overrides any other source about which stays or destinations we offer. Never invent facts (amenities, rooms, distances, availability) that are not written above — if it is not listed, say our team will confirm. Photos are sent by the system when the guest picks a resort — never say you cannot send photos.');
   return lines.join('\n');
 }
