@@ -31,7 +31,9 @@
 //   ai(env,c,sys,user,opts)→text|null, metaCreds(c, lead?)→{waba_id,wa_phone_id,wa_token}|null,
 //   sendStep(env,c,lead,step,stepCfg,opts)→{text,variant,sendId}, sendEmail(env,to,subject,html),
 //   orderPhones(env,c)→{digits10:{date,total}}|null, objectionPlaybook(c)→[{category,approved_response}],
-//   leadColumns(env)→[column titles of the leads table] }
+//   leadColumns(env)→[column titles of the leads table],
+//   proposals(env,cid,leadId?)→{leadId:{at,title}} (latest proposal sent, product-catalog proposals),
+//   proposalsOn(c)→bool (submit the proposal templates for this account) }
 
 import {FP_DEFAULTS, fpAccountHour, fpParseLater, fpScriptLang, fpLeadLanguage, fpLangName, fpTemplateLanguages, fpObjectionFor, FP_OBJECTION_GUIDE,
   fpNbaScore, fpMatchProducts, fpQuoteItem, fpQuoteTotals, fpQuoteNumber, fpQuoteFileName, fpFetchQuoteAssets, fpBuildQuotePdf} from './followup-pro.js';
@@ -58,6 +60,7 @@ export const FV3_DEFAULTS={
   ai_variant_b:true,          // AI writes a Variant B for nudges 1-2 so A/B testing starts on day one
   attribution_hours:72,       // a reply within this many hours of a follow-up counts for it
   weekly_digest:true,         // Monday email to the account owner
+  proposal_followups:true,    // leads at "Proposal Sent" get the proposal templates (day 1/3/7) instead of the normal ladder
   // Pro add-ons (followup-pro.js) — every one off until the account switches it on.
   ...FP_DEFAULTS,
 };
@@ -71,6 +74,19 @@ const TEMPLATE_THRESHOLD={3:25, 4:72, 5:168};
 const STALE_TEMPLATE_HOURS=72; // a template step more than 3 days overdue is dropped, not sent late
 const SESSION_WINDOW_MARGIN=10*60000;
 const REENGAGE_STEP=6;
+// Proposal track: a lead at the "Proposal Sent" stage (Chats → 📑 AI Proposal sets it) gets its own
+// approved templates — day 1 / 3 / 7 after the proposal, or after the customer's last reply since —
+// and never the normal ladder or re-engage. Steps 7-9 in followup_sends (kind 'proposal').
+export const FV3_PROPOSAL_STAGE='proposal_sent';
+export const FV3_PROPOSAL_STEPS={7:{kind:'p1', hours:24, label:'Proposal · day 1'}, 8:{kind:'p2', hours:72, label:'Proposal · day 3'}, 9:{kind:'p3', hours:168, label:'Proposal · day 7'}};
+export const FV3_PROPOSAL_KINDS=Object.values(FV3_PROPOSAL_STEPS).map(x=>x.kind);
+const PROPOSAL_STEP_BY_KIND=Object.fromEntries(Object.entries(FV3_PROPOSAL_STEPS).map(([s, x])=>[x.kind, Number(s)]));
+// Approved proposal templates by step ({7:row, …}) from followup_v3_templates rows.
+export function fv3ProposalTemplates(templates){
+  const out={};
+  for(const t of templates||[]) if(PROPOSAL_STEP_BY_KIND[t.kind] && t.status==='APPROVED') out[PROPOSAL_STEP_BY_KIND[t.kind]]=t;
+  return out;
+}
 const CONVERSION_WINDOW_DAYS=14;
 
 function clampInt(v, min, max, dflt){ const n=parseInt(v, 10); return Number.isFinite(n)?Math.min(max, Math.max(min, n)):dflt; }
@@ -95,7 +111,7 @@ export function fv3Config(raw){
     reengage_max:clampInt(o.reengage_max, 1, 6, d.reengage_max),
     auto_templates:b('auto_templates'), ai_variant_b:b('ai_variant_b'),
     attribution_hours:clampInt(o.attribution_hours, 1, 336, d.attribution_hours),
-    weekly_digest:b('weekly_digest'),
+    weekly_digest:b('weekly_digest'), proposal_followups:b('proposal_followups'),
     pro_smart_send:b('pro_smart_send'), pro_nba_home:b('pro_nba_home'), pro_objections:b('pro_objections'),
     pro_quote_pdf:b('pro_quote_pdf'), pro_auto_language:b('pro_auto_language'),
     pro_quote_valid_days:clampInt(o.pro_quote_valid_days, 1, 90, d.pro_quote_valid_days),
@@ -186,6 +202,7 @@ export function fv3StepLabel(step, cfg){
   if(step===3) return 'Template · day 1';
   if(step===4) return 'Template · day 3';
   if(step===5) return 'Template · day 7';
+  if(FV3_PROPOSAL_STEPS[step]) return FV3_PROPOSAL_STEPS[step].label;
   return 'Re-engage';
 }
 
@@ -196,16 +213,21 @@ function parseSkip(state){ try{ const s=JSON.parse(state?.skip_json||'{}'); retu
 // in: {lead, steps:{1..5: followup_ladder_steps row}, cfg, state, sends:[{step,kind,sent_at,replied_at,variant}],
 //      enabledAt, now, tz, hasOrder, reengageReady, terminalStages?}
 export function fv3Decide(input){
-  const {lead, steps:baseSteps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false, hasMeeting=false}=input;
+  const {lead, steps:baseSteps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false, hasMeeting=false,
+    proposal=null, proposalTemplates={}}=input;
   const steps=fv3StepsForLead(baseSteps,cfg,lead);
   const stage=String(lead?.Stage||'');
   const lastCust=fv3LastCustomerMs(lead);
-  const out=(status, reason, text, extra={})=>({status, reason, text, next:null, steps:stepRows(null), cycle:lastCust?new Date(lastCust).toISOString():null, ...extra});
+  // Proposal track: timed from the proposal, or from the customer's reply since, whichever is later.
+  const proposalTrack=stage===FV3_PROPOSAL_STAGE;
+  const anchor=proposalTrack?Math.max(ms(proposal?.at)||0, lastCust||0)||null:lastCust;
+  const out=(status, reason, text, extra={})=>({status, reason, text, next:null, steps:proposalTrack?proposalRows(null):stepRows(null), cycle:anchor?new Date(anchor).toISOString():null, ...extra});
   const sorted=[...sends].sort((a, b)=>(ms(a.sent_at)||0)-(ms(b.sent_at)||0));
   const cycleSends=lastCust?sorted.filter(s=>(ms(s.sent_at)||0)>lastCust):[];
   const ladderSent=new Map(); cycleSends.filter(s=>(s.kind||'ladder')!=='reengage' && s.step<=5).forEach(s=>ladderSent.set(Number(s.step), s));
   const skip=parseSkip(state);
-  const skipped=new Set(lastCust && skip.cycle===new Date(lastCust).toISOString() ? (skip.steps||[]).map(Number) : []);
+  const skipped=new Set(anchor && skip.cycle===new Date(anchor).toISOString() ? (skip.steps||[]).map(Number) : []);
+  const proposalSent=new Map(); if(proposalTrack) sorted.filter(s=>s.kind==='proposal' && (ms(s.sent_at)||0)>anchor).forEach(s=>proposalSent.set(Number(s.step), s));
   const stepState={};
   function stepRows(nextStep){
     const rows=[];
@@ -218,6 +240,13 @@ export function fv3Decide(input){
     }
     return rows;
   }
+  function proposalRows(nextStep){
+    return Object.entries(FV3_PROPOSAL_STEPS).map(([k, def])=>{
+      const s=Number(k), sent=proposalSent.get(s);
+      return {step:s, type:'template', label:def.label, state:sent?'sent':(stepState[s]||(nextStep===s?'next':'upcoming')),
+        sent_at:sent?.sent_at||null, replied_at:sent?.replied_at||null, variant:sent?.variant||null, due_at:stepState['due'+s]||null};
+    });
+  }
   if(state?.delivery_hold) return out('paused','delivery_unknown','An earlier send needs delivery verification before any retry.');
   if(cfg.paused) return out('paused', 'account_paused', 'Follow-ups are paused for your account.');
   if(lead?.OptOut==='Yes') return out('stopped', 'opted_out', 'The customer opted out — no more follow-ups.');
@@ -228,11 +257,14 @@ export function fv3Decide(input){
   if(hasMeeting) return out('meeting', 'meeting_booked', 'A meeting is booked or agreed with this lead — follow-ups are on hold until its outcome is logged (meeting reminders still go out).');
   if(FV3_CLOSED_STAGES.has(stage) || input.terminalStages?.has?.(stage)) return out('stopped', 'closed', 'Lead is closed — no more follow-ups.');
   const created=ms(lead?.CreatedAt)||ms(lead?.Date);
-  if(!cfg.include_existing_leads && ms(enabledAt) && (!created || created<ms(enabledAt))) return out('not_enrolled', 'existing_lead', 'Lead came in before Follow-up V3 was switched on, so it isn\'t enrolled.');
-  if(!lastCust) return out('not_enrolled', 'no_message', 'Waiting for the customer\'s first message.');
+  // A proposal sent by the team enrols the lead, whenever it came in — it is a deliberate ask for follow-ups.
+  if(proposalTrack && !cfg.proposal_followups) return out('stopped', 'proposal_off', 'Proposal sent — proposal follow-ups are switched off, and normal follow-ups don\'t go to leads with a proposal.');
+  if(!proposalTrack && !cfg.include_existing_leads && ms(enabledAt) && (!created || created<ms(enabledAt))) return out('not_enrolled', 'existing_lead', 'Lead came in before Follow-up V3 was switched on, so it isn\'t enrolled.');
+  if(!anchor) return out('not_enrolled', 'no_message', 'Waiting for the customer\'s first message.');
   const agentAt=ms(lead?.LastAgentMsgAt);
   let staffFloor=0;
-  if(agentAt && agentAt>lastCust+90000 && !sorted.some(s=>{ const t=ms(s.sent_at)||0; return agentAt>=t-60000 && agentAt<=t+5*60000; })){
+  // The proposal itself is the team's last message — only a later one counts as "your team replied".
+  if(agentAt && agentAt>anchor+(proposalTrack?10*60000:90000) && !sorted.some(s=>{ const t=ms(s.sent_at)||0; return agentAt>=t-60000 && agentAt<=t+5*60000; })){
     if(!cfg.staff_reply_hours) return out('agent_replied', 'agent_replied', 'Your team replied last — waiting for the customer.');
     staffFloor=agentAt+cfg.staff_reply_hours*H;
   }
@@ -256,6 +288,27 @@ export function fv3Decide(input){
   let prefHour=(cfg.smart_send_time||cfg.pro_smart_send)?fv3PreferredHour(state?.hours_json):null;
   if(prefHour===null && cfg.pro_smart_send && Number.isInteger(input.accountHour)) prefHour=input.accountHour;
   let pendingTemplate=null;
+  if(proposalTrack){
+    const cycle=new Date(anchor).toISOString();
+    for(const [k, def] of Object.entries(FV3_PROPOSAL_STEPS)){
+      const s=Number(k);
+      if(proposalSent.has(s)) continue;
+      if(skipped.has(s)){ stepState[s]='skipped'; continue; }
+      if(!proposalTemplates?.[s]){ stepState[s]='pending_template'; if(!pendingTemplate) pendingTemplate=s; continue; }
+      const base=anchor+def.hours*H;
+      if(now>base+STALE_TEMPLATE_HOURS*H){ stepState[s]='expired'; continue; }
+      let due=fv3NextAllowedMs(Math.max(gapFloor(base), staffFloor), tz, cfg.quiet_start, cfg.quiet_end);
+      if(prefHour!==null) due=fv3NextAllowedMs(fv3AlignToHour(due, tz, prefHour), tz, cfg.quiet_start, cfg.quiet_end);
+      if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
+      stepState['due'+s]=new Date(due).toISOString();
+      const next={step:s, kind:'proposal', type:'template', label:def.label, due_at:new Date(due).toISOString()};
+      const isDue=due<=now;
+      return {status:isDue?'due':'scheduled', reason:isDue?'due':'scheduled',
+        text:isDue?`Proposal follow-up (${def.label}) is going out now.`:`Next: ${def.label} — proposal follow-up.`, next, steps:proposalRows(s), cycle, ...snoozeInfo};
+    }
+    if(pendingTemplate) return out('waiting_template', 'proposal_template_pending', `${FV3_PROPOSAL_STEPS[pendingTemplate].label} is waiting for its WhatsApp template to be approved.`);
+    return out('completed', 'proposal_done', proposalSent.size?'All proposal follow-ups sent — no reply yet.':'No proposal follow-up could go out in time (sent too long ago).');
+  }
   for(let s=1; s<=5; s++){
     const row=steps[s];
     if(ladderSent.has(s)) continue;
@@ -329,6 +382,9 @@ export const FV3_REASON_INFO={
   lead_cap:{label:'Already got the maximum follow-ups for 30 days', fix:'Raise "Max follow-ups per lead in 30 days" in Settings if you want more.'},
   no_message:{label:'Never messaged you', fix:'Follow-ups start after the customer\'s first message.'},
   account_paused:{label:'Follow-ups are paused', fix:'Press ▶ Resume.'},
+  proposal_done:{label:'Proposal sent — all proposal follow-ups done', ok:true},
+  proposal_template_pending:{label:'Proposal sent — waiting for a proposal template to be approved', fix:'The proposal day 1/3/7 templates are submitted automatically — use "Re-check templates" below.'},
+  proposal_off:{label:'Proposal sent — proposal follow-ups are off', fix:'Turn on "Follow up sent proposals" in Settings below.', setting:'proposal_followups'},
   delivery_unknown:{label:'Delivery needs verification',fix:'Check send attempts below. Verify the provider conversation before allowing a retry.'},
   unknown:{label:'Not checked yet', fix:'The 15-minute sweep hasn\'t evaluated these leads yet. If this stays for more than an hour, check Settings → Logs for "followup v3 sweep".'},
 };
@@ -388,19 +444,24 @@ const TEMPLATE_BODIES={
   s4:'Hello {{1}}, your request about {{3}} is still open with {{2}}. Would you like us to share the latest details or options? Just reply to this message. Reply STOP to opt out.',
   s5:'Hi {{1}}, one last note from {{2}}. If {{3}} is still on your mind, reply YES and our team will help you today. If now is not a good time, no worries at all. Reply STOP to opt out.',
   reengage:'Hi {{1}}, it has been a while since we last spoke at {{2}}. We have some new updates you may like. Reply to this message and we will share them with you. Reply STOP to opt out.',
+  p1:'Hi {{1}}, this is {{2}}. Did you get a chance to go through {{3}} we shared with you? Happy to answer any questions or adjust anything you need. Reply STOP to opt out.',
+  p2:'Hello {{1}}, just following up on {{2}} from {{3}}. If you would like changes to the items, quantities or terms, reply here and we will update it for you. Reply STOP to opt out.',
+  p3:'Hi {{1}}, a final reminder from {{2}} about {{3}}. If you are ready to go ahead, reply YES and our team will confirm the next steps today. Reply STOP to opt out.',
 };
-const TEMPLATE_PARAMS={s3:['name', 'business', 'interest'], s4:['name', 'interest', 'business'], s5:['name', 'business', 'interest'], reengage:['name', 'business']};
+const TEMPLATE_PARAMS={s3:['name', 'business', 'interest'], s4:['name', 'interest', 'business'], s5:['name', 'business', 'interest'], reengage:['name', 'business'],
+  p1:['name', 'business', 'proposal'], p2:['name', 'proposal', 'business'], p3:['name', 'business', 'proposal']};
 export function fv3TemplatePreset(kind, {industry='', businessName='Our team'}={}){
   const body=TEMPLATE_BODIES[kind]; if(!body) return null;
   const params=TEMPLATE_PARAMS[kind];
-  const sample={name:'Asha', business:String(businessName||'Our team').slice(0, 40), interest:fv3InterestFallback(industry)};
+  const sample={name:'Asha', business:String(businessName||'Our team').slice(0, 40), interest:fv3InterestFallback(industry), proposal:'the proposal'};
   return {kind, body, params, category:'MARKETING', language:'en', example:params.map(p=>sample[p])};
 }
 export function fv3TemplateName(kind, attempt=1){ return `lv_followup_${kind}`+(attempt>1?`_v${attempt}`:''); }
 function cleanParam(v, fallback){ const t=String(v||'').replace(/\s+/g, ' ').trim().slice(0, 60); return t||fallback; }
 export function fv3TemplateParams(params, lead, c, industry){
   const first=String(lead?.Name||'').trim().split(/\s+/)[0];
-  const values={name:cleanParam(first, 'there'), business:cleanParam(c?.client_name, 'our team'), interest:cleanParam(lead?.InterestedProduct, fv3InterestFallback(industry))};
+  const values={name:cleanParam(first, 'there'), business:cleanParam(c?.client_name, 'our team'), interest:cleanParam(lead?.InterestedProduct, fv3InterestFallback(industry)),
+    proposal:lead?.ProposalTitle?cleanParam(`our proposal "${String(lead.ProposalTitle).replace(/["{}]/g, '')}"`, 'the proposal'):'the proposal'};
   return (params||[]).map(p=>values[p]??'');
 }
 
@@ -646,8 +707,10 @@ export async function fv3Setup(env, deps, c, settings, {resubmit=false}={}){
   if(!creds?.waba_id || !creds?.wa_token){ report.whatsapp='not_connected'; }
   else if(cfg.auto_templates){
     const existing=await templateRows(env, cid);
-    for(const kind of FV3_TEMPLATE_KINDS){
-      const step=kind==='reengage'?null:Number(kind.slice(1));
+    // Proposal templates only for accounts that send proposals (deps.proposalsOn).
+    const kinds=[...FV3_TEMPLATE_KINDS, ...(cfg.proposal_followups && deps.proposalsOn?.(c)?FV3_PROPOSAL_KINDS:[])];
+    for(const kind of kinds){
+      const step=/^s\d$/.test(kind)?Number(kind.slice(1)):null;
       let t=existing.find(x=>x.kind===kind);
       const ownTemplate=step && String(fresh[step]?.template_name||'').trim() && (!t || fresh[step].template_name!==t.name);
       if(ownTemplate){ report.templates[kind]={status:'OWN', name:fresh[step].template_name}; continue; }
@@ -682,6 +745,11 @@ async function checklist(env, deps, c, settings){
   }
   const re=templates.find(x=>x.kind==='reengage');
   items.push({key:'reengage', ok:re?.status==='APPROVED', status:re?.status||'NOT_SUBMITTED', template:re?.name||'', error:re?.error||'', label:'Re-engage template', optional:!settings.cfg.reengage_enabled});
+  if(deps.proposalsOn?.(c)) for(const [k, def] of Object.entries(FV3_PROPOSAL_STEPS)){
+    const t=templates.find(x=>x.kind===def.kind);
+    items.push({key:'proposal_'+def.kind, step:Number(k), ok:t?.status==='APPROVED', status:t?.status||'NOT_SUBMITTED', template:t?.name||'', error:t?.error||'',
+      label:`${def.label} template`, optional:!settings.cfg.proposal_followups});
+  }
   return items;
 }
 
@@ -838,6 +906,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
   const templates=await templateRows(env, cid);
   const tplByName={}; templates.forEach(t=>{ tplByName[t.name]=t; });
   const reTpl=reengageTemplate(templates);
+  const proposalTemplates=fv3ProposalTemplates(templates);
+  const proposals=await deps.proposals?.(env, cid).catch(()=>null)||{};
   const {results:sendRows}=await env.DB.prepare(`SELECT id, lead_id, step, kind, variant, sent_at, replied_at, converted_at FROM followup_sends WHERE client_id=? AND sent_at>=?`)
     .bind(cid, new Date(now-200*D).toISOString()).all();
   const sendsByLead={}; (sendRows||[]).forEach(r=>{ (sendsByLead[r.lead_id]||(sendsByLead[r.lead_id]=[])).push(r); });
@@ -870,7 +940,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       // Only look up orders for leads it can matter for (ecom, and either due or recently followed up).
       const recent=sends.some(s=>(ms(s.sent_at)||0)>now-CONVERSION_WINDOW_DAYS*D);
       const hasOrder=lead.Phone?fv3OrderCounts((await getOrders())?.[digits10(lead.Phone)], lead):false;
-      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id)), accountHour});
+      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id)), accountHour,
+        proposal:proposals[lead.Id]||null, proposalTemplates});
       checked++; reasons[d.reason]=(reasons[d.reason]||0)+1;
       if(sample.length<100) sample.push({lead_id:lead.Id,name:lead.Name,status:d.status,reason:d.reason,next:d.next});
       if(!preview && d.status==='goal_reached' && recent) stateWrites.push(markConversion(env, cid, lead, sends, now, hasOrder?orders?.[digits10(lead.Phone)]:null));
@@ -910,14 +981,13 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       if(String(live.ClientId)!==String(cid)) throw new Error('Pre-send lead ownership mismatch');
       const latestSettings=await fv3GetSettings(env,cid);
       if(!latestSettings?.enabled || latestSettings.cfg.paused) return;
-      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reTpl,accountHour});
+      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reTpl,accountHour,proposal:proposals[lead.Id]||null,proposalTemplates});
       if(latest.status!=='due' || latest.cycle!==d.cycle || latest.next.step!==step) return;
-      lead=live;
+      lead={...live, ProposalTitle:proposals[lead.Id]?.title||''};
       const leadSteps=fv3StepsForLead(steps,latestSettings.cfg,lead);
-      const stepCfg=step===REENGAGE_STEP
-        ? {step, type:'template', template_name:reTpl.name, template_language:reTpl.language, template_category:'MARKETING', template_body_vars:JSON.parse(reTpl.params||'[]').length}
-        : leadSteps[step];
-      const selectedVariant=stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
+      const tplStep=t=>({step, type:'template', template_name:t.name, template_language:t.language, template_category:'MARKETING', template_body_vars:JSON.parse(t.params||'[]').length});
+      const stepCfg=step===REENGAGE_STEP?tplStep(reTpl):FV3_PROPOSAL_STEPS[step]?tplStep(proposalTemplates[step]):leadSteps[step];
+      const selectedVariant=FV3_PROPOSAL_STEPS[step]?'A':stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
       const selectedTemplate=selectedVariant==='B'&&stepCfg.template_name_b?{name:stepCfg.template_name_b,language:stepCfg.template_language_b||stepCfg.template_language}:{name:stepCfg.template_name,language:stepCfg.template_language};
       const opts={selectedVariant:stepCfg.type==='template'?selectedVariant:undefined,v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
       const pro=latestSettings.cfg;
@@ -1080,7 +1150,9 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
   const cfg=settings.cfg;
   let accountHour=null;
   if(cfg.pro_smart_send){ const {results:hr}=await env.DB.prepare(`SELECT hours_json FROM followup_v3_leads WHERE client_id=?`).bind(Number(c.Id)).all(); accountHour=fpAccountHour(hr||[]); }
-  const d=fv3Decide({lead, steps, cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates), hasMeeting, accountHour});
+  const proposal=(await deps.proposals?.(env, c.Id, lead.Id).catch(()=>null)||{})[lead.Id]||null;
+  const d=fv3Decide({lead, steps, cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates), hasMeeting, accountHour,
+    proposal, proposalTemplates:fv3ProposalTemplates(templates)});
   const lastFail=await env.DB.prepare(`SELECT error_message, error_code, failed_at, step FROM followup_send_failures WHERE lead_id=? AND failed_at>=? ORDER BY failed_at DESC LIMIT 1`)
     .bind(Number(lead.Id), new Date(now-3*D).toISOString()).first().catch(()=>null);
   // Pro add-ons on the lead card — only the parts the account switched on.

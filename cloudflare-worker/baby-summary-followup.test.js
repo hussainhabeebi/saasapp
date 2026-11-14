@@ -25,6 +25,7 @@ test('not due in every case where a recap would be wrong or annoying', () => {
     'already sent after this message': lead({ ProductSummarySentAt: ago(5) }),
     'sent within the last 24h': lead({ LastCustomerMsgAt: ago(40), ProductSummarySentAt: ago(60 * 5) }),
     'won / converted': lead({ Stage: 'won' }),
+    'proposal sent (only Follow-up V3 proposal templates)': lead({ Stage: 'proposal_sent' }),
   };
   for (const [why, l] of Object.entries(cases)) assert.equal(babyCareSummaryDue(l, NOW), false, why);
   // custom delay

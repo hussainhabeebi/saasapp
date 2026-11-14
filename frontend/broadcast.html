@@ -2183,6 +2183,19 @@ function renderFuTimeline(){
     const st=!fv3State.config?.reengage_enabled?'Off':re?.status==='APPROVED'?'✅ Ready':'⏳ Template waiting for approval';
     nodes.push(`<button class="fu-node${fv3State.config?.reengage_enabled?'':' off'}" onclick="openFuPane('settings')"><div class="fu-when">After ${fv3State.config?.reengage_after_days||30} days</div><div class="fu-name">Re-engage</div><div class="fu-state">${st}</div><div class="fu-rate">${r&&r.sent?`${r.rate}% replied · ${r.sent} sent`:'No sends yet'}</div></button>`);
   }
+  // Proposal track (accounts that send proposals): leads at "Proposal Sent" get only these — a
+  // second row under the ladder.
+  const prop=on?(fv3State.checklist||[]).filter(i=>/^proposal_/.test(i.key)):[];
+  let pRow=$id('fuPropTimeline');
+  if(!pRow){ pRow=document.createElement('div'); pRow.id='fuPropTimeline'; el.insertAdjacentElement('afterend', pRow); }
+  if(prop.length){
+    const pon=fv3State.config?.proposal_followups!==false;
+    pRow.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 6px">📑 After a proposal is sent (stage “Proposal Sent”) — these go instead of the steps above</div><div class="fu-timeline">${prop.map(i=>{
+      const r=rate[i.step];
+      const st=!pon?'Off':i.status==='APPROVED'?'✅ Ready':i.status==='REJECTED'||i.status==='ERROR'?esc(FV3_STATUS_LABEL[i.status]||i.status):'⏳ Template waiting for approval';
+      return `<button class="fu-node${pon?'':' off'}" onclick="openFuPane('settings')"><div class="fu-when">${esc(i.label.replace(/^Proposal · /,'').replace(/ template$/,'').replace(/^day/,'Day'))} after</div><div class="fu-name">Proposal follow-up</div><div class="fu-state">${st}</div><div class="fu-rate">${r&&r.sent?`${r.rate}% replied · ${r.sent} sent`:'No sends yet'}</div></button>`;
+    }).join('')}</div>`;
+  } else pRow.innerHTML='';
   el.innerHTML=nodes.join('');
 }
 function fuEditStep(n){
@@ -3997,6 +4010,7 @@ function fv3Render(){
     chk('objection_branching','Answer objections','Nudges 1-2 reply to the lead\'s last objection using your Objection Playbook'),
     chk('exit_on_order','Stop when the customer orders','Ecommerce: an order ends the sequence'),
     chk('reengage_enabled','Re-engage long-silent leads','One more message after a long silence, up to the limit above'),
+    chk('proposal_followups','Follow up sent proposals','Leads at “Proposal Sent” get the proposal templates on day 1 / 3 / 7 — never the normal follow-ups'),
     chk('auto_templates','Create templates for me','Submit and plug in the day 1 / 3 / 7 and re-engage templates'),
     chk('ai_variant_b','AI-written B version','A second wording for nudges 1-2; the better one gets sent more'),
     chk('weekly_digest','Monday email summary','To the account owner\'s email'),
@@ -4035,7 +4049,7 @@ async function fv3EnableSetting(key, btn){
 async function fv3SaveConfig(){
   const cfg={};
   ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours','staff_reply_hours','pro_quote_valid_days'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
-  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','auto_templates','ai_variant_b','weekly_digest','pro_smart_send','pro_nba_home','pro_objections','pro_quote_pdf','pro_auto_language'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','proposal_followups','auto_templates','ai_variant_b','weekly_digest','pro_smart_send','pro_nba_home','pro_objections','pro_quote_pdf','pro_auto_language'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
   cfg.pro_quote_note=$id('fv3c_pro_quote_note').value.trim();
   cfg.stage_sequences={};
   document.querySelectorAll('[data-fv3-stage]').forEach(el=>{

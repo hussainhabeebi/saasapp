@@ -42,6 +42,9 @@ const RENDER_WEBHOOK_URL    = process.env.MARKETING_RENDER_WEBHOOK_URL    || '';
 const RENDER_WEBHOOK_SECRET = process.env.MARKETING_RENDER_WEBHOOK_SECRET || '';
 
 const TERMINAL_STAGES = new Set(['Converted', 'Lost', 'Closed', 'Opt Out']);
+// A lead at "Proposal Sent" (Chats → AI Proposal) gets only Follow-up V3's proposal templates —
+// no recovery messages.
+const PROPOSAL_STAGE = 'proposal_sent';
 
 // Escalation ladder defaults — each entry is hours since the *previous* step
 // (or since real last activity, for step 0). Clients can override via the
@@ -117,7 +120,7 @@ async function fetchLeads(tableId, token) {
     const rows = data.list || [];
     if (!rows.length) break;
     for (const r of rows) {
-      if (TERMINAL_STAGES.has(r.Stage)) continue;
+      if (TERMINAL_STAGES.has(r.Stage) || r.Stage === PROPOSAL_STAGE) continue;
       if (r.Date && r.Date < since) continue;
       all.push(r);
     }
@@ -168,7 +171,7 @@ function regularFollowupsPending(lead, client) {
 
 // ── DECIDE: does this lead need a recovery message right now, and which stage? ─
 function decide(lead, client) {
-  if (TERMINAL_STAGES.has(lead.Stage)) return null;
+  if (TERMINAL_STAGES.has(lead.Stage) || lead.Stage === PROPOSAL_STAGE) return null;
   if (truthy(lead.OptOut)) return null;
   if (truthy(lead.Handover)) return null; // human is already on this conversation
   if (client.recovery_enabled === 'No' || client.recovery_enabled === false) return null;

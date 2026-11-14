@@ -30,9 +30,10 @@ const REPORT = {
   health: { status: 'healthy', last_success_at: iso(now - 10 * 60e3), checked: 12 },
 };
 
-async function open(page, { v3 = false, query = '' } = {}) {
+async function open(page, { v3 = false, query = '', proposals = false } = {}) {
   const settings = v3
-    ? { enabled: true, enabled_at: iso(now - 86400e3), config: { paused: false, reengage_enabled: true, reengage_after_days: 30 }, checklist: [{ key: 'reengage', status: 'PENDING', label: 'Re-engage template' }] }
+    ? { enabled: true, enabled_at: iso(now - 86400e3), config: { paused: false, reengage_enabled: true, reengage_after_days: 30, proposal_followups: true }, checklist: [{ key: 'reengage', status: 'PENDING', label: 'Re-engage template' },
+      ...(proposals ? [{ key: 'proposal_p1', step: 7, status: 'APPROVED', label: 'Proposal · day 1 template' }, { key: 'proposal_p2', step: 8, status: 'PENDING', label: 'Proposal · day 3 template' }, { key: 'proposal_p3', step: 9, status: 'REJECTED', label: 'Proposal · day 7 template' }] : [])] }
     : { enabled: false, config: {}, checklist: [] };
   await page.addInitScript(() => { localStorage.setItem('lv_cid', '42'); localStorage.setItem('lv_session', 'tok'); });
   await page.route('**/*', (route) => {
@@ -154,4 +155,32 @@ test('Follow-up V3 settings: Pro add-ons are listed, off by default, and saved w
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0].config).toMatchObject({ pro_quote_pdf: true, pro_auto_language: true, pro_smart_send: false, pro_nba_home: false, pro_objections: false,
     pro_quote_valid_days: 10, pro_quote_note: '30% advance confirms the booking.' });
+});
+
+test('Follow-up V3 for proposal accounts: a separate Proposal Sent track, and a switch to turn it off', async ({ page }) => {
+  await open(page, { v3: true, proposals: true, query: '?view=followups' });
+  await page.locator('[data-fu="sequence"]').click();
+  // The normal ladder is unchanged; the proposal templates are their own row.
+  await expect(page.locator('#fuTimeline .fu-node')).toHaveCount(6);
+  const row = page.locator('#fuPropTimeline');
+  await expect(row).toContainText('After a proposal is sent');
+  await expect(row.locator('.fu-node')).toHaveCount(3);
+  await expect(row.locator('.fu-node').nth(0)).toContainText('Day 1 after');
+  await expect(row.locator('.fu-node').nth(0)).toContainText('✅ Ready');
+  await expect(row.locator('.fu-node').nth(1)).toContainText('waiting for approval');
+  await expect(row.locator('.fu-node').nth(2)).toContainText('Rejected');
+  const posts = [];
+  page.on('request', (req) => { if (req.method() === 'POST' && req.url().includes('/followups/v3/settings')) posts.push(JSON.parse(req.postData() || '{}')); });
+  await page.waitForFunction(() => !!document.getElementById('fv3c_proposal_followups'));
+  expect(await page.locator('#fv3c_proposal_followups').isChecked()).toBe(true);
+  await page.evaluate(() => { document.getElementById('fv3c_proposal_followups').checked = false; return window.fv3SaveConfig(); });
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].config).toMatchObject({ proposal_followups: false });
+});
+
+test('Follow-up V3 without proposals shows no proposal row', async ({ page }) => {
+  await open(page, { v3: true, query: '?view=followups' });
+  await page.locator('[data-fu="sequence"]').click();
+  await expect(page.locator('#fuTimeline .fu-node')).toHaveCount(6);
+  await expect(page.locator('#fuPropTimeline .fu-node')).toHaveCount(0);
 });

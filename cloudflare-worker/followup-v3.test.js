@@ -313,6 +313,45 @@ describe('with D1', ()=>{
     r=await fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now});
     assert.equal(sent.length, 1, 'deferred lead not retried before its time');
   });
+  test('proposal accounts: setup also submits the proposal templates; the sweep sends only the proposal template to a Proposal Sent lead', async ()=>{
+    const gen={...client, industry:'general'};
+    const settings=await fv3SaveSettings(env, 42, {enabled:true, industry:'general', config:{quiet_start:0, quiet_end:0, objection_branching:false}});
+    globalThis.fetch=async (url, opts={})=>{
+      graphCalls.push({url:String(url), body:opts.body?JSON.parse(opts.body):null});
+      if((opts.method||'GET')==='POST') return new Response(JSON.stringify({id:'1', status:'PENDING'}));
+      return new Response(JSON.stringify({data:[{name:new URL(String(url)).searchParams.get('name'), status:'APPROVED', language:'en'}]}));
+    };
+    const base={metaCreds:()=>({waba_id:'W', wa_token:'tok', wa_phone_id:'P'}), ai:async()=>null};
+    await fv3Setup(env, {...base, proposalsOn:()=>false}, gen, settings);
+    assert.ok(!graphCalls.some(c=>c.body?.name?.startsWith('lv_followup_p')), 'no proposal templates for accounts that do not send proposals');
+    graphCalls=[];
+    await fv3Setup(env, {...base, proposalsOn:()=>true}, gen, await fv3GetSettings(env, 42));
+    assert.deepEqual(graphCalls.filter(c=>c.body).map(c=>c.body.name), ['lv_followup_p1', 'lv_followup_p2', 'lv_followup_p3']);
+    // Proposal templates never get attached to the normal ladder.
+    assert.equal(db.prepare(`SELECT template_name FROM followup_ladder_steps WHERE client_id=42 AND step=1`).get().template_name||'', '');
+    await fv3Setup(env, {...base, proposalsOn:()=>true}, gen, await fv3GetSettings(env, 42)); // poll → APPROVED
+    assert.equal(db.prepare(`SELECT status FROM followup_v3_templates WHERE client_id=42 AND kind='p1'`).get().status, 'APPROVED');
+
+    const now=Date.now();
+    db.prepare(`UPDATE followup_v3_settings SET maint_at=?, enabled_at=? WHERE client_id=42`).run(iso(now), iso(now-5*D));
+    const leads=[
+      // Proposal sent 25h ago; the customer last wrote 2h before it → day-1 proposal template due.
+      {Id:1, Name:'Asha K', Phone:'91900', Stage:'proposal_sent', CreatedAt:iso(now-60*D), LastCustomerMsgAt:iso(now-27*H), LastAgentMsgAt:iso(now-25*H)},
+      // Same silence, normal stage → the normal ladder (session nudges expired, template step 3).
+      {Id:2, Name:'Ravi', Phone:'91901', Stage:'new', CreatedAt:iso(now-3*D), LastCustomerMsgAt:iso(now-27*H)},
+    ];
+    const sent=[];
+    const deps={...base, proposalsOn:()=>true, leadsTable:'L', ensureLeadsColumns:async()=>{},
+      ncFetch:async(e,path)=>new Response(JSON.stringify(/records\/\d+$/.test(path)?{...leads.find(l=>l.Id===Number(path.split('/').pop())),ClientId:42}:{list:leads})),
+      proposals:async(e,cid,leadId)=>({1:{at:iso(now-25*H), title:'Solar Hot Water'}}),
+      sendStep:async(env2, c, lead, step, stepCfg, opts)=>{ sent.push({lead:lead.Id, step, stepCfg, opts}); db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at, v3, kind) VALUES (42,?,?,?,?,1,?)`).run(lead.Id, step, 'A', iso(now), opts.kind); },
+    };
+    await fv3ProcessClient(env, deps, gen, await fv3GetSettings(env, 42), {now});
+    const p=sent.find(x=>x.lead===1);
+    assert.equal(p.step, 7); assert.equal(p.opts.kind, 'proposal'); assert.equal(p.stepCfg.template_name, 'lv_followup_p1');
+    assert.deepEqual(p.opts.templateParams, ['Asha', 'Acme', 'our proposal "Solar Hot Water"']);
+    assert.ok(!sent.some(x=>x.lead===1 && x.step<=6), 'no normal follow-up to a Proposal Sent lead');
+  });
   test('sweep asks NocoDB only for columns the leads table has (an unknown field fails the whole read)', async ()=>{
     await fv3EnsureSchema(env);
     const now=Date.now();
@@ -434,4 +473,70 @@ test('stage sequences override wording while preserving exit rules and session e
   const d=fv3Decide({lead:l,steps,cfg:custom,now:T('2026-10-11T12:00:00Z'),tz:'UTC'});
   assert.equal(d.steps[0].state,'expired');assert.equal(d.next.step,3);
   assert.equal(fv3Decide({lead:{...l,Handover:'Yes'},steps,cfg:custom,now:T('2026-10-11T12:00:00Z')}).status,'human');
+});
+
+// Proposal track: a lead at "Proposal Sent" gets only the proposal templates (day 1/3/7 after the
+// proposal), never the normal ladder or re-engage.
+import {FV3_PROPOSAL_STAGE, FV3_PROPOSAL_STEPS, fv3ProposalTemplates} from './followup-v3.js';
+describe('proposal follow-ups', ()=>{
+  const TPL={7:{name:'lv_followup_p1', language:'en', params:'["name","business","proposal"]'}, 8:{name:'lv_followup_p2', language:'en'}, 9:{name:'lv_followup_p3', language:'en'}};
+  const PROP={at:'2026-10-12T10:00:00Z', title:'Solar Hot Water'};
+  // Customer last wrote on the 10th; the team sent the proposal on the 12th (LastAgentMsgAt = then).
+  const pLead={Stage:FV3_PROPOSAL_STAGE, LastAgentMsgAt:'2026-10-12T10:00:30Z'};
+  const pd=(o={})=>fv3Decide({lead:lead({...pLead, ...o.lead}), steps, cfg:o.cfg||cfg, state:null, sends:o.sends||[], enabledAt:ENABLED, now:o.now, tz:'UTC',
+    reengageReady:true, proposal:o.proposal===undefined?PROP:o.proposal, proposalTemplates:o.tpl||TPL});
+
+  test('day 1 after the proposal, not the normal nudges — the proposal itself is not "your team replied"', ()=>{
+    let d=pd({now:T('2026-10-12T12:00:00Z')});
+    assert.equal(d.status, 'scheduled'); assert.equal(d.next.step, 7); assert.equal(d.next.kind, 'proposal');
+    assert.equal(d.next.due_at, '2026-10-13T10:00:00.000Z');
+    assert.deepEqual(d.steps.map(s=>s.step), [7, 8, 9]);
+    d=pd({now:T('2026-10-13T10:05:00Z')});
+    assert.equal(d.status, 'due'); assert.equal(d.next.step, 7); assert.equal(d.cycle, '2026-10-12T10:00:00.000Z');
+  });
+
+  test('day 3 and day 7 follow; then done, no re-engage', ()=>{
+    const s7={step:7, kind:'proposal', sent_at:'2026-10-13T10:05:00Z'};
+    let d=pd({sends:[s7], now:T('2026-10-14T10:00:00Z')});
+    assert.equal(d.next.step, 8); assert.equal(d.next.due_at, '2026-10-15T10:00:00.000Z');
+    const s8={step:8, kind:'proposal', sent_at:'2026-10-15T10:00:00Z'};
+    d=pd({sends:[s7, s8], now:T('2026-10-18T10:00:00Z')});
+    assert.equal(d.next.step, 9); assert.equal(d.next.due_at, '2026-10-19T10:00:00.000Z');
+    const s9={step:9, kind:'proposal', sent_at:'2026-10-19T10:00:00Z'};
+    d=pd({sends:[s7, s8, s9], now:T('2026-11-30T10:00:00Z')});
+    assert.equal(d.status, 'completed'); assert.equal(d.reason, 'proposal_done');
+  });
+
+  test('a customer reply after the proposal restarts the proposal track from that reply', ()=>{
+    const d=pd({lead:{LastCustomerMsgAt:'2026-10-13T08:00:00Z'}, sends:[{step:7, kind:'proposal', sent_at:'2026-10-13T07:00:00Z'}], now:T('2026-10-13T09:00:00Z')});
+    assert.equal(d.next.step, 7); assert.equal(d.next.due_at, '2026-10-14T09:00:00.000Z'); // 08:00 is inside quiet hours
+  });
+
+  test('waits for its template; can be switched off; leads from before V3 are still enrolled', ()=>{
+    let d=pd({tpl:{}, now:T('2026-10-13T11:00:00Z')});
+    assert.equal(d.status, 'waiting_template'); assert.equal(d.reason, 'proposal_template_pending');
+    d=pd({cfg:fv3Config({proposal_followups:false}), now:T('2026-10-13T11:00:00Z')});
+    assert.equal(d.status, 'stopped'); assert.equal(d.reason, 'proposal_off');
+    d=pd({lead:{CreatedAt:'2026-09-01T00:00:00Z'}, now:T('2026-10-13T11:00:00Z')});
+    assert.equal(d.status, 'due');
+  });
+
+  test('a team message after the proposal still holds it; won still ends it', ()=>{
+    let d=pd({lead:{LastAgentMsgAt:'2026-10-12T15:00:00Z'}, now:T('2026-10-13T11:00:00Z')});
+    assert.equal(d.status, 'scheduled'); assert.equal(d.next.due_at, '2026-10-13T15:00:00.000Z');
+    d=pd({lead:{Stage:'won'}, now:T('2026-10-13T11:00:00Z')});
+    assert.equal(d.reason, 'won');
+  });
+
+  test('proposal templates: bodies, params with the proposal title, approved ones by step', ()=>{
+    const p=fv3TemplatePreset('p1', {businessName:'Sunrise Solar'});
+    assert.match(p.body, /Did you get a chance to go through \{\{3\}\}/);
+    assert.deepEqual(p.params, ['name', 'business', 'proposal']);
+    assert.match(p.body, /Reply STOP to opt out\.$/);
+    assert.deepEqual(fv3TemplateParams(p.params, {Name:'Asha K', ProposalTitle:'Solar Hot Water'}, {client_name:'Sunrise Solar'}, 'general'),
+      ['Asha', 'Sunrise Solar', 'our proposal "Solar Hot Water"']);
+    assert.deepEqual(fv3TemplateParams(p.params, {Name:''}, {}, 'general'), ['there', 'our team', 'the proposal']);
+    assert.deepEqual(Object.keys(fv3ProposalTemplates([{kind:'p1', status:'APPROVED'}, {kind:'p2', status:'PENDING'}, {kind:'s3', status:'APPROVED'}])), ['7']);
+    assert.equal(FV3_PROPOSAL_STEPS[9].label, 'Proposal · day 7');
+  });
 });
