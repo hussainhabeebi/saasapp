@@ -992,7 +992,7 @@ function buildShell(){
    <button onclick="pickFiles('audio/*')"><span class="dot" style="background:#ff7f23">${IC.audio}</span>Audio</button>
    <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
    ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
-   ${isHospAcct()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">🏨</span>${isTravelAcct()?'AI Stay Itinerary':'AI Itinerary'}</button>`:''}
+   ${hItinOn()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">🏨</span>${isTravelAcct()?'AI Stay Itinerary':'AI Itinerary'}</button>`:''}
    ${isGeneralAcct()?`<button onclick="openAiProp()" id="aiPropBtn"><span class="dot" style="background:#0d9c93">📑</span>AI Proposal</button>`:''}
   </div>
   <div class="input-wrap" id="inputWrap">
@@ -1417,11 +1417,14 @@ function isHospAcct(){
  if(String(c.industry||'').toLowerCase()==='hospitality'||/^(yes|true|1|on)$/i.test(String(c.hospitality_enabled??'').trim()))return true;
  try{const m=JSON.parse(c.channel_industry_map||'[]');return Array.isArray(m)&&m.some(x=>String(x?.industry||'').toLowerCase()==='hospitality')}catch{return false}
 }
+// Stay itineraries come from Hospitality → Properties and Agency → Resorts & Hotels, so travel
+// agencies get them too (worker /hospitality/chat-properties lists both).
+function hItinOn(){return isHospAcct()||isTravelAcct()||/^(yes|true|1|on)$/i.test(String(clientRecord?.ta_enabled??'').trim())}
 let hItin={props:null,sel:null,days:null,busy:false,seq:0,stay:null};
 const H_ITIN_INTERESTS=['Relaxation','Nature','Sightseeing','Adventure','Wellness & spa','Food','Culture & history','Shopping','Photography',"Kids' activities"];
 const hImg=(u,cls,alt)=>`<img class="${cls||''}" src="${esc(u)}" alt="${esc(alt||'')}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
 async function openHospItin(){
- closePopovers();if(!current||isIg(current)||!isHospAcct())return;
+ closePopovers();if(!current||isIg(current)||!hItinOn())return;
  let ov=$('hospItinOv');if(!ov){ov=document.createElement('div');ov.id='hospItinOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
  ov.classList.remove('hidden');hItin={...hItin,sel:null,days:null,busy:false,stay:null,lead:current};
  ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="hItinBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✨ AI Itinerary for <b>${esc(who(current)||'contact')}</b></div></div><div class="tpl-main" id="hItinMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="hItinSearch" placeholder="Search properties" oninput="drawHItinProps()"></div></div><div class="tpl-items" id="hItinItems"><div class="tpl-empty"><div class="spinner"></div>Loading properties…</div></div></div><div class="tpl-detail" id="hItinDetail"><div class="tpl-empty">Choose a property — the AI drafts a day-by-day stay itinerary with photos for you to check before it is sent.</div></div></div>`;
@@ -1431,7 +1434,7 @@ async function openHospItin(){
 function drawHItinProps(){
  const el=$('hItinItems');if(!el||!hItin.props)return;const q=($('hItinSearch')?.value||'').trim().toLowerCase();
  const list=hItin.props.filter(p=>!q||`${p.name} ${p.location} ${(p.rooms||[]).map(r=>r.name).join(' ')}`.toLowerCase().includes(q));
- el.innerHTML=list.length?list.map(p=>`<button class="tpl-item h-prop ${hItin.sel===p?'active':''}" onclick="pickHItinProp('${esc(p.id)}')">${p.photos?.[0]?hImg(p.photos[0],'h-thumb'):'<div class="h-thumb">🏨</div>'}<span><b>${esc(p.name)}</b><small>${esc([p.location,(p.rooms||[]).length?`${p.rooms.length} room${p.rooms.length>1?'s':''}`:''].filter(Boolean).join(' · '))}</small></span></button>`).join(''):`<div class="tpl-empty">${hItin.props.length?'No properties match.':'No properties yet. Add them in Hospitality → Properties.'}</div>`;
+ el.innerHTML=list.length?list.map(p=>`<button class="tpl-item h-prop ${hItin.sel===p?'active':''}" onclick="pickHItinProp('${esc(p.id)}')">${p.photos?.[0]?hImg(p.photos[0],'h-thumb'):'<div class="h-thumb">🏨</div>'}<span><b>${esc(p.name)}</b><small>${esc([p.source==='agency'?'Resorts & Hotels':'',p.location,(p.rooms||[]).length?`${p.rooms.length} room${p.rooms.length>1?'s':''}`:''].filter(Boolean).join(' · '))}</small></span></button>`).join(''):`<div class="tpl-empty">${hItin.props.length?'No properties match.':'No properties yet. Add them in Hospitality → Properties or Travel Agency → Resorts & Hotels.'}</div>`;
 }
 function pickHItinProp(id){
  const p=(hItin.props||[]).find(x=>String(x.id)===String(id));if(!p||hItin.busy)return;

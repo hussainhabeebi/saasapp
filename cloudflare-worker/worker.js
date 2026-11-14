@@ -22,7 +22,7 @@ import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInTex
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
-import {hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
+import {hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
 import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -22424,9 +22424,24 @@ export function hospChatIsOn(c){
   if(String(c.industry||'').toLowerCase()==='hospitality'||/^(yes|true|1|on)$/i.test(String(c.hospitality_enabled??'').trim()))return true;
   try{const m=JSON.parse(c.channel_industry_map||'[]');return Array.isArray(m)&&m.some(x=>String(x?.industry||'').toLowerCase()==='hospitality');}catch(e){return false;}
 }
+// Who gets the stay itinerary: Hospitality accounts, and travel agencies (their Resorts & Hotels).
+function hospChatAllowed(c){
+  return hospChatIsOn(c)||taIsTravelClient(c)||/^(yes|true|1|on)$/i.test(String(c?.ta_enabled??'').trim());
+}
+const HOSP_CHAT_DENIED='AI Stay Itinerary is for Hospitality and Travel Agency accounts.';
 const hospChatShort=(v,max)=>{const t=String(v??'').replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max-1).trimEnd()+'…':t;};
+// A property from either list: Hospitality → Properties (plain id) or Agency → Resorts & Hotels ("a-<id>").
 async function hospChatLoad(env,clientId,propertyId,roomId){
-  const property=propertyId!=null&&propertyId!==''?await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=? AND client_id=? AND active=1`).bind(Number(propertyId)||0,Number(clientId)).first():null;
+  const pid=hospAiParseId(propertyId);
+  if(!pid)return {property:null,room:null};
+  if(pid.source==='agency'){
+    const row=(await taPropertiesForClient(env,clientId).catch(()=>[])).find(p=>Number(p.id)===pid.id);
+    if(!row)return {property:null,room:null};
+    const property=hospAiAgencyProperty(row);
+    const room=roomId!=null&&roomId!==''?hospAiAgencyRooms(row).find(r=>r.id===String(roomId))||null:null;
+    return {property,room};
+  }
+  const property=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=? AND client_id=? AND active=1`).bind(pid.id,Number(clientId)).first();
   let room=null;
   if(property&&roomId!=null&&roomId!==''){
     room=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE id=? AND client_id=? AND active=1`).bind(Number(roomId)||0,Number(clientId)).first();
@@ -22441,10 +22456,13 @@ async function handleHospitalityChatProperties(request,env){
   if(!payload)return json({error:'Invalid or expired session'},401);
   const c=await getClientById(env,payload.cid).catch(()=>null);
   if(!c)return json({error:'Client not found'},404);
-  if(!hospChatIsOn(c))return json({error:'AI Itinerary is for Hospitality accounts.'},403);
-  const [{results:props},{results:units}]=await Promise.all([
-    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(payload.cid)).all(),
-    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(payload.cid)).all(),
+  if(!hospChatAllowed(c))return json({error:HOSP_CHAT_DENIED},403);
+  // Both lists, whichever the account uses: Hospitality → Properties and Agency → Resorts & Hotels.
+  const none={results:[]};
+  const [{results:props},{results:units},agency]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(payload.cid)).all().catch(()=>none),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(payload.cid)).all().catch(()=>none),
+    taPropertiesForClient(env,payload.cid).catch(()=>[]),
   ]);
   const show=row=>hospAiPhotos(row).map(u=>engineResolveDirectImageUrl(u)).filter(Boolean).slice(0,5);
   const room=u=>({id:String(u.id),name:String(u.name||'').trim(),unit_type:String(u.unit_type||'').trim(),
@@ -22453,9 +22471,16 @@ async function handleHospitalityChatProperties(request,env){
     const linked=(units||[]).filter(u=>Number(u.property_id)===Number(p.id));
     // A property with no rooms linked to it offers the account's unlinked rooms (single-property setups).
     const rooms=(linked.length?linked:(units||[]).filter(u=>u.property_id==null)).filter(u=>String(u.name||'').trim()).map(room);
-    return {id:String(p.id),name:String(p.name).trim(),location:String(p.location||'').trim(),description:hospChatShort(p.description,300),
+    return {id:String(p.id),source:'hospitality',name:String(p.name).trim(),location:String(p.location||'').trim(),description:hospChatShort(p.description,300),
       amenities:hospChatShort(p.amenities,200),photos:show(p),rooms};
   });
+  for(const row of agency||[]){
+    const p=hospAiAgencyProperty(row);
+    if(!p.name)continue;
+    list.push({id:p.id,source:'agency',name:p.name,location:p.location,description:hospChatShort(p.description,300),amenities:hospChatShort(p.amenities,200),
+      photos:show(p),rooms:hospAiAgencyRooms(row).map(r=>({id:r.id,name:r.name,unit_type:'',capacity_adults:0,capacity_children:0,amenities:'',photos:[]}))});
+  }
+  list.sort((a,b)=>a.name.localeCompare(b.name,'en',{numeric:true,sensitivity:'base'}));
   return json({properties:list});
 }
 // POST /hospitality/ai-itinerary {property_id, room_id?, nights, check_in?, guest?} → {days}
@@ -22465,7 +22490,7 @@ async function handleHospitalityAiItinerary(request,env){
   const body=await request.json().catch(()=>({}));
   const c=await getClientById(env,payload.cid).catch(()=>null);
   if(!c)return json({error:'Client not found'},404);
-  if(!hospChatIsOn(c))return json({error:'AI Itinerary is for Hospitality accounts.'},403);
+  if(!hospChatAllowed(c))return json({error:HOSP_CHAT_DENIED},403);
   const {property,room}=await hospChatLoad(env,payload.cid,body?.property_id,body?.room_id);
   if(!property)return json({error:'Property not found'},404);
   const out=await hospAiItinerary(property,room,taAiItineraryGenerator(env,c,'hosp-ai-itinerary'),
@@ -22492,7 +22517,7 @@ async function handleHospitalityChatItinerarySend(request,env){
   const body=await request.json().catch(()=>({}));
   const c=await getClientById(env,payload.cid).catch(()=>null);
   if(!c)return json({error:'Client not found'},404);
-  if(!hospChatIsOn(c))return json({error:'AI Itinerary is for Hospitality accounts.'},403);
+  if(!hospChatAllowed(c))return json({error:HOSP_CHAT_DENIED},403);
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token)return json({error:'Chatwoot is not configured for this account.'},400);
   const leadId=Number(body?.lead_id)||0;
   if(!leadId)return json({error:'lead_id required'},400);

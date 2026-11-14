@@ -18,13 +18,14 @@ const PROPS = [
     rooms: [{ id: '9', name: 'Valley View Suite', capacity_adults: 3, photos: ['https://img.test/room1.png'] }, { id: '10', name: 'Garden Cottage', photos: [] }] },
   { id: '4', name: 'Lake Palace', location: 'Alleppey', photos: [], rooms: [] },
 ];
+const AGENCY = { id: 'a-7', source: 'agency', name: 'Bay View Resort', location: 'Wayanad', photos: ['https://img.test/bay.png'], rooms: [{ id: 'a-7-r1', name: 'Deluxe', photos: [] }] };
 const DAYS = [
   { day_no: 1, title: 'Arrival & check-in', overnight: 'Misty Hills Resort', meals: ['D'], items: [{ type: 'hotel', time: '14:00', description: 'Check in and settle in' }] },
   { day_no: 2, title: 'Tea country', meals: ['B'], items: [{ type: 'activity', description: 'Eravikulam National Park', image: 'https://img.test/eravikulam.png' }] },
   { day_no: 3, title: 'Check-out', items: [{ type: 'hotel', description: 'Check out' }] },
 ];
 
-async function open(page, { industry = 'hospitality', hospitality = 'Yes', draftFails = false } = {}) {
+async function open(page, { industry = 'hospitality', hospitality = 'Yes', draftFails = false, withAgency = false } = {}) {
   const calls = { draft: [], send: [] };
   await page.route('**/*', async (route) => {
     const req = route.request();
@@ -34,7 +35,7 @@ async function open(page, { industry = 'hospitality', hospitality = 'Yes', draft
     if (url.pathname.endsWith('/session/me')) return route.fulfill({ json: { email: 'owner@x.test', client: { authentik_email: 'owner@x.test', industry, hospitality_enabled: hospitality } } });
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(url.pathname)) return route.fulfill({ json: { list: [LEAD] } });
     if (url.pathname.endsWith('/chat/messages')) return route.fulfill({ json: { messages: MESSAGES } });
-    if (url.pathname.endsWith('/hospitality/chat-properties')) return route.fulfill({ json: { properties: PROPS } });
+    if (url.pathname.endsWith('/hospitality/chat-properties')) return route.fulfill({ json: { properties: withAgency ? [AGENCY, ...PROPS] : PROPS } });
     if (url.pathname.endsWith('/hospitality/ai-itinerary')) {
       calls.draft.push(req.postDataJSON());
       if (draftFails) return route.fulfill({ status: 422, json: { error: 'AI timed out' } });
@@ -124,4 +125,18 @@ test('a travel agency with Hospitality on gets both itineraries', async ({ page 
   await expect(page.locator('#attachMenu #hospItinBtn')).toHaveText(/AI Stay Itinerary/);
   await page.locator('#attachMenu #hospItinBtn').click();
   await expect(page.locator('#hospItinOv .tpl-item')).toHaveCount(2);
+});
+
+test('a travel agency gets stay itineraries from its Resorts & Hotels, listed with the Hospitality properties', async ({ page }) => {
+  const calls = await open(page, { industry: 'travel', hospitality: 'No', withAgency: true });
+  await page.locator('#attachBtn').click();
+  await page.locator('#attachMenu #hospItinBtn').click();
+  const ov = page.locator('#hospItinOv');
+  await expect(ov.locator('.tpl-item')).toHaveCount(3);
+  await expect(ov.locator('.tpl-item', { hasText: 'Bay View Resort' })).toContainText('Resorts & Hotels · Wayanad');
+  await ov.locator('.tpl-item', { hasText: 'Bay View Resort' }).click();
+  await page.locator('#hItinRoom').selectOption('a-7-r1');
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  await expect(ov.locator('.ai-itin-day')).toHaveCount(3);
+  expect(calls.draft[0]).toMatchObject({ property_id: 'a-7', room_id: 'a-7-r1' });
 });
