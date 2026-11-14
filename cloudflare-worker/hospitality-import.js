@@ -90,10 +90,20 @@ function text(v, max){
     .replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
     .replace(/[ \t]+/g,' ').replace(/\n\s*\n+/g,'\n').trim().slice(0, max);
 }
-// 4500, "4,500", "₹ 4,500/night", {amount:4500}, {value:"4500"} → 4500; anything else → null.
-export function hiMoney(v){
+// 4500, "4,500", "₹ 4,500/night", {amount:4500}, {value:"4500"}, [{price:5000},{price:4500}]
+// (the lowest) → 4500; anything else → null.
+const HI_MONEY_PARTS=['amount','value','price','min','from','base','starting','start','per_night','nightly','night','rate','base_price','sale_price','offer_price','selling_price','display','lowest','total'];
+export function hiMoney(v, depth=0){
   if(v==null||v==='') return null;
-  if(isObj(v)) return hiMoney(pick(v, ['amount','value','price','min','from','base']));
+  if(depth>3) return null;
+  if(Array.isArray(v)){
+    const all=v.map(x=>hiMoney(x, depth+1)).filter(x=>x!=null&&x>0);
+    return all.length?Math.min(...all):null;
+  }
+  if(isObj(v)){
+    for(const k of HI_MONEY_PARTS){ if(v[k]==null||v[k]==='') continue; const x=hiMoney(v[k], depth+1); if(x!=null&&x>0) return x; }
+    return null;
+  }
   if(typeof v==='number') return Number.isFinite(v)&&v>=0?v:null;
   const m=String(v).replace(/,/g,'').match(/\d+(?:\.\d+)?/);
   return m?Number(m[0]):null;
@@ -111,6 +121,18 @@ function currencyOf(...vals){
     if(/\bAED\b/i.test(s)) return 'AED';
   }
   return '';
+}
+// Currency carried inside a nested price ({amount, currency}, [{rate:{currency}}], …).
+function hiCurrencyDeep(v, depth=0){
+  if(v==null||depth>3) return '';
+  if(Array.isArray(v)){ for(const x of v){ const c=hiCurrencyDeep(x, depth+1); if(c) return c; } return ''; }
+  if(isObj(v)){
+    const c=currencyOf(v.currency, v.currency_code);
+    if(c) return c;
+    for(const k of HI_MONEY_PARTS){ const x=hiCurrencyDeep(v[k], depth+1); if(x) return x; }
+    return '';
+  }
+  return currencyOf(v);
 }
 function int(v, def){
   if(isObj(v)) v=pick(v, ['adults','max','value']);
@@ -224,6 +246,7 @@ export function hiMapProperty(raw, base){
   const location=hiLocation(raw);
   const m=hiMedia(raw, base);
   return {
+    _price_raw:hiPriceRaw(raw),
     external_id, name, location,
     description:text(pick(raw, ['description','short_description','summary','about','overview','details']), 1000),
     amenities:text(pick(raw, ['amenities','facilities','features','highlights']), 500),
@@ -232,6 +255,18 @@ export function hiMapProperty(raw, base){
   };
 }
 
+// A room's nightly price from whatever the feed calls it — the first key that holds a real (> 0)
+// amount; lists such as rates / rate_plans give their lowest. Falls back to the property's own
+// "from" price when the room has none.
+const HI_PRICE_KEYS=['base_rate','price','base_price','rate','room_rate','room_price','price_per_night','rate_per_night','per_night','night_price','nightly_rate','nightly_price','starting_price','starting_from','price_from','from_price','min_price','min_rate','lowest_price','lowest_rate','tariff','tariff_per_night','selling_price','sale_price','offer_price','discounted_price','display_price','amount','cost','pricing','prices','rates','rate_plans','plans','packages'];
+function hiPriceRaw(raw){
+  if(!isObj(raw)) return undefined;
+  for(const o of [raw, raw.attributes, raw.details]){
+    if(!isObj(o)) continue;
+    for(const k of HI_PRICE_KEYS){ const v=o[k]; if(v!=null&&v!==''&&(hiMoney(v)??0)>0) return v; }
+  }
+  return undefined;
+}
 function mapUnit(raw, prop, fallbackName, base){
   if(!isObj(raw)) return null;
   const name=text(pick(raw, ['name','title','room_name','room_type','type','category'])??fallbackName, 140);
@@ -239,7 +274,7 @@ function mapUnit(raw, prop, fallbackName, base){
   const cap=raw.capacity;
   const adults=int(pick(raw, ['max_adults','capacity_adults','adults','max_occupancy','occupancy','max_guests','guests','sleeps'])??cap, 2)||2;
   const children=int(pick(raw, ['max_children','capacity_children','children'])??(isObj(cap)?cap.children:undefined), 0);
-  const priceRaw=pick(raw, ['base_rate','price','base_price','rate','price_per_night','nightly_rate','starting_price','price_from','tariff','min_price','pricing']);
+  const priceRaw=hiPriceRaw(raw)??prop._price_raw;
   const m=hiMedia(raw, base);
   const pm=m.images.length?m:{images:[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean), videos:[prop.video_url_1,prop.video_url_2].filter(Boolean)};
   return {
@@ -248,8 +283,8 @@ function mapUnit(raw, prop, fallbackName, base){
     capacity_adults:adults, capacity_children:children,
     amenities:text(pick(raw, ['amenities','facilities','features']), 500)||(fallbackName?prop.amenities:''),
     base_rate:hiMoney(priceRaw)??0,
-    weekend_rate:hiMoney(pick(raw, ['weekend_rate','weekend_price','weekend_tariff'])),
-    currency:(currencyOf(raw.currency, raw.currency_code, priceRaw, raw.price_display, raw.price_label)||'INR').slice(0,10),
+    weekend_rate:hiMoney(pick(raw, ['weekend_rate','weekend_price','weekend_tariff','weekend_rates'])),
+    currency:(currencyOf(raw.currency, raw.currency_code, priceRaw, raw.price_display, raw.price_label)||hiCurrencyDeep(priceRaw)||'INR').slice(0,10),
     description:text(pick(raw, ['description','short_description','summary','about']), 1000)||(fallbackName?prop.description:''),
     image_url_1:pm.images[0]||null, image_url_2:pm.images[1]||null, image_url_3:pm.images[2]||null, image_url_4:pm.images[3]||null, image_url_5:pm.images[4]||null,
     video_url:pm.videos[0]||null, video_url_2:pm.videos[1]||null,
@@ -407,7 +442,9 @@ async function upsert(env, ctx, kind, rec, cols){
     const changed=link.hash!==hash;
     if(!changed&&!Number(link.removed)) return Number(link.local_id);
     // A location typed in Hospitality → Properties is kept when the feed itself has none.
-    const setCols=changed?cols.filter(c=>!(kind==='property'&&c==='location'&&!values[c])):[];
+    const setCols=changed?cols.filter(c=>!(
+      (kind==='property'&&c==='location'&&!values[c]) ||
+      (kind==='unit'&&(c==='base_rate'||c==='weekend_rate')&&!(Number(values[c])>0)))):[];
     const sets=setCols.map(c=>`${c}=?`);
     const vals=setCols.map(c=>values[c]);
     if(Number(link.removed)) sets.push('active=1');
@@ -563,7 +600,9 @@ export async function hiHandleRoute(request, env, deps, url){
       const {records}=await hiFetchAll(deps, {url:urlIn, auth_style:auth}, key, {maxPages:1});
       const props=records.map(r=>hiMapProperty(r, urlIn)).filter(Boolean);
       const sample=records.slice(0,5).map(r=>{ const p=hiMapProperty(r, urlIn); return p?{name:p.name, location:p.location, photos:[p.image_url_1,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).length, units:hiMapUnits(r, p, urlIn).map(u=>({name:u.name, base_rate:u.base_rate, currency:u.currency, capacity_adults:u.capacity_adults}))}:null; }).filter(Boolean);
-      return deps.json({ok:true, found:props.length, skipped:records.length-props.length, with_location:props.filter(p=>p.location).length, sample});
+      const rooms=records.flatMap(r=>{ const p=hiMapProperty(r, urlIn); return p?hiMapUnits(r, p, urlIn):[]; });
+      return deps.json({ok:true, found:props.length, skipped:records.length-props.length, with_location:props.filter(p=>p.location).length,
+        rooms:rooms.length, rooms_with_price:rooms.filter(u=>Number(u.base_rate)>0).length, sample});
     }catch(e){ return deps.json({ok:false, error:String(e?.message||e)}, 200); }
   }
 

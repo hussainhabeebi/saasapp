@@ -204,6 +204,21 @@ describe('sync', ()=>{
     assert.equal(row().location, 'Kuttanad');
   });
 
+  test('a price typed in Units is kept when the feed has none, replaced when it has one', async()=>{
+    delete props[0].rooms[0].price;
+    const id=addSource();
+    await hiSyncSource(env, deps, src(id));
+    const rate=()=>db.prepare(`SELECT base_rate FROM hospitality_units WHERE name='Deluxe Room'`).get().base_rate;
+    assert.equal(rate(), 0);
+    db.prepare(`UPDATE hospitality_units SET base_rate=6100 WHERE name='Deluxe Room'`).run();
+    props[0].rooms[0].description='Now with a balcony'; // forces the room row to be rewritten
+    await hiSyncSource(env, deps, src(id), {nowMs:NOW+3600e3});
+    assert.equal(rate(), 6100);
+    props[0].rooms[0].price=6500;
+    await hiSyncSource(env, deps, src(id), {nowMs:NOW+7200e3});
+    assert.equal(rate(), 6500);
+  });
+
   test('records leaving the feed are switched off, and back on when they return', async()=>{
     const id=addSource();
     await hiSyncSource(env, deps, src(id));
@@ -317,4 +332,23 @@ test('location is read from the many shapes feeds use', ()=>{
   for(const [raw, want] of cases) assert.equal(hiLocation(raw), want, JSON.stringify(raw));
   assert.equal(hiTownFromAddress('Near Bus Stand, Kumily'), 'Near Bus Stand');
   assert.equal(hiMapProperty({id:1, name:'Bay View Suites', location:{city:'Wayanad'}}).location, 'Wayanad');
+});
+
+test('room prices are read from the many shapes feeds use', ()=>{
+  const prop=hiMapProperty({id:1, name:'P'});
+  const price=raw=>hiMapUnits({id:1, name:'P', rooms:[{id:'r', name:'Room', ...raw}]}, prop)[0];
+  assert.equal(price({price:4500}).base_rate, 4500);
+  assert.equal(price({room_rate:'₹ 5,200 / night'}).base_rate, 5200);
+  assert.equal(price({sale_price:{amount:3999, currency:'INR'}}).base_rate, 3999);
+  assert.equal(price({rates:[{price:6000}, {price:5500}]}).base_rate, 5500);
+  assert.equal(price({rate_plans:[{name:'EP', rate:{amount:7000, currency:'AED'}}]}).base_rate, 7000);
+  assert.equal(price({rate_plans:[{name:'EP', rate:{amount:7000, currency:'AED'}}]}).currency, 'AED');
+  assert.equal(price({price:0, tariff:'4800'}).base_rate, 4800);           // a zero is "no price", look further
+  assert.equal(price({attributes:{per_night:2500}}).base_rate, 2500);
+  assert.equal(price({}).base_rate, 0);
+  // A room without its own price takes the property's "from" price.
+  const p2=hiMapProperty({id:2, name:'Q', price_from:3500});
+  assert.equal(hiMapUnits({id:2, name:'Q', price_from:3500, rooms:[{id:'a', name:'A'}]}, p2)[0].base_rate, 3500);
+  // No rooms list: the property itself is the unit, priced from the property.
+  assert.equal(hiMapUnits({id:3, name:'S', starting_price:'Rs. 8,000'}, hiMapProperty({id:3, name:'S', starting_price:'Rs. 8,000'}))[0].base_rate, 8000);
 });

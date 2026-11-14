@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
+import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -39261,7 +39261,7 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
       const nav=[];
       if(prop) nav.push({title:H3_NAV.otherProperties, value:H3_NAV.otherProperties});
       if(prop && useLoc) nav.push({title:H3_NAV.changeLocation, value:H3_NAV.changeLocation});
-      const paged=h3PageRows(hospH3Rows(rooms, u=>u.name, h3RoomDesc), 'rooms', a.page, nav);
+      const paged=h3PageRows(hospH3Rows(rooms, u=>u.name, h3RoomRowDesc), 'rooms', a.page, nav);
       if(paged.page===1 && prop){
         const info=[`*${prop.name}*${prop.location?` · 📍 ${String(prop.location).trim()}`:''}`];
         if(prop.description && String(prop.description).trim()) info.push(String(prop.description).trim());
