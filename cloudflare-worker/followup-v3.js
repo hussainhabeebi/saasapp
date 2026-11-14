@@ -10,6 +10,7 @@
 //   - Objection-aware nudges: a lead whose last objection matches the Objection Playbook gets a
 //     nudge that answers it (Respond.io / Kommo branching).
 //   - Re-engagement after long silence, smart retry, Meta frequency-cap aware (AiSensy, Gallabox).
+//     Each open pipeline stage has its own re-engage template (fv3PipelineStages / fv3ReengageFor).
 //   - Report: replies, conversions and revenue per step, opt-out health, trend, best hour,
 //     failures with a fix, industry benchmark, weekly digest (Klaviyo flow analytics).
 //   - Per-lead status ("sent / next / why not") on the lead card and in Chats.
@@ -81,6 +82,69 @@ export const FV3_PROPOSAL_STAGE='proposal_sent';
 export const FV3_PROPOSAL_STEPS={7:{kind:'p1', hours:24, label:'Proposal · day 1'}, 8:{kind:'p2', hours:72, label:'Proposal · day 3'}, 9:{kind:'p3', hours:168, label:'Proposal · day 7'}};
 export const FV3_PROPOSAL_KINDS=Object.values(FV3_PROPOSAL_STEPS).map(x=>x.kind);
 const PROPOSAL_STEP_BY_KIND=Object.fromEntries(Object.entries(FV3_PROPOSAL_STEPS).map(([s, x])=>[x.kind, Number(s)]));
+// ── Re-engage per stage ──────────────────────────────────────────────────────────────────────────
+// Every open pipeline stage has its own re-engage template (kind re_<stage>, lv_followup_re_<stage>)
+// worded for that stage; "new" and stages outside the pipeline (bot flow steps) keep the generic
+// 'reengage' one. A stage waits for its own template — it never falls back to another stage's.
+// Same defaults as dashboard.html DEFAULT_PIPELINE_STAGES (keep in step); a customised pipeline is
+// flow_json.pipeline. Travel (status board) and General have no default pipeline.
+const FV3_PIPELINE_DEFAULTS={
+  _default:[['contacted','Contacted'],['qualified','Qualified'],['proposal_sent','Proposal Sent'],['negotiation','Negotiation']],
+  insurance:[['contacted','Contacted'],['needs_analysis','Needs Analysis'],['quote_sent','Quote Sent'],['follow_up','Follow Up']],
+  real_estate:[['contacted','Contacted'],['site_visit','Site Visit'],['negotiation','Negotiation'],['booking','Booking']],
+  healthcare:[['contacted','Contacted'],['follow_up','Follow Up']],
+  education:[['contacted','Contacted'],['counselling','Counselling'],['application','Application'],['fee_pending','Fee Pending']],
+  automotive:[['contacted','Contacted'],['test_drive','Test Drive'],['quotation','Quotation'],['finance','Finance']],
+  ecommerce:[['contacted','Contacted'],['interested','Interested'],['cart','Cart / Checkout']],
+  consultancy:[['contacted','Contacted'],['screening','Screening'],['interview','Interview'],['offer','Offer Sent']],
+  b2b:[['contacted','Contacted'],['quote_sent','Quote Sent'],['sample','Sample Sent'],['negotiation','Negotiation']],
+  hospitality:[['contacted','Contacted'],['quote_sent','Quote Sent'],['dates_confirmed','Dates Confirmed'],['advance_pending','Advance Pending']],
+  saas_digital_marketing:[['contacted','Contacted'],['demo','Demo'],['proposal_sent','Proposal Sent'],['negotiation','Negotiation']],
+  business_services:[['contacted','Contacted'],['documents_pending','Documents Pending'],['processing','Processing']],
+  matrimonial:[['contacted','Contacted'],['profile_sent','Profile Sent'],['meeting','Meeting Arranged']],
+  ev_charging:[['contacted','Contacted'],['site_survey','Site Survey'],['quote_sent','Quote Sent'],['installation','Installation']],
+};
+const FV3_NO_DEFAULT_PIPELINE=new Set(['travel','general']);
+// Stages that never get a re-engage of their own: new (generic), handover and closed/booked ones.
+const FV3_NOT_REENGAGE_STAGES=new Set(['new','human_handover','won','converted','Converted','lost','Lost','Closed','Opt Out','consultation_booked','visit_booked','appt_booked']);
+export const FV3_MAX_STAGE_REENGAGE=12;
+const titleCase=id=>String(id||'').replace(/_/g,' ').replace(/\b\w/g,ch=>ch.toUpperCase());
+export function fv3StageSlug(id){ return String(id||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40); }
+export function fv3ReengageKind(stage){ const slug=fv3StageSlug(stage); return slug?'re_'+slug:null; }
+// The account's open pipeline stages [{id,label}] that get their own re-engage template.
+// `proposals`: the account sends proposals (Chats → AI Proposal), so "Proposal Sent" is one of them.
+export function fv3PipelineStages(c,{proposals=false}={}){
+  let flow={}; try{ flow=JSON.parse(c?.flow_json||'{}')||{}; }catch(e){}
+  const industry=String(c?.industry||'general').toLowerCase();
+  const labels=flow.labels&&typeof flow.labels==='object'?flow.labels:{};
+  const list=Array.isArray(flow.pipeline)
+    ? flow.pipeline.filter(x=>x&&x.id).map(x=>[String(x.id), String(x.label||'')])
+    : FV3_NO_DEFAULT_PIPELINE.has(industry)?[]:(FV3_PIPELINE_DEFAULTS[industry]||FV3_PIPELINE_DEFAULTS._default);
+  const out=[];const seen=new Set();
+  const add=(id,label)=>{
+    if(!id||FV3_NOT_REENGAGE_STAGES.has(id)||seen.has(id)||!fv3StageSlug(id)) return;
+    seen.add(id); out.push({id, label:String(labels[id]||label||titleCase(id)).replace(/\s+/g,' ').trim().slice(0,40)});
+  };
+  list.forEach(([id,label])=>add(id,label));
+  if(proposals) add(FV3_PROPOSAL_STAGE,'Proposal Sent');
+  return out.slice(0,FV3_MAX_STAGE_REENGAGE);
+}
+// Which re-engage template a lead at `stage` gets: the merchant's own for the stage, else the
+// stage's automatic one (null while not approved), else — "new"/unlisted stages — the generic one.
+// → {template:{name,language,params?,own?}|null, kind, stageLabel}
+export function fv3ReengageFor(stage, {templates=[], cfg={}, stages=[]}={}){
+  const st=String(stage||'');
+  const own=cfg.stage_sequences?.[st]?.reengage;
+  const def=stages.find(x=>x.id===st);
+  if(own?.template_name) return {template:{name:own.template_name, language:own.template_language||'en', own:true}, kind:'own', stageLabel:def?.label||titleCase(st)};
+  if(def){
+    const kind=fv3ReengageKind(st);
+    const t=templates.find(x=>x.kind===kind && x.status==='APPROVED')||null;
+    return {template:t, kind, stageLabel:def.label};
+  }
+  return {template:templates.find(x=>x.kind==='reengage' && x.status==='APPROVED')||null, kind:'reengage', stageLabel:''};
+}
+
 // Approved proposal templates by step ({7:row, …}) from followup_v3_templates rows.
 export function fv3ProposalTemplates(templates){
   const out={};
@@ -131,6 +195,10 @@ export function fv3StageConfig(raw){
       steps[i]=i<=2 ? {message:String(v.message||'').slice(0,2000), hours:clampInt(v.hours,1,23,SESSION_THRESHOLD_DEFAULT[i])}
         : {template_name:String(v.template_name||'').slice(0,512), template_language:String(v.template_language||'en').slice(0,20)};
     }
+    // Re-engage: the merchant's own approved template for this stage (blank = the automatic one).
+    const re=value.reengage;
+    if(re && typeof re==='object' && String(re.template_name||'').trim())
+      steps.reengage={template_name:String(re.template_name).trim().slice(0,512), template_language:String(re.template_language||'en').trim().slice(0,20)||'en'};
     out[stage.trim()]=steps;
   }
   return out;
@@ -139,7 +207,7 @@ export function fv3StepsForLead(steps,cfg,lead){
   const overrides=cfg.stage_sequences?.[String(lead.Stage||'')];
   if(!overrides) return steps;
   const out={...steps};
-  for(const [i,v] of Object.entries(overrides)) out[i]={...steps[i],...v, step:Number(i), type:Number(i)<=2?'session':'template', message_b:'', template_name_b:'', ai_mode:0};
+  for(const [i,v] of Object.entries(overrides)) if(/^[1-5]$/.test(i)) out[i]={...steps[i],...v, step:Number(i), type:Number(i)<=2?'session':'template', message_b:'', template_name_b:'', ai_mode:0};
   return out;
 }
 
@@ -307,9 +375,9 @@ export function fv3Decide(input){
         text:isDue?`Proposal follow-up (${def.label}) is going out now.`:`Next: ${def.label} — proposal follow-up.`, next, steps:proposalRows(s), cycle, ...snoozeInfo};
     }
     if(pendingTemplate) return out('waiting_template', 'proposal_template_pending', `${FV3_PROPOSAL_STEPS[pendingTemplate].label} is waiting for its WhatsApp template to be approved.`);
-    return out('completed', 'proposal_done', proposalSent.size?'All proposal follow-ups sent — no reply yet.':'No proposal follow-up could go out in time (sent too long ago).');
+    // Proposal templates done — the Proposal Sent stage's own re-engage follows (below).
   }
-  for(let s=1; s<=5; s++){
+  if(!proposalTrack) for(let s=1; s<=5; s++){
     const row=steps[s];
     if(ladderSent.has(s)) continue;
     if(skipped.has(s)){ stepState[s]='skipped'; continue; }
@@ -342,26 +410,30 @@ export function fv3Decide(input){
       text:isDue?`Follow-up ${s} (${next.label}) is going out now.`:snoozeInfo.snooze_until?`Customer asked to talk later — next: follow-up ${s} (${next.label}).`:`Next: follow-up ${s} (${next.label}).`,
       next, steps:stepRows(s), cycle:new Date(lastCust).toISOString(), ...snoozeInfo};
   }
-  // Ladder done for this silence — re-engage, if switched on.
+  // Ladder (or proposal templates) done for this silence — the stage's re-engage, if switched on.
+  const doneReason=proposalTrack?'proposal_done':'ladder_done';
+  const doneText=proposalTrack?'All proposal follow-ups sent — no reply yet.':'All follow-ups sent — no reply yet.';
   const reSends=sorted.filter(s=>s.kind==='reengage');
-  const reAfterLast=reSends.filter(s=>(ms(s.sent_at)||0)>lastCust);
+  const reAfterLast=reSends.filter(s=>(ms(s.sent_at)||0)>anchor);
+  const stageNote=input.reengageStage?` for "${input.reengageStage}"`:'';
   if(cfg.reengage_enabled && reAfterLast.length<cfg.reengage_max){
-    if(!reengageReady) return out(pendingTemplate?'waiting_template':'completed', pendingTemplate?'template_pending':'ladder_done',
-      pendingTemplate?`Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`:'All follow-ups sent — re-engage starts once its template is approved.', {steps:stepRows(null)});
+    if(!reengageReady) return out(pendingTemplate?'waiting_template':'completed', pendingTemplate?'template_pending':doneReason,
+      pendingTemplate?`Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`:`${doneText.replace(/ — no reply yet\.$/,'')} — re-engage${stageNote} starts once its template is approved.`);
     const lastRe=reAfterLast.length?ms(reAfterLast[reAfterLast.length-1].sent_at):null;
-    let due=Math.max(lastCust+cfg.reengage_after_days*D, lastRe?lastRe+cfg.reengage_after_days*D:0);
+    let due=Math.max(anchor+cfg.reengage_after_days*D, lastRe?lastRe+cfg.reengage_after_days*D:0);
     due=Math.max(gapFloor(due),staffFloor);
     if(prefHour!==null) due=fv3AlignToHour(due, tz, prefHour);
     due=fv3NextAllowedMs(due, tz, cfg.quiet_start, cfg.quiet_end);
     if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
-    const next={step:REENGAGE_STEP, kind:'reengage', type:'template', label:'Re-engage', due_at:new Date(due).toISOString()};
+    const next={step:REENGAGE_STEP, kind:'reengage', type:'template', label:input.reengageStage?`Re-engage · ${input.reengageStage}`:'Re-engage', due_at:new Date(due).toISOString()};
     const isDue=due<=now;
     return {status:isDue?'due':'scheduled', reason:isDue?'due':'reengage',
-      text:isDue?'Re-engage message is going out now.':`All follow-ups sent with no reply — re-engage message ${reAfterLast.length+1} of ${cfg.reengage_max} is scheduled.`,
-      next, steps:stepRows(null), cycle:new Date(lastCust).toISOString(), ...snoozeInfo};
+      text:isDue?`Re-engage message${stageNote} is going out now.`:`${proposalTrack?'All proposal follow-ups':'All follow-ups'} sent with no reply — re-engage message${stageNote} ${reAfterLast.length+1} of ${cfg.reengage_max} is scheduled.`,
+      next, steps:proposalTrack?proposalRows(null):stepRows(null), cycle:new Date(anchor).toISOString(), ...snoozeInfo};
   }
-  if(pendingTemplate) return out('waiting_template', 'template_pending', `Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`, {steps:stepRows(null)});
-  return out('completed', 'ladder_done', ladderSent.size?'All follow-ups sent — no reply yet.':'No follow-up could go out in this silence window (24h session closed or steps not set).', {steps:stepRows(null)});
+  if(pendingTemplate) return out('waiting_template', 'template_pending', `Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`);
+  if(proposalTrack) return out('completed', 'proposal_done', proposalSent.size?doneText:'No proposal follow-up could go out in time (sent too long ago).');
+  return out('completed', 'ladder_done', ladderSent.size?doneText:'No follow-up could go out in this silence window (24h session closed or steps not set).');
 }
 
 // Plain-language reason + what to do about it, for the report's "Who isn't getting follow-ups".
@@ -450,6 +522,24 @@ const TEMPLATE_BODIES={
 };
 const TEMPLATE_PARAMS={s3:['name', 'business', 'interest'], s4:['name', 'interest', 'business'], s5:['name', 'business', 'interest'], reengage:['name', 'business'],
   p1:['name', 'business', 'proposal'], p2:['name', 'proposal', 'business'], p3:['name', 'business', 'proposal']};
+// A stage's re-engage wording, picked by what the stage is about (quote, proposal, visit/demo,
+// payment, paperwork, qualifying); anything else names the stage. Placeholders: {{1}} name,
+// {{2}} business, {{3}} what they asked about (or the proposal, for a proposal stage).
+const STAGE_REENGAGE=[
+  [/proposal/i, ['name','business','proposal'], ()=>'Hi {{1}}, this is {{2}}. It has been a while since we shared {{3}} with you. If your plans have changed, we can update it for you, just reply to this message. Reply STOP to opt out.'],
+  [/quot|estimate|offer|pricing|price/i, ['name','business','interest'], ()=>'Hi {{1}}, it has been a while since {{2}} sent you a quotation for {{3}}. Prices and availability may have changed, so reply here and we will share an updated one. Reply STOP to opt out.'],
+  [/demo|visit|survey|drive|viewing|meeting|interview|appointment|consult|counsel/i, ['name','business','interest'], l=>`Hello {{1}}, {{2}} here. We never got to complete the ${l} for {{3}}. Would you like to pick a new time? Reply to this message and we will arrange it. Reply STOP to opt out.`],
+  [/negotiat|payment|fee|advance|cart|checkout|finance|booking|deposit/i, ['name','business','interest'], l=>`Hi {{1}}, your ${l} with {{2}} for {{3}} is still open. If you would like to go ahead, reply here and we will help you finish it today. Reply STOP to opt out.`],
+  [/document|application|processing|sample|install|dates|profile|kyc/i, ['name','business','interest'], l=>`Hello {{1}}, this is {{2}}. Your request for {{3}} is still at the ${l} step. Reply to this message and we will help you with what is needed to move ahead. Reply STOP to opt out.`],
+  [/qualif|needs|interest|screen|contact|follow/i, ['name','business','interest'], ()=>'Hi {{1}}, it has been a while since you spoke to {{2}} about {{3}}. We have new options that may suit you, so reply here and we will share them. Reply STOP to opt out.'],
+];
+export function fv3StageReengagePreset(stage, label, {industry='', businessName='Our team'}={}){
+  const l=String(label||titleCase(stage)).replace(/[^A-Za-z0-9 &/-]+/g,' ').replace(/\s+/g,' ').trim().toLowerCase().slice(0,30)||'next';
+  const hit=STAGE_REENGAGE.find(([re])=>re.test(`${stage} ${label}`));
+  const [, params, body]=hit||[null, ['name','business','interest'], x=>`Hi {{1}}, this is {{2}}. Your enquiry about {{3}} is still at the ${x} step with us. Reply to this message whenever you are ready and we will help you take the next step. Reply STOP to opt out.`];
+  const sample={name:'Asha', business:String(businessName||'Our team').slice(0, 40), interest:fv3InterestFallback(industry), proposal:'the proposal'};
+  return {kind:fv3ReengageKind(stage), body:body(l), params, category:'MARKETING', language:'en', example:params.map(p=>sample[p]), stage, label};
+}
 export function fv3TemplatePreset(kind, {industry='', businessName='Our team'}={}){
   const body=TEMPLATE_BODIES[kind]; if(!body) return null;
   const params=TEMPLATE_PARAMS[kind];
@@ -649,14 +739,17 @@ async function submitTemplate(env, creds, clientId, kind, preset, attempt){
   return {kind, name, status, error};
 }
 export async function pollTemplate(env, creds, t){
-  const res=await graph(`https://graph.facebook.com/v21.0/${creds.waba_id}/message_templates?name=${encodeURIComponent(t.name)}&fields=name,status,language,rejected_reason&limit=20`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
+  const res=await graph(`https://graph.facebook.com/v21.0/${creds.waba_id}/message_templates?name=${encodeURIComponent(t.name)}&fields=name,status,language,rejected_reason,components&limit=20`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
   if(!res.ok) throw new Error('Template verification failed: HTTP '+res.status);
   const hit=(res.data?.data||[]).find(x=>x.name===t.name && (!x.language || x.language===t.language));
   if(!hit) return {...t,status:'NOT_FOUND',error:'Template not found for this WhatsApp account/language'};
   const status=String(hit.status||t.status).toUpperCase();
   const error=status==='REJECTED'?String(hit.rejected_reason||'Rejected by Meta').slice(0, 300):'';
   if(t.id) await env.DB.prepare(`UPDATE followup_v3_templates SET status=?, error=?, checked_at=? WHERE id=?`).bind(status, error, new Date().toISOString(), t.id).run();
-  return {...t, status, error};
+  // How many {{n}} the approved BODY has — a merchant's own template is sent with exactly that many.
+  const bodyText=String((hit.components||[]).find(x=>String(x?.type||'').toUpperCase()==='BODY')?.text||'');
+  const vars=Math.max(0, ...[...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map(m=>Number(m[1])));
+  return {...t, status, error, vars};
 }
 async function attachTemplate(env, clientId, step, t){
   const params=(()=>{ try{ return JSON.parse(t.params||'[]'); }catch(e){ return []; } })();
@@ -708,13 +801,20 @@ export async function fv3Setup(env, deps, c, settings, {resubmit=false}={}){
   else if(cfg.auto_templates){
     const existing=await templateRows(env, cid);
     // Proposal templates only for accounts that send proposals (deps.proposalsOn).
-    const kinds=[...FV3_TEMPLATE_KINDS, ...(cfg.proposal_followups && deps.proposalsOn?.(c)?FV3_PROPOSAL_KINDS:[])];
+    const proposalsOn=!!deps.proposalsOn?.(c);
+    // One re-engage template per open pipeline stage (unless the merchant picked their own for it).
+    const stagePresets=cfg.reengage_enabled
+      ? fv3PipelineStages(c, {proposals:proposalsOn}).filter(st=>!cfg.stage_sequences?.[st.id]?.reengage?.template_name)
+        .map(st=>fv3StageReengagePreset(st.id, st.label, {industry:c.industry||settings.industry, businessName:c.client_name}))
+      : [];
+    const presetByKind=Object.fromEntries(stagePresets.map(p=>[p.kind, p]));
+    const kinds=[...FV3_TEMPLATE_KINDS, ...(cfg.proposal_followups && proposalsOn?FV3_PROPOSAL_KINDS:[]), ...stagePresets.map(p=>p.kind)];
     for(const kind of kinds){
       const step=/^s\d$/.test(kind)?Number(kind.slice(1)):null;
       let t=existing.find(x=>x.kind===kind);
       const ownTemplate=step && String(fresh[step]?.template_name||'').trim() && (!t || fresh[step].template_name!==t.name);
       if(ownTemplate){ report.templates[kind]={status:'OWN', name:fresh[step].template_name}; continue; }
-      const preset=fv3TemplatePreset(kind, {industry:c.industry||settings.industry, businessName:c.client_name});
+      const preset=presetByKind[kind]||fv3TemplatePreset(kind, {industry:c.industry||settings.industry, businessName:c.client_name});
       try{
         if(!t){ await submitTemplate(env, creds, cid, kind, preset, 1); t=await env.DB.prepare(`SELECT * FROM followup_v3_templates WHERE client_id=? AND kind=?`).bind(cid, kind).first(); }
         else if((t.status==='REJECTED'||t.status==='ERROR') && resubmit){ await submitTemplate(env, creds, cid, kind, preset, (t.attempt||1)+1); t=await env.DB.prepare(`SELECT * FROM followup_v3_templates WHERE client_id=? AND kind=?`).bind(cid, kind).first(); }
@@ -745,6 +845,13 @@ async function checklist(env, deps, c, settings){
   }
   const re=templates.find(x=>x.kind==='reengage');
   items.push({key:'reengage', ok:re?.status==='APPROVED', status:re?.status||'NOT_SUBMITTED', template:re?.name||'', error:re?.error||'', label:'Re-engage template', optional:!settings.cfg.reengage_enabled});
+  // Each open stage's own re-engage (the generic one above covers "new" and unlisted stages).
+  for(const st of fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)})){
+    const own=settings.cfg.stage_sequences?.[st.id]?.reengage;
+    const t=own?.template_name?null:templates.find(x=>x.kind===fv3ReengageKind(st.id));
+    items.push({key:'reengage_stage', stage:st.id, ok:own?.template_name?true:t?.status==='APPROVED', status:own?.template_name?'OWN':t?.status||'NOT_SUBMITTED',
+      template:own?.template_name||t?.name||'', error:t?.error||'', label:`Re-engage · ${st.label}`, optional:!settings.cfg.reengage_enabled});
+  }
   if(deps.proposalsOn?.(c)) for(const [k, def] of Object.entries(FV3_PROPOSAL_STEPS)){
     const t=templates.find(x=>x.kind===def.kind);
     items.push({key:'proposal_'+def.kind, step:Number(k), ok:t?.status==='APPROVED', status:t?.status||'NOT_SUBMITTED', template:t?.name||'', error:t?.error||'',
@@ -905,8 +1012,9 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
   const steps=await ladderRows(env, cid);
   const templates=await templateRows(env, cid);
   const tplByName={}; templates.forEach(t=>{ tplByName[t.name]=t; });
-  const reTpl=reengageTemplate(templates);
   const proposalTemplates=fv3ProposalTemplates(templates);
+  const reStages=fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)});
+  const reFor=(lead, cfgNow)=>fv3ReengageFor(lead?.Stage, {templates, cfg:cfgNow, stages:reStages});
   const proposals=await deps.proposals?.(env, cid).catch(()=>null)||{};
   const {results:sendRows}=await env.DB.prepare(`SELECT id, lead_id, step, kind, variant, sent_at, replied_at, converted_at FROM followup_sends WHERE client_id=? AND sent_at>=?`)
     .bind(cid, new Date(now-200*D).toISOString()).all();
@@ -940,7 +1048,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       // Only look up orders for leads it can matter for (ecom, and either due or recently followed up).
       const recent=sends.some(s=>(ms(s.sent_at)||0)>now-CONVERSION_WINDOW_DAYS*D);
       const hasOrder=lead.Phone?fv3OrderCounts((await getOrders())?.[digits10(lead.Phone)], lead):false;
-      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!reTpl, hasMeeting:meetingLeads.has(Number(lead.Id)), accountHour,
+      const re=reFor(lead, cfg);
+      const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!re.template, reengageStage:re.stageLabel, hasMeeting:meetingLeads.has(Number(lead.Id)), accountHour,
         proposal:proposals[lead.Id]||null, proposalTemplates});
       checked++; reasons[d.reason]=(reasons[d.reason]||0)+1;
       if(sample.length<100) sample.push({lead_id:lead.Id,name:lead.Name,status:d.status,reason:d.reason,next:d.next});
@@ -981,12 +1090,16 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       if(String(live.ClientId)!==String(cid)) throw new Error('Pre-send lead ownership mismatch');
       const latestSettings=await fv3GetSettings(env,cid);
       if(!latestSettings?.enabled || latestSettings.cfg.paused) return;
-      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reTpl,accountHour,proposal:proposals[lead.Id]||null,proposalTemplates});
+      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reFor(live, latestSettings.cfg).template,reengageStage:reFor(live, latestSettings.cfg).stageLabel,accountHour,proposal:proposals[lead.Id]||null,proposalTemplates});
       if(latest.status!=='due' || latest.cycle!==d.cycle || latest.next.step!==step) return;
       lead={...live, ProposalTitle:proposals[lead.Id]?.title||''};
       const leadSteps=fv3StepsForLead(steps,latestSettings.cfg,lead);
       const tplStep=t=>({step, type:'template', template_name:t.name, template_language:t.language, template_category:'MARKETING', template_body_vars:JSON.parse(t.params||'[]').length});
-      const stepCfg=step===REENGAGE_STEP?tplStep(reTpl):FV3_PROPOSAL_STEPS[step]?tplStep(proposalTemplates[step]):leadSteps[step];
+      const reTpl=step===REENGAGE_STEP?reFor(lead, latestSettings.cfg).template:null;
+      if(step===REENGAGE_STEP && !reTpl) return;
+      // A merchant's own re-engage template carries no stored params — sized from Meta at send time.
+      const stepCfg=step===REENGAGE_STEP?(reTpl.own?{step, type:'template', template_name:reTpl.name, template_language:reTpl.language, template_category:'MARKETING', template_body_vars:1, own:true}:tplStep(reTpl))
+        :FV3_PROPOSAL_STEPS[step]?tplStep(proposalTemplates[step]):leadSteps[step];
       const selectedVariant=FV3_PROPOSAL_STEPS[step]?'A':stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
       const selectedTemplate=selectedVariant==='B'&&stepCfg.template_name_b?{name:stepCfg.template_name_b,language:stepCfg.template_language_b||stepCfg.template_language}:{name:stepCfg.template_name,language:stepCfg.template_language};
       const opts={selectedVariant:stepCfg.type==='template'?selectedVariant:undefined,v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
@@ -1022,6 +1135,11 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
           if(!creds?.waba_id || !creds?.wa_token) throw new Error('WhatsApp API credentials missing');
           const verified=await pollTemplate(env,creds,{name:selectedTemplate.name,language:selectedTemplate.language||'en_US',status:'UNKNOWN'});
           if(verified.status!=='APPROVED') throw new Error('Template not approved: '+verified.status);
+          if(stepCfg.own){
+            const n=Number(verified.vars)||0;
+            stepToSend={...stepToSend, template_body_vars:n};
+            opts.templateParams=fv3TemplateParams(Array.from({length:n}, (_, i)=>['name', 'business', 'interest'][i]||'name'), lead, c, c.industry||settings.industry);
+          }
         }
         const claim=await env.DB.prepare(`INSERT INTO followup_v3_jobs (client_id,lead_id,cycle,step,status,updated_at) VALUES (?,?,?,?,'sending',?) ON CONFLICT(client_id,lead_id,cycle,step) DO UPDATE SET status='sending',updated_at=excluded.updated_at WHERE followup_v3_jobs.status='retry'`)
           .bind(cid,Number(lead.Id),jobCycle,step,new Date().toISOString()).run();
@@ -1151,7 +1269,8 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
   let accountHour=null;
   if(cfg.pro_smart_send){ const {results:hr}=await env.DB.prepare(`SELECT hours_json FROM followup_v3_leads WHERE client_id=?`).bind(Number(c.Id)).all(); accountHour=fpAccountHour(hr||[]); }
   const proposal=(await deps.proposals?.(env, c.Id, lead.Id).catch(()=>null)||{})[lead.Id]||null;
-  const d=fv3Decide({lead, steps, cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!reengageTemplate(templates), hasMeeting, accountHour,
+  const re=fv3ReengageFor(lead.Stage, {templates, cfg, stages:fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)})});
+  const d=fv3Decide({lead, steps, cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!re.template, reengageStage:re.stageLabel, hasMeeting, accountHour,
     proposal, proposalTemplates:fv3ProposalTemplates(templates)});
   const lastFail=await env.DB.prepare(`SELECT error_message, error_code, failed_at, step FROM followup_send_failures WHERE lead_id=? AND failed_at>=? ORDER BY failed_at DESC LIMIT 1`)
     .bind(Number(lead.Id), new Date(now-3*D).toISOString()).first().catch(()=>null);
@@ -1214,7 +1333,8 @@ export async function fv3HandleRoute(request, env, deps, url){
 
   if(path==='/settings' && method==='GET'){
     const s=await fv3GetSettings(env, cid);
-    return json({enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, health:fv3Health(s), defaults:FV3_DEFAULTS, last_setup:s.last_setup||{}, checklist:s.enabled?await checklist(env, deps, c, s):[]});
+    return json({enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, health:fv3Health(s), defaults:FV3_DEFAULTS, last_setup:s.last_setup||{}, checklist:s.enabled?await checklist(env, deps, c, s):[],
+      stages:fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)})});
   }
   if(path==='/settings' && method==='POST'){
     const body=await request.json().catch(()=>({}));

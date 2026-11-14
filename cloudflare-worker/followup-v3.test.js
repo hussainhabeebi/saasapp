@@ -326,7 +326,8 @@ describe('with D1', ()=>{
     assert.ok(!graphCalls.some(c=>c.body?.name?.startsWith('lv_followup_p')), 'no proposal templates for accounts that do not send proposals');
     graphCalls=[];
     await fv3Setup(env, {...base, proposalsOn:()=>true}, gen, await fv3GetSettings(env, 42));
-    assert.deepEqual(graphCalls.filter(c=>c.body).map(c=>c.body.name), ['lv_followup_p1', 'lv_followup_p2', 'lv_followup_p3']);
+    // Proposal templates, plus the Proposal Sent stage's own re-engage (General has no other pipeline stages).
+    assert.deepEqual(graphCalls.filter(c=>c.body).map(c=>c.body.name), ['lv_followup_p1', 'lv_followup_p2', 'lv_followup_p3', 'lv_followup_re_proposal_sent']);
     // Proposal templates never get attached to the normal ladder.
     assert.equal(db.prepare(`SELECT template_name FROM followup_ladder_steps WHERE client_id=42 AND step=1`).get().template_name||'', '');
     await fv3Setup(env, {...base, proposalsOn:()=>true}, gen, await fv3GetSettings(env, 42)); // poll → APPROVED
@@ -351,6 +352,49 @@ describe('with D1', ()=>{
     assert.equal(p.step, 7); assert.equal(p.opts.kind, 'proposal'); assert.equal(p.stepCfg.template_name, 'lv_followup_p1');
     assert.deepEqual(p.opts.templateParams, ['Asha', 'Acme', 'our proposal "Solar Hot Water"']);
     assert.ok(!sent.some(x=>x.lead===1 && x.step<=6), 'no normal follow-up to a Proposal Sent lead');
+  });
+  test('re-engage per stage: setup submits one template per open stage; the sweep sends each lead its own stage\'s', async ()=>{
+    const saas={...client, industry:'saas_digital_marketing'};
+    const settings=await fv3SaveSettings(env, 42, {enabled:true, industry:'saas_digital_marketing', config:{quiet_start:0, quiet_end:0, objection_branching:false, include_existing_leads:true,
+      stage_sequences:{negotiation:{reengage:{template_name:'my_nego', template_language:'en_US'}}}}});
+    globalThis.fetch=async (url, opts={})=>{
+      graphCalls.push({url:String(url), body:opts.body?JSON.parse(opts.body):null});
+      if((opts.method||'GET')==='POST') return new Response(JSON.stringify({id:'1', status:'PENDING'}));
+      const name=new URL(String(url)).searchParams.get('name');
+      // my_nego is the merchant's own approved template with two variables.
+      return new Response(JSON.stringify({data:[{name, status:'APPROVED', language:name==='my_nego'?'en_US':'en', components:[{type:'BODY', text:name==='my_nego'?'Hi {{1}}, {{2}} here.':'x'}]}]}));
+    };
+    const base={metaCreds:()=>({waba_id:'W', wa_token:'tok', wa_phone_id:'P'}), ai:async()=>null, proposalsOn:()=>true};
+    await fv3Setup(env, base, saas, settings);
+    const names=graphCalls.filter(c=>c.body).map(c=>c.body.name);
+    assert.deepEqual(names.filter(n=>n.startsWith('lv_followup_re')), ['lv_followup_reengage', 'lv_followup_re_contacted', 'lv_followup_re_demo', 'lv_followup_re_proposal_sent'],
+      'one per open stage — negotiation uses the merchant\'s own, so none is submitted for it');
+    const demoBody=graphCalls.find(c=>c.body?.name==='lv_followup_re_demo').body.components[0].text;
+    assert.match(demoBody, /complete the demo for \{\{3\}\}/);
+    await fv3Setup(env, base, saas, await fv3GetSettings(env, 42)); // poll → APPROVED
+
+    const now=Date.now();
+    db.prepare(`UPDATE followup_v3_settings SET maint_at=?, enabled_at=? WHERE client_id=42`).run(iso(now), iso(now-90*D));
+    // Ladder done long ago (no ladder steps set) → every lead is due its re-engage, 31 days after their last message.
+    const old=iso(now-31*D);
+    const leads=[
+      {Id:1, Name:'Asha', Phone:'91900', Stage:'demo', CreatedAt:old, LastCustomerMsgAt:old},
+      {Id:2, Name:'Ravi', Phone:'91901', Stage:'new', CreatedAt:old, LastCustomerMsgAt:old},
+      {Id:3, Name:'Meera', Phone:'91902', Stage:'negotiation', CreatedAt:old, LastCustomerMsgAt:old},
+    ];
+    const sent=[];
+    const deps={...base, leadsTable:'L', ensureLeadsColumns:async()=>{},
+      ncFetch:async(e,path)=>new Response(JSON.stringify(/records\/\d+$/.test(path)?{...leads.find(l=>l.Id===Number(path.split('/').pop())),ClientId:42}:{list:leads})),
+      sendStep:async(env2, c, lead, step, stepCfg, opts)=>{ sent.push({lead:lead.Id, step, stepCfg, opts}); db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at, v3, kind) VALUES (42,?,?,?,?,1,?)`).run(lead.Id, step, 'A', iso(now), opts.kind); },
+    };
+    await fv3ProcessClient(env, deps, saas, await fv3GetSettings(env, 42), {now});
+    const by=Object.fromEntries(sent.map(x=>[x.lead, x]));
+    assert.equal(by[1].step, 6); assert.equal(by[1].stepCfg.template_name, 'lv_followup_re_demo');
+    assert.deepEqual(by[1].opts.templateParams, ['Asha', 'Acme', 'your enquiry']);
+    assert.equal(by[2].stepCfg.template_name, 'lv_followup_reengage', '"new" keeps the generic re-engage');
+    assert.equal(by[3].stepCfg.template_name, 'my_nego');
+    assert.equal(by[3].stepCfg.template_language, 'en_US');
+    assert.deepEqual(by[3].opts.templateParams, ['Meera', 'Acme'], 'own template sent with exactly its two variables');
   });
   test('sweep asks NocoDB only for columns the leads table has (an unknown field fails the whole read)', async ()=>{
     await fv3EnsureSchema(env);
@@ -484,7 +528,7 @@ describe('proposal follow-ups', ()=>{
   // Customer last wrote on the 10th; the team sent the proposal on the 12th (LastAgentMsgAt = then).
   const pLead={Stage:FV3_PROPOSAL_STAGE, LastAgentMsgAt:'2026-10-12T10:00:30Z'};
   const pd=(o={})=>fv3Decide({lead:lead({...pLead, ...o.lead}), steps, cfg:o.cfg||cfg, state:null, sends:o.sends||[], enabledAt:ENABLED, now:o.now, tz:'UTC',
-    reengageReady:true, proposal:o.proposal===undefined?PROP:o.proposal, proposalTemplates:o.tpl||TPL});
+    reengageReady:o.reengageReady??true, reengageStage:'Proposal Sent', proposal:o.proposal===undefined?PROP:o.proposal, proposalTemplates:o.tpl||TPL});
 
   test('day 1 after the proposal, not the normal nudges — the proposal itself is not "your team replied"', ()=>{
     let d=pd({now:T('2026-10-12T12:00:00Z')});
@@ -495,7 +539,7 @@ describe('proposal follow-ups', ()=>{
     assert.equal(d.status, 'due'); assert.equal(d.next.step, 7); assert.equal(d.cycle, '2026-10-12T10:00:00.000Z');
   });
 
-  test('day 3 and day 7 follow; then done, no re-engage', ()=>{
+  test('day 3 and day 7 follow; then the Proposal Sent stage\'s own re-engage', ()=>{
     const s7={step:7, kind:'proposal', sent_at:'2026-10-13T10:05:00Z'};
     let d=pd({sends:[s7], now:T('2026-10-14T10:00:00Z')});
     assert.equal(d.next.step, 8); assert.equal(d.next.due_at, '2026-10-15T10:00:00.000Z');
@@ -503,8 +547,20 @@ describe('proposal follow-ups', ()=>{
     d=pd({sends:[s7, s8], now:T('2026-10-18T10:00:00Z')});
     assert.equal(d.next.step, 9); assert.equal(d.next.due_at, '2026-10-19T10:00:00.000Z');
     const s9={step:9, kind:'proposal', sent_at:'2026-10-19T10:00:00Z'};
-    d=pd({sends:[s7, s8, s9], now:T('2026-11-30T10:00:00Z')});
+    // 30 days (reengage_after_days) after the proposal: the stage's re-engage, never the normal ladder.
+    d=pd({sends:[s7, s8, s9], now:T('2026-11-11T11:00:00Z')});
+    assert.equal(d.status, 'due'); assert.equal(d.next.step, 6); assert.equal(d.next.kind, 'reengage');
+    assert.equal(d.next.label, 'Re-engage · Proposal Sent'); assert.equal(d.next.due_at, '2026-11-11T10:00:00.000Z');
+    assert.match(d.text, /re-engage message for "Proposal Sent"/i);
+    assert.deepEqual(d.steps.map(x=>x.step), [7, 8, 9]);
+    // Its template not approved yet → waits (no other stage's template is used).
+    d=pd({sends:[s7, s8, s9], now:T('2026-11-30T10:00:00Z'), reengageReady:false});
     assert.equal(d.status, 'completed'); assert.equal(d.reason, 'proposal_done');
+    assert.match(d.text, /re-engage for "Proposal Sent" starts once its template is approved/);
+    // Both re-engages used → done.
+    const re=[{step:6, kind:'reengage', sent_at:'2026-11-11T10:00:00Z'}, {step:6, kind:'reengage', sent_at:'2026-12-11T10:00:00Z'}];
+    d=pd({sends:[s7, s8, s9, ...re], now:T('2027-02-01T10:00:00Z')});
+    assert.equal(d.reason, 'proposal_done');
   });
 
   test('a customer reply after the proposal restarts the proposal track from that reply', ()=>{
@@ -538,5 +594,53 @@ describe('proposal follow-ups', ()=>{
     assert.deepEqual(fv3TemplateParams(p.params, {Name:''}, {}, 'general'), ['there', 'our team', 'the proposal']);
     assert.deepEqual(Object.keys(fv3ProposalTemplates([{kind:'p1', status:'APPROVED'}, {kind:'p2', status:'PENDING'}, {kind:'s3', status:'APPROVED'}])), ['7']);
     assert.equal(FV3_PROPOSAL_STEPS[9].label, 'Proposal · day 7');
+  });
+});
+
+// Re-engage per stage: every open pipeline stage has its own re-engage template.
+import {fv3PipelineStages, fv3StageReengagePreset, fv3ReengageFor, fv3ReengageKind, fv3StageConfig} from './followup-v3.js';
+describe('re-engage per stage', ()=>{
+  test('the account\'s open stages: industry defaults, a customised pipeline, Proposal Sent for proposal accounts', ()=>{
+    assert.deepEqual(fv3PipelineStages({industry:'real_estate'}).map(s=>s.id), ['contacted', 'site_visit', 'negotiation', 'booking']);
+    assert.deepEqual(fv3PipelineStages({industry:'general'}), []);
+    assert.deepEqual(fv3PipelineStages({industry:'general'}, {proposals:true}), [{id:'proposal_sent', label:'Proposal Sent'}]);
+    const custom={industry:'general', flow_json:JSON.stringify({pipeline:[{id:'new', label:'New'}, {id:'site_visit', label:'Showroom Visit'}, {id:'won', label:'Won'}, {id:'kyc docs', label:''}], labels:{site_visit:'Showroom visit'}})};
+    assert.deepEqual(fv3PipelineStages(custom, {proposals:true}), [{id:'site_visit', label:'Showroom visit'}, {id:'kyc docs', label:'Kyc Docs'}, {id:'proposal_sent', label:'Proposal Sent'}]);
+    assert.equal(fv3ReengageKind('kyc docs'), 're_kyc_docs');
+  });
+
+  test('each stage gets its own wording; all are valid Meta template bodies', ()=>{
+    const stages=[['contacted', 'Contacted'], ['quote_sent', 'Quote Sent'], ['proposal_sent', 'Proposal Sent'], ['site_visit', 'Site Visit'], ['test_drive', 'Test Drive'],
+      ['negotiation', 'Negotiation'], ['fee_pending', 'Fee Pending'], ['documents_pending', 'Documents Pending'], ['custom_x', 'Waiting On Board']];
+    const presets=stages.map(([id, l])=>fv3StageReengagePreset(id, l, {businessName:'Acme'}));
+    assert.equal(new Set(presets.map(p=>p.body)).size, stages.length, 'no two stages share a body');
+    for(const p of presets){
+      assert.match(p.body, /^Hi |^Hello /); assert.match(p.body, /Reply STOP to opt out\.$/);
+      assert.equal(p.params.length, 3); assert.equal(p.example.length, 3);
+      assert.match(p.body, /\{\{1\}\}.*\{\{2\}\}.*\{\{3\}\}/s);
+    }
+    assert.match(presets[1].body, /sent you a quotation for \{\{3\}\}/);
+    assert.deepEqual(presets[2].params, ['name', 'business', 'proposal']);
+    assert.match(presets[3].body, /complete the site visit for/);
+    assert.match(presets[4].body, /complete the test drive for/);
+    assert.match(presets[6].body, /your fee pending with/);
+    assert.match(presets[8].body, /still at the waiting on board step/);
+    assert.equal(presets[1].kind, 're_quote_sent');
+  });
+
+  test('which template a lead gets: own pick, else its stage\'s (waits if not approved), else generic for new / unlisted stages', ()=>{
+    const stages=[{id:'quote_sent', label:'Quote Sent'}, {id:'negotiation', label:'Negotiation'}];
+    const templates=[{kind:'reengage', name:'lv_followup_reengage', status:'APPROVED'}, {kind:'re_quote_sent', name:'lv_followup_re_quote_sent', status:'APPROVED'},
+      {kind:'re_negotiation', name:'lv_followup_re_negotiation', status:'PENDING'}];
+    const cfg2=fv3Config({stage_sequences:{negotiation:{reengage:{template_name:'my_nego', template_language:'en_US'}}}});
+    assert.equal(fv3ReengageFor('quote_sent', {templates, cfg, stages}).template.name, 'lv_followup_re_quote_sent');
+    assert.equal(fv3ReengageFor('negotiation', {templates, cfg, stages}).template, null, 'never another stage\'s template');
+    assert.equal(fv3ReengageFor('negotiation', {templates, cfg, stages}).stageLabel, 'Negotiation');
+    assert.deepEqual(fv3ReengageFor('negotiation', {templates, cfg:cfg2, stages}).template, {name:'my_nego', language:'en_US', own:true});
+    assert.equal(fv3ReengageFor('new', {templates, cfg, stages}).template.name, 'lv_followup_reengage');
+    assert.equal(fv3ReengageFor('qual_2', {templates, cfg, stages}).template.name, 'lv_followup_reengage');
+    // The stage editor's re-engage pick survives config cleaning; blank means automatic.
+    assert.deepEqual(fv3StageConfig({negotiation:{reengage:{template_name:' my_nego '}}, quote_sent:{reengage:{template_name:''}}}),
+      {negotiation:{reengage:{template_name:'my_nego', template_language:'en'}}, quote_sent:{}});
   });
 });
