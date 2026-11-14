@@ -514,7 +514,7 @@ export const taPdf={safe:pdfSafe,esc,wrap,textWidth,hexRgb};
 // Optional (Hospitality → stay itinerary): `tag` replaces "TRAVEL ITINERARY", `facts` replaces the
 // key-fact boxes ([[LABEL,value]…]), `footNote` replaces the price/availability line, and
 // assets.gallery ([{title,text,image}]) adds a "Your Stay" section of photo cards after the intro.
-export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null}={}){
+export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null,galleryMax=6,galleryPhotoH=130}={}){
   const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=64;
   const AC=hexRgb(accent,[0.06,0.45,0.47]).map(v=>v.toFixed(3)).join(' ');
   const plan=taItineraryPlan(pkg,itin);
@@ -523,7 +523,8 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
   const dest=titleCase(String(pkg?.destination||'').trim());
   const images=[];const imgName=img=>{if(!img)return null;let i=images.indexOf(img);if(i<0){images.push(img);i=images.length-1;}return `Im${i+1}`;};
   const logo=assets.logo,cover=assets.cover?.image,places=assets.places||new Map();
-  let usedWiki=!!(assets.cover&&(cover||assets.cover.extract));
+  // A cover marked wiki:false is the property's own photo — no Wikipedia credit unless there's an extract.
+  let usedWiki=!!(assets.cover&&(assets.cover.extract||(cover&&assets.cover.wiki!==false)));
 
   const pages=[];let ops=[],y=0;
   const o=s=>ops.push(s);
@@ -622,13 +623,13 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
     for(const l of wrap(assets.cover.extract,10.5,false,CW,6)){need(15);txt(MX,y-10.5,l,10.5,false,'0.25 0.28 0.32');y-=15;}
   }
   // ── Your stay: the property's / room's own photos as cards, two per row ──
-  const gallery=(Array.isArray(assets.gallery)?assets.gallery:[]).filter(g=>g&&g.image).slice(0,6);
+  const gallery=(Array.isArray(assets.gallery)?assets.gallery:[]).filter(g=>g&&g.image).slice(0,galleryMax);
   if(gallery.length){
-    const gw=(CW-12)/2,ph=130;
+    const gw=(CW-12)/2,ph=galleryPhotoH;
     const cards=gallery.map(g=>{
       const head=g.title?wrap(g.title,11,true,gw-20,2):[];
       const body=g.text?wrap(g.text,8.8,false,gw-20,4):[];
-      return {g,head,body,h:ph+(head.length||body.length?16:6)+head.length*14+body.length*11.8+8};
+      return {g,head,body,h:head.length||body.length?ph+16+head.length*14+body.length*11.8+8:ph};
     });
     section(galleryTitle,cards[0].h);
     for(let i=0;i<cards.length;i+=2){

@@ -152,6 +152,7 @@ export function hospAiAgencyProperty(p){
     description:[stars?`${stars}-star ${TYPE_LABEL[type]||'property'}.`:TYPE_LABEL[type]?`${TYPE_LABEL[type]}.`:'',str(p?.description,1400)].filter(Boolean).join(' '),
     amenities:str(p?.amenities,1500),
     image_url_1:str(p?.image_url,1000),image_url_2:str(p?.image_url_2,1000),image_url_3:str(p?.image_url_3,1000),
+    photos_folder_url:str(p?.photos_folder_url,1000),
     property_type:type,
   };
 }
@@ -191,3 +192,28 @@ export function hospAiPriceHint(rates,currency,unit){
   return {from,to:to>from?to:0,currency:str(currency,8).toUpperCase()||'INR',unit:HOSP_AI_PRICE_UNITS.includes(String(unit||'').toLowerCase().trim())?String(unit).toLowerCase().trim():'per night'};
 }
 export const HOSP_AI_PRICE_FOOTNOTE='The price range is indicative. Rooms are subject to availability; our team confirms the exact price for your dates when you book.';
+
+// ── Resorts & Hotels → PDF only (no day-by-day plan) ──
+// For an Agency Resorts & Hotels property the Chats itinerary is a one-PDF brochure: the property
+// name, its location, the price range the agent confirms, and every photo — Photo 1-3 links, then
+// all images in its Google Drive photos folder (up to HOSP_AI_BROCHURE_MAX). Nothing else is sent:
+// no AI plan, no separate photo messages.
+export const HOSP_AI_BROCHURE_MAX=30;
+// Price pre-fill for a Resorts & Hotels row: its own price range first, else price-from / season /
+// off-season prices.
+export function hospAiAgencyPriceHint(row){
+  const range=[row?.price_range_min,row?.price_range_max];
+  const useRange=range.some(v=>Number(v)>0);
+  return hospAiPriceHint(useRange?range:[row?.price_from,row?.season_price,row?.off_season_price],row?.currency,row?.price_unit);
+}
+// Photo links first (as typed), then the folder's image ids as Drive links, no repeats, capped.
+export function hospAiBrochurePhotoList(property,folderIds,max=HOSP_AI_BROCHURE_MAX){
+  const out=[],seen=new Set();
+  const driveId=u=>(/\/file\/d\/([a-zA-Z0-9_-]+)/.exec(u)||/[?&]id=([a-zA-Z0-9_-]+)/.exec(u)||[])[1]||'';
+  for(const url of hospAiPhotos(property)){const k=driveId(url)||url;if(!seen.has(k)){seen.add(k);out.push({url});}}
+  for(const id of folderIds||[]){if(id&&!seen.has(id)){seen.add(id);out.push({drive_id:id});}}
+  return out.slice(0,max);
+}
+export function hospAiBrochurePdfName(property){
+  return `${String(property?.name||'property').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').slice(0,60)||'property'}.pdf`;
+}

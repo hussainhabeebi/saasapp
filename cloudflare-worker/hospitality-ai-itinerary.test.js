@@ -134,3 +134,21 @@ test('the PDF draws the price band only when a range is given', ()=>{
   const without=dec(taBuildItineraryPdf(pkg,itin,{tag:'Stay Itinerary',facts:[['Stay','2 nights']]}));
   assert.doesNotMatch(without, /PRICE RANGE/);
 });
+
+test('Resorts & Hotels brochure: price pre-fill, photo list, PDF with all photos and no day plan', async ()=>{
+  const {hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPriceLine}=await import('./hospitality-ai-itinerary.js');
+  assert.deepEqual(hospAiAgencyPriceHint({price_range_min:5000,price_range_max:9000,price_from:4000,currency:'INR',price_unit:'per night'}), {from:5000,to:9000,currency:'INR',unit:'per night'});
+  assert.deepEqual(hospAiAgencyPriceHint({price_from:4000,season_price:7000,currency:'INR'}), {from:4000,to:7000,currency:'INR',unit:'per night'});
+  const prop={image_url_1:'https://drive.google.com/file/d/AAA/view',image_url_2:'https://x.test/2.jpg'};
+  assert.deepEqual(hospAiBrochurePhotoList(prop,['AAA','BBB','CCC'],3), [{url:'https://drive.google.com/file/d/AAA/view'},{url:'https://x.test/2.jpg'},{drive_id:'BBB'}]);
+  assert.equal(hospAiBrochurePdfName({name:'Bay View Resort'}), 'Bay-View-Resort.pdf');
+  const img={filter:'DCTDecode',data:new Uint8Array([1,2,3]),w:4,h:3,cs:'DeviceRGB'};
+  const imgs=Array.from({length:12},(_,i)=>({...img,data:new Uint8Array([i])}));
+  const pdf=new TextDecoder('latin1').decode(taBuildItineraryPdf({name:'Bay View Resort',destination:'Wayanad',nights:0},{days:[]},{tag:'Stay Itinerary',facts:[['Location','Wayanad']],
+    priceBand:{label:'Price range',value:hospAiPriceLine({from:5000,to:9000,currency:'INR',unit:'per night'})},galleryTitle:'Photos',galleryMax:30,galleryPhotoH:175,
+    assets:{cover:{image:imgs[0]},gallery:imgs.slice(1).map(image=>({image}))}}));
+  assert.match(pdf, /\(Photos\)/);
+  assert.match(pdf, /\/Im12 Do/);
+  assert.match(pdf, /\(INR 5,000 - 9,000 per night\)/);
+  assert.doesNotMatch(pdf, /Day-by-Day|nights \/|About /);
+});

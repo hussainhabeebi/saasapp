@@ -1438,7 +1438,46 @@ function drawHItinProps(){
 }
 function pickHItinProp(id){
  const p=(hItin.props||[]).find(x=>String(x.id)===String(id));if(!p||hItin.busy)return;
- hItin.sel=p;hItin.days=null;hItin.stay=null;$('hItinMain')?.classList.add('picked');drawHItinProps();drawHItinDetail('profile');
+ hItin.sel=p;hItin.days=null;hItin.stay=null;$('hItinMain')?.classList.add('picked');drawHItinProps();
+ if(p.brochure)return openHBrochure(p);
+ drawHItinDetail('profile');
+}
+// ── Resorts & Hotels (Agency): one PDF, no day-by-day plan ──
+// Location, the price range (pre-filled from the property, editable) and every photo — Photo 1-3
+// and all images in its Google Drive photos folder — go into one PDF. Only the PDF is sent.
+async function openHBrochure(p){
+ hItin.br={photos:null,price:{price_on:true}};const seq=++hItin.seq;drawHBrochure();
+ try{const d=await apiJson(WORKER+'/hospitality/chat-property-photos?property_id='+encodeURIComponent(p.id));if(seq!==hItin.seq||hItin.sel!==p)return;hItin.br.photos=d.photos||[]}
+ catch(e){if(seq!==hItin.seq)return;hItin.br.photos=p.photos||[];hItin.br.err=e.message}
+ hItin.br.price=hBrochureReadPrice();drawHBrochure();
+}
+function hBrochureReadPrice(){const v=id=>$(id)?($(id).value||'').trim():undefined,o=hItin.br?.price||{};
+ return {price_on:true,price_from:v('hItinPriceFrom')??o.price_from,price_to:v('hItinPriceTo')??o.price_to,price_currency:v('hItinPriceCur')??o.price_currency,price_unit:v('hItinPriceUnit')??o.price_unit}}
+function drawHBrochure(){
+ const el=$('hItinDetail'),p=hItin.sel,b=hItin.br;if(!el||!p||!b)return;
+ const ph=b.photos;
+ const photos=ph===null?`<div class="tpl-empty" style="padding:10px"><div class="spinner"></div>Loading photos from the Drive folder…</div>`
+  :ph.length?`<div class="ai-itin-photos" id="hItinPhotos">${ph.map(u=>`<figure>${hImg(u,'',p.name)}</figure>`).join('')}</div><div style="font-size:12.5px;color:var(--muted)">${ph.length} photo${ph.length>1?'s':''} go into the PDF${p.has_folder?' (Photo 1-3 and the Drive folder)':''}.</div>`
+  :`<div style="font-size:12.5px;color:var(--muted)">No photos found${p.has_folder?' — check the Drive folder is shared as "Anyone with the link"':''}. The PDF will have the location and price range only.</div>`;
+ const t=b.price||{price_on:true};
+ el.innerHTML=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc(['Resorts & Hotels',p.location?'📍 '+p.location:''].filter(Boolean).join(' · '))}</small></div>${photos}
+ <div class="tpl-form"><div style="font-size:13px;font-weight:600">💰 Price range</div><div id="hBrochurePrice">${hItinPriceFields(t).replace(/<label class="h-itin-check">[\s\S]*?<\/label>/,'')}</div>
+ <label>Message with the PDF<input id="hItinCaption" placeholder="${esc(`📄 *${p.name}*${p.location?' · '+p.location:''} + the price range`)}"></label>
+ <div style="font-size:12.5px;color:var(--muted)">Only the PDF is sent — the location, price range and photos are inside it.</div><div id="hItinErr" style="color:#d93025;font-size:13px"></div></div>
+ <div class="tpl-actions"><button class="ai-itin-btn" id="hItinSendBtn" onclick="hBrochureSend()" ${ph===null?'disabled':''}>📄 Send PDF</button></div>`;
+}
+async function hBrochureSend(){
+ const lead=hItin.lead,p=hItin.sel;if(!lead||!p)return;
+ const t=hBrochureReadPrice(),price=hItinPriceOf(t);hItin.br.price=t;
+ const btn=$('hItinSendBtn'),err=$('hItinErr');const caption=($('hItinCaption')?.value||'').trim();
+ if(btn){btn.disabled=true;btn.textContent='Building PDF…'}if(err)err.textContent='';
+ try{
+  const d=await apiJson(WORKER+'/hospitality/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,property_id:p.id,...(price?{price}:{}),...(caption?{caption}:{})})});
+  closeHospItin();
+  const shown=caption||`📄 *${p.name}*${p.location?` · ${p.location}`:''}${price?`\n💰 Price range: ${hItinPriceLine(price)}`:''}`;
+  const msg=pushLocal(lead,{role:'assistant',content:shown,attachment:{kind:'document',type:'application/pdf',name:d.name||`${p.name}.pdf`}});setMsgStatus(lead,msg,null);
+  toast(d.pdf_photos?`✓ PDF sent with ${d.pdf_photos} photo${d.pdf_photos>1?'s':''}`:'✓ PDF sent');
+ }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent='📄 Send PDF'}}
 }
 const hItinRoom=()=>(hItin.sel?.rooms||[]).find(r=>String(r.id)===String(hItin.stay?.room_id))||null;
 // The property's photos, then the chosen room's — what the preview shows and the chat receives.
