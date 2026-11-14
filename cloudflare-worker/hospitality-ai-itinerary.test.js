@@ -111,3 +111,26 @@ test('Agency Resorts & Hotels rows join the picker with their own ids and room c
   assert.match(system, /check-in at Bay View Resort/);
   assert.match(user, /Room: Pool Villa/);
 });
+
+test('optional price range: cleaned, formatted, pre-filled from rates', async ()=>{
+  const {hospAiPrice,hospAiPriceLine,hospAiPriceHint}=await import('./hospitality-ai-itinerary.js');
+  assert.equal(hospAiPrice(null), null);
+  assert.equal(hospAiPrice({from:'', to:''}), null);
+  assert.deepEqual(hospAiPrice({from:'6,000', to:'4500', currency:'inr', unit:'per night'}), {from:4500,to:6000,currency:'INR',unit:'per night'});
+  assert.deepEqual(hospAiPrice({to:'120', currency:'usd', unit:'whatever'}), {from:120,to:0,currency:'USD',unit:'per night'});
+  assert.equal(hospAiPriceLine({from:4500,to:12000,currency:'INR',unit:'per night'}), 'INR 4,500 - 12,000 per night');
+  assert.equal(hospAiPriceLine({from:250,to:250,currency:'AED',unit:'per person'}), 'AED 250 per person');
+  assert.deepEqual(hospAiPriceHint([4500,0,6000,null],'inr','per night'), {from:4500,to:6000,currency:'INR',unit:'per night'});
+  assert.equal(hospAiPriceHint([0,null],'INR'), null);
+});
+
+test('the PDF draws the price band only when a range is given', ()=>{
+  const pkg=hospAiStayPkg(PROP,ROOM,2);
+  const itin={days:[{day_no:1,title:'Arrival',items:[{type:'hotel',description:'Check in'}]}]};
+  const dec=b=>new TextDecoder('latin1').decode(b);
+  const withPrice=dec(taBuildItineraryPdf(pkg,itin,{tag:'Stay Itinerary',facts:[['Stay','2 nights']],priceBand:{label:'Price range · Valley View Suite',value:'INR 4,500 - 6,000 per night',note:'Indicative.'}}));
+  assert.match(withPrice, /\(PRICE RANGE \\267 VALLEY VIEW SUITE\)|\(PRICE RANGE/);
+  assert.match(withPrice, /\(INR 4,500 - 6,000 per night\)/);
+  const without=dec(taBuildItineraryPdf(pkg,itin,{tag:'Stay Itinerary',facts:[['Stay','2 nights']]}));
+  assert.doesNotMatch(without, /PRICE RANGE/);
+});

@@ -15,7 +15,8 @@ const LEAD = { Id: 7, ClientId: '48', Name: 'Asha', Phone: '919800000000', Conve
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const PROPS = [
   { id: '3', name: 'Misty Hills Resort', location: 'Munnar, Kerala', amenities: 'Infinity pool, Spa', photos: ['https://img.test/prop1.png', 'https://img.test/prop2.png'],
-    rooms: [{ id: '9', name: 'Valley View Suite', capacity_adults: 3, photos: ['https://img.test/room1.png'] }, { id: '10', name: 'Garden Cottage', photos: [] }] },
+    price: { from: 4500, to: 9000, currency: 'INR', unit: 'per night' },
+    rooms: [{ id: '9', name: 'Valley View Suite', capacity_adults: 3, photos: ['https://img.test/room1.png'], price: { from: 6000, to: 7500, currency: 'INR', unit: 'per night' } }, { id: '10', name: 'Garden Cottage', photos: [] }] },
   { id: '4', name: 'Lake Palace', location: 'Alleppey', photos: [], rooms: [] },
 ];
 const AGENCY = { id: 'a-7', source: 'agency', name: 'Bay View Resort', location: 'Wayanad', photos: ['https://img.test/bay.png'], rooms: [{ id: 'a-7-r1', name: 'Deluxe', photos: [] }] };
@@ -139,4 +140,43 @@ test('a travel agency gets stay itineraries from its Resorts & Hotels, listed wi
   await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
   await expect(ov.locator('.ai-itin-day')).toHaveCount(3);
   expect(calls.draft[0]).toMatchObject({ property_id: 'a-7', room_id: 'a-7-r1' });
+});
+
+test('optional price range: off by default, pre-filled from the room, editable, sent with the PDF', async ({ page }) => {
+  const calls = await open(page);
+  await page.evaluate(() => openHospItin());
+  const ov = page.locator('#hospItinOv');
+  await ov.locator('.tpl-item', { hasText: 'Misty Hills Resort' }).click();
+  await expect(page.locator('#hItinPriceOn')).not.toBeChecked();
+  await expect(page.locator('#hItinPriceFrom')).toHaveCount(0);
+  await page.locator('#hItinPriceOn').check();
+  await expect(page.locator('#hItinPriceFrom')).toHaveValue('4500');
+  await expect(page.locator('#hItinPriceTo')).toHaveValue('9000');
+  // Choosing a room switches to that room's rates.
+  await page.locator('#hItinRoom').selectOption('9');
+  await expect(page.locator('#hItinPriceOn')).toBeChecked();
+  await expect(page.locator('#hItinPriceFrom')).toHaveValue('6000');
+  await page.locator('#hItinPriceTo').fill('8000');
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  await expect(ov.locator('.ai-itin-day')).toHaveCount(3);
+  await expect(page.locator('#hItinPriceLine')).toHaveText('💰 INR 6,000 - 8,000 per night');
+  await expect(page.locator('#hItinCaption')).toHaveValue('📄 Here is your stay itinerary for *Misty Hills Resort*. 💰 Price range: INR 6,000 - 8,000 per night');
+  // The AI draft never gets the price; the send does.
+  expect(calls.draft[0].price).toBeUndefined();
+  await page.getByRole('button', { name: '✅ Approve & send' }).click();
+  await expect(ov).toBeHidden();
+  expect(calls.send[0].price).toEqual({ from: 6000, to: 8000, currency: 'INR', unit: 'per night' });
+});
+
+test('price range ticked with no rates asks for one before drafting', async ({ page }) => {
+  const calls = await open(page);
+  await page.evaluate(() => openHospItin());
+  await page.locator('#hospItinOv .tpl-item', { hasText: 'Lake Palace' }).click();
+  await page.locator('#hItinPriceOn').check();
+  await expect(page.locator('#hItinPriceBox')).toContainText('No rates saved');
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  expect(calls.draft).toEqual([]);
+  await page.locator('#hItinPriceFrom').fill('3000');
+  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
+  await expect.poll(() => calls.draft.length).toBe(1);
 });

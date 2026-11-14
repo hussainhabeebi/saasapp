@@ -160,3 +160,34 @@ export function hospAiAgencyRooms(p){
   return String(p?.room_types||'').split(/\n|,|;|\|/).map(x=>str(x,120)).filter(x=>{const k=x.toLowerCase();if(!x||seen.has(k))return false;seen.add(k);return true;})
     .slice(0,20).map((name,i)=>({id:`${HOSP_AI_AGENCY_PREFIX}${p.id}-r${i+1}`,name,unit_type:'',amenities:'',description:''}));
 }
+
+// ── Optional price range (Chats → "💰 Price range" on the stay form) ──
+// Off by default (the guest gets the exact price from the team at booking). When the agent ticks
+// it, the range they typed — pre-filled from the room / property rates — goes on the PDF and in
+// the message. The AI never sees or writes a price.
+export const HOSP_AI_PRICE_UNITS=['per night','per person','per couple','per room','for the stay'];
+const num=v=>{const n=Number(String(v??'').replace(/[,\s]/g,''));return Number.isFinite(n)&&n>0?Math.round(n*100)/100:0;};
+export function hospAiPrice(raw){
+  if(!raw||typeof raw!=='object')return null;
+  let from=num(raw.from),to=num(raw.to);
+  if(!from&&to){from=to;to=0;}
+  if(!from)return null;
+  if(to&&to<from)[from,to]=[to,from];
+  const currency=str(raw.currency,8).toUpperCase().replace(/[^A-Z₹$€£]/g,'')||'INR';
+  const unit=HOSP_AI_PRICE_UNITS.includes(String(raw.unit||'').toLowerCase().trim())?String(raw.unit).toLowerCase().trim():'per night';
+  return {from,to:to&&to!==from?to:0,currency,unit};
+}
+const money=(n,cur)=>Number(n).toLocaleString(cur==='INR'?'en-IN':'en-US',{maximumFractionDigits:2});
+export function hospAiPriceLine(p){
+  p=hospAiPrice(p);
+  if(!p)return '';
+  return `${p.currency} ${money(p.from,p.currency)}${p.to?` - ${money(p.to,p.currency)}`:''} ${p.unit}`;
+}
+// The pre-fill for the form: lowest and highest of the given rates.
+export function hospAiPriceHint(rates,currency,unit){
+  const r=(rates||[]).map(num).filter(Boolean);
+  if(!r.length)return null;
+  const from=Math.min(...r),to=Math.max(...r);
+  return {from,to:to>from?to:0,currency:str(currency,8).toUpperCase()||'INR',unit:HOSP_AI_PRICE_UNITS.includes(String(unit||'').toLowerCase().trim())?String(unit).toLowerCase().trim():'per night'};
+}
+export const HOSP_AI_PRICE_FOOTNOTE='The price range is indicative. Rooms are subject to availability; our team confirms the exact price for your dates when you book.';
