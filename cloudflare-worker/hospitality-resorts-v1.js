@@ -27,7 +27,11 @@ export const RV1_STYLE='resorts_v1';
 export const RV1_NAV={
   changeLocation:'📍 Change location',
   otherResorts:'↩ Other resorts',
+  allResorts:'🏨 All resorts',
   book:'📅 Book now',
+  photos:'📸 More photos',
+  video:'🎬 Video',
+  brochure:'📄 Brochure',
 };
 const DESC_MAX=72;
 const DETAILS_DESC_MAX=500;
@@ -37,9 +41,18 @@ export const RV1_PRICE_NOTE='Each resort shows its price range — our booking t
 const PROPERTY_TYPE_LABEL={resort:'Resort',hotel:'Hotel',villa:'Villa',homestay:'Homestay',houseboat:'Houseboat',apartment:'Apartment',camp:'Camp',other:'Stay'};
 
 const yes=v=>String(v||'').trim().toLowerCase()==='yes';
-// Hospitality on, Agency (Travel Agency module → Resorts & Hotels) on, and this style picked.
+// A travel agency account: a travel industry, or the Agency / Travel module switched on.
+function isAgency(c){
+  const industry=String(c?.industry||'').trim().toLowerCase();
+  return industry.includes('travel') || yes(c?.ta_enabled);
+}
+// Two ways in, both reading the Agency → Resorts & Hotels list:
+//  • Hospitality clients: Hospitality on, Agency on, Settings → Hospitality → Sub-style "Resorts V1".
+//  • Travel agencies: Travel Settings → 🧭 Chat Style "Resorts V1" (lt_chat_style).
 export function rv1IsStyle(c){
-  return !!c && yes(c.hospitality_enabled) && yes(c.ta_enabled) && c.hospitality_style===RV1_STYLE;
+  if(!c) return false;
+  if(yes(c.hospitality_enabled) && yes(c.ta_enabled) && c.hospitality_style===RV1_STYLE) return true;
+  return isAgency(c) && String(c.lt_chat_style||'').trim().toLowerCase()===RV1_STYLE;
 }
 
 export function rv1Active(properties){
@@ -126,6 +139,18 @@ export function rv1PriceText({property=null, list=[], locLabel=''}){
 export function rv1PhotoUrls(p){
   return ['image_url','image_url_2','image_url_3'].map(f=>String(p?.[f]||'').trim()).filter(Boolean);
 }
+const hasFolder=p=>/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(String(p?.photos_folder_url||''));
+// Every option offered under a resort's details, in order. Up to 3 are WhatsApp reply buttons;
+// more (a resort with a photos folder, video or brochure) become one list.
+export function rv1PropertyOptions(p, {useLoc=true}={}){
+  const out=[RV1_NAV.book];
+  if(hasFolder(p) || rv1PhotoUrls(p).length) out.push(RV1_NAV.photos);
+  if(String(p?.video_url||'').trim()) out.push(RV1_NAV.video);
+  if(String(p?.pdf_url||'').trim()) out.push(RV1_NAV.brochure);
+  out.push(RV1_NAV.otherResorts);
+  if(useLoc) out.push(RV1_NAV.changeLocation);
+  return out.map(t=>({title:t, value:t}));
+}
 
 // "More locations · page 2" / "More resorts · page 2" rows (h3PageRows builds them).
 export function rv1MoreTap(text){
@@ -136,7 +161,11 @@ function navIs(text, key){
   const t=h3Norm(text);
   switch(key){
     case 'changeLocation': return /^(change|other|another|different|all)\s+(location|locations|destination|destinations|place|places)$/.test(t) || t==='locations';
-    case 'otherResorts': return /^(other|another|all|more|different)\s+(resorts?|hotels?|properties|property|stays?|options?)$/.test(t);
+    case 'otherResorts': return /^(other|another|more|different)\s+(resorts?|hotels?|properties|property|stays?|options?)$/.test(t);
+    case 'allResorts': return /^(all|full|every|show\s+all|see\s+all|list\s+all)\s*(the\s+)?(resorts?|hotels?|properties|stays?|resorts\s+(and|&)\s+hotels|list)$/.test(t);
+    case 'photos': return /^(more\s+)?(photos?|pics?|pictures?|images?|gallery)(\s+please|\s+pls)?$/.test(t) || /^(send|show)(\s+me)?(\s+more)?\s+(photos?|pics?|pictures?|images?)$/.test(t);
+    case 'video': return /^(videos?|send\s+(the\s+)?video|show\s+(me\s+)?(the\s+)?video|tour\s+video)$/.test(t);
+    case 'brochure': return /^(brochure|pdf|catalog(ue)?|send\s+(the\s+)?(brochure|pdf)|details\s+pdf)$/.test(t);
   }
   return false;
 }
@@ -216,11 +245,20 @@ export function rv1Decide({text, isNewLead=false, ctx={}, properties=[]}){
 
   // 1. "More … · page N" rows.
   const more=rv1MoreTap(t);
-  if(more) return more.kind==='locations'?(useLoc?{type:'locations', page:more.page}:start()):toProps(curLocKey, more.page);
+  if(more){
+    if(more.kind==='locations') return useLoc?{type:'locations', page:more.page}:start();
+    // Paging through every resort (🏨 All resorts) keeps going through every resort.
+    if(ctx.all || curLocKey==null) return {type:'properties', locKey:null, page:more.page, all:true};
+    return toProps(curLocKey, more.page);
+  }
 
   // 2. Navigation buttons and booking.
   if(h3ExactName(t, RV1_NAV.changeLocation) || navIs(t, 'changeLocation')) return useLoc?{type:'locations', page:1}:toProps(null);
+  if(h3ExactName(t, RV1_NAV.allResorts) || navIs(t, 'allResorts')) return {type:'properties', locKey:null, page:1, all:true};
   if(h3ExactName(t, RV1_NAV.otherResorts) || navIs(t, 'otherResorts')) return toProps(curLocKey);
+  for(const kind of ['photos', 'video', 'brochure']){
+    if(curProp && (h3ExactName(t, RV1_NAV[kind]) || navIs(t, kind))) return {type:kind, propertyId:curProp.id};
+  }
   if(h3ExactName(t, RV1_NAV.book) || rv1IsBookText(t)) return {type:'book', propertyId:curProp?curProp.id:null};
   const bookNamed=bookWithName(t, inLoc.length?[...inLoc, ...props.filter(p=>!inLoc.includes(p))]:props);
   if(bookNamed) return {type:'book', propertyId:bookNamed.id};
@@ -289,6 +327,7 @@ export function rv1Decide({text, isNewLead=false, ctx={}, properties=[]}){
 function amounts(s){
   return (String(s).match(/\d[\d,]*(?:\.\d+)?/g)||[]).map(x=>Number(x.replace(/,/g, ''))).filter(n=>n>=100);
 }
+const RV1_OTHER_PRICE_RE=/\b(?:packages?|flights?|tickets?|air\s*fares?|fares?|visas?|tours?|umrah|hajj|cruises?|transfers?|cabs?|taxis?|insurance)\b/i;
 export function rv1StripPrices(text, properties=[]){
   const src=String(text||'');
   if(!src.trim()) return src;
@@ -296,8 +335,12 @@ export function rv1StripPrices(text, properties=[]){
   const names=props.map(p=>p.name);
   const allowed=new Set();
   for(const p of props) for(const f of ['price_range_min','price_range_max']) if(Number(p[f])>0) allowed.add(Number(p[f]));
+  const namesResort=s=>names.some(n=>h3MentionsName(s, n));
   const bad=s=>{
     if(!h3HasStayPrice(s, names)) return false;
+    // A travel agency's package / flight / visa prices are theirs to quote — only stay prices
+    // (or a price next to one of the listed resorts) are guarded.
+    if(RV1_OTHER_PRICE_RE.test(s) && !namesResort(s)) return false;
     const nums=amounts(s);
     return !nums.length || !nums.every(n=>allowed.has(n));
   };

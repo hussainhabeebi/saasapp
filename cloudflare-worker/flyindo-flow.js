@@ -25,7 +25,10 @@ export const FLYINDO_PREFIX='FLY:';
 // Chat Style "Greetings only": the customer's first message gets the Flyindo welcome (no menu),
 // the chat is handed to the team and the bot stays silent for that customer from then on.
 export const GREETING_STYLE='greeting';
-export const CHAT_STYLES=[FLYINDO_STYLE,GREETING_STYLE];
+// Chat Style "Resorts V1": the guided Resorts & Hotels flow (hospitality-resorts-v1.js) —
+// locations → resorts → photos, details & price range → Book (handover, then silent).
+export const RESORTS_V1_STYLE='resorts_v1';
+export const CHAT_STYLES=[FLYINDO_STYLE,GREETING_STYLE,RESORTS_V1_STYLE];
 export const GREETING_TEXT_MAX=1000;
 export const FLYINDO_MAX_DESTINATIONS=10;
 export const FLYINDO_MAX_DAYS_AHEAD=550;   // ~18 months

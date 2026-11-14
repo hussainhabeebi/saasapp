@@ -138,3 +138,30 @@ test('currency, WhatsApp menu and itineraries are tabs of the same page; the old
   await expect(page.locator('#itMsg')).toContainText('Saved');
   expect(itin).toEqual({ itin_share_pdf: true, itin_auto_images: false, lt_contextual_answers: false });
 });
+
+test('Chat Style: Resorts V1 for travel agencies — explained, previewed and saved', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: { ...saved } }); }
+      return route.fulfill({ json: { lt_chat_style: '' } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await page.getByRole('button', { name: '🧭 Chat Style' }).click();
+  await expect(page.locator('#rv1Opts')).toBeHidden();
+  await page.locator('input[name="flyStyle"][value="resorts_v1"]').check();
+  await expect(page.locator('#rv1Opts')).toBeVisible();
+  await expect(page.locator('#rv1Opts')).toContainText('🏨 All resorts');
+  await expect(page.locator('#rv1Opts')).toContainText('price range only');
+  await expect(page.locator('#flyOpts')).toBeHidden();
+  await expect(page.locator('#flyPreviewTitle')).toHaveText('Preview · Resorts V1');
+  await expect(page.locator('#flyPreview')).toContainText('Price range: ₹8,000 – ₹15,000 per night');
+  await page.getByRole('button', { name: /^Save/ }).first().click();
+  await expect.poll(() => saved?.lt_chat_style).toBe('resorts_v1');
+});
