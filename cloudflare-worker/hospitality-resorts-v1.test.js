@@ -163,9 +163,9 @@ test('full list: 🏨 All resorts, and paging through every resort', ()=>{
   assert.deepEqual(decide('More resorts · page 2', {ctx:{location:'Munnar'}}), {type:'properties', locKey:'munnar', page:2});
 });
 
-test('full buttons under a resort: Book, More photos, Video, Brochure, Other resorts, Change location', ()=>{
+test('full buttons under a resort: Book, Video, Brochure, Other resorts, Change location (photos are in the PDF)', ()=>{
   const p={...properties[0], photos_folder_url:'https://drive.google.com/drive/folders/abc123', video_url:'https://drive.google.com/file/d/v/view', pdf_url:'https://drive.google.com/file/d/p/view'};
-  assert.deepEqual(rv1PropertyOptions(p).map(o=>o.title), [RV1_NAV.book, RV1_NAV.photos, RV1_NAV.video, RV1_NAV.brochure, RV1_NAV.otherResorts, RV1_NAV.changeLocation]);
+  assert.deepEqual(rv1PropertyOptions(p).map(o=>o.title), [RV1_NAV.book, RV1_NAV.video, RV1_NAV.brochure, RV1_NAV.otherResorts, RV1_NAV.changeLocation]);
   assert.deepEqual(rv1PropertyOptions(properties[2], {useLoc:false}).map(o=>o.title), [RV1_NAV.book, RV1_NAV.otherResorts]);
   const ctx={property:'Aadhisakthi Resort'};
   assert.deepEqual(decide(RV1_NAV.photos, {ctx}), {type:'photos', propertyId:1});
@@ -205,4 +205,17 @@ test('price range comes from the Resorts & Hotels prices when Range From / To ar
   assert.doesNotMatch(rv1StripPrices('Ooty 3 Bedroom A5 is around ₹10,000 per night.', props), /10,000/);
   assert.match(rv1AiContext(props), /Ooty 3 Bedroom A5.*price range: ₹8,000 – ₹12,000 per night/);
   assert.match(rv1AiContext(props), /ONLY prices you may mention/);
+});
+
+test('brochure PDF: key facts and caption carry the saved price range and the photos link', async()=>{
+  const { rv1BrochureFacts, rv1BrochureCaption }=await import('./hospitality-resorts-v1.js');
+  const p={name:'Ooty 3 Bedroom A5', location:'Ooty', property_type:'resort', star_rating:4, currency:'INR', price_unit:'per night',
+    season_price:12000, off_season_price:8000, photos_folder_url:'https://drive.google.com/drive/folders/abcdefghij12'};
+  assert.deepEqual(rv1BrochureFacts(p), [['Location','Ooty'],['Type','Resort'],['Rating','4-star'],['Price range','₹8,000 – ₹12,000 per night']]);
+  const cap=rv1BrochureCaption(p);
+  assert.match(cap, /📄 \*Ooty 3 Bedroom A5\* · Ooty/);
+  assert.match(cap, /💰 Price range: ₹8,000 – ₹12,000 per night/);
+  assert.match(cap, /📸 All photos: https:\/\/drive\.google\.com\/drive\/folders\/abcdefghij12/);
+  assert.doesNotMatch(rv1BrochureCaption({name:'X'}), /All photos/);
+  assert.match(rv1BrochureCaption({name:'X'}), /Price on request/);
 });

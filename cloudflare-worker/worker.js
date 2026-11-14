@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {rv1PropertyOptions,RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
+import {rv1PriceBounds,rv1BrochureFacts,rv1BrochureCaption,rv1PropertyOptions,RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
@@ -22522,7 +22522,7 @@ async function hospChatBrochureImage(env,item){
   return await taPrepareImage(new Uint8Array(await blob.arrayBuffer())).catch(()=>null);
 }
 // Resorts & Hotels: the brochure PDF — name, location, price range, every photo. No day plan.
-async function hospChatBuildBrochurePdf(env,c,property,price){
+async function hospChatBuildBrochurePdf(env,c,property,price,{facts=null}={}){
   const items=await hospChatBrochurePhotos(env,property);
   const imgs=[];
   for(let i=0;i<items.length;i+=6)imgs.push(...await Promise.all(items.slice(i,i+6).map(x=>hospChatBrochureImage(env,x))));
@@ -22531,7 +22531,7 @@ async function hospChatBuildBrochurePdf(env,c,property,price){
   const logo=logoUrl?await hospChatPdfImage(env,logoUrl):null;
   const pkg={name:property.name,destination:property.location,nights:0};
   const bytes=taBuildItineraryPdf(pkg,{days:[]},{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',
-    accent:c.quote_accent_color||'',tag:'Stay Itinerary',facts:property.location?[['Location',property.location]]:[],
+    accent:c.quote_accent_color||'',tag:'Stay Itinerary',facts:facts||(property.location?[['Location',property.location]]:[]),
     priceBand:price?{label:'Price range',value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null,
     footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryPhotoH:175,
     assets:{logo,cover:photos[0]?{image:photos[0],wiki:false}:null,gallery:photos.slice(photos.length>1?1:0).map(image=>({image}))}});
@@ -40015,16 +40015,21 @@ async function hospRv1Execute(env, c, clientId, convId, leadId, plan){
       const opts=rv1PropertyOptions(prop, {useLoc});
       out.patch={location:locOf(prop), property:prop.name, unit:''};
       if(a.type==='property'){
-        // Photos first (Photo 1–3, then a few from the Drive photos folder), within a time budget.
-        const deadline=Date.now()+RV1_PHOTO_BUDGET_MS;
-        let sent=0;
-        for(const url of rv1PhotoUrls(prop)){
-          if(Date.now()>deadline) break;
-          if(await hospH3SendImage(env, c, convId, url, sent?'':rv1PhotoCaption(prop), 'resort.jpg')) sent++;
-        }
-        if(prop.photos_folder_url && Date.now()<deadline){
-          await taSendPropertyFolderPhotos(env, c, convId, prop.photos_folder_url, sent?'':rv1PhotoCaption(prop), Math.max(2, RV1_MAX_PHOTOS-sent))
-            .catch(e=>reportOpsError(env, 'hospRv1FolderPhotos', e, {clientId, propertyId:prop.id}));
+        // One PDF instead of a stream of photos: every photo (Photo 1–3, then the Drive photos
+        // folder), the location, type and price range; the caption carries the range and the
+        // photos-folder link. If the PDF can't be built, the photos are sent as before.
+        const pdfSent=await hospRv1SendBrochurePdf(env, c, clientId, convId, prop);
+        if(!pdfSent){
+          const deadline=Date.now()+RV1_PHOTO_BUDGET_MS;
+          let sent=0;
+          for(const url of rv1PhotoUrls(prop)){
+            if(Date.now()>deadline) break;
+            if(await hospH3SendImage(env, c, convId, url, sent?'':rv1PhotoCaption(prop), 'resort.jpg')) sent++;
+          }
+          if(prop.photos_folder_url && Date.now()<deadline){
+            await taSendPropertyFolderPhotos(env, c, convId, prop.photos_folder_url, sent?'':rv1PhotoCaption(prop), Math.max(2, RV1_MAX_PHOTOS-sent))
+              .catch(e=>reportOpsError(env, 'hospRv1FolderPhotos', e, {clientId, propertyId:prop.id}));
+          }
         }
         await say(rv1DetailsText(prop), opts);
       }else if(a.type==='photos'){
@@ -40050,6 +40055,26 @@ async function hospRv1Execute(env, c, clientId, convId, leadId, plan){
     if(leadId && out.patch) await hospH3SaveCtx(env, clientId, leadId, out.patch);
   }catch(e){ await reportOpsError(env, 'hospRv1Execute', e, {clientId, convId, step:a?.type}); }
   return out;
+}
+
+// Resorts V1: a resort's brochure PDF (hospChatBuildBrochurePdf — the same one Chats → AI Stay
+// Itinerary sends for a Resorts & Hotels property), with the price range only from the saved
+// prices. Returns true when the PDF reached the chat.
+async function hospRv1SendBrochurePdf(env, c, clientId, convId, prop){
+  try{
+    const b=rv1PriceBounds(prop);
+    const price=b?hospAiPrice({from:b.lo||b.hi, to:b.lo?b.hi:0, currency:prop.currency||'INR', unit:prop.price_unit||'per night'}):null;
+    const property=hospAiAgencyProperty(prop);
+    const facts=rv1BrochureFacts(prop);
+    const out=await hospChatBuildBrochurePdf(env, c, property, price, {facts});
+    if(!out?.bytes?.length) return false;
+    const fd=new FormData();
+    fd.append('content', rv1BrochureCaption(prop)); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', new Blob([out.bytes], {type:'application/pdf'}), hospAiBrochurePdfName(property));
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok) throw new Error(`Chatwoot HTTP ${r.status}`);
+    return true;
+  }catch(e){ await reportOpsError(env, 'hospRv1SendBrochurePdf', e, {clientId, propertyId:prop?.id}); return false; }
 }
 
 // The early Resorts V1 turn (handleEngineWebhook, before travel menus and greeting intros): a step

@@ -28,8 +28,9 @@ test('travel agency + Chat Style Resorts V1: lists, buttons and booking from Res
     if(u.startsWith('https://cw.test/')){
       let body=opts.body, content='', items=null, type='';
       if(typeof body==='string'){ const j=JSON.parse(body); content=j.content; items=j.content_attributes?.items||null; type=j.content_type||''; }
-      else if(body?.get){ content=body.get('content'); items=body.get('content_attributes')?JSON.parse(body.get('content_attributes')).items:null; type=body.get('attachments[]')?'attachment':''; }
-      sent.push({url:u, content, items, type});
+      let file=null;
+      if(body?.get){ content=body.get('content'); items=body.get('content_attributes')?JSON.parse(body.get('content_attributes')).items:null; file=body.get('attachments[]'); type=file?'attachment':''; }
+      sent.push({url:u, content, items, type, file});
       return Response.json({id:sent.length});
     }
     return Response.json({list:[]});
@@ -77,7 +78,15 @@ test('travel agency + Chat Style Resorts V1: lists, buttons and booking from Res
     const details=sent.at(-1);
     assert.match(details.content, /Price range: \*₹8,000 – ₹15,000 per night\*/);
     assert.doesNotMatch(details.content, /8,500/);
-    assert.deepEqual(details.items.map(i=>i.title), ['📅 Book now', '📸 More photos', '🎬 Video', '📄 Brochure', '↩ Other resorts', '📍 Change location']);
+    assert.deepEqual(details.items.map(i=>i.title), ['📅 Book now', '🎬 Video', '📄 Brochure', '↩ Other resorts', '📍 Change location']);
+    // One brochure PDF (all photos + range + photos link) instead of separate photo messages.
+    const pdfs=sent.filter(m=>m.type==='attachment');
+    assert.equal(pdfs.length, 1, JSON.stringify(sent.map(m=>[m.type, String(m.content).slice(0,40)])));
+    assert.match(pdfs[0].content, /📄 \*Misty Hills Resort\* · Munnar, Kerala/);
+    assert.match(pdfs[0].content, /Price range: ₹8,000 – ₹15,000 per night/);
+    assert.match(pdfs[0].content, /All photos: https:\/\/drive\.google\.com\/drive\/folders\/abcdefghij12/);
+    assert.equal(pdfs[0].file?.type, 'application/pdf');
+    assert.ok(pdfs[0].file.size>1000, 'a real PDF');
 
     // A resort with no media / range: the short set, "Price on request".
     await run('Lake Palace Houseboat');
