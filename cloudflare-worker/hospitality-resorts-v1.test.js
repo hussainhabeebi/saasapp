@@ -1,7 +1,7 @@
 // Hospitality style "Resorts V1" (hospitality-resorts-v1.js): Agency Resorts & Hotels flow.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RV1_NAV, rv1IsStyle, rv1Decide, rv1IntroText, rv1DetailsText, rv1PropertyRowDesc, rv1PriceText,
+import { RV1_NAV, rv1IsStyle, rv1Decide, rv1PropertyOptions, rv1IntroText, rv1DetailsText, rv1PropertyRowDesc, rv1PriceText,
   rv1StripPrices, rv1AiContext, rv1IsBookText, rv1MoreTap, RV1_PRICE_NOTE } from './hospitality-resorts-v1.js';
 import { taPropertyClean, taPropertyPriceRange } from './ta-properties.js';
 import { h3Locations } from './hospitality-h3.js';
@@ -146,4 +146,37 @@ test('after booking (handed over) the bot stays silent, even with handover silen
     assert.equal(await engineHandoverSilenceTurn(env,{...c,hospitality_style:'h3'},'7',{id:'m3'},state,parsed,'hi'), null, 'other styles unchanged');
     assert.equal(await engineHandoverSilenceTurn(env,c,'7',{id:'m4'},{...state,lead:{Id:42,Stage:'new',Handover:'No'},stage:'new'},parsed,'hi'), null, 'not booked yet');
   }finally{ globalThis.fetch=realFetch; }
+});
+
+test('travel agencies: Chat Style "Resorts V1" turns it on without the Hospitality module', ()=>{
+  assert.equal(rv1IsStyle({industry:'travel', lt_chat_style:'resorts_v1'}), true);
+  assert.equal(rv1IsStyle({industry:'general', ta_enabled:'Yes', lt_chat_style:'resorts_v1'}), true);
+  assert.equal(rv1IsStyle({industry:'travel', lt_chat_style:'flyindo'}), false);
+  assert.equal(rv1IsStyle({industry:'travel', lt_chat_style:''}), false);
+  assert.equal(rv1IsStyle({industry:'ecommerce', lt_chat_style:'resorts_v1'}), false, 'not an agency');
+});
+
+test('full list: 🏨 All resorts, and paging through every resort', ()=>{
+  assert.deepEqual(decide(RV1_NAV.allResorts), {type:'properties', locKey:null, page:1, all:true});
+  assert.deepEqual(decide('show all resorts'), {type:'properties', locKey:null, page:1, all:true});
+  assert.deepEqual(decide('More resorts · page 2'), {type:'properties', locKey:null, page:2, all:true});
+  assert.deepEqual(decide('More resorts · page 2', {ctx:{location:'Munnar'}}), {type:'properties', locKey:'munnar', page:2});
+});
+
+test('full buttons under a resort: Book, More photos, Video, Brochure, Other resorts, Change location', ()=>{
+  const p={...properties[0], photos_folder_url:'https://drive.google.com/drive/folders/abc123', video_url:'https://drive.google.com/file/d/v/view', pdf_url:'https://drive.google.com/file/d/p/view'};
+  assert.deepEqual(rv1PropertyOptions(p).map(o=>o.title), [RV1_NAV.book, RV1_NAV.photos, RV1_NAV.video, RV1_NAV.brochure, RV1_NAV.otherResorts, RV1_NAV.changeLocation]);
+  assert.deepEqual(rv1PropertyOptions(properties[2], {useLoc:false}).map(o=>o.title), [RV1_NAV.book, RV1_NAV.otherResorts]);
+  const ctx={property:'Aadhisakthi Resort'};
+  assert.deepEqual(decide(RV1_NAV.photos, {ctx}), {type:'photos', propertyId:1});
+  assert.deepEqual(decide('more photos', {ctx}), {type:'photos', propertyId:1});
+  assert.deepEqual(decide(RV1_NAV.video, {ctx}), {type:'video', propertyId:1});
+  assert.deepEqual(decide(RV1_NAV.brochure, {ctx}), {type:'brochure', propertyId:1});
+});
+
+test('price guard leaves a travel agency\'s package and flight prices alone', ()=>{
+  const pkg='Our Goa 3N/4D package with hotel is ₹14,999 per person.';
+  assert.equal(rv1StripPrices(pkg, properties), pkg);
+  const named='Aadhisakthi Resort package is ₹9,999 per night.';
+  assert.doesNotMatch(rv1StripPrices(named, properties), /9,999/);
 });
