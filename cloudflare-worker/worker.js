@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {rv1PriceBounds,rv1BrochureFacts,rv1BrochureCaption,rv1PropertyOptions,RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
+import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormDue,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1PriceBounds,rv1BrochureFacts,rv1BrochureCaption,rv1PropertyOptions,RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
@@ -23319,12 +23319,16 @@ async function tripReadForCustomer(env,tableId,clientId,leadId,phone){
   return out;
 }
 export function tripAutoOn(c){ return c?.ta_auto_trips!=='No'; }
-export async function tripRequestSync(env,c,clientId,leadId,state,leadBody,qual,{complete=false}={}){
+// force: file the trip with just a destination (Resorts V1's details form — partial details count);
+// notes: extra lines for the trip's notes; service: the trip's Service (e.g. "Hotel Booking").
+export async function tripRequestSync(env,c,clientId,leadId,state,leadBody,qual,{complete=false,force=false,notes=null,service=''}={}){
   if(!tripAutoOn(c)) return null;
   const tableId=taResolveTable(c,'bookings');
   if(!tableId) return null;
   const f=tripRequestFields(qual);
-  if(!tripRequestEligible(f)) return null;
+  if(!f.destination) return null;
+  if(!force&&!tripRequestEligible(f)) return null;
+  const extraNotes=Array.isArray(notes)?notes.filter(Boolean).map(String):[];
   await tripEnsureColumns(env,tableId);
   const now=new Date();
   const phone=state.phone||leadBody?.Phone||state.lead?.Phone||'';
@@ -23347,8 +23351,9 @@ export async function tripRequestSync(env,c,clientId,leadId,state,leadBody,qual,
     const routed=channelOwner?'':tripRouteOwner(engineGetLeadRouting(c),f.destination,e=>staff.has(e));
     const owner=routed||leadOwner;
     const rec=tripRequestRecord(f,{name:leadBody?.Name||state.lead?.Name||state.name||'',phone,leadId,owner,currency:c.deal_currency||'',now});
-    const lines=[`Request from the WhatsApp bot${complete?'':' (customer has not finished the steps yet)'}: ${summary}`];
+    const lines=[`Request from the WhatsApp bot${complete?'':' (customer has not finished the steps yet)'}: ${summary}`,...extraNotes];
     if(f.children_ages) lines.push(`Children's ages: ${f.children_ages}`);
+    if(service) rec.service=String(service).slice(0,60);
     if(plan.duplicateOf){ rec.duplicate_of=plan.duplicateOf; lines.push(`Possible duplicate of trip #${plan.duplicateOf} (same phone and destination)`); }
     rec.notes=appendNote(null,lines);
     if(complete) rec.alerted_at=now.toISOString();
@@ -23364,7 +23369,7 @@ export async function tripRequestSync(env,c,clientId,leadId,state,leadBody,qual,
     const {patch,changes}=tripRequestDiff(trip,rec);
     const body={Id:trip.Id};
     if(plan.action==='update') Object.assign(body,patch);
-    if(changes.length) body.notes=appendNote(trip,[`Customer ${plan.action==='update'?'updated':'changed in chat (not applied — trip already quoted)'}: ${changes.join('; ')}`]);
+    if(changes.length||extraNotes.length) body.notes=appendNote(trip,[...(changes.length?[`Customer ${plan.action==='update'?'updated':'changed in chat (not applied — trip already quoted)'}: ${changes.join('; ')}`]:[]),...extraNotes]);
     const alert=complete&&!trip.alerted_at&&plan.action==='update';
     if(alert){ body.alerted_at=now.toISOString(); if(!changes.length) body.notes=appendNote(trip,[`Customer finished the steps: ${summary}`]); }
     if(Object.keys(body).length>1) await write('PATCH',body);
@@ -27217,6 +27222,14 @@ async function handleNativeFormEndpoint(request, env){
     const clientId=flowMeta.clientId;
     const c=clientId?await getClientById(env, clientId):null;
     if(!c) return respond({data:{acknowledged:true}});
+    // Resorts V1 trip details form: Trip + handover + "our agent will send further details".
+    if(flowMeta.k==='rv1'){
+      const dec=v=>{ try{ return decodeURIComponent(v||''); }catch(e){ return ''; } };
+      const f=rv1CleanTripDetails(decrypted.data||{});
+      await hospRv1FormSubmitted(env, c, clientId, {phone:flowMeta.phone, convId:flowMeta.convId, location:dec(flowMeta.loc), property:dec(flowMeta.prop)}, f)
+        .catch(e=>reportOpsError(env, 'Resorts V1 — details form submission failed', e, {clientId}));
+      return respond({version:'3.0', screen:'SUCCESS', data:{extension_message_response:{params:{flow_token:decrypted.flow_token||''}}}});
+    }
 
     const qualQuestions=engineParseJsonField(c.qual_questions, []);
     const submitted=decrypted.data||{};
@@ -29037,6 +29050,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(rv1Turn){
         const leadId=await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,rv1Turn.turn,startMs,mediaType,ctx);
         if(leadId && rv1Turn.patch()) await hospH3SaveCtx(env,clientId,leadId,rv1Turn.patch());
+        if(leadId && rv1Turn.leadPatch) await engineUpsertLead(env,'PATCH',leadId,rv1Turn.leadPatch).catch(()=>{});
         return json({ok:true,route:rv1Turn.turn.route==='human'?'resorts_v1_booked':'resorts_v1',sent:c.bot_reply_disabled!=='Yes'});
       }
     }
@@ -31163,6 +31177,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(!orderHandledInline && rv1IsStyle(c) && convId && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && routing.route!=='human'){
       try{
         rv1Plan=await hospRv1Plan(env, c, clientId, userText, state, isNewLead);
+        if(rv1Plan && !rv1Plan.action) rv1Plan=null;
         if(rv1Plan?.action?.type==='book'){
           routing.route='human'; routing.humanReason='resorts_v1_booked';
           routing.reply=rv1BookText(hospRv1Property(rv1Plan));
@@ -39753,17 +39768,19 @@ async function hospH3BuildAiContext(env, c, clientId, lead, userText=''){
 // fallback for state saved before this table existed). Created on first use.
 let _h3StateReady=null;
 function hospH3EnsureState(env){
+  // form (Resorts V1): '' → 'sent' (the trip details form went out) → 'done' (details received).
   if(!_h3StateReady) _h3StateReady=env.DB.prepare(`CREATE TABLE IF NOT EXISTS hosp_h3_state (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, location TEXT NOT NULL DEFAULT '', property TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '', updated_at TEXT, PRIMARY KEY (client_id, lead_id))`).run()
+    .then(()=>env.DB.prepare(`ALTER TABLE hosp_h3_state ADD COLUMN form TEXT NOT NULL DEFAULT ''`).run().catch(()=>null))
     .catch(e=>{ _h3StateReady=null; throw e; });
   return _h3StateReady;
 }
 async function hospH3GetCtx(env, clientId, leadId, lead){
-  const fallback={location:lead?.HospSelectedLocation||'', property:lead?.HospSelectedProperty||'', unit:lead?.HospSelectedUnit||''};
+  const fallback={location:lead?.HospSelectedLocation||'', property:lead?.HospSelectedProperty||'', unit:lead?.HospSelectedUnit||'', form:''};
   if(!leadId || !env.DB) return fallback;
   try{
     await hospH3EnsureState(env);
-    const row=await env.DB.prepare(`SELECT location, property, unit FROM hosp_h3_state WHERE client_id=? AND lead_id=?`).bind(Number(clientId), Number(leadId)).first();
-    if(row) return {location:row.location||'', property:row.property||'', unit:row.unit||''};
+    const row=await env.DB.prepare(`SELECT * FROM hosp_h3_state WHERE client_id=? AND lead_id=?`).bind(Number(clientId), Number(leadId)).first();
+    if(row) return {location:row.location||'', property:row.property||'', unit:row.unit||'', form:row.form||''};
   }catch(e){}
   return fallback;
 }
@@ -39772,15 +39789,16 @@ async function hospH3SaveCtx(env, clientId, leadId, patch){
     try{
       const cur=await hospH3GetCtx(env, clientId, leadId, null);
       const next={...cur, ...Object.fromEntries(Object.entries(patch).filter(([,v])=>v!==undefined))};
-      await env.DB.prepare(`INSERT INTO hosp_h3_state (client_id, lead_id, location, property, unit, updated_at) VALUES (?,?,?,?,?,?)
-        ON CONFLICT(client_id, lead_id) DO UPDATE SET location=excluded.location, property=excluded.property, unit=excluded.unit, updated_at=excluded.updated_at`)
-        .bind(Number(clientId), Number(leadId), next.location||'', next.property||'', next.unit||'', new Date().toISOString()).run();
+      await env.DB.prepare(`INSERT INTO hosp_h3_state (client_id, lead_id, location, property, unit, form, updated_at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, lead_id) DO UPDATE SET location=excluded.location, property=excluded.property, unit=excluded.unit, form=excluded.form, updated_at=excluded.updated_at`)
+        .bind(Number(clientId), Number(leadId), next.location||'', next.property||'', next.unit||'', next.form||'', new Date().toISOString()).run();
     }catch(e){ await reportOpsError(env, 'hospH3SaveCtx', e, {clientId, leadId}); }
   }
   const body={Id:Number(leadId)};
   if(patch.location!==undefined) body.HospSelectedLocation=patch.location;
   if(patch.property!==undefined) body.HospSelectedProperty=patch.property;
   if(patch.unit!==undefined) body.HospSelectedUnit=patch.unit;
+  if(Object.keys(body).length<2) return; // only the form state changed
   try{
     await ensureLeadsColumns(env, ['HospSelectedLocation','HospSelectedProperty','HospSelectedUnit']);
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body});
@@ -39958,8 +39976,10 @@ async function hospRv1Plan(env, c, clientId, userText, state, isNewLead){
   if(state.lead) Object.assign(state.lead, {HospSelectedLocation:ctx.location, HospSelectedProperty:ctx.property});
   const args={properties, ctx};
   let action=rv1Decide({text:userText, isNewLead, ...args});
-  if(!action) action=await hospH3AiResolve(env, c, userText, rv1AiCandidates(args));
-  return action?{action, data:{properties}}:null;
+  // While the trip details form is out, a typed reply is read as the details first (engineResortsV1Turn).
+  if(!action && ctx.form!=='sent') action=await hospH3AiResolve(env, c, userText, rv1AiCandidates(args));
+  // action may be null: the caller still gets the guest's place (ctx) for the details form.
+  return {action, data:{properties, ctx, phone:state.phone||state.lead?.Phone||''}};
 }
 function hospRv1Property(plan){
   const id=plan?.action?.propertyId;
@@ -40052,9 +40072,134 @@ async function hospRv1Execute(env, c, clientId, convId, leadId, plan){
         await say(rv1PriceText({property:prop}), opts);
       }
     }
+    // The guest picked a destination: the trip details form goes out once, after the list.
+    if(rv1FormDue(a, plan.data.ctx||{}, useLoc)){
+      const prop=a.type==='property'?hospRv1Property(plan):null;
+      const loc=a.locKey!=null?locs.find(l=>l.key===a.locKey):null;
+      const dest=loc?.label||(prop?locOf(prop):'')||prop?.name||'';
+      if(await hospRv1SendForm(env, c, clientId, convId, plan.data.phone, {location:dest, property:prop?.name||''}))
+        out.patch={...(out.patch||{}), form:'sent'};
+    }
     if(leadId && out.patch) await hospH3SaveCtx(env, clientId, leadId, out.patch);
   }catch(e){ await reportOpsError(env, 'hospRv1Execute', e, {clientId, convId, step:a?.type}); }
   return out;
+}
+
+// ── Resorts V1 trip details form (hospitality-resorts-v1.js rv1Form*) ──
+// A WhatsApp Flow (same encrypted endpoint as Native Forms, /native-forms/endpoint) created and
+// published for the client on first use; where a Flow can't be sent (no direct WhatsApp Cloud
+// credentials, encryption keys not set, Meta refused), the same questions go out as a message and
+// the guest's typed reply is read instead. Returns true when either went out.
+const _rv1FlowFailedAt=new Map();
+async function hospRv1EnsureFlow(env, c, clientId){
+  if(!c.waba_id||!c.wa_token||!c.wa_phone_id||!env.NATIVE_FORMS_PUBLIC_KEY_PEM||!env.NATIVE_FORMS_PRIVATE_KEY_PEM||!env.META_APP_SECRET||!env.WORKER_BASE_URL) return '';
+  if(c.rv1_flow_id && String(c.rv1_flow_ver||'')===RV1_FORM_VERSION) return c.rv1_flow_id;
+  if(Date.now()-(_rv1FlowFailedAt.get(String(clientId))||0)<3600000) return '';
+  try{
+    const G='https://graph.facebook.com/v18.0', auth={Authorization:`Bearer ${c.wa_token}`};
+    const keyR=await fetch(`${G}/${c.waba_id}/whatsapp_business_encryption`, {method:'POST', headers:{...auth, 'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({business_public_key:env.NATIVE_FORMS_PUBLIC_KEY_PEM})});
+    if(!keyR.ok) throw new Error('encryption key: HTTP '+keyR.status+' '+(await keyR.text().catch(()=>'')).slice(0,200));
+    const createR=await fetch(`${G}/${c.waba_id}/flows`, {method:'POST', headers:{...auth, 'Content-Type':'application/json'},
+      body:JSON.stringify({name:`leadvyne-resorts-v1-${clientId}-v${RV1_FORM_VERSION}`, categories:['LEAD_GENERATION'], endpoint_uri:`${env.WORKER_BASE_URL}/native-forms/endpoint`})});
+    const created=await createR.json().catch(()=>({}));
+    if(!createR.ok||!created.id) throw new Error('create flow: '+(created?.error?.message||'HTTP '+createR.status));
+    const fd=new FormData();
+    fd.append('file', new Blob([JSON.stringify(rv1FormFlowJson())], {type:'application/json'}), 'flow.json');
+    fd.append('name', 'flow.json'); fd.append('asset_type', 'FLOW_JSON');
+    const assetR=await fetch(`${G}/${created.id}/assets`, {method:'POST', headers:auth, body:fd});
+    if(!assetR.ok) throw new Error('upload flow: HTTP '+assetR.status+' '+(await assetR.text().catch(()=>'')).slice(0,200));
+    const pubR=await fetch(`${G}/${created.id}/publish`, {method:'POST', headers:auth});
+    if(!pubR.ok) throw new Error('publish flow: HTTP '+pubR.status+' '+(await pubR.text().catch(()=>'')).slice(0,200));
+    await ensureClientColumns(env, ['rv1_flow_id','rv1_flow_ver']);
+    await patchClientFields(env, clientId, {rv1_flow_id:String(created.id), rv1_flow_ver:RV1_FORM_VERSION});
+    c.rv1_flow_id=String(created.id); c.rv1_flow_ver=RV1_FORM_VERSION;
+    return c.rv1_flow_id;
+  }catch(e){
+    _rv1FlowFailedAt.set(String(clientId), Date.now());
+    await reportOpsError(env, 'Resorts V1 — WhatsApp form could not be set up (the questions go out as a message instead)', e, {clientId});
+    return '';
+  }
+}
+// flow_token: who and where, so the submission (handleNativeFormEndpoint) needs no lookup of its own.
+export function hospRv1FlowToken({clientId, convId, phone, location='', property=''}){
+  return btoa(JSON.stringify({k:'rv1', clientId:String(clientId), convId:convId?String(convId):null, phone:String(phone||''),
+    loc:encodeURIComponent(String(location||'').slice(0,80)), prop:encodeURIComponent(String(property||'').slice(0,80))})).replace(/=+$/,'');
+}
+async function hospRv1SendForm(env, c, clientId, convId, phone, {location='', property=''}={}){
+  const dest=location||property;
+  const flowId=phone?await hospRv1EnsureFlow(env, c, clientId):'';
+  if(flowId){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {method:'POST',
+        headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({messaging_product:'whatsapp', to:String(phone).replace(/[^\d]/g,''), type:'interactive', interactive:{
+          type:'flow', body:{text:rv1FormInviteText(dest)},
+          action:{name:'flow', parameters:{flow_message_version:'3', flow_token:hospRv1FlowToken({clientId, convId, phone, location, property}),
+            flow_id:flowId, flow_cta:'Fill details', flow_action:'navigate',
+            flow_action_payload:{screen:RV1_FORM_SCREEN, data:{destination:dest?`🌴 ${dest}`:'🌴 Your stay'}}}}}})});
+      if(r.ok){
+        // The Flow goes straight to WhatsApp — a private note keeps the team's Chats view complete.
+        await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST',
+          headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+          body:JSON.stringify({content:`📝 Trip details form sent to the guest${dest?` (${dest})`:''}.`, message_type:'outgoing', private:true})}).catch(()=>{});
+        return true;
+      }
+      await reportOpsError(env, 'Resorts V1 — WhatsApp form send refused (sent as a message instead)', new Error(`HTTP ${r.status} ${(await r.text().catch(()=>'')).slice(0,300)}`), {clientId});
+    }catch(e){ await reportOpsError(env, 'Resorts V1 — WhatsApp form send failed', e, {clientId}); }
+  }
+  await hospitalityChatwootText(c, convId, rv1FormTextFallback(dest));
+  return true;
+}
+// The trip details in a typed reply: the rule-based reader first, then (only for a reply that holds
+// numbers and gave nothing) a small AI extraction whose every value must be in the text.
+async function hospRv1ReadDetails(env, c, text){
+  const parsed=rv1ParseTripDetails(text);
+  if(rv1IsDetailsReply(text, parsed)) return parsed;
+  if(!/\d/.test(String(text||'')) || (!env.GEMINI_API_KEY && !c.openrouter_key && !env.AI)) return parsed;
+  try{
+    const system='Extract hotel booking details a guest typed. Return JSON only: {"name":string|null,"phone":string|null,"adults":number|null,"kids":number|null,"rooms":number|null,"date":"YYYY-MM-DD"|null,"budget":string|null}. Use null for anything not written in the message — never guess. Today is '+new Date().toISOString().slice(0,10)+'.';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, String(text).slice(0,600), {temperature:0, maxOutputTokens:150, json:true, caller:'rv1-details'})
+      || await engineCfAiGenerate(env, system, String(text).slice(0,600), {temperature:0, maxOutputTokens:150, caller:'rv1-details'}))||'';
+    const m=String(raw).replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(!m) return parsed;
+    const ai=rv1DetailsInText(rv1CleanTripDetails(JSON.parse(m[0])), text);
+    return {...ai, ...parsed};
+  }catch(e){ return parsed; }
+}
+// Details received (WhatsApp form or typed): the lead is handed to the team, the details become a
+// Trip (partial details count), the guest is told an agent will send further details, and the bot
+// stays silent for them from then on (engineHandoverSilenceTurn). Used by the Flow endpoint; the
+// typed path does the same through engineResortsV1Turn's turn.
+export async function hospRv1FormSubmitted(env, c, clientId, {phone, convId, location='', property=''}, f){
+  const state=await engineGetLeadState(env, clientId, phone, 'Phone');
+  state.phone=phone; state.convId=convId||state.lead?.ConversationID||null;
+  if(f.name) state.name=f.name;
+  const qual={...(state.qualAnswers||{}), ...rv1TripQual(f, {location, property})};
+  const lang=state.lead?.Language||c.language||'en';
+  const text=rv1ThanksText(f.name||state.lead?.Name, location||property);
+  const history=(state.history||[]).slice();
+  const now=new Date().toISOString();
+  history.push({role:'user', content:`📝 Trip details: ${rv1TripNotes(f).join(' · ')||'(form sent empty)'}`, ts:now});
+  history.push({role:'assistant', content:text, ts:now});
+  const leadBody={ClientId:String(clientId), Phone:phone||state.lead?.Phone||'', ConversationID:state.convId, Channel:'whatsapp',
+    QualAnswers:JSON.stringify(qual), Stage:'human_handover', Handover:'Yes', ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:now,
+    ...(f.name?{Name:f.name}:{})};
+  const leadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+  if(!leadId) return;
+  await d1InsertLeadMessage(env, leadId, clientId, {role:'assistant', sender_type:'bot', content:text, ts:now}).catch(()=>{});
+  if(state.stage!=='human_handover') await engineJournalStageChange(env, clientId, leadId, state.stage, 'human_handover').catch(()=>{});
+  const trip=await tripRequestSync(env, c, clientId, leadId, state, leadBody, qual, {complete:true, force:true, notes:rv1TripNotes(f), service:'Hotel Booking'})
+    .catch(e=>{ reportOpsError(env, 'Resorts V1 — trip from the details form failed', e, {clientId, leadId}).catch(()=>{}); return null; });
+  await engineMaybeSendHotLeadAlert(env, c, clientId, leadId, state.lead, leadBody, {inboxId:state.lead?.InboxId||null, ...(trip?.alert?{reason:'trip_request', detail:trip.alert}:{})}).catch(()=>{});
+  if(state.convId){
+    await engineDeliverReply(env, c, clientId, state.convId, text, {mediaType:'text', langCode:lang});
+    await engineSendHandoverLabel(c, state.convId).catch(()=>{});
+  }
+  await hospH3SaveCtx(env, clientId, leadId, {form:'done'});
+  await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:leadId, channel:'whatsapp', at:now}).catch(()=>{});
+  if(trip?.tripId) await engineBroadcastUpdate(env, clientId, {type:'trip_request', lead_id:leadId, trip_id:trip.tripId, created:!!trip.created, complete:true,
+    lead_name:leadBody.Name||state.lead?.Name||phone||'', summary:trip.summary||'', owner:trip.owner||'', at:now}).catch(()=>{});
 }
 
 // Resorts V1: a resort's brochure PDF (hospChatBuildBrochurePdf — the same one Chats → AI Stay
@@ -40082,9 +40227,25 @@ async function hospRv1SendBrochurePdf(env, c, clientId, convId, prop){
 // answers first, and messages the flow doesn't own, take the normal path).
 export async function engineResortsV1Turn(env, c, clientId, state, userText, isNewLead){
   const plan=await hospRv1Plan(env, c, clientId, userText, state, isNewLead);
-  if(!plan || plan.action.aiFirst) return null;
+  if(!plan) return null;
   const lang=c.language||'en';
   let patch=null;
+  // The details form is out and this isn't a tap in the flow: read the reply as the trip details.
+  const ctx=plan.data.ctx||{};
+  if(ctx.form==='sent' && (!plan.action || plan.action.aiFirst)){
+    const f=await hospRv1ReadDetails(env, c, userText);
+    if(rv1IsDetailsReply(userText, f)){
+      const dest=ctx.location||ctx.property||'';
+      const text=rv1ThanksText(f.name||state.lead?.Name, dest);
+      if(f.name) state.name=f.name;
+      patch={form:'done'};
+      return {patch:()=>patch, leadPatch:f.name?{Name:f.name}:null, turn:{route:'human', next:'human_handover', preserveCrmStage:false, intent:'BOOKING', lang, text, historyUserText:userText,
+        qualAnswers:{...(state.qualAnswers||{}), ...rv1TripQual(f, {location:ctx.location, property:ctx.property})},
+        tripRequest:{complete:true, force:true, notes:rv1TripNotes(f), service:'Hotel Booking'},
+        deliver:async()=>{ await engineDeliverReply(env, c, clientId, state.convId, text, {mediaType:'text', langCode:lang}); await engineSendHandoverLabel(c, state.convId); return null; }}};
+    }
+  }
+  if(!plan.action || plan.action.aiFirst) return null;
   if(plan.action.type==='book'){
     // Booked: the team takes the chat (Handover = Yes) and the bot stays silent for this guest.
     const prop=hospRv1Property(plan);
