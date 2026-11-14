@@ -12,9 +12,9 @@
 //   4. Room tap → the room's photos and details, then "📅 Book now" / "↩ Other rooms" /
 //      "📍 Change location".
 //   5. Book now → the chat is handed to a human agent, who confirms availability and gives the
-//      price at checkout. H3 never shows or quotes a price: not in lists, captions, room details
-//      or AI replies (h3StripPrices is the last guard), and Hospitality Pro's instant quotes are
-//      skipped for H3 clients.
+//      detailed price at checkout. The only price H3 shows is the starting nightly price on each
+//      row of the room list; property rows, captions, room details and AI replies carry none
+//      (h3StripPrices is the last guard), and Hospitality Pro's instant quotes are skipped.
 //
 // Typed text works as well as taps: "Munnar", a property name or a room name jumps straight to
 // that step. Anything this module doesn't recognise returns null and the normal AI reply runs.
@@ -99,7 +99,22 @@ export function h3LocationTitle(loc){
   const withCount=`${loc.label} (${loc.count})`;
   return withCount.length<=TITLE_MAX ? withCount : h3Truncate(loc.label, TITLE_MAX);
 }
-// No prices in H3 — the human agent gives the price at checkout.
+function money(cur, n){
+  const v=Number(n);
+  if(!(v>0)) return '';
+  const c=String(cur||'INR').toUpperCase();
+  const sym=c==='INR'?'₹':(c==='USD'?'$':(c==='EUR'?'€':(c==='GBP'?'£':c+' ')));
+  return `${sym}${v.toLocaleString('en-IN')}`;
+}
+// Room rows in the room list ("Choose an item") show the starting nightly price; the detailed
+// price for the guest's dates comes from staff at checkout. Nowhere else in H3 shows a price.
+export function h3RoomRowDesc(u){
+  const parts=[h3RoomDesc(u)].filter(Boolean);
+  const r=money(u.currency, u.base_rate);
+  if(r) parts.push(`From ${r}/night`);
+  return h3Truncate(parts.join(' · '), DESC_MAX);
+}
+// No prices on property rows, captions or room details — staff give the detailed price at checkout.
 export function h3PropertyDesc(p, units){
   const n=h3RoomsOf(units, p).length;
   const parts=[];

@@ -107,7 +107,10 @@ async function hiTest(){
     const locNote=d.with_location==null?'':(d.with_location===d.found
       ?`<div style="font-size:12px;color:var(--muted);margin-bottom:6px">📍 All have a location.</div>`
       :`<div style="font-size:12px;color:var(--warn,#b45309);margin-bottom:6px">📍 ${d.with_location} of ${d.found} have a location in the feed — set the rest in Properties (kept on every sync).</div>`);
-    out.innerHTML=`<div style="color:var(--green,#16a34a);font-size:13px;font-weight:700;margin-bottom:6px">✓ Found ${d.found} propert${d.found===1?'y':'ies'} on the first page. A sample:</div>${locNote}
+    const priceNote=d.rooms==null?'':(d.rooms_with_price===d.rooms
+      ?`<div style="font-size:12px;color:var(--muted);margin-bottom:6px">💰 All ${d.rooms} rooms have a price.</div>`
+      :`<div style="font-size:12px;color:var(--warn,#b45309);margin-bottom:6px">💰 ${d.rooms_with_price} of ${d.rooms} rooms have a price in the feed — set the rest in Units (kept on every sync).</div>`);
+    out.innerHTML=`<div style="color:var(--green,#16a34a);font-size:13px;font-weight:700;margin-bottom:6px">✓ Found ${d.found} propert${d.found===1?'y':'ies'} on the first page. A sample:</div>${locNote}${priceNote}
       ${d.sample.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:13px">
         <b>${esc(p.name)}</b>${p.location?` — ${esc(p.location)}`:''} <span style="color:var(--muted)">· ${p.photos} photo${p.photos===1?'':'s'}</span>
         <div style="color:var(--muted);font-size:12px;margin-top:2px">${p.units.map(u=>`${esc(u.name)} (${money(u)}, ${u.capacity_adults} adults)`).join(' · ')}</div>

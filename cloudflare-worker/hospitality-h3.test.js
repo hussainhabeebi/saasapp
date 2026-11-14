@@ -183,3 +183,12 @@ test('AI replies lose every stay price, keep everything else', async ()=>{
   // List lines with a price lose the price line only.
   assert.equal(h3StripPrices('Here are the rooms:\n- Pool Villa — ₹9,000\n- Garden view', names), `Here are the rooms:\n- Garden view\n\n${H3_PRICE_NOTE}`);
 });
+
+test('room list rows show the starting price; other H3 texts do not', async ()=>{
+  const { h3RoomRowDesc, h3RoomCaption } = await import('./hospitality-h3.js');
+  assert.equal(h3RoomRowDesc(units[0]), '2 adults · From ₹4,500/night');
+  assert.equal(h3RoomRowDesc(U(9, 'X', 1, {capacity_adults:3, base_rate:12000, currency:'AED'})), '3 adults · From AED 12,000/night');
+  assert.equal(h3RoomRowDesc(U(9, 'X', 1, {capacity_adults:3, base_rate:0})), '3 adults'); // no price set → none shown
+  assert.equal(h3RoomCaption(units[0]), '*Deluxe Room*\n2 adults');
+  assert.equal(h3PropertyDesc(properties[0], units), 'Pool, Wi-Fi');
+});
