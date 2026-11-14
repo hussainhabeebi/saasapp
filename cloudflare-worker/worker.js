@@ -10905,12 +10905,19 @@ async function bcLoad(env,cid){
   return data?{...data,updated_at:row.updated_at}:null;
 }
 // The saved contacts for a client, or null. Never throws: a D1 hiccup must not stop a reply.
-// People & Contacts in BOT REPLIES (the contacts block in the AI prompt, the invented phone/email
-// check, contact-request answers and the hand-over contact card) is paused: replies degraded right
+// People & Contacts in AI-WRITTEN BOT REPLIES (the contacts block in the AI prompt and the invented
+// phone/email check) is paused: replies degraded right
 // after it went live (6 Nov 2026). The settings page and the logo on pages/PDFs keep working.
 // Set the worker variable BC_BOT_REPLIES=on to switch the bot-side behaviour back on.
 export async function bcForBot(env,c){
   if(String(env?.BC_BOT_REPLIES||'').toLowerCase()!=='on') return null;
+  return bcForClient(env,c);
+}
+// The fixed contact replies ("contact number pls" → the saved contact, and the card after a
+// hand-over) are copied from settings, not written by the AI, so they can't degrade a reply and
+// stay on while the prompt block is paused. BC_CONTACT_CARDS=off switches them off too.
+export async function bcForContactCard(env,c){
+  if(String(env?.BC_CONTACT_CARDS||'').toLowerCase()==='off') return null;
   return bcForClient(env,c);
 }
 export async function bcForClient(env,c){
@@ -25064,7 +25071,7 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
 async function engineContactRequestReply(env, c, userText, replyLang){
   try{
     if(!bcIsContactRequest(userText)) return '';
-    const card=bcContactCard(await bcForBot(env, c), userText);
+    const card=bcContactCard(await bcForContactCard(env, c), userText);
     if(!card) return '';
     let lead='Sure! Here is who to contact:';
     if(replyLang && replyLang!=='en'){
@@ -25080,7 +25087,7 @@ async function engineContactRequestReply(env, c, userText, replyLang){
 // kept out of ConvHistory, so the hand-over loop checks still see the hand-over text unchanged.
 async function engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx){
   try{
-    const card=bcContactCard(await bcForBot(env, c), userText);
+    const card=bcContactCard(await bcForContactCard(env, c), userText);
     if(!card) return false;
     let lead='You can also reach the right person directly:';
     if(replyLang && replyLang!=='en'){
