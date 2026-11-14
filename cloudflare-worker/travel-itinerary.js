@@ -514,7 +514,7 @@ export const taPdf={safe:pdfSafe,esc,wrap,textWidth,hexRgb};
 // Optional (Hospitality → stay itinerary): `tag` replaces "TRAVEL ITINERARY", `facts` replaces the
 // key-fact boxes ([[LABEL,value]…]), `footNote` replaces the price/availability line, and
 // assets.gallery ([{title,text,image}]) adds a "Your Stay" section of photo cards after the intro.
-export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay'}={}){
+export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null}={}){
   const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=64;
   const AC=hexRgb(accent,[0.06,0.45,0.47]).map(v=>v.toFixed(3)).join(' ');
   const plan=taItineraryPlan(pkg,itin);
@@ -601,6 +601,19 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
       const vl=wrap(v,k.startsWith('PRICE')?12.5:11,true,bw-20,1)[0];
       txt(x+12,y-37,vl,k.startsWith('PRICE')?12.5:11,true,k.startsWith('PRICE')?AC:'0.13 0.15 0.19');
     });
+    y-=bh+6;
+  }
+  // ── Price band (stay itinerary with a price range): one full-width box under the facts ──
+  if(priceBand&&priceBand.value){
+    const label=pdfSafe(priceBand.label||'PRICE RANGE').toUpperCase().slice(0,70),value=pdfSafe(priceBand.value).slice(0,80);
+    const note=priceBand.note?wrap(priceBand.note,8.5,false,CW-28,2):[];
+    const bh=46+note.length*11;
+    need(bh+8);y-=4;
+    round(MX,y-bh,CW,bh,8,'0.95 0.97 0.97');
+    rect(MX,y-bh,4,bh,AC);
+    txt(MX+16,y-17,label,7.5,true,'0.45 0.5 0.55');
+    txt(MX+16,y-35,wrap(value,15,true,CW-28,1)[0],15,true,AC);
+    let ny=y-48;note.forEach(l=>{txt(MX+16,ny,l,8.5,false,'0.4 0.43 0.48');ny-=11;});
     y-=bh+6;
   }
   // ── About the destination ──

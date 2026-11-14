@@ -1453,24 +1453,50 @@ function hItinForm(){
  const paces=[['','— Not set —'],['relaxed','🐢 Relaxed — 1-2 things a day'],['balanced','⚖️ Balanced — 2-3 things a day'],['packed','⚡ Packed — 3-5 things a day']];
  const rooms=p.rooms||[];
  return `<div class="tpl-form"><div style="font-size:13px;color:var(--muted)">About the guest's stay — the AI tailors the plan to this. Only the nights are needed.</div><div class="ai-itin-prof">
-  ${rooms.length?`<label class="full">Room<select id="hItinRoom" onchange="hItin.stay={...hItinRead()};drawHItinDetail('profile')"><option value="">— Any room —</option>${rooms.map(r=>`<option value="${esc(r.id)}" ${String(t.room_id)===String(r.id)?'selected':''}>${esc(r.name)}${r.capacity_adults?` · up to ${r.capacity_adults} adults`:''}</option>`).join('')}</select></label>`:''}
+  ${rooms.length?`<label class="full">Room<select id="hItinRoom" onchange="hItin.stay={...hItinRead(),price_from:undefined,price_to:undefined,price_currency:undefined,price_unit:undefined};drawHItinDetail('profile')"><option value="">— Any room —</option>${rooms.map(r=>`<option value="${esc(r.id)}" ${String(t.room_id)===String(r.id)?'selected':''}>${esc(r.name)}${r.capacity_adults?` · up to ${r.capacity_adults} adults`:''}</option>`).join('')}</select></label>`:''}
   <label>Nights<input type="number" min="1" max="29" id="hItinNights" value="${esc(t.nights??2)}"></label><label style="grid-column:span 2">Check-in date<input type="date" id="hItinCheckIn" value="${esc(t.check_in||'')}"></label>
   <label>Adults<input type="number" min="0" id="hItinAdults" value="${esc(t.adults??'')}"></label><label>Children<input type="number" min="0" id="hItinChildren" value="${esc(t.children??'')}"></label><label>Infants<input type="number" min="0" id="hItinInfants" value="${esc(t.infants??'')}"></label>
   <label class="full">Kids' ages<input id="hItinAges" placeholder="e.g. 4, 9" value="${esc(t.child_ages||'')}"></label>
   <label class="full">Pace<select id="hItinPace">${paces.map(([v,l])=>`<option value="${v}" ${t.pace===v?'selected':''}>${l}</option>`).join('')}</select></label>
   <div class="full" style="display:grid;gap:4px;font-size:12px;color:var(--muted)">Interests<div class="ai-itin-chips" id="hItinInterests">${H_ITIN_INTERESTS.map(x=>`<label><input type="checkbox" value="${esc(x)}" ${(t.interests||[]).includes(x)?'checked':''}>${esc(x)}</label>`).join('')}</div><input id="hItinInterestsMore" placeholder="Other interests, comma separated" value="${esc(custom)}" style="width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px"></div>
+  ${hItinPriceFields(t)}
  </div></div><div class="tpl-actions"><button class="ai-itin-btn" id="hItinDraftBtn" onclick="hItinDraft()">✨ Draft itinerary</button></div>`;
 }
+// 💰 Price range (optional): off unless ticked; pre-filled from the chosen room's rates (else the
+// property's lowest–highest), editable. Goes on the PDF and in the message — never to the AI.
+const H_ITIN_PRICE_UNITS=['per night','per person','per couple','per room','for the stay'];
+function hItinPriceHint(){const r=hItinRoom();return (r&&r.price)||hItin.sel?.price||null}
+function hItinPriceFields(t){
+ const h=hItinPriceHint()||{},on=!!t.price_on;
+ const val=(k,hk)=>t[k]!==undefined&&t[k]!==null?t[k]:(h[hk]||'');
+ const unit=val('price_unit','unit')||'per night';
+ return `<div class="full" style="display:grid;gap:8px;border-top:1px solid #e9edef;padding-top:10px"><label class="h-itin-check"><input type="checkbox" id="hItinPriceOn" ${on?'checked':''} onchange="hItin.stay={...hItinRead()};drawHItinDetail('profile')">💰 Show a price range in the itinerary</label>
+  ${on?`<div class="ai-itin-prof" id="hItinPriceBox"><label>From<input type="number" min="0" id="hItinPriceFrom" value="${esc(val('price_from','from'))}"></label><label>To<input type="number" min="0" id="hItinPriceTo" placeholder="optional" value="${esc(val('price_to','to')||'')}"></label><label>Currency<input id="hItinPriceCur" maxlength="5" value="${esc(val('price_currency','currency')||'INR')}"></label>
+   <label class="full">Per<select id="hItinPriceUnit">${H_ITIN_PRICE_UNITS.map(u=>`<option ${u===unit?'selected':''}>${u}</option>`).join('')}</select></label>
+   ${h.from?'':`<div class="full" style="font-size:12px;color:var(--muted)">No rates saved for this ${hItinRoom()?'room':'property'} — type the range.</div>`}</div>`:''}</div>`;
+}
+function hItinPriceOf(t){
+ if(!t?.price_on)return null;const n=v=>Number(String(v??'').replace(/[,\s]/g,''))||0;
+ let from=n(t.price_from),to=n(t.price_to);if(!from&&to){from=to;to=0}if(!from)return null;if(to&&to<from)[from,to]=[to,from];
+ return {from,to:to&&to!==from?to:0,currency:(String(t.price_currency||'INR').trim().toUpperCase()||'INR'),unit:t.price_unit||'per night'};
+}
+function hItinPriceLine(p){if(!p)return '';const f=x=>Number(x).toLocaleString(p.currency==='INR'?'en-IN':'en-US');return `${p.currency} ${f(p.from)}${p.to?` - ${f(p.to)}`:''} ${p.unit}`}
 function hItinRead(){
  const v=id=>($(id)?.value||'').trim();
- return {room_id:v('hItinRoom'),nights:v('hItinNights')||'2',check_in:v('hItinCheckIn'),adults:v('hItinAdults'),children:v('hItinChildren'),infants:v('hItinInfants'),child_ages:v('hItinAges'),pace:v('hItinPace'),
+ const priceOn=!!$('hItinPriceOn')?.checked,old=hItin.stay||{};
+ const pv=(id,k)=>$(id)?v(id):old[k];
+ return {price_on:priceOn,price_from:pv('hItinPriceFrom','price_from'),price_to:pv('hItinPriceTo','price_to'),price_currency:pv('hItinPriceCur','price_currency'),price_unit:pv('hItinPriceUnit','price_unit'),
+  room_id:v('hItinRoom'),nights:v('hItinNights')||'2',check_in:v('hItinCheckIn'),adults:v('hItinAdults'),children:v('hItinChildren'),infants:v('hItinInfants'),child_ages:v('hItinAges'),pace:v('hItinPace'),
   interests:[...document.querySelectorAll('#hItinInterests input:checked')].map(c=>c.value).concat(v('hItinInterestsMore').split(',').map(x=>x.trim()).filter(Boolean))};
 }
-function hItinDraft(){hItin.stay=hItinRead();hItinGenerate()}
+function hItinDraft(){
+ const t=hItinRead();
+ if(t.price_on&&!hItinPriceOf(t)){toast('Type the price range, or untick 💰 Price range');$('hItinPriceFrom')?.focus();return}
+ hItin.stay=t;hItinGenerate()}
 function drawHItinDetail(state,msg){
  const el=$('hItinDetail'),p=hItin.sel;if(!el||!p)return;const r=hItinRoom(),t=hItin.stay;
  const n=Number(t?.nights)||0;
- const head=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc([p.location,r?r.name:'',state!=='profile'&&n?`${n} night${n>1?'s':''}`:'',state!=='profile'&&t?.check_in?'from '+t.check_in:''].filter(Boolean).join(' · '))}</small>${p.amenities?`<div style="font-size:12.5px;color:var(--muted);margin-top:4px">✨ ${esc(p.amenities)}</div>`:''}</div>${hItinPhotoStrip()}`;
+ const head=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc([p.location,r?r.name:'',state!=='profile'&&n?`${n} night${n>1?'s':''}`:'',state!=='profile'&&t?.check_in?'from '+t.check_in:''].filter(Boolean).join(' · '))}</small>${p.amenities?`<div style="font-size:12.5px;color:var(--muted);margin-top:4px">✨ ${esc(p.amenities)}</div>`:''}${state!=='profile'&&hItinPriceOf(t)?`<div id="hItinPriceLine" style="font-size:13px;font-weight:600;color:#0d9c93;margin-top:4px">💰 ${esc(hItinPriceLine(hItinPriceOf(t)))}</div>`:''}</div>${hItinPhotoStrip()}`;
  if(state==='profile'){el.innerHTML=head+hItinForm();return}
  if(state==='loading'){el.innerHTML=head+`<div class="tpl-empty"><div class="spinner"></div>Drafting the stay itinerary… this can take up to a minute.</div>`;return}
  if(state==='error'){el.innerHTML=head+`<div class="tpl-empty">AI could not draft this itinerary.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawHItinDetail('profile')">✏️ Stay details</button><button class="ai-itin-btn sec" onclick="hItinGenerate()">↻ Try again</button></div>`;return}
@@ -1478,7 +1504,7 @@ function drawHItinDetail(state,msg){
  const li=i=>i.image?`<li class="has-img">${hImg(i.image,'',i.description)}<span>${i.time?`<b style="display:inline">${esc(i.time)}</b> `:''}${esc(i.description)}</span></li>`:`<li>${i.time?`<b style="display:inline">${esc(i.time)}</b> `:''}${esc(i.description)}</li>`;
  const days=(hItin.days||[]).map(d=>`<div class="ai-itin-day"><b>Day ${esc(d.day_no)}${d.title?' — '+esc(d.title):''}</b>${d.description?`<p>${esc(d.description)}</p>`:''}${(d.items||[]).filter(i=>i.description).length?`<ul>${d.items.filter(i=>i.description).map(li).join('')}</ul>`:''}${(d.meals||[]).length||d.overnight?`<div class="facts">${[(d.meals||[]).map(m=>meals[m]).filter(Boolean).join(', '),d.overnight?'🌙 '+d.overnight:''].filter(Boolean).map(esc).join(' · ')}</div>`:''}</div>`).join('');
  const hasPhotos=(p.photos||[]).length||(r?.photos||[]).length;
- el.innerHTML=head+days+`<div class="tpl-form">${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="hItinSendPhotos" checked>Also send the ${r?'property and room':'property'} photos (up to 3)</label>`:''}<label>Message with the PDF<input id="hItinCaption" value="${esc(`📄 Here is your stay itinerary for *${p.name}*.`)}"></label><div id="hItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawHItinDetail('profile')">✏️ Stay details</button><button class="ai-itin-btn sec" onclick="hItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="hItinSendBtn" onclick="hItinSend()">✅ Approve &amp; send</button></div>`;
+ el.innerHTML=head+days+`<div class="tpl-form">${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="hItinSendPhotos" checked>Also send the ${r?'property and room':'property'} photos (up to 3)</label>`:''}<label>Message with the PDF<input id="hItinCaption" value="${esc(`📄 Here is your stay itinerary for *${p.name}*.${hItinPriceOf(t)?` 💰 Price range: ${hItinPriceLine(hItinPriceOf(t))}`:''}`)}"></label><div id="hItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawHItinDetail('profile')">✏️ Stay details</button><button class="ai-itin-btn sec" onclick="hItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="hItinSendBtn" onclick="hItinSend()">✅ Approve &amp; send</button></div>`;
 }
 const hItinBody=()=>{const t=hItin.stay||{};return {property_id:hItin.sel.id,...(t.room_id?{room_id:t.room_id}:{}),nights:t.nights||'2',...(t.check_in?{check_in:t.check_in}:{}),
  guest:{adults:t.adults,children:t.children,infants:t.infants,child_ages:t.child_ages,pace:t.pace,interests:t.interests||[]}}};
@@ -1494,7 +1520,7 @@ async function hItinSend(){
  const btn=$('hItinSendBtn'),err=$('hItinErr');const caption=($('hItinCaption')?.value||'').trim();const sendPhotos=!!$('hItinSendPhotos')?.checked;
  if(btn){btn.disabled=true;btn.textContent='Sending…'}if(err)err.textContent='';
  try{
-  const d=await apiJson(WORKER+'/hospitality/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,...hItinBody(),days,caption,send_photos:sendPhotos})});
+  const d=await apiJson(WORKER+'/hospitality/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,...hItinBody(),...(hItinPriceOf(hItin.stay)?{price:hItinPriceOf(hItin.stay)}:{}),days,caption,send_photos:sendPhotos})});
   closeHospItin();
   const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind:'document',type:'application/pdf',name:d.name||`${p.name} stay itinerary.pdf`}});setMsgStatus(lead,msg,null);
   toast(d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the itinerary sent`:'✓ Itinerary sent');
