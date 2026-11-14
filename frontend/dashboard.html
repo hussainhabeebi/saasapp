@@ -3991,6 +3991,7 @@ const ROLES = {
                 <option value="resort">Resort</option>
                 <option value="houseboat">Houseboat</option>
                 <option value="h3">H3 — Location guided</option>
+                <option value="resorts_v1">Resorts V1 — Agency Resorts &amp; Hotels</option>
               </select>
               <button class="save-btn" id="saveHospitalityStyle">Save</button>
               <span class="save-msg" id="saveHospitalityStyleMsg"></span>
@@ -4004,6 +4005,11 @@ const ROLES = {
               </select>
               <button class="save-btn" id="saveHospitalityH3Locations">Save</button>
               <span class="save-msg" id="saveHospitalityH3LocationsMsg"></span>
+            </div>
+
+            <div id="hospRv1SettingsRow" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 48px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ Resorts V1 · How it works</b><div class="s-note" style="margin:2px 0 0">Uses your <b>Agency → 🏨 Resorts &amp; Hotels</b> list. 1) The intro names your locations and lists them as buttons (set each property's Location). 2) A location shows its resorts &amp; hotels. 3) A resort sends its photos (Photo 1–3 + Drive photos folder) and details with the <b>price range only</b> — set <i>Price Range From / To</i> on each property; the exact price is never sent. 4) “📅 Book now” hands the chat to your team and the bot stays silent for that guest.</div>
+                <div id="hospRv1AgencyWarn" class="s-note" style="margin:6px 0 0;color:var(--red,#dc2626);display:none">⚠️ Turn on the Agency / Travel module (Modules → Agency) — Resorts V1 reads its Resorts &amp; Hotels list and stays off until it is enabled.</div></div>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
@@ -23773,6 +23779,9 @@ $id('saveHospitalityStyle').addEventListener('click',async()=>{
 // H3 style only: the Location-step row shows while H3 is the saved style.
 function _hospH3RowVisibility(style){
   const row=$id('hospH3SettingsRow'); if(row) row.style.display=style==='h3'?'flex':'none';
+  // Resorts V1: how it works, and a warning while the Agency module (its Resorts & Hotels) is off.
+  const rv1=$id('hospRv1SettingsRow'); if(rv1) rv1.style.display=style==='resorts_v1'?'flex':'none';
+  const warn=$id('hospRv1AgencyWarn'); if(warn) warn.style.display=style==='resorts_v1'&&clientRecord.ta_enabled!=='Yes'?'block':'none';
 }
 $id('saveHospitalityH3Locations').addEventListener('click',async()=>{
   const btn=$id('saveHospitalityH3Locations'),msg=$id('saveHospitalityH3LocationsMsg');

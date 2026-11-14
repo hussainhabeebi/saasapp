@@ -10,7 +10,7 @@ export const TA_RESORT_CATEGORIES=['family','couple','both'];
 export const TA_RESORT_CATEGORY_LABEL={family:'Family Resort',couple:'Couple Resort',both:'Family & Couple Resort'};
 // The lead's CRM Service Category for each (the CRM's built-in category list has both).
 export const TA_RESORT_SERVICE_CATEGORY={family:'Family Resort',couple:'Couple Resort'};
-export const TA_PROPERTY_FIELDS=['name','property_type','category','location','star_rating','room_types','price_from','currency','price_unit','season_price','off_season_price','season_months','amenities','description','image_url','image_url_2','image_url_3','photos_folder_url','video_url','pdf_url','status'];
+export const TA_PROPERTY_FIELDS=['name','property_type','category','location','star_rating','room_types','price_from','currency','price_unit','season_price','off_season_price','season_months','price_range_min','price_range_max','amenities','description','image_url','image_url_2','image_url_3','photos_folder_url','video_url','pdf_url','status'];
 export const TA_PROPERTY_MEDIA_FIELDS=['image_url','image_url_2','image_url_3','photos_folder_url','video_url','pdf_url'];
 const MEDIA_LABEL={image_url:'Photo 1',image_url_2:'Photo 2',image_url_3:'Photo 3',photos_folder_url:'Photos folder',video_url:'Video',pdf_url:'PDF brochure'};
 // Photos pulled from a property's Drive folder per send: more when the lead asked for photos, a
@@ -131,7 +131,7 @@ export function taPropertyClean(body, partial=false){
     if(partial&&!(f in (body||{}))) continue;
     let v=body?.[f];
     if(f==='star_rating'){ const n=Number(v); v=Number.isFinite(n)&&n>=1&&n<=7?Math.round(n):null; }
-    else if(f==='price_from'||f==='season_price'||f==='off_season_price'){ const n=Number(v); v=v!==''&&v!=null&&Number.isFinite(n)&&n>=0?n:null; }
+    else if(f==='price_from'||f==='season_price'||f==='off_season_price'||f==='price_range_min'||f==='price_range_max'){ const n=Number(v); v=v!==''&&v!=null&&Number.isFinite(n)&&n>=0?n:null; }
     else if(f==='season_months') v=taSeasonMonthsClean(v);
     else if(f==='status') v=v==='inactive'?'inactive':'active';
     else if(f==='property_type') v=TA_PROPERTY_TYPES.includes(v)?v:'resort';
@@ -142,9 +142,31 @@ export function taPropertyClean(body, partial=false){
     if(TA_PROPERTY_MEDIA_FIELDS.includes(f)){ const err=taPropertyMediaUrlError(f,v); if(err) return {error:err}; }
     values[f]=v;
   }
+  // A range typed the wrong way round ("15000 – 8000") is saved low → high.
+  const lo=values.price_range_min, hi=values.price_range_max;
+  if(lo!=null&&hi!=null&&lo>hi){ values.price_range_min=hi; values.price_range_max=lo; }
   if(!partial&&!values.name) return {error:'Property name is required'};
   if(partial&&'name' in values&&!values.name) return {error:'Property name is required'};
   return {values};
+}
+
+// Price range shown instead of an exact price (Hospitality style "Resorts V1"):
+// "₹8,000 – ₹15,000 per night", "From ₹8,000 per night", "Up to ₹15,000 per night", or '' when
+// the property has no range set. Never reads price_from / season rates.
+export function taPropertyMoney(cur, n){
+  const v=Number(n);
+  if(!(v>0)) return '';
+  const c=String(cur||'INR').toUpperCase();
+  const sym={INR:'₹',USD:'$',EUR:'€',GBP:'£'}[c]||c+' ';
+  return `${sym}${v.toLocaleString('en-IN')}`;
+}
+export function taPropertyPriceRange(p){
+  const lo=taPropertyMoney(p?.currency, p?.price_range_min), hi=taPropertyMoney(p?.currency, p?.price_range_max);
+  const unit=String(p?.price_unit||'per night').trim();
+  if(lo&&hi) return lo===hi?`Around ${lo} ${unit}`:`${lo} – ${hi} ${unit}`;
+  if(lo) return `From ${lo} ${unit}`;
+  if(hi) return `Up to ${hi} ${unit}`;
+  return '';
 }
 
 export function taPropertyHasMedia(p){
@@ -288,6 +310,8 @@ export function taPropertyContextLines(properties, now=new Date()){
       if(on) line+=` (now: ${on==='season'?'season':'off-season'})`;
     }
     else line+=Number(p.price_from)>0?` — from ${p.currency||'INR'} ${p.price_from} ${p.price_unit||'per night'}`:' — price on request';
+    const range=taPropertyPriceRange(p);
+    if(range) line+=` — price range: ${range}`;
     if(p.room_types) line+=` — rooms: ${String(p.room_types).replace(/\s*\n\s*/g,', ').slice(0,150)}`;
     if(p.amenities) line+=` — amenities: ${String(p.amenities).replace(/\s*\n\s*/g,', ').slice(0,150)}`;
     if(p.description) line+=` — ${String(p.description).replace(/\s+/g,' ').slice(0,200)}`;
