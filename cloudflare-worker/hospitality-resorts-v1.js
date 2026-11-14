@@ -1,21 +1,16 @@
-// Hospitality style "Resorts V1" — a guided WhatsApp flow over the Agency module's
-// Resorts & Hotels list (ta_properties), for hospitality clients who also have the Agency module on.
+// Hospitality style "Resorts V1" — a short guided WhatsApp flow over the Agency module's
+// Resorts & Hotels list (ta_properties). Picked in Settings → Hospitality → Sub-style (Hospitality +
+// Agency on) or, for travel agencies, Travel Settings → 🧭 Chat Style.
 //
-// Only clients whose hospitality_style is 'resorts_v1' (with Hospitality and Agency both enabled)
-// ever reach this code. Hotel, Resort, Houseboat and H3 keep their own paths untouched.
-//
-//   1. Intro: the bot greets, names the locations of the active Resorts & Hotels in the text
-//      ("We have resorts & hotels in Munnar, Wayanad and Vagamon") and lists them as tappable rows.
-//      With fewer than two locations it goes straight to the resort list.
-//   2. Location tap → the resorts & hotels in that location, each row showing its price range.
-//   3. Resort tap → its photos (Photo 1–3, then a few from its Drive photos folder), then the
-//      details with the PRICE RANGE only — never an exact price — and
-//      "📅 Book now" / "↩ Other resorts" / "📍 Change location".
-//   4. Book now (or "I want to book") → the chat is handed to a human agent and the bot stays silent
-//      for that customer from then on (worker.js: engineHandoverSilenceTurn).
-//
-// Typed text works as well as taps: a location or resort name jumps to that step; questions go to
-// the AI, whose resort data carries ranges only (rv1StripPrices is the last guard on its reply).
+//   1. Intro: the bot greets, names the destinations (the locations of the active Resorts & Hotels)
+//      and lists them as tappable rows.
+//   2. A destination picked → the trip details form (a WhatsApp form, else the same questions as a
+//      message): name, phone, adults, kids, rooms, check-in date, budget — all optional.
+//   3. Until the details come back, every other message gets the normal AI answer (its resort data
+//      carries price ranges only; rv1StripPrices is the last guard on its reply).
+//   4. Details received (partial counts) → a Trip on Agency → Trips, the chat is handed to the team,
+//      the guest is told our travel expert will send further details, and the bot stays silent
+//      for that guest from then on (worker.js: engineHandoverSilenceTurn).
 //
 // Pure decisions only (no I/O) so they can be unit-tested; worker.js sends the messages.
 
@@ -38,7 +33,7 @@ const DETAILS_DESC_MAX=500;
 export const RV1_PRICE_ON_REQUEST='Price on request';
 export const RV1_NO_PRICE_NOTE='💬 Our booking team will share the price for your dates, room and meal plan when you book.';
 export const RV1_EXACT_PRICE_NOTE='💬 This is the price range — the exact price for your dates, room and meal plan is confirmed by our booking team when you book.';
-export const RV1_PRICE_NOTE='Each resort shows its price range — our booking team confirms the exact price for your dates when you book (tap 📅 Book now). 😊';
+export const RV1_PRICE_NOTE='Our travel expert will share the exact price for your dates once you send your trip details. 😊';
 const PROPERTY_TYPE_LABEL={resort:'Resort',hotel:'Hotel',villa:'Villa',homestay:'Homestay',houseboat:'Houseboat',apartment:'Apartment',camp:'Camp',other:'Stay'};
 
 const yes=v=>String(v||'').trim().toLowerCase()==='yes';
@@ -143,7 +138,7 @@ export function rv1IntroText(biz, locations, {useLoc=true, count=0}={}){
   if(useLoc && named.length){
     const shown=named.slice(0, 8);
     const where=named.length>8?`${shown.map(n=>`*${n}*`).join(', ')} and more`:joinNames(shown);
-    return `${hi}\n\nWe have handpicked resorts & hotels in ${where}. 🌴\n\nChoose a location to see the stays 👇`;
+    return `${hi}\n\nWe have handpicked resorts & hotels in ${where}. 🌴\n\nChoose your destination 👇`;
   }
   const one=named.length===1?` in *${named[0]}*`:'';
   return `${hi}\n\nHere ${count===1?'is our resort':'are our resorts & hotels'}${one} 🌴 Tap one for photos, details and the price range 👇`;
@@ -258,109 +253,44 @@ export function rv1Resolve({ctx={}, properties=[]}){
 // Options the guest can be pointing at, for the AI resolver in worker.js when no rule matched.
 export function rv1AiCandidates({ctx={}, properties=[], max=150}){
   const r=rv1Resolve({ctx, properties});
-  const inLoc=r.curLocKey!=null?rv1PropertiesIn(r.props, r.curLocKey):[];
-  const out=[];
-  for(const p of [...inLoc, ...r.props.filter(p=>!inLoc.includes(p))]) out.push({label:`Resort: ${p.name}`, action:{type:'property', propertyId:p.id}});
-  if(r.useLoc) for(const l of r.locs.filter(l=>l.key)) out.push({label:`Location: ${l.label}`, action:{type:'properties', locKey:l.key, page:1}});
-  return out.slice(0, max);
+  return r.locs.filter(l=>l.key).map(l=>({label:`Location: ${l.label}`, action:{type:'form', locKey:l.key}})).slice(0, max);
 }
 
-// Decides this turn's step. null = not part of the guided flow (the normal AI reply runs).
-//   {type:'locations', page, intro}
-//   {type:'properties', locKey, page, intro, resume}   locKey null = every resort
-//   {type:'property', propertyId}
-//   {type:'price', propertyId?, locKey?}
-//   {type:'book', propertyId}                            propertyId null = nothing picked yet
-// aiFirst:true on a step = the AI answers the question first, then the step is sent.
-// ctx = the lead's saved {location, property} names.
+// Decides this turn's step. The flow is only: destinations → (one picked) the trip details form.
+// Everything else — questions, resort names, prices, "book" — is the normal AI's to answer until the
+// form comes back (then the chat is the team's and the bot is silent). Returns null for the AI, or:
+//   {type:'locations', page, intro}   the destinations list (aiFirst: after the AI's answer)
+//   {type:'form', locKey}             a destination picked → the trip details form for it
+// ctx = the lead's saved {location, form}.
 export function rv1Decide({text, isNewLead=false, ctx={}, properties=[]}){
   const t=String(text||'').trim();
   if(!t) return null;
-  const {props, locs, useLoc, curProp, curLocKey}=rv1Resolve({ctx, properties});
+  const {props, locs}=rv1Resolve({ctx, properties});
   if(!props.length) return null;
-  const start=(intro=false)=>useLoc?{type:'locations', page:1, intro}:{type:'properties', locKey:null, page:1, intro};
-  const toProps=(locKey, page=1, extra={})=>{
-    if(!useLoc) return {type:'properties', locKey:null, page, ...extra};
-    if(locKey==null || !locs.some(l=>l.key===locKey)) return {type:'locations', page:1};
-    return {type:'properties', locKey, page, ...extra};
-  };
-  const inLoc=curLocKey!=null?rv1PropertiesIn(props, curLocKey):[];
+  const named=locs.filter(l=>l.key);
+  const start=(intro=false)=>({type:'locations', page:1, intro});
 
-  // 1. "More … · page N" rows.
+  // 1. "More locations · page N".
   const more=rv1MoreTap(t);
-  if(more){
-    if(more.kind==='locations') return useLoc?{type:'locations', page:more.page}:start();
-    // Paging through every resort (🏨 All resorts) keeps going through every resort.
-    if(ctx.all || curLocKey==null) return {type:'properties', locKey:null, page:more.page, all:true};
-    return toProps(curLocKey, more.page);
+  if(more?.kind==='locations') return {type:'locations', page:more.page};
+
+  // 2. "📍 Change location" (also from older chats) → the list again.
+  if(h3ExactName(t, RV1_NAV.changeLocation) || navIs(t, 'changeLocation')) return start();
+
+  // 3. A destination tapped or typed by name ("Ooty (31)", "ooty", "munnar please").
+  const loc=locs.find(l=>h3ExactName(t, l.label) || h3ExactName(t, h3LocationTitle(l)));
+  if(loc) return {type:'form', locKey:loc.key};
+  const isQuestion=RV1_QUESTION_RE.test(t) && t.split(/\s+/).length>2;
+  if(!isQuestion){
+    const typed=named.find(l=>h3MentionsName(t, l.label)) || uniqueBy(named, l=>h3WordsMatch(t, l.label));
+    if(typed && t.split(/\s+/).length<=5) return {type:'form', locKey:typed.key};
   }
 
-  // 2. Navigation buttons and booking.
-  if(h3ExactName(t, RV1_NAV.changeLocation) || navIs(t, 'changeLocation')) return useLoc?{type:'locations', page:1}:toProps(null);
-  if(h3ExactName(t, RV1_NAV.allResorts) || navIs(t, 'allResorts')) return {type:'properties', locKey:null, page:1, all:true};
-  if(h3ExactName(t, RV1_NAV.otherResorts) || navIs(t, 'otherResorts')) return toProps(curLocKey);
-  for(const kind of ['photos', 'video', 'brochure']){
-    if(curProp && (h3ExactName(t, RV1_NAV[kind]) || navIs(t, kind))) return {type:kind, propertyId:curProp.id};
-  }
-  if(h3ExactName(t, RV1_NAV.book) || rv1IsBookText(t)) return {type:'book', propertyId:curProp?curProp.id:null};
-  const bookNamed=bookWithName(t, inLoc.length?[...inLoc, ...props.filter(p=>!inLoc.includes(p))]:props);
-  if(bookNamed) return {type:'book', propertyId:bookNamed.id};
-
-  // 3. Price questions: the range of what the guest names or is looking at.
-  if(H3_PRICE_Q_RE.test(t) && t.split(/\s+/).length<=14){
-    const named=longestBy(inLoc, p=>h3MentionsName(t, p.name)) || longestBy(props, p=>h3MentionsName(t, p.name));
-    if(named) return {type:'price', propertyId:named.id};
-    if(curProp) return {type:'price', propertyId:curProp.id};
-    if(useLoc){
-      const l=locs.filter(x=>x.key).find(x=>h3MentionsName(t, x.label));
-      if(l) return {type:'price', locKey:l.key};
-    }
-    if(curLocKey!=null) return {type:'price', locKey:curLocKey};
-    if(!useLoc) return {type:'price', locKey:null};
-    return null; // nothing chosen yet — the AI answers with the ranges it has
-  }
-
-  // 4. A tap (or the whole message) naming a location or resort exactly.
-  if(useLoc){
-    const loc=locs.find(l=>h3ExactName(t, l.label) || h3ExactName(t, h3LocationTitle(l)));
-    if(loc) return toProps(loc.key);
-  }
-  const tap=inLoc.find(p=>h3ExactName(t, p.name)) || props.find(p=>h3ExactName(t, p.name));
-  if(tap) return {type:'property', propertyId:tap.id};
-
-  // 5. A question is the AI's to answer; the matching step follows its answer when it names one.
-  if(RV1_QUESTION_RE.test(t) && t.split(/\s+/).length>2){
-    const p=longestBy(inLoc, x=>h3MentionsName(t, x.name)) || longestBy(props, x=>h3MentionsName(t, x.name));
-    if(p) return {type:'property', propertyId:p.id, aiFirst:true};
-    if(useLoc){
-      const l=locs.filter(x=>x.key).find(x=>h3MentionsName(t, x.label));
-      if(l) return {...toProps(l.key), aiFirst:true};
-    }
-    if(isNewLead) return {...start(false), aiFirst:true};
-    return null;
-  }
-
-  // 6. Typed text naming a resort or location, then short forms ("bay view", "bluebell").
-  const mention=longestBy(inLoc, p=>h3MentionsName(t, p.name)) || longestBy(props, p=>h3MentionsName(t, p.name));
-  if(mention) return {type:'property', propertyId:mention.id};
-  if(useLoc){
-    const l=locs.filter(x=>x.key).find(x=>h3MentionsName(t, x.label));
-    if(l) return toProps(l.key);
-  }
-  const short=uniqueBy(inLoc, p=>h3WordsMatch(t, p.name)) || uniqueBy(props, p=>h3WordsMatch(t, p.name));
-  if(short) return {type:'property', propertyId:short.id};
-  if(useLoc){
-    const l=uniqueBy(locs.filter(x=>x.key), x=>h3WordsMatch(t, x.label));
-    if(l) return toProps(l.key);
-  }
-
-  // 7. Greetings and first enquiries start (or resume) the flow.
-  if(RV1_GREETING_RE.test(t)){
-    if(!isNewLead && useLoc && curLocKey!=null) return toProps(curLocKey, 1, {resume:true});
-    return start(true);
-  }
-  if(isNewLead) return start(true);
-  if(!ctx.location && !ctx.property && RV1_ENQUIRY_RE.test(t) && t.split(/\s+/).length<=4) return start();
+  // 4. Greetings and a new guest's first message get the destinations (after the AI's answer when
+  // they asked something); every other message is the AI's.
+  if(RV1_GREETING_RE.test(t)) return start(true);
+  if(isNewLead) return isQuestion?{...start(true), aiFirst:true}:start(true);
+  if(!ctx.location && !ctx.form && RV1_ENQUIRY_RE.test(t) && t.split(/\s+/).length<=4) return start();
   return null;
 }
 
@@ -426,7 +356,7 @@ export function rv1AiContext(properties, {location='', property=''}={}){
     if(p.description) line+=` — ${oneLine(p.description, 200)}`;
     lines.push(line);
   }
-  lines.push('PRICE RULE (strict): the price ranges above come straight from our Resorts & Hotels records and are the ONLY prices you may mention. Copy a range exactly as written for the resort it belongs to — never give an exact price, a per-night rate, a total, an estimate, a discount, a currency conversion or a range for a resort not in this list. A resort marked "Price on request" has no price: say our booking team will share it. Say our booking team confirms the exact price for the guest\'s dates when they book. Only recommend resorts from this list; it overrides any other source about which stays or destinations we offer. Never invent facts (amenities, rooms, distances, availability) that are not written above — if it is not listed, say our team will confirm. Photos are sent by the system when the guest picks a resort — never say you cannot send photos.');
+  lines.push('PRICE RULE (strict): the price ranges above come straight from our Resorts & Hotels records and are the ONLY prices you may mention. Copy a range exactly as written for the resort it belongs to — never give an exact price, a per-night rate, a total, an estimate, a discount, a currency conversion or a range for a resort not in this list. A resort marked "Price on request" has no price: say our booking team will share it. Say our booking team confirms the exact price for the guest\'s dates when they book. Only recommend resorts from this list; it overrides any other source about which stays or destinations we offer. Never invent facts (amenities, rooms, distances, availability) that are not written above — if it is not listed, say our team will confirm. To get options and a quote, the guest picks their destination and sends their trip details (name, phone, guests, rooms, date, budget) — our travel expert then contacts them; never ask them to pay or book in this chat.');
   return lines.join('\n');
 }
 

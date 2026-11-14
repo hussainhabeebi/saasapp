@@ -157,11 +157,13 @@ test('Chat Style: Resorts V1 for travel agencies — explained, previewed and sa
   await expect(page.locator('#rv1Opts')).toBeHidden();
   await page.locator('input[name="flyStyle"][value="resorts_v1"]').check();
   await expect(page.locator('#rv1Opts')).toBeVisible();
-  await expect(page.locator('#rv1Opts')).toContainText('🏨 All resorts');
-  await expect(page.locator('#rv1Opts')).toContainText('price range only');
+  await expect(page.locator('#rv1Opts')).toContainText('name, phone, adults, kids, rooms, check-in date and budget');
+  await expect(page.locator('#rv1Opts')).toContainText('bot stays silent');
   await expect(page.locator('#flyOpts')).toBeHidden();
   await expect(page.locator('#flyPreviewTitle')).toHaveText('Preview · Resorts V1');
-  await expect(page.locator('#flyPreview')).toContainText('Price range: ₹8,000 – ₹15,000 per night');
+  await expect(page.locator('#flyPreview')).toContainText('Choose your destination');
+  await expect(page.locator('#flyPreview')).toContainText('Fill details');
+  await expect(page.locator('#flyPreview')).not.toContainText('Book now');
   await page.getByRole('button', { name: /^Save/ }).first().click();
   await expect.poll(() => saved?.lt_chat_style).toBe('resorts_v1');
 });

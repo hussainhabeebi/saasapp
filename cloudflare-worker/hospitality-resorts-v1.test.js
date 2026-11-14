@@ -49,51 +49,6 @@ test('intro names the locations in the text; new lead / greeting gets the locati
   assert.deepEqual(decide('anything at all', {isNewLead:true}), {type:'locations', page:1, intro:true});
 });
 
-test('one location only: starts at the resort list', ()=>{
-  const one=[P(1, 'A Resort', 'Munnar'), P(2, 'B Resort', 'Munnar')];
-  assert.deepEqual(rv1Decide({text:'hi', properties:one, isNewLead:true}), {type:'properties', locKey:null, page:1, intro:true});
-  assert.match(rv1IntroText('Biz', h3Locations(one), {useLoc:false, count:2}), /resorts & hotels in \*Munnar\*/);
-  assert.equal(rv1Decide({text:'hi', properties:[], isNewLead:true}), null);
-});
-
-test('location tap → its resorts; resort tap → photos & details', ()=>{
-  assert.deepEqual(decide('Munnar (2)'), {type:'properties', locKey:'munnar', page:1});
-  assert.deepEqual(decide('Munnar (2)\n2 resorts & hotels'), {type:'properties', locKey:'munnar', page:1});
-  assert.deepEqual(decide('Bay View Suites', {ctx:{location:'Munnar'}}), {type:'property', propertyId:2});
-  assert.deepEqual(decide('bayview'), {type:'property', propertyId:2});
-  assert.deepEqual(decide('Wayanad'), {type:'properties', locKey:'wayanad', page:1});
-  assert.notEqual(decide('Old Closed Resort')?.type, 'property'); // inactive: never opened
-});
-
-test('navigation and paging', ()=>{
-  assert.deepEqual(decide(RV1_NAV.changeLocation, {ctx:{property:'Bay View Suites'}}), {type:'locations', page:1});
-  assert.deepEqual(decide(RV1_NAV.otherResorts, {ctx:{property:'Bay View Suites'}}), {type:'properties', locKey:'munnar', page:1});
-  assert.deepEqual(rv1MoreTap('More resorts · page 2'), {kind:'resorts', page:2});
-  assert.deepEqual(decide('More resorts · page 2', {ctx:{location:'Munnar'}}), {type:'properties', locKey:'munnar', page:2});
-});
-
-test('booking: Book now / "I want to book" → book (handover)', ()=>{
-  assert.deepEqual(decide(RV1_NAV.book, {ctx:{property:'Aadhisakthi Resort'}}), {type:'book', propertyId:1});
-  assert.deepEqual(decide('I want to book', {ctx:{property:'Aadhisakthi Resort'}}), {type:'book', propertyId:1});
-  assert.deepEqual(decide('book now'), {type:'book', propertyId:null});
-  assert.deepEqual(decide('book bay view suites'), {type:'book', propertyId:2});
-  for(const t of ['Book now', 'book it', 'confirm booking', 'ok book', 'please book', 'booking confirm']) assert.equal(rv1IsBookText(t), true, t);
-  for(const t of ['is booking available?', 'how to book', 'booked already?']) assert.equal(rv1IsBookText(t), false, t);
-});
-
-test('price questions get the range, never an exact price', ()=>{
-  assert.deepEqual(decide('price?', {ctx:{property:'Aadhisakthi Resort'}}), {type:'price', propertyId:1});
-  assert.deepEqual(decide('rate of bay view suites'), {type:'price', propertyId:2});
-  assert.deepEqual(decide('price', {ctx:{location:'Munnar'}}), {type:'price', locKey:'munnar'});
-  assert.equal(decide('price'), null);
-  const one=rv1PriceText({property:properties[0]});
-  assert.match(one, /₹8,000 – ₹15,000 per night/);
-  assert.doesNotMatch(one, /8,500|8500/);
-  const many=rv1PriceText({list:properties.slice(0, 2), locLabel:'Munnar'});
-  assert.match(many, /Aadhisakthi Resort — ₹8,000 – ₹15,000/);
-  assert.match(many, /Bay View Suites — From ₹5,000/);
-});
-
 test('details show the range and amenities, not price_from or season rates', ()=>{
   const d=rv1DetailsText({...properties[0], season_price:12000, description:'Hilltop stay.'});
   assert.match(d, /Price range: \*₹8,000 – ₹15,000 per night\*/);
@@ -101,13 +56,6 @@ test('details show the range and amenities, not price_from or season rates', ()=
   assert.match(d, /Hilltop stay\./);
   assert.doesNotMatch(d, /8,500|12,000|12000/);
   assert.match(rv1DetailsText(properties[2]), /Price on request/);
-});
-
-test('questions go to the AI; a named resort follows the answer', ()=>{
-  assert.deepEqual(decide('is breakfast included at bay view suites?'), {type:'property', propertyId:2, aiFirst:true});
-  assert.deepEqual(decide('what is there to do in Wayanad?'), {type:'properties', locKey:'wayanad', page:1, aiFirst:true});
-  assert.equal(decide('is pet allowed?'), null);
-  assert.deepEqual(decide('is pet allowed?', {isNewLead:true}), {type:'locations', page:1, intro:false, aiFirst:true});
 });
 
 test('AI reply guard keeps ranges, drops exact stay prices', ()=>{
@@ -154,24 +102,6 @@ test('travel agencies: Chat Style "Resorts V1" turns it on without the Hospitali
   assert.equal(rv1IsStyle({industry:'travel', lt_chat_style:'flyindo'}), false);
   assert.equal(rv1IsStyle({industry:'travel', lt_chat_style:''}), false);
   assert.equal(rv1IsStyle({industry:'ecommerce', lt_chat_style:'resorts_v1'}), false, 'not an agency');
-});
-
-test('full list: 🏨 All resorts, and paging through every resort', ()=>{
-  assert.deepEqual(decide(RV1_NAV.allResorts), {type:'properties', locKey:null, page:1, all:true});
-  assert.deepEqual(decide('show all resorts'), {type:'properties', locKey:null, page:1, all:true});
-  assert.deepEqual(decide('More resorts · page 2'), {type:'properties', locKey:null, page:2, all:true});
-  assert.deepEqual(decide('More resorts · page 2', {ctx:{location:'Munnar'}}), {type:'properties', locKey:'munnar', page:2});
-});
-
-test('full buttons under a resort: Book, Video, Brochure, Other resorts, Change location (photos are in the PDF)', ()=>{
-  const p={...properties[0], photos_folder_url:'https://drive.google.com/drive/folders/abc123', video_url:'https://drive.google.com/file/d/v/view', pdf_url:'https://drive.google.com/file/d/p/view'};
-  assert.deepEqual(rv1PropertyOptions(p).map(o=>o.title), [RV1_NAV.book, RV1_NAV.video, RV1_NAV.brochure, RV1_NAV.otherResorts, RV1_NAV.changeLocation]);
-  assert.deepEqual(rv1PropertyOptions(properties[2], {useLoc:false}).map(o=>o.title), [RV1_NAV.book, RV1_NAV.otherResorts]);
-  const ctx={property:'Aadhisakthi Resort'};
-  assert.deepEqual(decide(RV1_NAV.photos, {ctx}), {type:'photos', propertyId:1});
-  assert.deepEqual(decide('more photos', {ctx}), {type:'photos', propertyId:1});
-  assert.deepEqual(decide(RV1_NAV.video, {ctx}), {type:'video', propertyId:1});
-  assert.deepEqual(decide(RV1_NAV.brochure, {ctx}), {type:'brochure', propertyId:1});
 });
 
 test('price guard leaves a travel agency\'s package and flight prices alone', ()=>{
@@ -268,4 +198,26 @@ test('trip details form: Flow JSON, when it is due, and reading typed details', 
   assert.deepEqual(m.rv1TripNotes({name:'Rahul', adults:'2', kids:'1', rooms:'1', budget:'25000'}),
     ['Contact: Rahul', 'Guests: 3 (2 adults, 1 kid)', 'Rooms needed: 1', 'Budget: 25000', 'Not given yet: phone number, check-in date']);
   assert.match(m.rv1ThanksText('Rahul Kumar', 'Munnar'), /^Thank you Rahul! 🙏 We've received your details for \*Munnar\*\.\n\nOur travel expert will contact you shortly with further details/);
+});
+
+test('flow: destinations → (one picked) the details form; everything else is the AI\'s', ()=>{
+  // Greeting / new guest → the destinations list.
+  assert.deepEqual(decide('Hi', {isNewLead:true}), {type:'locations', page:1, intro:true});
+  assert.deepEqual(decide('hello'), {type:'locations', page:1, intro:true});
+  assert.deepEqual(decide('need a resort', {isNewLead:true}), {type:'locations', page:1, intro:true});
+  // A new guest's question: the AI answers, then the destinations follow.
+  assert.deepEqual(decide('do you have pool villas?', {isNewLead:true}), {type:'locations', page:1, intro:true, aiFirst:true});
+  // A destination tapped or typed → the form for it.
+  assert.deepEqual(decide('Munnar (2)'), {type:'form', locKey:'munnar'});
+  assert.deepEqual(decide('Munnar (2)\n2 resorts & hotels'), {type:'form', locKey:'munnar'});
+  assert.deepEqual(decide('wayanad'), {type:'form', locKey:'wayanad'});
+  assert.deepEqual(decide('Thekkady please'), {type:'form', locKey:'thekkady'});
+  assert.deepEqual(decide(RV1_NAV.changeLocation), {type:'locations', page:1, intro:false});
+  assert.deepEqual(decide('More locations · page 2'), {type:'locations', page:2});
+  // No resort selection, prices, Book now: those are the AI's.
+  for(const t of ['Bay View Suites', 'price?', 'rate of bay view suites', 'book now', RV1_NAV.book, '🏨 All resorts', 'is breakfast included?',
+    'what is there to do in Wayanad?', 'thanks'])
+    assert.equal(decide(t, {ctx:{location:'Munnar', form:'sent'}}), null, t);
+  // Inactive resorts' locations are not destinations.
+  assert.equal(decide('Goa'), null);
 });
