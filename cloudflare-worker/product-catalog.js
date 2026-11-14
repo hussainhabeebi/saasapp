@@ -1,9 +1,10 @@
 // Products & Services catalogue for General-industry accounts (products-services.html).
 //
 // The account lists what it sells — products and services, with full details, a price, photos,
-// an optional voice note and brochure, all as Google Drive share links. Two things read it:
-//  - the bot: when a customer names an item in chat, its details card, photos, voice note and
-//    brochure go into the chat (once per lead per item per day), and the AI's answers are
+// an optional video, voice note and brochure, all as Google Drive share links (a video may also be
+// a YouTube or other link). Two things read it:
+//  - the bot: when a customer names an item in chat, its details card, photos, video, voice note
+//    and brochure go into the chat (once per lead per item per day), and the AI's answers are
 //    grounded on the catalogue (pcContextBlock);
 //  - Chats → 📑 AI Proposal: the agent picks items and quantities, the AI writes the proposal's
 //    words from the chat (pcProposalPrompt / pcProposalDraft), the agent reviews and edits it, and
@@ -72,7 +73,7 @@ export function pcCleanItem(body,{partial=false}={}){
   }
   if(has('currency')) out.currency=pcCurrency(b.currency);
   if(has('price_unit')) out.price_unit=line(b.price_unit,40);
-  for(const f of [...PC_IMAGE_FIELDS,'voice_note_url','brochure_url']){
+  for(const f of [...PC_IMAGE_FIELDS,'video_url','voice_note_url','brochure_url']){
     if(!has(f)) continue;
     const u=line(b[f],1000);
     if(u&&!isLink(u)) return {error:`${f.replace(/_/g,' ')} must be a link (https://…)`};
@@ -133,12 +134,24 @@ export function pcItemCard(item){
   return out.join('\n').replace(/\n{3,}/g,'\n\n').trim();
 }
 
-// What the bot sends after the card, in order: photos, the voice note, then the brochure.
+// A Google Drive link (sent as the file itself); anything else (YouTube, Vimeo…) goes as a link.
+export const pcIsDriveLink=u=>/^https?:\/\/(drive|docs)\.google\.com\//i.test(String(u||'').trim());
+// What the bot sends after the card, in order: photos, the video, the voice note, then the brochure.
+// A video is a Drive file sent as a WhatsApp video when it fits (worker.js), else its link.
 export function pcMediaPlan(item){
   const plan=pcPhotos(item).map((url,i)=>({url,kind:'image',caption:i===0?`📷 ${line(item?.name,120)}`:''}));
+  if(isLink(item?.video_url)){
+    const url=line(item.video_url,1000);
+    plan.push({url,kind:'video',drive:pcIsDriveLink(url),caption:`🎬 ${line(item?.name,120)}`});
+  }
   if(isLink(item?.voice_note_url)) plan.push({url:line(item.voice_note_url,1000),kind:'voice',caption:''});
   if(isLink(item?.brochure_url)) plan.push({url:line(item.brochure_url,1000),kind:'document',caption:`📄 ${line(item?.name,120)} — brochure`});
   return plan;
+}
+
+// The message for a video that goes as a link (YouTube, or a Drive video too large to attach).
+export function pcVideoLinkText(item,url){
+  return `🎬 Watch the ${line(item?.name,120)} video: ${line(url,1000)}`;
 }
 
 // Verified catalogue for the AI's grounded answers (appended to the FAQ prompt's context).

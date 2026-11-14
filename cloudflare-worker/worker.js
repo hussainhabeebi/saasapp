@@ -24,7 +24,7 @@ import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-aut
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
-import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
+import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -22670,17 +22670,19 @@ async function handleHospitalityChatItinerarySend(request,env){
    Session-gated (requireSession), like the other module pages that write data.
    ════════════════════════════════════════════════════════════════════════════════════════════════ */
 const PC_ITEM_COLUMNS=['kind','name','category','sku','short_description','details','features','keywords','price','currency','price_unit',
-  ...PC_IMAGE_FIELDS,'voice_note_url','brochure_url','auto_send','status','sort_order'];
+  ...PC_IMAGE_FIELDS,'video_url','voice_note_url','brochure_url','auto_send','status','sort_order'];
 let _pcSchemaEnsured=false;
 async function pcEnsureSchema(env){
   if(_pcSchemaEnsured) return;
   await env.DB.batch([
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_items (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'product', name TEXT NOT NULL, category TEXT, sku TEXT, short_description TEXT, details TEXT, features TEXT, keywords TEXT, price REAL, currency TEXT NOT NULL DEFAULT 'INR', price_unit TEXT, image_url_1 TEXT, image_url_2 TEXT, image_url_3 TEXT, image_url_4 TEXT, image_url_5 TEXT, voice_note_url TEXT, brochure_url TEXT, auto_send INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_items (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'product', name TEXT NOT NULL, category TEXT, sku TEXT, short_description TEXT, details TEXT, features TEXT, keywords TEXT, price REAL, currency TEXT NOT NULL DEFAULT 'INR', price_unit TEXT, image_url_1 TEXT, image_url_2 TEXT, image_url_3 TEXT, image_url_4 TEXT, image_url_5 TEXT, video_url TEXT, voice_note_url TEXT, brochure_url TEXT, auto_send INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT)`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pc_items_client ON pc_items(client_id, status)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_media_sent (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, item_id INTEGER NOT NULL, sent_at TEXT NOT NULL, PRIMARY KEY (lead_id, item_id))`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', total REAL, currency TEXT NOT NULL DEFAULT '', items_json TEXT NOT NULL DEFAULT '[]', pdf_name TEXT NOT NULL DEFAULT '', sent_by TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL)`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pc_proposals_lead ON pc_proposals(client_id, lead_id, sent_at)`),
   ]);
+  // Added after the first release — tables created before it get the column here.
+  await env.DB.prepare(`ALTER TABLE pc_items ADD COLUMN video_url TEXT`).run().catch(()=>null);
   _pcSchemaEnsured=true;
 }
 async function pcItemsFor(env,clientId,{activeOnly=false}={}){
@@ -22879,6 +22881,21 @@ async function engineMaybeSendCatalogItems(env,c,clientId,convId,leadId,userText
       await hospitalityChatwootText(c,convId,card);
       await d1InsertLeadMessage(env,leadId,clientId,{role:'assistant',content:card,ts:new Date().toISOString(),sender_type:'bot'}).catch(()=>{});
       for(const m of pcMediaPlan(item)){
+        // Video: a Drive file goes as a playable WhatsApp video when it's within WhatsApp's 16 MB;
+        // a YouTube/other link, or a Drive video too large to attach, goes as a link to watch.
+        if(m.kind==='video'){
+          const blob=m.drive?await hospitalityFetchMediaBlob(env,m.url,true).catch(()=>null):null;
+          if(blob){
+            const fd=new FormData();
+            fd.append('content',m.caption); fd.append('message_type','outgoing'); fd.append('private','false');
+            fd.append('attachments[]',blob,`video.${(blob.type.split('/')[1]||'mp4').replace(/[^a-z0-9]/gi,'')}`);
+            if((await hospChatPost(c,convId,fd).catch(()=>null))?.ok) continue;
+          }
+          const text=pcVideoLinkText(item,m.url);
+          await hospitalityChatwootText(c,convId,text);
+          await d1InsertLeadMessage(env,leadId,clientId,{role:'assistant',content:text,ts:new Date().toISOString(),sender_type:'bot'}).catch(()=>{});
+          continue;
+        }
         if(m.kind==='image'){
           const blob=await hospitalityFetchMediaBlob(env,m.url,false).catch(()=>null);
           if(blob){

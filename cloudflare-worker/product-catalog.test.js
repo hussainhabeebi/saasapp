@@ -2,7 +2,7 @@
 // its details card / media plan / AI context, and Chats → 📑 AI Proposal (prompt, parse, totals, PDF).
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {pcIsOn,pcCleanItem,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcPriceText,pcMoney,pcTranscript,pcSelection,
+import {pcIsOn,pcIsDriveLink,pcVideoLinkText,pcCleanItem,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcPriceText,pcMoney,pcTranscript,pcSelection,
   pcProposalPrompt,pcParseProposal,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
 
 const HEATER={id:1,kind:'product',name:'Solar Water Heater',category:'Solar',short_description:'Rooftop solar water heater for homes.',
@@ -159,4 +159,17 @@ test('the proposal PDF has the title, customer, items, totals and sections', ()=
   for(const t of ['Hot Water Proposal','Prepared for Asha','14 Nov 2026','Valid until 29 Nov 2026','Overview','Solar Water Heater','INR 84,000','2 x INR 42,000','On request',
     'GST \\(18%\\)','INR 99,120','TOTAL','Why Sunrise Solar','Next Steps','Terms & Conditions','Warm regards,','1 item is priced on request','Page 1 of'])
     assert.ok(s.includes(t), `PDF has ${t}`);
+});
+
+test('video link: Drive videos go as a file (worker falls back to the link), other links as a link', ()=>{
+  assert.match(pcCleanItem({name:'X',video_url:'not a link'}).error, /video url must be a link/);
+  assert.equal(pcCleanItem({name:'X',video_url:' https://youtu.be/abc '}).video_url, 'https://youtu.be/abc');
+  assert.equal(pcIsDriveLink('https://drive.google.com/file/d/v1/view'), true);
+  assert.equal(pcIsDriveLink('https://www.youtube.com/watch?v=abc'), false);
+  // Photos first, then the video, then the voice note and brochure.
+  const plan=pcMediaPlan({...HEATER,video_url:'https://drive.google.com/file/d/vid1/view'});
+  assert.deepEqual(plan.map(m=>m.kind), ['image','video','voice','document']);
+  assert.deepEqual(plan[1], {url:'https://drive.google.com/file/d/vid1/view',kind:'video',drive:true,caption:'🎬 Solar Water Heater'});
+  assert.equal(pcMediaPlan({...AMC,video_url:'https://youtu.be/abc'})[0].drive, false);
+  assert.equal(pcVideoLinkText(HEATER,'https://youtu.be/abc'), '🎬 Watch the Solar Water Heater video: https://youtu.be/abc');
 });

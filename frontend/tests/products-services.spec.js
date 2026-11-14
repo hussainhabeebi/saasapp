@@ -16,6 +16,10 @@ async function open(page, items = []) {
     const req = route.request();
     const url = new URL(req.url());
     if (url.protocol === 'file:') return route.continue();
+    if (url.pathname.endsWith('/ecom/drive-file-size')) {
+      const big = url.searchParams.get('url').includes('big');
+      return route.fulfill({ json: { size_bytes: big ? 40 * 1048576 : 8 * 1048576, content_type: 'video/mp4' } });
+    }
     if (url.pathname.endsWith('/catalog/items')) {
       const m = req.method();
       const body = m === 'GET' ? null : req.postDataJSON();
@@ -42,16 +46,28 @@ test('add an item with details and Drive media, then edit and delete it', async 
   await page.locator('#fKeywords').fill('geyser');
   await page.locator('#fImg1').fill('https://drive.google.com/file/d/abc123/view?usp=sharing');
   await expect(page.locator('#thumbs img')).toHaveAttribute('src', 'https://drive.google.com/thumbnail?id=abc123&sz=w400');
+  // Video: a Drive MP4 under 16 MB plays in the chat; a larger one or a YouTube link goes as a link.
+  await page.locator('#fVideo').fill('https://drive.google.com/file/d/big1/view');
+  await page.locator('#fVideo').blur();
+  await expect(page.locator('#videoHint')).toContainText('40.0 MB');
+  await expect(page.locator('#videoHint')).toContainText('sent as a link');
+  await page.locator('#fVideo').fill('https://youtu.be/abc');
+  await page.locator('#fVideo').blur();
+  await expect(page.locator('#videoHint')).toHaveText('Sent as a link the customer taps to watch.');
+  await page.locator('#fVideo').fill('https://drive.google.com/file/d/vid1/view');
+  await page.locator('#fVideo').blur();
+  await expect(page.locator('#videoHint')).toHaveText('✓ 8.0 MB — plays right in the WhatsApp chat.');
   await page.locator('#fVoice').fill('https://drive.google.com/file/d/voice1/view');
   await page.locator('#saveBtn').click();
   await expect(page.locator('#editor')).toBeHidden();
   const post = calls.find((c) => c.method === 'POST');
   expect(post.auth).toBe('Bearer t');
   expect(post.body).toMatchObject({ kind: 'product', name: 'Solar Water Heater', price: '42000', currency: 'INR', keywords: 'geyser',
-    image_url_1: 'https://drive.google.com/file/d/abc123/view?usp=sharing', voice_note_url: 'https://drive.google.com/file/d/voice1/view', auto_send: 1, status: 'active' });
+    image_url_1: 'https://drive.google.com/file/d/abc123/view?usp=sharing', video_url: 'https://drive.google.com/file/d/vid1/view', voice_note_url: 'https://drive.google.com/file/d/voice1/view', auto_send: 1, status: 'active' });
   const card = page.locator('.item', { hasText: 'Solar Water Heater' });
   await expect(card).toContainText('INR 42,000');
   await expect(card).toContainText('🎙️ Voice note');
+  await expect(card).toContainText('🎬 Video');
   await expect(card).toContainText('Bot sends on mention');
 
   await card.getByRole('button', { name: 'Edit' }).click();
