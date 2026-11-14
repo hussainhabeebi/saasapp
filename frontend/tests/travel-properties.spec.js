@@ -182,3 +182,29 @@ test('properties list A–Z then numbers; Manual sort saves the order and ◀ �
   expect(reorders.at(-1)).toEqual([]);
   expect(await names()).toEqual(['amber bay', 'Villa 2', 'Villa 10', 'Zen Garden', '7 Hills Resort']);
 });
+
+test('price range (Resorts V1): shown on the card and saved with the property', async ({ page }) => {
+  const ids = { packages: 'tp', bookings: 'tb', cases: 'tc', itineraries: 'ti', umrah_groups: 'tu' };
+  const posts = [];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (!url.startsWith(WORKER)) return route.abort();
+    const u = new URL(url);
+    if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids) } });
+    if (u.pathname === '/ta/properties' && req.method() === 'GET') return route.fulfill({ json: { list: [
+      { id: 1, name: 'Misty Hills', location: 'Munnar', price_range_min: 8000, price_range_max: 15000, currency: 'INR', price_unit: 'per night', status: 'active' },
+    ] } });
+    if (u.pathname === '/ta/properties' && req.method() === 'PATCH') { posts.push(req.postDataJSON()); return route.fulfill({ json: { ok: true } }); }
+    return route.fulfill({ json: { list: [] } });
+  });
+  await page.goto('file://' + path.resolve(__dirname, '../travel-agency.html') + '?client=7&token=t&embed=1&shell=travel&tab=properties', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#agencyContent .prop-range')).toContainText('INR 8,000 – 15,000 per night');
+  await page.click('text=Misty Hills');
+  await expect(page.locator('#propRangeMin')).toHaveValue('8000');
+  await expect(page.locator('#propRangeMax')).toHaveValue('15000');
+  await page.fill('#propRangeMax', '18000');
+  await page.click('#savePropBtn');
+  await expect(page.locator('#savePropMsg')).toHaveText('✓ Saved');
+  expect(posts.at(-1)).toMatchObject({ Id: '1', price_range_min: '8000', price_range_max: '18000' });
+});

@@ -1,6 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
+import {RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
@@ -11351,6 +11352,8 @@ async function taPropertyEnsureSchema(env){
     season_price REAL,
     off_season_price REAL,
     season_months TEXT DEFAULT '',
+    price_range_min REAL,
+    price_range_max REAL,
     sort_order INTEGER,
     amenities TEXT,
     description TEXT,
@@ -11379,7 +11382,7 @@ async function taPropertyEnsureSchema(env){
   // Drive folder and season / off-season rates — are added to an existing table.
   const {results:cols}=await env.DB.prepare(`PRAGMA table_info(ta_properties)`).all();
   const have=new Set((cols||[]).map(c=>c.name));
-  for(const [name,type] of [['category',`TEXT DEFAULT ''`],['photos_folder_url','TEXT'],['season_price','REAL'],['off_season_price','REAL'],['season_months',`TEXT DEFAULT ''`],['sort_order','INTEGER']]){
+  for(const [name,type] of [['category',`TEXT DEFAULT ''`],['photos_folder_url','TEXT'],['season_price','REAL'],['off_season_price','REAL'],['season_months',`TEXT DEFAULT ''`],['sort_order','INTEGER'],['price_range_min','REAL'],['price_range_max','REAL']]){
     if(cols&&!have.has(name)) await env.DB.prepare(`ALTER TABLE ta_properties ADD COLUMN ${name} ${type}`).run();
   }
   _taPropertySchemaEnsured=true;
@@ -21094,7 +21097,8 @@ async function engineBuildTravelContext(env, c, clientId){
   }
   // H3 hospitality clients: the Hospitality module (hospH3BuildAiContext) is the stays catalogue,
   // so this separate Resorts & Hotels list is left out — two lists made the AI deny real stays.
-  if(!h3IsStyle(c)){
+  // Resorts V1 gets its own range-only list (rv1AiContext) — this one carries exact rates.
+  if(!h3IsStyle(c) && !rv1IsStyle(c)){
     const properties=await taPropertiesForClient(env, clientId).catch(()=>[]);
     lines.push(...taPropertyContextLines(properties));
   }
@@ -27647,11 +27651,14 @@ export async function engineHandoverSilenceTurn(env, c, clientId, body, state, p
   // Travel Settings → Chat Style "Greetings only": once greeted (and so handed over) the bot never
   // replies to that customer again, whatever the handover-silence setting says.
   const greetingOnly=!healthcare && !configured && handedOver && greetingOnlyOn(c);
-  if(!healthcare && !configured && !greetingOnly) return null;
+  // Hospitality style "Resorts V1": once the guest books (and so is handed over) the team has the
+  // chat and the bot stays silent for that customer, whatever the handover-silence setting says.
+  const resortsV1=!healthcare && !configured && !greetingOnly && handedOver && rv1IsStyle(c);
+  if(!healthcare && !configured && !greetingOnly && !resortsV1) return null;
   await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
   // A Baby Care customer changing their order still updates it.
   if(configured) await engineSilentBabyCareOrderUpdate(env, c, clientId, parsed.phone, text, state.lead, ctx);
-  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':'handed-over';
+  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':resortsV1?'resorts-v1-booked':'handed-over';
   await logEngineSkip(env,clientId,parsed.phone,parsed.convId,reason,`stage ${state.stage||''} — message saved to Chats, no bot reply`);
   return json({ok:true,skipped:reason,lead_collected:true});
 }
@@ -30979,7 +30986,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){ await reportOpsError(env, 'hospitalitySuiteTurn', e, {clientId, convId}); }
     }
     // H3 never quotes a price — the human agent does at checkout — so Pro's instant quotes are off.
-    if(!orderHandledInline && hpEnabled(c) && !h3IsStyle(c) && state.leadId){
+    if(!orderHandledInline && hpEnabled(c) && !h3IsStyle(c) && !rv1IsStyle(c) && state.leadId){
       try{
         const hp=await hpHandleTurn(env, HP_DEPS, {c, clientId, convId, leadId:state.leadId, phone, name:state.name, userText, rawText:text,
           mediaType, mediaUrl, lang:replyLang, selectedUnit:state.lead?.HospSelectedUnit||'',
@@ -31020,6 +31027,21 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         }else if(h3Plan && !h3Plan.action.aiFirst) orderHandledInline=true;
         // aiFirst: the AI answers the question as usual; the list is sent after it (hospH3Execute).
       }catch(e){ await reportOpsError(env, 'hospH3Plan', e, {clientId, convId}); }
+    }
+    // Hospitality style "Resorts V1" (hospitality-resorts-v1.js) — the Agency module's Resorts &
+    // Hotels: Location → Resort (photos, details, price range) → Book. Booking hands the chat to the
+    // team and the bot goes silent for that guest (engineHandoverSilenceTurn).
+    let rv1Plan=null;
+    if(!orderHandledInline && rv1IsStyle(c) && convId && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && routing.route!=='human'){
+      try{
+        rv1Plan=await hospRv1Plan(env, c, clientId, userText, state, isNewLead);
+        if(rv1Plan?.action?.type==='book'){
+          routing.route='human'; routing.humanReason='resorts_v1_booked';
+          routing.reply=rv1BookText(hospRv1Property(rv1Plan));
+          if(state.leadId && rv1Plan.action.propertyId) await hospH3SaveCtx(env, clientId, state.leadId, {property:hospRv1Property(rv1Plan)?.name||''});
+          rv1Plan=null;
+        }else if(rv1Plan && !rv1Plan.action.aiFirst) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env, 'hospRv1Plan', e, {clientId, convId}); }
     }
 
     // Education enrollment flow — deterministic name/phone collection + D1 insert.
@@ -31190,6 +31212,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const h3Ctx=await hospH3BuildAiContext(env, c, clientId, state.lead, userText).catch(()=>'');
         if(h3Ctx) contextBlock=(contextBlock||'')+h3Ctx;
       }
+      // Resorts V1: the Agency Resorts & Hotels with price ranges only (no exact prices).
+      if(rv1IsStyle(c)){
+        const rv1Ctx=rv1AiContext(await taPropertiesForClient(env, clientId).catch(()=>[]),
+          {location:state.lead?.HospSelectedLocation||'', property:state.lead?.HospSelectedProperty||''});
+        if(rv1Ctx) contextBlock=(contextBlock||'')+rv1Ctx;
+      }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
@@ -31218,6 +31246,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
       if(h3IsStyle(c)) reply=await hospH3GuardPrices(env, clientId, reply);
+      if(rv1IsStyle(c)) reply=rv1StripPrices(reply, await taPropertiesForClient(env, clientId).catch(()=>[]));
       routing.reply=reply; sentText=reply;
       let faqQuickReplies=null;
       // The LLM never creates Ecom navigation. Exact categories/products are handled before this
@@ -31365,7 +31394,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
       // Resort/hotel photos, video and brochure — when the lead names one, asks for its media, or the reply recommends it
       // — and files the lead under Family Resort / Couple Resort when that's what they're after.
-      if(routing.route==='travel_faq'){
+      if(routing.route==='travel_faq' && !rv1IsStyle(c)){
         const resortCategory=await travelMaybeSendPropertyMedia(env, c, clientId, convId, {userText, replyText:sentText, previousBotText:state.botMsgs?.[state.botMsgs.length-1]||'', leadId:state.leadId, currentCategory:state.lead?.ServiceCategory});
         if(resortCategory&&!routing.serviceCategory){ routing.serviceCategory=resortCategory; await ensureLeadsColumns(env,['ServiceCategory']).catch(()=>{}); }
       }
@@ -31383,6 +31412,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       if(h3IsStyle(c)) reply=await hospH3GuardPrices(env, clientId, reply);
+      if(rv1IsStyle(c)) reply=rv1StripPrices(reply, await taPropertiesForClient(env, clientId).catch(()=>[]));
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
       // alongside the LLM's own answer, rather than only ever reachable by typing something a
@@ -31500,6 +31530,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
     }
     if(h3Plan && !hpTurnHandled) await hospH3Execute(env, c, clientId, convId, resolvedLeadId, h3Plan);
+    if(rv1Plan && !hpTurnHandled) await hospRv1Execute(env, c, clientId, convId, resolvedLeadId, rv1Plan);
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -39783,10 +39814,93 @@ async function hospH3Execute(env, c, clientId, convId, leadId, plan){
   }catch(e){ await reportOpsError(env, 'hospH3Execute', e, {clientId, convId, step:a?.type}); }
 }
 
+// ── Hospitality style "Resorts V1" (hospitality-resorts-v1.js): Agency Resorts & Hotels ────────
+// Location → Resort (photos + details + price range) → Book (human handover, then silent).
+// The guest's location / resort is kept in the same per-lead table as H3 (hosp_h3_state).
+const RV1_PHOTO_BUDGET_MS=15000;
+const RV1_MAX_PHOTOS=6; // Photo 1–3 plus folder photos, per resort tap
+async function hospRv1Plan(env, c, clientId, userText, state, isNewLead){
+  const properties=rv1Active(await taPropertiesForClient(env, clientId));
+  if(!properties.length) return null;
+  const ctx=await hospH3GetCtx(env, clientId, state.leadId, state.lead);
+  if(state.lead) Object.assign(state.lead, {HospSelectedLocation:ctx.location, HospSelectedProperty:ctx.property});
+  const args={properties, ctx};
+  let action=rv1Decide({text:userText, isNewLead, ...args});
+  if(!action) action=await hospH3AiResolve(env, c, userText, rv1AiCandidates(args));
+  return action?{action, data:{properties}}:null;
+}
+function hospRv1Property(plan){
+  const id=plan?.action?.propertyId;
+  return id==null?null:(plan.data.properties.find(p=>Number(p.id)===Number(id))||null);
+}
+async function hospRv1Execute(env, c, clientId, convId, leadId, plan){
+  if(!plan || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  const {action:a, data:{properties}}=plan;
+  const locs=h3Locations(properties);
+  const useLoc=rv1UseLocationStep(locs);
+  const biz=String(c.business_name||c.client_name||'').trim();
+  const say=(text, rows)=>engineSendChatwootQuickReply(env, c, clientId, convId, text, rows);
+  const rows=list=>list.map(p=>({title:p.name, value:p.name, desc:rv1PropertyRowDesc(p)}));
+  const locOf=p=>h3LocKey(p.location)?String(p.location).split(',')[0].trim():(useLoc?H3_OTHER_LOCATION:'');
+  try{
+    if(a.type==='locations'){
+      const paged=h3PageRows(locs.map(l=>({title:h3LocationTitle(l), value:h3LocationTitle(l), desc:`${l.count} resort${l.count===1?'':'s'} & hotel${l.count===1?'':'s'}`})), 'locations', a.page);
+      const text=a.intro?rv1IntroText(biz, locs, {useLoc:true, count:properties.length}):'📍 Choose a location to see the resorts & hotels 👇';
+      await say(text, paged.rows);
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:'', property:'', unit:''});
+      return;
+    }
+    if(a.type==='properties'){
+      const list=rv1PropertiesIn(properties, a.locKey);
+      const loc=a.locKey!=null?locs.find(l=>l.key===a.locKey):null;
+      const nav=useLoc?[{title:RV1_NAV.changeLocation, value:RV1_NAV.changeLocation}]:[];
+      const paged=h3PageRows(rows(list), 'resorts', a.page, nav);
+      const text=a.intro?rv1IntroText(biz, locs, {useLoc:false, count:list.length}):rv1PropertiesText(loc?.label||'', list.length);
+      await say(text, paged.rows);
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:loc?loc.label:'', property:'', unit:''});
+      return;
+    }
+    const prop=hospRv1Property(plan);
+    const btns=[{title:RV1_NAV.book, value:RV1_NAV.book}, {title:RV1_NAV.otherResorts, value:RV1_NAV.otherResorts}];
+    if(useLoc) btns.push({title:RV1_NAV.changeLocation, value:RV1_NAV.changeLocation});
+    if(a.type==='property' && prop){
+      // Photos first (Photo 1–3, then a few from the Drive photos folder), within a time budget.
+      const deadline=Date.now()+RV1_PHOTO_BUDGET_MS;
+      let sent=0;
+      for(const url of rv1PhotoUrls(prop)){
+        if(Date.now()>deadline) break;
+        if(await hospH3SendImage(env, c, convId, url, sent?'':rv1PhotoCaption(prop), 'resort.jpg')) sent++;
+      }
+      if(prop.photos_folder_url && Date.now()<deadline){
+        await taSendPropertyFolderPhotos(env, c, convId, prop.photos_folder_url, sent?'':rv1PhotoCaption(prop), Math.max(2, RV1_MAX_PHOTOS-sent))
+          .then(n=>{ sent+=n||0; })
+          .catch(e=>reportOpsError(env, 'hospRv1FolderPhotos', e, {clientId, propertyId:prop.id}));
+      }
+      await say(rv1DetailsText(prop), btns);
+      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:locOf(prop), property:prop.name, unit:''});
+      return;
+    }
+    if(a.type==='price'){
+      if(prop){
+        await say(rv1PriceText({property:prop}), btns);
+        if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:locOf(prop), property:prop.name, unit:''});
+        return;
+      }
+      const list=rv1PropertiesIn(properties, a.locKey);
+      const loc=a.locKey!=null?locs.find(l=>l.key===a.locKey):null;
+      await hospitalityChatwootText(c, convId, rv1PriceText({list, locLabel:loc?.label||''}));
+      const nav=useLoc?[{title:RV1_NAV.changeLocation, value:RV1_NAV.changeLocation}]:[];
+      await say('🏨 Tap a resort for photos & details 👇', h3PageRows(rows(list), 'resorts', 1, nav).rows);
+      return;
+    }
+  }catch(e){ await reportOpsError(env, 'hospRv1Execute', e, {clientId, convId, step:a?.type}); }
+}
+
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   if(h3IsStyle(c)) return; // H3 sends its own photos and pickers (hospH3Execute)
+  if(rv1IsStyle(c)) return; // Resorts V1 sends its own photos and pickers (hospRv1Execute)
   try{
     const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all();
     if(!units || !units.length) return;

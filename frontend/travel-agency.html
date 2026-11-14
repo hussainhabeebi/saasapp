@@ -875,6 +875,9 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
       <div class="form-group"><label class="form-label">Price Unit</label>
         <select class="form-input" id="propUnit"><option>per night</option><option>per person</option><option>per couple</option><option>per package</option></select>
       </div>
+      <div style="grid-column:1/-1;font-size:12px;color:var(--muted);margin-top:4px">💰 Price range — optional. Hospitality style “Resorts V1” sends only this range to the guest (never an exact price); fill one or both.</div>
+      <div class="form-group"><label class="form-label">Price Range From</label><input class="form-input" type="number" id="propRangeMin" placeholder="e.g. 8000"></div>
+      <div class="form-group"><label class="form-label">Price Range To</label><input class="form-input" type="number" id="propRangeMax" placeholder="e.g. 15000"></div>
       <div style="grid-column:1/-1;font-size:12px;color:var(--muted);margin-top:4px">📅 Season &amp; off-season rates — optional. Pick the months that count as season; every other month is off-season. The bot quotes the rate for the customer's travel month.</div>
       <div class="form-group"><label class="form-label">Season Rate</label><input class="form-input" type="number" id="propSeasonPrice" placeholder="e.g. 12000"></div>
       <div class="form-group"><label class="form-label">Off-season Rate</label><input class="form-input" type="number" id="propOffSeasonPrice" placeholder="e.g. 8000"></div>
@@ -5307,6 +5310,7 @@ function renderTaProperties(){
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(PROP_TYPE_LABELS[p.property_type]||'Resort')}${p.star_rating?' · '+'⭐'.repeat(p.star_rating):''}${p.location?' · '+esc(p.location):''}</div>
         ${seasonal.length?`<div class="prop-season" style="font-family:var(--mono);font-size:12.5px;margin-top:6px;line-height:1.6">${seasonal.join('<br>')}</div>`:''}
         <div style="font-family:var(--mono);font-size:13px;margin-top:6px;${seasonal.length&&!(Number(p.price_from)>0)?'display:none':''}">${Number(p.price_from)>0?`From ${esc(p.currency||'INR')} ${fmtMoney(p.price_from)} <span style="color:var(--muted)">${esc(p.price_unit||'per night')}</span>`:'<span style="color:var(--muted)">Price on request</span>'}</div>
+        ${propRangeLabel(p)?`<div class="prop-range" style="font-family:var(--mono);font-size:12.5px;margin-top:4px">💰 ${esc(propRangeLabel(p))}</div>`:''}
         <div style="font-size:12px;color:var(--muted);margin-top:6px">${media||'No media yet'}</div>
       </div>
     </div>`;
@@ -5341,7 +5345,16 @@ function renderTaProperties(){
 }
 
 let _editPropId=null;
-const PROP_INPUTS={name:'propName',property_type:'propType',category:'propCategory',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',season_price:'propSeasonPrice',off_season_price:'propOffSeasonPrice',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',photos_folder_url:'propFolder',video_url:'propVideo',pdf_url:'propPdf'};
+const PROP_INPUTS={name:'propName',property_type:'propType',category:'propCategory',status:'propStatus',location:'propLocation',star_rating:'propStars',price_from:'propPrice',currency:'propCurrency',price_unit:'propUnit',season_price:'propSeasonPrice',off_season_price:'propOffSeasonPrice',price_range_min:'propRangeMin',price_range_max:'propRangeMax',room_types:'propRooms',amenities:'propAmenities',description:'propDesc',image_url:'propImg1',image_url_2:'propImg2',image_url_3:'propImg3',photos_folder_url:'propFolder',video_url:'propVideo',pdf_url:'propPdf'};
+// "INR 8,000 – 15,000 per night" / "From INR 8,000 per night" / "Up to …", or '' (no range set).
+function propRangeLabel(p){
+  const lo=Number(p.price_range_min)>0?fmtMoney(p.price_range_min):'', hi=Number(p.price_range_max)>0?fmtMoney(p.price_range_max):'';
+  const cur=p.currency||'INR', unit=p.price_unit||'per night';
+  if(lo&&hi) return lo===hi?`Around ${cur} ${lo} ${unit}`:`${cur} ${lo} – ${hi} ${unit}`;
+  if(lo) return `From ${cur} ${lo} ${unit} (range)`;
+  if(hi) return `Up to ${cur} ${hi} ${unit}`;
+  return '';
+}
 const PROP_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 let _propSeasonMonths=new Set();
 const propSeasonSet=v=>new Set(String(v||'').split(',').map(Number).filter(n=>n>=1&&n<=12));

@@ -92,3 +92,17 @@ test('H3 settings row shows only for the H3 style', async ({ page }) => {
   await page.evaluate(() => { /* @ts-ignore */ clientRecord.hospitality_style = 'resort'; /* @ts-ignore */ initHospitalitySettings(); });
   await expect(page.locator('#hospH3SettingsRow')).toHaveCSS('display', 'none');
 });
+
+test('Resorts V1: option, how-it-works row, and the Agency warning while Agency is off', async ({ page }) => {
+  await openProperties(page, 'h3');
+  await page.evaluate(() => { /* @ts-ignore */ clientRecord.hospitality_style = 'resorts_v1'; /* @ts-ignore */ clientRecord.ta_enabled = 'No'; /* @ts-ignore */ initHospitalitySettings(); });
+  await expect(page.locator('#cfgHospitalityStyle option[value="resorts_v1"]')).toHaveText('Resorts V1 — Agency Resorts & Hotels');
+  await expect(page.locator('#cfgHospitalityStyle')).toHaveValue('resorts_v1');
+  await expect(page.locator('#hospRv1SettingsRow')).toHaveCSS('display', 'flex');
+  await expect(page.locator('#hospH3SettingsRow')).toHaveCSS('display', 'none');
+  await expect(page.locator('#hospRv1AgencyWarn')).toHaveCSS('display', 'block');
+  await page.evaluate(() => { /* @ts-ignore */ clientRecord.ta_enabled = 'Yes'; /* @ts-ignore */ initHospitalitySettings(); });
+  await expect(page.locator('#hospRv1AgencyWarn')).toHaveCSS('display', 'none');
+  await page.evaluate(() => { /* @ts-ignore */ clientRecord.hospitality_style = 'h3'; /* @ts-ignore */ initHospitalitySettings(); });
+  await expect(page.locator('#hospRv1SettingsRow')).toHaveCSS('display', 'none');
+});
