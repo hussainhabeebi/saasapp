@@ -455,13 +455,18 @@ async function renderChatStyle(){
 <div class="card" style="margin-top:0"><h3>🧭 Chat style</h3>
 <label class="wmtoggle" style="margin-bottom:8px"><input type="radio" name="flyStyle" value="" ${!fly.style?'checked':''} onchange="flySet('style','')"> <b>Default</b> <span class="sub">— the bot answers customer questions as it does today</span></label>
 <label class="wmtoggle" style="margin-bottom:8px"><input type="radio" name="flyStyle" value="flyindo" ${fly.style==='flyindo'?'checked':''} onchange="flySet('style','flyindo')"> <b>Flyindo</b> <span class="sub">— guided booking with buttons only</span></label>
-<label class="wmtoggle"><input type="radio" name="flyStyle" value="greeting" ${fly.style==='greeting'?'checked':''} onchange="flySet('style','greeting')"> <b>Greetings only</b> <span class="sub">— the Flyindo welcome, then the bot goes silent</span></label>
+<label class="wmtoggle" style="margin-bottom:8px"><input type="radio" name="flyStyle" value="greeting" ${fly.style==='greeting'?'checked':''} onchange="flySet('style','greeting')"> <b>Greetings only</b> <span class="sub">— the Flyindo welcome, then the bot goes silent</span></label>
+<label class="wmtoggle"><input type="radio" name="flyStyle" value="resorts_v1" ${fly.style==='resorts_v1'?'checked':''} onchange="flySet('style','resorts_v1')"> <b>Resorts V1</b> <span class="sub">— your 🏨 Resorts &amp; Hotels: locations → resorts with photos &amp; price range → Book</span></label>
 <p class="sub" style="margin-top:10px">With <b>Flyindo</b>, every customer is walked through one booking request by tapping options: <b>destination → travel date → adults → children (and their ages)</b>. They then get a summary of the request and the chat is handed to your team, marked as a hot lead. With <b>AI answers</b> on, anything they type — a price, package, hotel or visa question — is answered from your bot prompt and knowledge base, and they're taken straight back to the options to continue booking. With it off, the same options are shown again. Typing "talk to agent" goes straight to your team, and "hi" or "menu" starts over.</p>
 <p class="sub" style="margin-top:6px">With <b>Greetings only</b>, a customer's first message gets the Flyindo welcome — no menu, no AI — and the chat is handed to your team. From then on the bot stays silent for that customer: their messages still land in Chats for your team to answer.</p></div>
+<div class="card" id="rv1Opts" style="${fly.style==='resorts_v1'?'':'display:none'}"><h3>🏨 Resorts V1</h3>
+<p class="sub">Uses your <b>Travel Agency → 🏨 Resorts &amp; Hotels</b> list (active properties only):</p>
+<p class="sub">1️⃣ The welcome names your locations and lists them as buttons, plus <b>🏨 All resorts</b> for the full list.<br>2️⃣ A location shows every resort &amp; hotel there with its price range (paged when there are more than fit).<br>3️⃣ A resort sends its photos, then its details with the <b>price range only</b> — never an exact price — and the buttons 📅 Book now · 📸 More photos · 🎬 Video · 📄 Brochure · ↩ Other resorts · 📍 Change location (each shown when the resort has it).<br>4️⃣ <b>📅 Book now</b> hands the chat to your team and the bot stays silent for that customer.</p>
+<p class="sub">Set <b>Location</b> and <b>Price Range From / To</b> on each property. Questions are still answered by the AI (ranges only); package, flight and visa questions work as before.</p></div>
 <div class="card" id="greetOpts" style="${fly.style==='greeting'?'':'display:none'}"><h3>👋 Greeting message</h3>
 <p class="sub" style="margin-top:-6px">Leave empty to use the Flyindo welcome. <code>{agency}</code> becomes your agency name.</p>
 <div class="field"><textarea id="flyGreet" rows="6" maxlength="1000" placeholder="${esc(greetDefault('{agency}'))}" oninput="flySet('greet',this.value)">${esc(fly.greet)}</textarea></div></div>
-<div class="card" id="flyOpts" style="${fly.style==='flyindo'?'':'opacity:.55'};${fly.style==='greeting'?'display:none':''}"><h3>Destinations <span class="badge ${fly.dests.length>10?'bad':'ok'}" id="flyCount">${fly.dests.length} / 10</span></h3>
+<div class="card" id="flyOpts" style="${fly.style==='flyindo'?'':'opacity:.55'};${fly.style==='greeting'||fly.style==='resorts_v1'?'display:none':''}"><h3>Destinations <span class="badge ${fly.dests.length>10?'bad':'ok'}" id="flyCount">${fly.dests.length} / 10</span></h3>
 <p class="sub" style="margin-top:-6px">Shown as a WhatsApp list in step 2 (up to 10).</p>
 <div id="flyDests"></div><button class="btn" onclick="flyAddDest()">＋ Add destination</button>
 <div class="formgrid" style="margin-top:14px">
@@ -469,10 +474,11 @@ async function renderChatStyle(){
 <div class="field span2"><label>Ask children's ages</label><select id="flyAges" onchange="flySet('ages',this.value==='1')"><option value="1" ${fly.ages?'selected':''}>Yes — when pricing depends on age</option><option value="0" ${!fly.ages?'selected':''}>No</option></select></div>
 <div class="field span2"><label>🤖 AI answers questions</label><select id="flyAi" onchange="flySet('ai',this.value==='1')"><option value="1" ${fly.ai?'selected':''}>On — answer anything typed, then back to the options</option><option value="0" ${!fly.ai?'selected':''}>Off — buttons only, show the options again</option></select></div></div></div>
 <div style="display:flex;gap:10px;align-items:center;margin-top:14px"><button class="btn primary" id="flySave" onclick="saveChatStyle()">Save chat style</button><span class="sub" id="flyMsg"></span></div>
-</div><div><div class="wmphone"><div class="wmbar">${esc(fly.agency||'Your agency')}<span id="flyPreviewTitle">Preview · ${fly.style==='greeting'?'Greetings only':'Flyindo booking flow'}</span></div><div class="wmchat" id="flyPreview"></div></div></div></div>`;
+</div><div><div class="wmphone"><div class="wmbar">${esc(fly.agency||'Your agency')}<span id="flyPreviewTitle">Preview · ${flyStyleLabel(fly.style)}</span></div><div class="wmchat" id="flyPreview"></div></div></div></div>`;
   flyRenderDests();flyPreview();
 }
-function flySet(k,v){fly[k]=v;if(k==='style'){const o=$('flyOpts');if(o){o.style.opacity=v==='flyindo'?'1':'.55';o.style.display=v==='greeting'?'none':''}const g=$('greetOpts');if(g)g.style.display=v==='greeting'?'':'none';const t=$('flyPreviewTitle');if(t)t.textContent='Preview · '+(v==='greeting'?'Greetings only':'Flyindo booking flow')}flyPreview()}
+function flyStyleLabel(v){return v==='greeting'?'Greetings only':v==='resorts_v1'?'Resorts V1':'Flyindo booking flow'}
+function flySet(k,v){fly[k]=v;if(k==='style'){const o=$('flyOpts');if(o){o.style.opacity=v==='flyindo'?'1':'.55';o.style.display=v==='greeting'||v==='resorts_v1'?'none':''}const g=$('greetOpts');if(g)g.style.display=v==='greeting'?'':'none';const r=$('rv1Opts');if(r)r.style.display=v==='resorts_v1'?'':'none';const t=$('flyPreviewTitle');if(t)t.textContent='Preview · '+flyStyleLabel(v)}flyPreview()}
 // Same text as greetingOnlyText in the worker (flyindo-flow.js).
 function greetDefault(agency){return `Hello! 👋 Welcome to *${agency}*!\nWe're happy to help you plan your next trip. 🌍\n\nWhere would you like to travel today?\n\nOur travel consultant will reply to you shortly. 😊`}
 function flyRenderDests(){
@@ -488,6 +494,17 @@ function flyPreview(){
   const agency=fly.agency||'Your agency',dests=fly.dests.filter(d=>String(d.name||'').trim()),first=dests[0]?.name||'Munnar';
   const fmt=t=>esc(t).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
   const list=(btn)=>`<div class="wmbtn">☰ ${esc(btn)}</div>`;
+  if(fly.style==='resorts_v1'){
+    el.innerHTML=`<div class="wmbubble out">Hi</div>
+<div class="wmbubble in">Hi! 👋 Welcome to <b>${esc(agency)}</b>.<br><br>We have handpicked resorts &amp; hotels in <b>Munnar</b>, <b>Alleppey</b> and <b>Wayanad</b>. 🌴<br><br>Choose a location to see the stays 👇</div>${list('Choose')}
+<div class="wmbubble out">Munnar (3)</div>
+<div class="wmbubble in">🏨 Our resorts &amp; hotels in <b>Munnar</b> — tap one for photos, details and the price range 👇</div>${list('Choose')}
+<div class="wmbubble out">Misty Hills Resort</div>
+<div class="wmbubble in">📷 📷 📷<br>🏨 <b>Misty Hills Resort</b><br>💰 Price range: <b>₹8,000 – ₹15,000 per night</b></div>${list('📅 Book now · 📸 More photos · 🎬 Video · 📄 Brochure')}
+<div class="wmbubble out">📅 Book now</div>
+<div style="text-align:center;margin:8px 0"><span class="badge ok">👤 Handed to your team · 🤫 Bot silent</span></div>`;
+    return;
+  }
   if(fly.style==='greeting'){
     const g=String(fly.greet||'').trim();
     el.innerHTML=`<div class="wmbubble out">Hi</div>
@@ -521,7 +538,7 @@ async function saveChatStyle(){
   btn.disabled=true;
   try{
     fareSettings=await api('/live-travel/travel-settings',{method:'PUT',body:JSON.stringify({lt_chat_style:fly.style,lt_flyindo_agency_name:fly.agency.trim(),lt_flyindo_child_ages:!!fly.ages,lt_flyindo_ai:!!fly.ai,lt_flyindo_greeting_text:String(fly.greet||'').trim(),...(dests.length?{lt_flyindo_destinations:dests}:{})})});
-    msg.textContent=fly.style==='flyindo'?'✓ Saved — new WhatsApp messages now get the Flyindo booking flow':fly.style==='greeting'?'✓ Saved — new customers get the welcome, then the bot stays silent':'✓ Saved — the bot answers as before';msg.style.color='var(--green)';
+    msg.textContent=fly.style==='flyindo'?'✓ Saved — new WhatsApp messages now get the Flyindo booking flow':fly.style==='greeting'?'✓ Saved — new customers get the welcome, then the bot stays silent':fly.style==='resorts_v1'?'✓ Saved — customers now get the Resorts & Hotels flow':'✓ Saved — the bot answers as before';msg.style.color='var(--green)';
   }catch(e){msg.textContent='Error: '+e.message;msg.style.color='var(--red)'}
   finally{btn.disabled=false}
 }

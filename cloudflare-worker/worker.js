@@ -1,7 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
-import {RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
+import {rv1PropertyOptions,RV1_NAV,rv1IsStyle,rv1Active,rv1PropertiesIn,rv1UseLocationStep,rv1PropertyRowDesc,rv1PhotoCaption,rv1DetailsText,rv1IntroText,rv1PropertiesText,rv1BookText,rv1PriceText,rv1PhotoUrls,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
@@ -22267,7 +22267,7 @@ async function handleLtTravelSettings(request,env){
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
   for(const k of ['lt_pay_qr_1_label','lt_pay_qr_2_label'])if(k in body&&typeof body[k]!=='string')return json({error:`${k} must be text`},400);
-  if('lt_chat_style' in body&&!['',...CHAT_STYLES].includes(String(body.lt_chat_style||'')))return json({error:`lt_chat_style must be "", "${FLYINDO_STYLE}" or "${GREETING_STYLE}"`},400);
+  if('lt_chat_style' in body&&!['',...CHAT_STYLES].includes(String(body.lt_chat_style||'')))return json({error:`lt_chat_style must be "", "${FLYINDO_STYLE}", "${GREETING_STYLE}" or "resorts_v1"`},400);
   if('lt_flyindo_greeting_text' in body&&typeof body.lt_flyindo_greeting_text!=='string')return json({error:'lt_flyindo_greeting_text must be text'},400);
   for(const k of ['lt_flyindo_child_ages','lt_flyindo_ai'])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_flyindo_agency_name' in body&&typeof body.lt_flyindo_agency_name!=='string')return json({error:'lt_flyindo_agency_name must be text'},400);
@@ -25173,7 +25173,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
     qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
     sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang
   };
-  const replyText=turn.text||turn.reply||'';
+  let replyText=turn.text||turn.reply||'';
   const replyLang=turn.lang||turn.customerLanguage||c.language||'en';
   const replyButtons=turn.buttons||turn.quickReplies||[];
   if(c.bot_reply_disabled!=='Yes'&&turn.mediaUrl&&state.convId){
@@ -25184,6 +25184,8 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
     ?(c.bot_reply_disabled==='Yes'?false:await turn.deliver())
     :await engineDeliverReply(env,c,clientId,state.convId,replyText,{mediaType,langCode:replyLang,quickReplies:replyButtons,ctx});
   routing.quickReplies=Array.isArray(sentOptions)?sentOptions:null;
+  // A turn that only knows its text once it has sent (Resorts V1) fills turn.text in deliver().
+  if(!replyText && turn.text){ replyText=turn.text; routing.reply=turn.text; }
   if(turn.serviceCategory){routing.serviceCategory=turn.serviceCategory;await ensureLeadsColumns(env,['ServiceCategory']).catch(()=>{});}
   const built=engineBuildLeadUpsertBody(c,clientId,state,routing,userText,messageId,isNewLead);
   await engineResolveLeadOwner(env,c,clientId,built.body,state,isNewLead);
@@ -29026,6 +29028,19 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         return json({ok:true,route:'travel_greeting',sent:c.bot_reply_disabled!=='Yes'});
       }
     }
+    // Resorts V1 (Hospitality sub-style or Travel Settings → Chat Style): the guided Resorts &
+    // Hotels flow runs here, before travel flows / menu / packages and the greeting intros, so a
+    // new guest's "hi" gets the locations list. Questions (aiFirst) and anything the flow doesn't
+    // own carry on below, where the AI answers and the matching list follows (hospRv1Plan again).
+    if(!introAction && rv1IsStyle(c) && mediaType==='text' && convId && userText
+      && !ENGINE_OPT_OUT_WORDS.includes(String(userText).toLowerCase().trim())){
+      const rv1Turn=await engineResortsV1Turn(env,c,clientId,state,userText,isNewLead).catch(e=>{reportOpsError(env,'Resorts V1 turn failed',e,{clientId}).catch(()=>{});return null;});
+      if(rv1Turn){
+        const leadId=await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,rv1Turn.turn,startMs,mediaType,ctx);
+        if(leadId && rv1Turn.patch()) await hospH3SaveCtx(env,clientId,leadId,rv1Turn.patch());
+        return json({ok:true,route:rv1Turn.turn.route==='human'?'resorts_v1_booked':'resorts_v1',sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
     // Travel Settings → 🧩 Flows: a published flow whose keyword or package this message matches
     // (or a chat already in one) — AI-first, so side questions are still answered. Runs before
     // Flyindo, so a flow takes over only for its own trigger; everything else is unchanged.
@@ -29171,7 +29186,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // A new/returning lead whose opener is a real ask ("price & photos of the name printed set")
     // gets that answered first — see engineIsSpecificFirstQuestion; the intro rides after it.
     const _specificFirstAsk=mediaType==='text'&&engineIsSpecificFirstQuestion(userText);
-    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
+    const configuredGreetingTurn=!rv1IsStyle(c)&&(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -29213,7 +29228,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
     // Shopify-style stores open with their own guided menu (engineShopifyFlowTurn below) instead.
     const _shopifyFlow=engineShopifyFlowOn(c, botConfig);
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow&&!rv1IsStyle(c)
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -29227,7 +29242,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
     // If the LLM call inside it fails, it returns the plain question which is still better than
     // "I'll connect you with our team shortly." on a first contact.
-    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk && !_shopifyFlow){
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk && !_shopifyFlow && !rv1IsStyle(c)){
       const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
       if(_noFlowIntro && _noFlowIntro.trim()){
         const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
@@ -39951,67 +39966,116 @@ function hospRv1Property(plan){
   const id=plan?.action?.propertyId;
   return id==null?null:(plan.data.properties.find(p=>Number(p.id)===Number(id))||null);
 }
+// Sends this turn's Resorts V1 step. Returns {text, options, patch}: the main text sent (for the
+// chat history), the options offered, and the guest's new place in the flow (saved per lead —
+// here when leadId is known, otherwise by the caller once the brand-new lead has an id).
 async function hospRv1Execute(env, c, clientId, convId, leadId, plan){
-  if(!plan || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  const out={text:'', options:null, patch:null};
+  if(!plan || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return out;
   const {action:a, data:{properties}}=plan;
   const locs=h3Locations(properties);
   const useLoc=rv1UseLocationStep(locs);
-  const biz=String(c.business_name||c.client_name||'').trim();
-  const say=(text, rows)=>engineSendChatwootQuickReply(env, c, clientId, convId, text, rows);
+  const biz=String(c.business_name||c.lt_flyindo_agency_name||c.client_name||'').trim();
+  const say=async(text, rows)=>{ out.text=out.text||text; out.options=rows; await engineSendChatwootQuickReply(env, c, clientId, convId, text, rows); };
   const rows=list=>list.map(p=>({title:p.name, value:p.name, desc:rv1PropertyRowDesc(p)}));
   const locOf=p=>h3LocKey(p.location)?String(p.location).split(',')[0].trim():(useLoc?H3_OTHER_LOCATION:'');
+  const allRow={title:RV1_NAV.allResorts, value:RV1_NAV.allResorts, desc:`Every resort & hotel (${properties.length})`};
   try{
     if(a.type==='locations'){
-      const paged=h3PageRows(locs.map(l=>({title:h3LocationTitle(l), value:h3LocationTitle(l), desc:`${l.count} resort${l.count===1?'':'s'} & hotel${l.count===1?'':'s'}`})), 'locations', a.page);
+      // Every location, then "🏨 All resorts" for the full list.
+      const locRows=locs.map(l=>({title:h3LocationTitle(l), value:h3LocationTitle(l), desc:`${l.count} resort${l.count===1?'':'s'} & hotel${l.count===1?'':'s'}`}));
+      const paged=h3PageRows(locRows, 'locations', a.page, [allRow]);
       const text=a.intro?rv1IntroText(biz, locs, {useLoc:true, count:properties.length}):'📍 Choose a location to see the resorts & hotels 👇';
       await say(text, paged.rows);
-      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:'', property:'', unit:''});
-      return;
-    }
-    if(a.type==='properties'){
+      out.patch={location:'', property:'', unit:''};
+    }else if(a.type==='properties'){
       const list=rv1PropertiesIn(properties, a.locKey);
       const loc=a.locKey!=null?locs.find(l=>l.key===a.locKey):null;
       const nav=useLoc?[{title:RV1_NAV.changeLocation, value:RV1_NAV.changeLocation}]:[];
       const paged=h3PageRows(rows(list), 'resorts', a.page, nav);
-      const text=a.intro?rv1IntroText(biz, locs, {useLoc:false, count:list.length}):rv1PropertiesText(loc?.label||'', list.length);
+      let text=a.intro?rv1IntroText(biz, locs, {useLoc:false, count:list.length})
+        :paged.pages>1?`${rv1PropertiesText(loc?.label||'', list.length)}\n(${list.length} in all · page ${paged.page} of ${paged.pages})`
+        :rv1PropertiesText(loc?.label||'', list.length);
+      // 3 options or fewer go out as reply buttons, which carry no description line — the price
+      // ranges then go in the message itself.
+      if(paged.rows.length<=3) text+=`\n\n${list.map(p=>`• *${p.name}* — ${rv1PropertyRowDesc(p)}`).join('\n')}`;
       await say(text, paged.rows);
-      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:loc?loc.label:'', property:'', unit:''});
-      return;
-    }
-    const prop=hospRv1Property(plan);
-    const btns=[{title:RV1_NAV.book, value:RV1_NAV.book}, {title:RV1_NAV.otherResorts, value:RV1_NAV.otherResorts}];
-    if(useLoc) btns.push({title:RV1_NAV.changeLocation, value:RV1_NAV.changeLocation});
-    if(a.type==='property' && prop){
-      // Photos first (Photo 1–3, then a few from the Drive photos folder), within a time budget.
-      const deadline=Date.now()+RV1_PHOTO_BUDGET_MS;
-      let sent=0;
-      for(const url of rv1PhotoUrls(prop)){
-        if(Date.now()>deadline) break;
-        if(await hospH3SendImage(env, c, convId, url, sent?'':rv1PhotoCaption(prop), 'resort.jpg')) sent++;
-      }
-      if(prop.photos_folder_url && Date.now()<deadline){
-        await taSendPropertyFolderPhotos(env, c, convId, prop.photos_folder_url, sent?'':rv1PhotoCaption(prop), Math.max(2, RV1_MAX_PHOTOS-sent))
-          .then(n=>{ sent+=n||0; })
-          .catch(e=>reportOpsError(env, 'hospRv1FolderPhotos', e, {clientId, propertyId:prop.id}));
-      }
-      await say(rv1DetailsText(prop), btns);
-      if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:locOf(prop), property:prop.name, unit:''});
-      return;
-    }
-    if(a.type==='price'){
-      if(prop){
-        await say(rv1PriceText({property:prop}), btns);
-        if(leadId) await hospH3SaveCtx(env, clientId, leadId, {location:locOf(prop), property:prop.name, unit:''});
-        return;
-      }
+      out.patch={location:loc?loc.label:'', property:'', unit:''};
+    }else if(a.type==='price' && a.propertyId==null){
       const list=rv1PropertiesIn(properties, a.locKey);
       const loc=a.locKey!=null?locs.find(l=>l.key===a.locKey):null;
-      await hospitalityChatwootText(c, convId, rv1PriceText({list, locLabel:loc?.label||''}));
+      const priceText=rv1PriceText({list, locLabel:loc?.label||''});
+      await hospitalityChatwootText(c, convId, priceText);
       const nav=useLoc?[{title:RV1_NAV.changeLocation, value:RV1_NAV.changeLocation}]:[];
       await say('🏨 Tap a resort for photos & details 👇', h3PageRows(rows(list), 'resorts', 1, nav).rows);
-      return;
+      out.text=priceText;
+      out.patch=loc?{location:loc.label, property:'', unit:''}:null;
+    }else{
+      const prop=hospRv1Property(plan);
+      if(!prop) return out;
+      const opts=rv1PropertyOptions(prop, {useLoc});
+      out.patch={location:locOf(prop), property:prop.name, unit:''};
+      if(a.type==='property'){
+        // Photos first (Photo 1–3, then a few from the Drive photos folder), within a time budget.
+        const deadline=Date.now()+RV1_PHOTO_BUDGET_MS;
+        let sent=0;
+        for(const url of rv1PhotoUrls(prop)){
+          if(Date.now()>deadline) break;
+          if(await hospH3SendImage(env, c, convId, url, sent?'':rv1PhotoCaption(prop), 'resort.jpg')) sent++;
+        }
+        if(prop.photos_folder_url && Date.now()<deadline){
+          await taSendPropertyFolderPhotos(env, c, convId, prop.photos_folder_url, sent?'':rv1PhotoCaption(prop), Math.max(2, RV1_MAX_PHOTOS-sent))
+            .catch(e=>reportOpsError(env, 'hospRv1FolderPhotos', e, {clientId, propertyId:prop.id}));
+        }
+        await say(rv1DetailsText(prop), opts);
+      }else if(a.type==='photos'){
+        // 📸 More photos: a fresh batch from the Drive folder, else Photo 1–3 again.
+        let sent=0;
+        if(prop.photos_folder_url){
+          sent=await taSendPropertyFolderPhotos(env, c, convId, prop.photos_folder_url, `📸 *${prop.name}*`, TA_PROPERTY_FOLDER_SEND_EXPLICIT)
+            .catch(e=>{ reportOpsError(env, 'hospRv1FolderPhotos', e, {clientId, propertyId:prop.id}); return 0; });
+        }
+        if(!sent) for(const url of rv1PhotoUrls(prop)) if(await hospH3SendImage(env, c, convId, url, sent?'':`📸 *${prop.name}*`, 'resort.jpg')) sent++;
+        await say(sent?`That's a look at *${prop.name}* 📸 What would you like to do next? 👇`:`More photos of *${prop.name}* are on the way from our team 🙏 What would you like to do next? 👇`, opts);
+      }else if(a.type==='video' || a.type==='brochure'){
+        const isVideo=a.type==='video';
+        const url=String(isVideo?prop.video_url:prop.pdf_url||'').trim();
+        const ok=url?await sendDriveMediaToChatwoot(c, convId, url, isVideo?`🎬 *${prop.name}*`:`📄 *${prop.name}* — brochure`,
+          isVideo?'':String(prop.name).replace(/[^\p{L}\p{N}]+/gu,'-').slice(0,60)+'-brochure.pdf').catch(()=>false):false;
+        await say(ok?`Here's the ${isVideo?'video':'brochure'} of *${prop.name}* 👆 What would you like to do next? 👇`
+          :`Our team will share the ${isVideo?'video':'brochure'} of *${prop.name}* shortly 🙏 What would you like to do next? 👇`, opts);
+      }else if(a.type==='price'){
+        await say(rv1PriceText({property:prop}), opts);
+      }
     }
+    if(leadId && out.patch) await hospH3SaveCtx(env, clientId, leadId, out.patch);
   }catch(e){ await reportOpsError(env, 'hospRv1Execute', e, {clientId, convId, step:a?.type}); }
+  return out;
+}
+
+// The early Resorts V1 turn (handleEngineWebhook, before travel menus and greeting intros): a step
+// the flow owns outright, as a turn for enginePersistFirstGreetingTurn, or null (questions the AI
+// answers first, and messages the flow doesn't own, take the normal path).
+export async function engineResortsV1Turn(env, c, clientId, state, userText, isNewLead){
+  const plan=await hospRv1Plan(env, c, clientId, userText, state, isNewLead);
+  if(!plan || plan.action.aiFirst) return null;
+  const lang=c.language||'en';
+  let patch=null;
+  if(plan.action.type==='book'){
+    // Booked: the team takes the chat (Handover = Yes) and the bot stays silent for this guest.
+    const prop=hospRv1Property(plan);
+    const text=rv1BookText(prop);
+    if(prop) patch={location:h3LocKey(prop.location)?String(prop.location).split(',')[0].trim():'', property:prop.name, unit:''};
+    return {patch:()=>patch, turn:{route:'human', next:'human_handover', preserveCrmStage:false, intent:'BOOKING', lang, text, historyUserText:userText,
+      deliver:async()=>{ await engineDeliverReply(env, c, clientId, state.convId, text, {mediaType:'text', langCode:lang}); await engineSendHandoverLabel(c, state.convId); return null; }}};
+  }
+  const turn={route:'faq', next:state.stage||'new', preserveCrmStage:true, intent:'FLOW_ENTRY', lang, text:'', historyUserText:userText,
+    deliver:async()=>{
+      const r=await hospRv1Execute(env, c, clientId, state.convId, state.leadId||null, plan);
+      turn.text=r.text; patch=state.leadId?null:r.patch;
+      return r.options||null;
+    }};
+  return {patch:()=>patch, turn};
 }
 
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
