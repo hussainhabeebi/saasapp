@@ -63,6 +63,10 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .ai-itin-day{background:#fff;border-radius:10px;padding:12px 14px;border-left:4px solid #0d9c93}.ai-itin-day b{display:block;margin-bottom:4px}.ai-itin-day p{margin:0 0 6px;font-size:13.5px;color:#3b4a54}.ai-itin-day ul{margin:0;padding-left:18px;font-size:13.5px}.ai-itin-day .facts{font-size:12.5px;color:var(--muted);margin-top:6px}
 .ai-itin-prof{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.ai-itin-prof .full{grid-column:1/-1}.tpl-form select,.tpl-form textarea{width:100%;border:1px solid #d1d7db;border-radius:8px;padding:8px 12px;outline:0;font-size:14px;font-family:inherit;background:#fff}.tpl-form select{height:40px}.ai-itin-chips{display:flex;flex-wrap:wrap;gap:6px}.ai-itin-chips label{display:inline-flex!important;align-items:center;gap:5px;border:1px solid #d1d7db;border-radius:16px;padding:4px 10px;color:#111!important;cursor:pointer}.ai-itin-chips input{width:auto!important;height:auto!important;margin:0}
 .ai-itin-btn{height:40px;border-radius:20px;border:0;padding:0 18px;font-weight:600;cursor:pointer;background:#0d9c93;color:#fff}.ai-itin-btn.sec{background:#fff;color:#0d9c93;border:1px solid #0d9c93}.ai-itin-btn:disabled{opacity:.55;cursor:default}
+.tpl-item.h-prop{display:flex;gap:10px;align-items:center}.tpl-item.h-prop>span{min-width:0;flex:1}.h-thumb{width:52px;height:52px;border-radius:8px;object-fit:cover;flex:none;background:#e9edef}div.h-thumb{display:flex;align-items:center;justify-content:center;font-size:22px}
+.ai-itin-photos{flex:none;display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}.ai-itin-photos img{width:132px;height:92px;object-fit:cover;border-radius:8px;flex:none;background:#e9edef}.ai-itin-photos figure{margin:0;flex:none}.ai-itin-photos figcaption{font-size:11.5px;color:var(--muted);max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ai-itin-day li.has-img{list-style:none;margin-left:-18px;display:flex;gap:10px;align-items:center;margin-top:6px}.ai-itin-day li.has-img img{width:84px;height:60px;object-fit:cover;border-radius:6px;flex:none;background:#e9edef}
+.h-itin-check{display:flex!important;align-items:center;gap:8px;font-size:13.5px;color:#111!important}.h-itin-check input{width:auto!important;height:auto!important;margin:0}
 @media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
 /* voice / audio player */
@@ -984,7 +988,7 @@ function buildShell(){
    <button onclick="pickFiles('image/*',true)"><span class="dot" style="background:#ff2e74">${IC.cam}</span>Camera</button>
    <button onclick="pickFiles('audio/*')"><span class="dot" style="background:#ff7f23">${IC.audio}</span>Audio</button>
    <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
-   ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
+   ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:isHospAcct()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
   </div>
   <div class="input-wrap" id="inputWrap">
    <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
@@ -1394,6 +1398,95 @@ async function aiItinSend(){
 }
 function aiItinBack(){const m=$('aiItinMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){m.classList.remove('picked');aiItin.sel=null;aiItin.seq++;drawAiItinPkgs();return}closeAiItin()}
 function closeAiItin(){const ov=$('aiItinOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}aiItin.sel=null;aiItin.days=null;aiItin.seq++}
+
+// ── ✨ AI Itinerary (Hospitality accounts) ──────────────────────────────────────────────────────
+// Attach → AI Itinerary: pick a property (and optionally a room), fill in the guest's stay, the AI
+// drafts a day-by-day stay plan; review it with the property's / room's photos and a photo per
+// place, then "Approve & send" puts the photos (optional) and the stay PDF into this chat
+// (worker /hospitality/chat-itinerary/send). No price is shown — the team gives it at checkout.
+function isHospAcct(){return !isTravelAcct()&&clientRecord.hospitality_enabled==='Yes'}
+let hItin={props:null,sel:null,days:null,busy:false,seq:0,stay:null};
+const H_ITIN_INTERESTS=['Relaxation','Nature','Sightseeing','Adventure','Wellness & spa','Food','Culture & history','Shopping','Photography',"Kids' activities"];
+const hImg=(u,cls,alt)=>`<img class="${cls||''}" src="${esc(u)}" alt="${esc(alt||'')}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
+async function openHospItin(){
+ closePopovers();if(!current||isIg(current)||!isHospAcct())return;
+ let ov=$('hospItinOv');if(!ov){ov=document.createElement('div');ov.id='hospItinOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
+ ov.classList.remove('hidden');hItin={...hItin,sel:null,days:null,busy:false,stay:null,lead:current};
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="hItinBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✨ AI Itinerary for <b>${esc(who(current)||'contact')}</b></div></div><div class="tpl-main" id="hItinMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="hItinSearch" placeholder="Search properties" oninput="drawHItinProps()"></div></div><div class="tpl-items" id="hItinItems"><div class="tpl-empty"><div class="spinner"></div>Loading properties…</div></div></div><div class="tpl-detail" id="hItinDetail"><div class="tpl-empty">Choose a property — the AI drafts a day-by-day stay itinerary with photos for you to check before it is sent.</div></div></div>`;
+ try{if(!hItin.props){const d=await apiJson(WORKER+'/hospitality/chat-properties');hItin.props=d.properties||[]}drawHItinProps()}
+ catch(e){const el=$('hItinItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load properties.<br><small>${esc(e.message)}</small></div>`}
+}
+function drawHItinProps(){
+ const el=$('hItinItems');if(!el||!hItin.props)return;const q=($('hItinSearch')?.value||'').trim().toLowerCase();
+ const list=hItin.props.filter(p=>!q||`${p.name} ${p.location} ${(p.rooms||[]).map(r=>r.name).join(' ')}`.toLowerCase().includes(q));
+ el.innerHTML=list.length?list.map(p=>`<button class="tpl-item h-prop ${hItin.sel===p?'active':''}" onclick="pickHItinProp('${esc(p.id)}')">${p.photos?.[0]?hImg(p.photos[0],'h-thumb'):'<div class="h-thumb">🏨</div>'}<span><b>${esc(p.name)}</b><small>${esc([p.location,(p.rooms||[]).length?`${p.rooms.length} room${p.rooms.length>1?'s':''}`:''].filter(Boolean).join(' · '))}</small></span></button>`).join(''):`<div class="tpl-empty">${hItin.props.length?'No properties match.':'No properties yet. Add them in Hospitality → Properties.'}</div>`;
+}
+function pickHItinProp(id){
+ const p=(hItin.props||[]).find(x=>String(x.id)===String(id));if(!p||hItin.busy)return;
+ hItin.sel=p;hItin.days=null;hItin.stay=null;$('hItinMain')?.classList.add('picked');drawHItinProps();drawHItinDetail('profile');
+}
+const hItinRoom=()=>(hItin.sel?.rooms||[]).find(r=>String(r.id)===String(hItin.stay?.room_id))||null;
+// The property's photos, then the chosen room's — what the preview shows and the chat receives.
+function hItinPhotoStrip(){
+ const p=hItin.sel,r=hItinRoom();
+ const ph=[...(p.photos||[]).slice(0,r?3:5).map(u=>[u,p.name]),...(r?.photos||[]).slice(0,3).map(u=>[u,r.name])];
+ return ph.length?`<div class="ai-itin-photos" id="hItinPhotos">${ph.map(([u,c])=>`<figure>${hImg(u,'',c)}<figcaption>${esc(c)}</figcaption></figure>`).join('')}</div>`:'';
+}
+function hItinForm(){
+ const p=hItin.sel,t=hItin.stay||{room_id:'',nights:2,check_in:'',adults:2,children:'',infants:'',child_ages:'',pace:'',interests:[]};
+ const custom=(t.interests||[]).filter(x=>!H_ITIN_INTERESTS.includes(x)).join(', ');
+ const paces=[['','— Not set —'],['relaxed','🐢 Relaxed — 1-2 things a day'],['balanced','⚖️ Balanced — 2-3 things a day'],['packed','⚡ Packed — 3-5 things a day']];
+ const rooms=p.rooms||[];
+ return `<div class="tpl-form"><div style="font-size:13px;color:var(--muted)">About the guest's stay — the AI tailors the plan to this. Only the nights are needed.</div><div class="ai-itin-prof">
+  ${rooms.length?`<label class="full">Room<select id="hItinRoom" onchange="hItin.stay={...hItinRead()};drawHItinDetail('profile')"><option value="">— Any room —</option>${rooms.map(r=>`<option value="${esc(r.id)}" ${String(t.room_id)===String(r.id)?'selected':''}>${esc(r.name)}${r.capacity_adults?` · up to ${r.capacity_adults} adults`:''}</option>`).join('')}</select></label>`:''}
+  <label>Nights<input type="number" min="1" max="29" id="hItinNights" value="${esc(t.nights??2)}"></label><label style="grid-column:span 2">Check-in date<input type="date" id="hItinCheckIn" value="${esc(t.check_in||'')}"></label>
+  <label>Adults<input type="number" min="0" id="hItinAdults" value="${esc(t.adults??'')}"></label><label>Children<input type="number" min="0" id="hItinChildren" value="${esc(t.children??'')}"></label><label>Infants<input type="number" min="0" id="hItinInfants" value="${esc(t.infants??'')}"></label>
+  <label class="full">Kids' ages<input id="hItinAges" placeholder="e.g. 4, 9" value="${esc(t.child_ages||'')}"></label>
+  <label class="full">Pace<select id="hItinPace">${paces.map(([v,l])=>`<option value="${v}" ${t.pace===v?'selected':''}>${l}</option>`).join('')}</select></label>
+  <div class="full" style="display:grid;gap:4px;font-size:12px;color:var(--muted)">Interests<div class="ai-itin-chips" id="hItinInterests">${H_ITIN_INTERESTS.map(x=>`<label><input type="checkbox" value="${esc(x)}" ${(t.interests||[]).includes(x)?'checked':''}>${esc(x)}</label>`).join('')}</div><input id="hItinInterestsMore" placeholder="Other interests, comma separated" value="${esc(custom)}" style="width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px"></div>
+ </div></div><div class="tpl-actions"><button class="ai-itin-btn" id="hItinDraftBtn" onclick="hItinDraft()">✨ Draft itinerary</button></div>`;
+}
+function hItinRead(){
+ const v=id=>($(id)?.value||'').trim();
+ return {room_id:v('hItinRoom'),nights:v('hItinNights')||'2',check_in:v('hItinCheckIn'),adults:v('hItinAdults'),children:v('hItinChildren'),infants:v('hItinInfants'),child_ages:v('hItinAges'),pace:v('hItinPace'),
+  interests:[...document.querySelectorAll('#hItinInterests input:checked')].map(c=>c.value).concat(v('hItinInterestsMore').split(',').map(x=>x.trim()).filter(Boolean))};
+}
+function hItinDraft(){hItin.stay=hItinRead();hItinGenerate()}
+function drawHItinDetail(state,msg){
+ const el=$('hItinDetail'),p=hItin.sel;if(!el||!p)return;const r=hItinRoom(),t=hItin.stay;
+ const n=Number(t?.nights)||0;
+ const head=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc([p.location,r?r.name:'',state!=='profile'&&n?`${n} night${n>1?'s':''}`:'',state!=='profile'&&t?.check_in?'from '+t.check_in:''].filter(Boolean).join(' · '))}</small>${p.amenities?`<div style="font-size:12.5px;color:var(--muted);margin-top:4px">✨ ${esc(p.amenities)}</div>`:''}</div>${hItinPhotoStrip()}`;
+ if(state==='profile'){el.innerHTML=head+hItinForm();return}
+ if(state==='loading'){el.innerHTML=head+`<div class="tpl-empty"><div class="spinner"></div>Drafting the stay itinerary… this can take up to a minute.</div>`;return}
+ if(state==='error'){el.innerHTML=head+`<div class="tpl-empty">AI could not draft this itinerary.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawHItinDetail('profile')">✏️ Stay details</button><button class="ai-itin-btn sec" onclick="hItinGenerate()">↻ Try again</button></div>`;return}
+ const meals={B:'Breakfast',L:'Lunch',D:'Dinner'};
+ const li=i=>i.image?`<li class="has-img">${hImg(i.image,'',i.description)}<span>${i.time?`<b style="display:inline">${esc(i.time)}</b> `:''}${esc(i.description)}</span></li>`:`<li>${i.time?`<b style="display:inline">${esc(i.time)}</b> `:''}${esc(i.description)}</li>`;
+ const days=(hItin.days||[]).map(d=>`<div class="ai-itin-day"><b>Day ${esc(d.day_no)}${d.title?' — '+esc(d.title):''}</b>${d.description?`<p>${esc(d.description)}</p>`:''}${(d.items||[]).filter(i=>i.description).length?`<ul>${d.items.filter(i=>i.description).map(li).join('')}</ul>`:''}${(d.meals||[]).length||d.overnight?`<div class="facts">${[(d.meals||[]).map(m=>meals[m]).filter(Boolean).join(', '),d.overnight?'🌙 '+d.overnight:''].filter(Boolean).map(esc).join(' · ')}</div>`:''}</div>`).join('');
+ const hasPhotos=(p.photos||[]).length||(r?.photos||[]).length;
+ el.innerHTML=head+days+`<div class="tpl-form">${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="hItinSendPhotos" checked>Also send the ${r?'property and room':'property'} photos (up to 3)</label>`:''}<label>Message with the PDF<input id="hItinCaption" value="${esc(`📄 Here is your stay itinerary for *${p.name}*.`)}"></label><div id="hItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawHItinDetail('profile')">✏️ Stay details</button><button class="ai-itin-btn sec" onclick="hItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="hItinSendBtn" onclick="hItinSend()">✅ Approve &amp; send</button></div>`;
+}
+const hItinBody=()=>{const t=hItin.stay||{};return {property_id:hItin.sel.id,...(t.room_id?{room_id:t.room_id}:{}),nights:t.nights||'2',...(t.check_in?{check_in:t.check_in}:{}),
+ guest:{adults:t.adults,children:t.children,infants:t.infants,child_ages:t.child_ages,pace:t.pace,interests:t.interests||[]}}};
+async function hItinGenerate(){
+ const p=hItin.sel;if(!p)return;if(!hItin.stay)hItin.stay=hItinRead();const seq=++hItin.seq;hItin.busy=true;drawHItinDetail('loading');
+ try{const d=await apiJson(WORKER+'/hospitality/ai-itinerary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(hItinBody())});
+  if(seq!==hItin.seq)return;if(!Array.isArray(d.days)||!d.days.length)throw new Error('The draft had no days.');hItin.days=d.days;drawHItinDetail('ready')}
+ catch(e){if(seq===hItin.seq)drawHItinDetail('error',e.message)}
+ finally{if(seq===hItin.seq)hItin.busy=false}
+}
+async function hItinSend(){
+ const lead=hItin.lead,p=hItin.sel,days=hItin.days;if(!lead||!p||!days)return;
+ const btn=$('hItinSendBtn'),err=$('hItinErr');const caption=($('hItinCaption')?.value||'').trim();const sendPhotos=!!$('hItinSendPhotos')?.checked;
+ if(btn){btn.disabled=true;btn.textContent='Sending…'}if(err)err.textContent='';
+ try{
+  const d=await apiJson(WORKER+'/hospitality/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,...hItinBody(),days,caption,send_photos:sendPhotos})});
+  closeHospItin();
+  const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind:'document',type:'application/pdf',name:d.name||`${p.name} stay itinerary.pdf`}});setMsgStatus(lead,msg,null);
+  toast(d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the itinerary sent`:'✓ Itinerary sent');
+ }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent='✅ Approve & send'}}
+}
+function hItinBack(){const m=$('hItinMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){m.classList.remove('picked');hItin.sel=null;hItin.seq++;drawHItinProps();return}closeHospItin()}
+function closeHospItin(){const ov=$('hospItinOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}hItin.sel=null;hItin.days=null;hItin.seq++}
 
 // ── Voice & audio playback ───────────────────────────────────────────────────────────────────
 // One shared <audio>: starting a note stops the previous one, and progress survives the thread
@@ -1914,7 +2007,7 @@ function stepThreadSearch(d){if(!tsHits.length)return;tsIdx=(tsIdx+d+tsHits.leng
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
 document.addEventListener('click',e=>{if(!ddJustOpened&&!e.target.closest('.dd'))closeDd();if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions')){$('chatMenu')?.classList.add('hidden');syncBackdrop()}});
-document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if($('aiItinOv')&&!$('aiItinOv').classList.contains('hidden'))return aiItinBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if($('aiItinOv')&&!$('aiItinOv').classList.contains('hidden'))return aiItinBack();if($('hospItinOv')&&!$('hospItinOv').classList.contains('hidden'))return hItinBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
  const {channel:ch,leadId}=e.data;
