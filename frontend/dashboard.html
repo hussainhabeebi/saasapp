@@ -7456,7 +7456,9 @@ const DEFAULT_PIPELINE_STAGES={
 function pipelineUsesStatusBoard(){ return clientRecord?.industry==='travel'; }
 function defaultPipelineStages(){
   const ind=clientRecord?.industry||'general';
-  if(NO_DEFAULT_PIPELINE_INDUSTRIES.has(ind)) return [];
+  // General accounts send proposals (Chats → 📑 AI Proposal moves a lead to Proposal Sent), so the
+  // board needs that column even without a default pipeline.
+  if(NO_DEFAULT_PIPELINE_INDUSTRIES.has(ind)) return ind==='general'?[{id:'proposal_sent',label:'Proposal Sent'}]:[];
   return (DEFAULT_PIPELINE_STAGES[ind]||DEFAULT_PIPELINE_STAGES._default).map(s=>({...s}));
 }
 // The client's customised list, or null when never customised (→ industry defaults).

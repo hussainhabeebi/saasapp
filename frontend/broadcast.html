@@ -2180,7 +2180,9 @@ function renderFuTimeline(){
   if(on){
     const re=(fv3State.checklist||[]).find(i=>i.key==='reengage');
     const r=rate[6];
-    const st=!fv3State.config?.reengage_enabled?'Off':re?.status==='APPROVED'?'✅ Ready':'⏳ Template waiting for approval';
+    const perStage=(fv3State.checklist||[]).filter(i=>i.key==='reengage_stage');
+    const readyStages=perStage.filter(i=>i.ok).length;
+    const st=!fv3State.config?.reengage_enabled?'Off':(re?.status==='APPROVED'?'✅ Ready':'⏳ Template waiting for approval')+(perStage.length?` · ${readyStages}/${perStage.length} stages ready`:'');
     nodes.push(`<button class="fu-node${fv3State.config?.reengage_enabled?'':' off'}" onclick="openFuPane('settings')"><div class="fu-when">After ${fv3State.config?.reengage_after_days||30} days</div><div class="fu-name">Re-engage</div><div class="fu-state">${st}</div><div class="fu-rate">${r&&r.sent?`${r.rate}% replied · ${r.sent} sent`:'No sends yet'}</div></button>`);
   }
   // Proposal track (accounts that send proposals): leads at "Proposal Sent" get only these — a
@@ -2194,7 +2196,14 @@ function renderFuTimeline(){
       const r=rate[i.step];
       const st=!pon?'Off':i.status==='APPROVED'?'✅ Ready':i.status==='REJECTED'||i.status==='ERROR'?esc(FV3_STATUS_LABEL[i.status]||i.status):'⏳ Template waiting for approval';
       return `<button class="fu-node${pon?'':' off'}" onclick="openFuPane('settings')"><div class="fu-when">${esc(i.label.replace(/^Proposal · /,'').replace(/ template$/,'').replace(/^day/,'Day'))} after</div><div class="fu-name">Proposal follow-up</div><div class="fu-state">${st}</div><div class="fu-rate">${r&&r.sent?`${r.rate}% replied · ${r.sent} sent`:'No sends yet'}</div></button>`;
-    }).join('')}</div>`;
+    }).join('')}${(()=>{
+      // Then the Proposal Sent stage's own re-engage.
+      const pr=(fv3State.checklist||[]).find(i=>i.key==='reengage_stage'&&i.stage==='proposal_sent');
+      if(!pr) return '';
+      const ron=fv3State.config?.reengage_enabled!==false;
+      const st=!ron?'Off':pr.status==='OWN'?'✅ Your template':pr.ok?'✅ Ready':pr.status==='REJECTED'||pr.status==='ERROR'?esc(FV3_STATUS_LABEL[pr.status]||pr.status):'⏳ Template waiting for approval';
+      return `<button class="fu-node${ron?'':' off'}" onclick="openFuPane('settings')"><div class="fu-when">After ${fv3State.config?.reengage_after_days||30} days</div><div class="fu-name">Re-engage · Proposal Sent</div><div class="fu-state">${st}</div><div class="fu-rate">&nbsp;</div></button>`;
+    })()}</div>`;
   } else pRow.innerHTML='';
   el.innerHTML=nodes.join('');
 }
@@ -3962,8 +3971,12 @@ async function fv3Api(path, body){
 }
 function fv3StageEditors(config){
   const presets={new:['New enquiry','Hi {name}, would you like help choosing the right option?'],demo_pending:['Demo pending','Hi {name}, would you like to choose a convenient time for your demo?'],demo_done:['Demo completed','Hi {name}, do you have any questions after the demo?'],quote_sent:['Quotation sent','Hi {name}, any questions about your quotation?'],payment_pending:['Payment pending','Hi {name}, do you need help completing the payment?']};
-  const stages=[...new Set([...Object.keys(presets),...Object.keys(config)])];
-  return stages.map(stage=>{const active=Object.hasOwn(config,stage),v=config[stage]||{},preset=presets[stage]||[stage,'Hi {name}, can we help with the next step?'];return `<details class="card" data-fv3-stage="${escAttr(stage)}" style="margin:8px 0"><summary>${esc(preset[0])} <span style="font-size:11px;color:var(--muted)">(${esc(stage)})</span></summary><label style="display:block;margin:8px 0"><input type="checkbox" data-enabled ${active?'checked':''}> Use this stage sequence</label><div class="grid">${[1,2].map(i=>`<div class="form-field"><label>Nudge ${i}</label><textarea data-message="${i}" rows="2">${esc(v[i]?.message||preset[1])}</textarea><label>After hours</label><input type="number" data-hours="${i}" min="1" max="23" value="${Number(v[i]?.hours)||i*3}"></div>`).join('')}${[3,4,5].map(i=>`<div class="form-field"><label>Day ${{3:1,4:3,5:7}[i]} approved template (blank uses the default)</label><input data-template="${i}" value="${escAttr(v[i]?.template_name||'')}" placeholder="Approved template name"><label>Template language</label><input data-language="${i}" value="${escAttr(v[i]?.template_language||'en')}" placeholder="en"></div>`).join('')}</div></details>`;}).join('');
+  // The account's own pipeline stages first (from the worker), then the presets and any saved ones.
+  const own=(fv3State?.stages||[]);
+  own.forEach(st=>{ if(!presets[st.id]) presets[st.id]=[st.label,'Hi {name}, can we help with the next step?']; else presets[st.id]=[st.label,presets[st.id][1]]; });
+  const stages=[...new Set([...own.map(st=>st.id),...Object.keys(presets),...Object.keys(config)])];
+  const reAuto=id=>(fv3State?.checklist||[]).find(i=>i.key==='reengage_stage'&&i.stage===id);
+  return stages.map(stage=>{const active=Object.hasOwn(config,stage),v=config[stage]||{},preset=presets[stage]||[stage,'Hi {name}, can we help with the next step?'];return `<details class="card" data-fv3-stage="${escAttr(stage)}" style="margin:8px 0"><summary>${esc(preset[0])} <span style="font-size:11px;color:var(--muted)">(${esc(stage)})</span></summary><label style="display:block;margin:8px 0"><input type="checkbox" data-enabled ${active?'checked':''}> Use this stage sequence</label><div class="grid">${[1,2].map(i=>`<div class="form-field"><label>Nudge ${i}</label><textarea data-message="${i}" rows="2">${esc(v[i]?.message||preset[1])}</textarea><label>After hours</label><input type="number" data-hours="${i}" min="1" max="23" value="${Number(v[i]?.hours)||i*3}"></div>`).join('')}${[3,4,5].map(i=>`<div class="form-field"><label>Day ${{3:1,4:3,5:7}[i]} approved template (blank uses the default)</label><input data-template="${i}" value="${escAttr(v[i]?.template_name||'')}" placeholder="Approved template name"><label>Template language</label><input data-language="${i}" value="${escAttr(v[i]?.template_language||'en')}" placeholder="en"></div>`).join('')}<div class="form-field"><label>Re-engage approved template (blank uses this stage's automatic one${reAuto(stage)?.template&&reAuto(stage)?.status!=='OWN'?`: <code>${esc(reAuto(stage).template)}</code>`:''})</label><input data-reengage value="${escAttr(v.reengage?.template_name||'')}" placeholder="Approved template name"><label>Template language</label><input data-reengage-language value="${escAttr(v.reengage?.template_language||'en')}" placeholder="en"></div></div></details>`;}).join('');
 }
 async function fv3Load(){
   try{ fv3State=await fv3Api('/settings'); }catch(e){ fv3State=null; $id('fv3Msg').textContent='Couldn\'t load Follow-up V3: '+e.message; return; }
@@ -4053,10 +4066,17 @@ async function fv3SaveConfig(){
   cfg.pro_quote_note=$id('fv3c_pro_quote_note').value.trim();
   cfg.stage_sequences={};
   document.querySelectorAll('[data-fv3-stage]').forEach(el=>{
-    if(!el.querySelector('[data-enabled]').checked) return;
     const stage=el.dataset.fv3Stage,steps={};
+    // A stage's own re-engage template applies on its own — it doesn't need the stage sequence on.
+    if(!el.querySelector('[data-enabled]').checked){
+      const reName=el.querySelector('[data-reengage]')?.value.trim();
+      if(reName) cfg.stage_sequences[stage]={reengage:{template_name:reName,template_language:el.querySelector('[data-reengage-language]').value.trim()||'en'}};
+      return;
+    }
     for(const i of [1,2]){const message=el.querySelector('[data-message="'+i+'"]').value.trim();if(message) steps[i]={message,hours:Number(el.querySelector('[data-hours="'+i+'"]').value)};}
     for(const i of [3,4,5]){const name=el.querySelector('[data-template="'+i+'"]').value.trim();if(name) steps[i]={template_name:name,template_language:el.querySelector('[data-language="'+i+'"]').value.trim()||'en'};}
+    const reName=el.querySelector('[data-reengage]')?.value.trim();
+    if(reName) steps.reengage={template_name:reName,template_language:el.querySelector('[data-reengage-language]').value.trim()||'en'};
     cfg.stage_sequences[stage]=steps;
   });
   cfg.exit_stages=$id('fv3c_exit_stages').value.split(',').map(x=>x.trim()).filter(Boolean);
