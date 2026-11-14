@@ -461,7 +461,7 @@ async function renderChatStyle(){
 <p class="sub" style="margin-top:6px">With <b>Greetings only</b>, a customer's first message gets the Flyindo welcome — no menu, no AI — and the chat is handed to your team. From then on the bot stays silent for that customer: their messages still land in Chats for your team to answer.</p></div>
 <div class="card" id="rv1Opts" style="${fly.style==='resorts_v1'?'':'display:none'}"><h3>🏨 Resorts V1</h3>
 <p class="sub">Uses your <b>Travel Agency → 🏨 Resorts &amp; Hotels</b> list (active properties only):</p>
-<p class="sub">1️⃣ The welcome names your locations and lists them as buttons, plus <b>🏨 All resorts</b> for the full list.<br>2️⃣ A location shows every resort &amp; hotel there with its price range (paged when there are more than fit).<br>3️⃣ A resort sends its photos, then its details with the <b>price range only</b> — never an exact price — and the buttons 📅 Book now · 📸 More photos · 🎬 Video · 📄 Brochure · ↩ Other resorts · 📍 Change location (each shown when the resort has it).<br>4️⃣ <b>📅 Book now</b> hands the chat to your team and the bot stays silent for that customer.</p>
+<p class="sub">1️⃣ The welcome names your locations and lists them as buttons, plus <b>🏨 All resorts</b> for the full list.<br>2️⃣ A location shows every resort &amp; hotel there with its price range (paged when there are more than fit).<br>3️⃣ A resort sends <b>one PDF</b> with all its photos (Photo 1–3 + Drive photos folder), location and <b>price range only</b> — never an exact price — with the photos-folder link in the caption, then the buttons 📅 Book now · 🎬 Video · 📄 Brochure · ↩ Other resorts · 📍 Change location (each shown when the resort has it).<br>4️⃣ <b>📅 Book now</b> hands the chat to your team and the bot stays silent for that customer.</p>
 <p class="sub">Set <b>Location</b> and <b>Price Range From / To</b> on each property. Questions are still answered by the AI (ranges only); package, flight and visa questions work as before.</p></div>
 <div class="card" id="greetOpts" style="${fly.style==='greeting'?'':'display:none'}"><h3>👋 Greeting message</h3>
 <p class="sub" style="margin-top:-6px">Leave empty to use the Flyindo welcome. <code>{agency}</code> becomes your agency name.</p>
@@ -500,7 +500,8 @@ function flyPreview(){
 <div class="wmbubble out">Munnar (3)</div>
 <div class="wmbubble in">🏨 Our resorts &amp; hotels in <b>Munnar</b> — tap one for photos, details and the price range 👇</div>${list('Choose')}
 <div class="wmbubble out">Misty Hills Resort</div>
-<div class="wmbubble in">📷 📷 📷<br>🏨 <b>Misty Hills Resort</b><br>💰 Price range: <b>₹8,000 – ₹15,000 per night</b></div>${list('📅 Book now · 📸 More photos · 🎬 Video · 📄 Brochure')}
+<div class="wmbubble in">📄 Misty-Hills-Resort.pdf<br>📄 <b>Misty Hills Resort</b> · Munnar<br>💰 Price range: ₹8,000 – ₹15,000 per night<br>📸 All photos: drive.google.com/…</div>
+<div class="wmbubble in">🏨 <b>Misty Hills Resort</b><br>💰 Price range: <b>₹8,000 – ₹15,000 per night</b></div>${list('📅 Book now · 🎬 Video · 📄 Brochure')}
 <div class="wmbubble out">📅 Book now</div>
 <div style="text-align:center;margin:8px 0"><span class="badge ok">👤 Handed to your team · 🤫 Bot silent</span></div>`;
     return;

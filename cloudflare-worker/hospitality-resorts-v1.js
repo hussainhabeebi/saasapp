@@ -167,11 +167,27 @@ export function rv1PhotoUrls(p){
   return ['image_url','image_url_2','image_url_3'].map(f=>String(p?.[f]||'').trim()).filter(Boolean);
 }
 const hasFolder=p=>/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(String(p?.photos_folder_url||''));
-// Every option offered under a resort's details, in order. Up to 3 are WhatsApp reply buttons;
+// The brochure PDF's key-fact boxes (up to 4, short) and its WhatsApp caption: name, location,
+// price range (saved prices only) and the link to every photo (the Drive photos folder).
+export function rv1BrochureFacts(p){
+  const out=[];
+  if(p?.location) out.push(['Location', String(p.location).trim()]);
+  out.push(['Type', kindLabel(p)]);
+  if(Number(p?.star_rating)>0) out.push(['Rating', `${Number(p.star_rating)}-star`]);
+  out.push(['Price range', rv1Range(p)]);
+  return out.slice(0, 4);
+}
+export function rv1BrochureCaption(p){
+  const lines=[`📄 *${p.name}*${p?.location?` · ${String(p.location).trim()}`:''}`];
+  lines.push(`💰 Price range: ${rv1Range(p)}`);
+  if(hasFolder(p)) lines.push(`📸 All photos: ${String(p.photos_folder_url).trim()}`);
+  return lines.join('\n');
+}
+// Every option offered under a resort's details, in order. (The brochure PDF already holds every
+// photo, so there is no "More photos" option; an old chat's tap on it still works.) Up to 3 are WhatsApp reply buttons;
 // more (a resort with a photos folder, video or brochure) become one list.
 export function rv1PropertyOptions(p, {useLoc=true}={}){
   const out=[RV1_NAV.book];
-  if(hasFolder(p) || rv1PhotoUrls(p).length) out.push(RV1_NAV.photos);
   if(String(p?.video_url||'').trim()) out.push(RV1_NAV.video);
   if(String(p?.pdf_url||'').trim()) out.push(RV1_NAV.brochure);
   out.push(RV1_NAV.otherResorts);
