@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.leadvyne.app",
+      "sha256_cert_fingerprints": [
+        "53:67:C5:B1:91:4C:CF:DC:20:AF:A0:87:EC:03:43:6D:37:5B:47:A1:C2:39:5E:AD:F5:71:70:92:EA:93:7A:20"
+      ]
+    }
+  }
+]

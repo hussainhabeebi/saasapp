@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leadvyne · Products &amp; Services</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Products & Services for General accounts (Dashboard → 📦 Products & Services). Each item has
+     full details, a price and Google Drive links for photos, a voice note and a brochure. The bot
+     sends an item's details and media when a customer names it in chat, and Chats → 📑 AI Proposal
+     builds proposals from these items. Worker routes: /catalog/items (session-gated). -->
+<style>
+:root{
+  --bg:#EEF2F0;--card:#FFFFFF;--ink:#0F1A1E;--muted:#55666B;
+  --accent:#0D9C93;--accent-ink:#0A6F69;--accent-soft:#DFF6F3;
+  --line:#D7E0DC;--danger:#B42318;--danger-soft:#FEE4E2;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14.5px;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;min-height:56px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700}.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+body.embed header{display:none}
+main{padding:20px 16px 40px}
+.inner{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.intro{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow);display:flex;gap:14px;align-items:flex-start}
+.intro h1{font-family:var(--disp);font-size:20px;margin-bottom:4px}
+.intro p{color:var(--muted);font-size:13.5px;line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.stat b{display:block;font-family:var(--disp);font-size:22px;color:var(--accent-ink)}
+.stat span{font-size:12px;color:var(--muted)}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.toolbar input,.toolbar select{height:38px;border:1.5px solid var(--line);border-radius:10px;padding:0 12px;background:var(--card);min-width:0}
+.toolbar input{flex:1 1 220px}
+.btn{height:38px;border-radius:10px;border:0;padding:0 16px;font-family:var(--disp);font-weight:600;cursor:pointer;background:var(--accent);color:#fff;white-space:nowrap}
+.btn:hover{background:var(--accent-ink)}.btn.sec{background:var(--card);color:var(--accent-ink);border:1.5px solid var(--accent)}
+.btn.danger{background:var(--danger-soft);color:var(--danger)}.btn:disabled{opacity:.55;cursor:default}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.item{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
+.item.off{opacity:.6}
+.item .pic{height:150px;background:#E3EBE8;display:flex;align-items:center;justify-content:center;font-size:40px;position:relative}
+.item .pic img{width:100%;height:100%;object-fit:cover;display:block}
+.item .tag{position:absolute;top:10px;left:10px;background:rgba(255,255,255,.94);color:var(--accent-ink);font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;text-transform:uppercase;letter-spacing:.04em}
+.item .body{padding:12px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
+.item h3{font-family:var(--disp);font-size:16px;line-height:1.25}
+.item .price{font-weight:700;color:var(--accent-ink)}
+.item .desc{font-size:13px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.item .media{display:flex;gap:6px;flex-wrap:wrap;font-size:12px}
+.item .media span{background:var(--bg);border-radius:8px;padding:2px 8px}
+.item .foot{display:flex;gap:6px;align-items:center;padding:10px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
+.item .foot .grow{flex:1;font-size:12px;color:var(--muted)}
+.small{height:32px;padding:0 12px;font-size:13px}
+.empty{background:var(--card);border:1.5px dashed var(--line);border-radius:14px;padding:40px 20px;text-align:center;color:var(--muted)}
+.empty b{display:block;font-family:var(--disp);font-size:17px;color:var(--ink);margin-bottom:6px}
+.msg{font-size:13px;color:var(--danger)}
+/* Editor */
+.ov{position:fixed;inset:0;background:rgba(10,20,20,.45);display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow-y:auto;z-index:50}
+.ov.hidden{display:none}
+.modal{background:var(--card);border-radius:16px;width:100%;max-width:760px;box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.modal .mh{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line)}
+.modal .mh h2{font-family:var(--disp);font-size:18px;flex:1}
+.x{background:none;border:0;font-size:22px;cursor:pointer;color:var(--muted);line-height:1}
+.modal .mb{padding:16px 20px;display:flex;flex-direction:column;gap:16px}
+.sec-t{font-family:var(--disp);font-size:12.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.fg{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.fg label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--muted);font-weight:500;grid-column:span 6;min-width:0}
+.fg .s2{grid-column:span 2}.fg .s3{grid-column:span 3}.fg .s4{grid-column:span 4}
+@media(max-width:620px){.fg .s2,.fg .s3,.fg .s4{grid-column:span 6}}
+.fg input,.fg select,.fg textarea{border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--bg);color:var(--ink);font-size:14px;width:100%}
+.fg input,.fg select{height:40px}
+.fg textarea{resize:vertical;line-height:1.45}
+.fg input:focus,.fg select:focus,.fg textarea:focus{outline:none;border-color:var(--accent);background:#fff}
+.hint{font-size:12px;color:var(--muted);line-height:1.45}
+.tip{background:var(--accent-soft);color:var(--accent-ink);border-radius:10px;padding:10px 12px;font-size:12.5px;line-height:1.5}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.thumbs img{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#E3EBE8}
+.checks{display:flex;gap:18px;flex-wrap:wrap}
+.checks label{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer}
+.checks input{width:18px;height:18px;accent-color:var(--accent)}
+.modal .mf{display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:14px 20px;border-top:1px solid var(--line);flex-wrap:wrap}
+.modal .mf .msg{flex:1}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0F1A1E;color:#fff;padding:10px 16px;border-radius:10px;font-size:13.5px;z-index:60}
+.toast.hidden{display:none}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<header><div class="brand">Lead<span>vyne</span></div><span class="chip">📦 Products &amp; Services</span></header>
+<main><div class="inner">
+  <div class="intro">
+    <div style="font-size:30px">📦</div>
+    <div><h1>Products &amp; Services</h1>
+      <p>List what you sell with full details, photos, a voice note and a brochure. When a customer names an item in chat, the bot sends its details and media automatically. In <b>Chats → Attach → 📑 AI Proposal</b> you can pick items and let AI write a proposal from the conversation.</p></div>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="toolbar">
+    <input id="q" placeholder="Search name, category, keyword" oninput="draw()">
+    <select id="fKind" onchange="draw()" aria-label="Type"><option value="">All types</option><option value="product">Products</option><option value="service">Services</option></select>
+    <select id="fStatus" onchange="draw()" aria-label="Status"><option value="">Any status</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+    <button class="btn" id="addBtn" onclick="openEditor()">+ Add item</button>
+  </div>
+  <div id="list"><div class="empty">Loading…</div></div>
+</div></main>
+
+<div class="ov hidden" id="editor" onclick="if(event.target===this)closeEditor()">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edTitle">
+    <div class="mh"><h2 id="edTitle">Add item</h2><button class="x" title="Close" onclick="closeEditor()">×</button></div>
+    <div class="mb">
+      <div class="sec-t">Basics</div>
+      <div class="fg">
+        <label class="s2">Type<select id="fKindEd"><option value="product">📦 Product</option><option value="service">🛠️ Service</option></select></label>
+        <label class="s4">Name *<input id="fName" maxlength="120" placeholder="e.g. Solar Water Heater 200L"></label>
+        <label class="s3">Category<input id="fCategory" maxlength="80" placeholder="e.g. Solar"></label>
+        <label class="s3">SKU / code<input id="fSku" maxlength="60"></label>
+        <label class="s2">Price<input id="fPrice" inputmode="decimal" placeholder="Leave blank: on request"></label>
+        <label class="s2">Currency<select id="fCurrency"><option>INR</option><option>AED</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>QAR</option><option>OMR</option><option>KWD</option><option>BHD</option></select></label>
+        <label class="s2">Per<input id="fUnit" maxlength="40" placeholder="e.g. month, visit, kg"></label>
+      </div>
+      <div class="sec-t">Details</div>
+      <div class="fg">
+        <label>Short description<input id="fShort" maxlength="300" placeholder="One line the bot and proposals lead with"></label>
+        <label>Full details<textarea id="fDetails" rows="5" maxlength="5000" placeholder="Specifications, what's included, warranty, delivery, process…"></textarea></label>
+        <label class="s3">Highlights (one per line)<textarea id="fFeatures" rows="4" maxlength="2000" placeholder="200 litre tank&#10;5-year warranty"></textarea></label>
+        <label class="s3">Keywords customers use (comma separated)<textarea id="fKeywords" rows="4" maxlength="500" placeholder="geyser, solar heater"></textarea><span class="hint">The bot sends this item when a customer writes its name, code or one of these words.</span></label>
+      </div>
+      <div class="sec-t">Media (Google Drive links)</div>
+      <div class="tip">Share each file in Google Drive as <b>“Anyone with the link can view”</b> and paste its link. Photos: JPG or PNG under 5 MB. Video: MP4 under 16 MB is sent as a video (a YouTube or larger video is sent as a link). Voice note: MP3, M4A or OGG. Brochure: PDF.</div>
+      <div class="fg">
+        <label class="s3">Photo 1<input id="fImg1" placeholder="https://drive.google.com/file/d/…" oninput="drawThumbs()"></label>
+        <label class="s3">Photo 2<input id="fImg2" oninput="drawThumbs()"></label>
+        <label class="s2">Photo 3<input id="fImg3" oninput="drawThumbs()"></label>
+        <label class="s2">Photo 4<input id="fImg4" oninput="drawThumbs()"></label>
+        <label class="s2">Photo 5<input id="fImg5" oninput="drawThumbs()"></label>
+        <div class="thumbs" id="thumbs" style="grid-column:span 6"></div>
+        <label>🎬 Video<input id="fVideo" placeholder="https://drive.google.com/file/d/… or a YouTube link" onblur="checkVideo()" oninput="$('videoHint').textContent=''"><span class="hint" id="videoHint" aria-live="polite"></span></label>
+        <label class="s3">🎙️ Voice note<input id="fVoice" placeholder="https://drive.google.com/file/d/…"></label>
+        <label class="s3">📄 Brochure (PDF)<input id="fBrochure" placeholder="https://drive.google.com/file/d/…"></label>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="fAuto" checked>Bot sends this when a customer names it</label>
+        <label><input type="checkbox" id="fActive" checked>Active</label>
+      </div>
+    </div>
+    <div class="mf"><span class="msg" id="edMsg"></span><button class="btn danger hidden" id="delBtn" onclick="removeItem()">Delete</button><button class="btn sec" onclick="closeEditor()">Cancel</button><button class="btn" id="saveBtn" onclick="saveItem()">Save</button></div>
+  </div>
+</div>
+<div class="toast hidden" id="toast"></div>
+
+<script>
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params=new URLSearchParams(location.search);
+let sessionToken=params.get('token')||'';
+try{ if(!sessionToken) sessionToken=localStorage.getItem('lv_session')||''; }catch(e){}
+if(params.get('embed')==='1') document.body.classList.add('embed');
+let items=[],editing=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(t){const el=$('toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(toast._t);toast._t=setTimeout(()=>el.classList.add('hidden'),2600)}
+async function api(method,body){
+  const r=await fetch(WORKER_BASE+'/catalog/items',{method,headers:{'Authorization':'Bearer '+sessionToken,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok||d.error) throw new Error(d.error||'HTTP '+r.status);
+  return d;
+}
+const money=(n,c)=>n==null||n===''?'':`${c||'INR'} ${Number(n).toLocaleString(c==='INR'||!c?'en-IN':'en-US',{maximumFractionDigits:2})}`;
+const priceText=i=>i.price==null?'Price on request':money(i.price,i.currency)+(i.price_unit?` ${/^(per\b|\/)/i.test(i.price_unit)?i.price_unit:'/ '+i.price_unit}`:'');
+// Drive share link → thumbnail the browser can show (same rule as the worker's engineResolveDirectImageUrl).
+function thumb(u){
+  u=String(u||'').trim();if(!/^https?:\/\//i.test(u))return '';
+  if(!/drive\.google\.com/.test(u))return u;
+  const id=(u.match(/\/file\/d\/([a-zA-Z0-9_-]+)/)||u.match(/[?&]id=([a-zA-Z0-9_-]+)/)||[])[1];
+  return id?`https://drive.google.com/thumbnail?id=${id}&sz=w400`:u;
+}
+async function load(){
+  try{items=(await api('GET')).items||[];draw()}
+  catch(e){$('list').innerHTML=`<div class="empty"><b>Could not load your catalogue</b>${esc(e.message)}</div>`}
+}
+function draw(){
+  const q=$('q').value.trim().toLowerCase(),k=$('fKind').value,st=$('fStatus').value;
+  const act=items.filter(i=>i.status!=='inactive');
+  $('stats').innerHTML=[[items.length,'Items'],[act.filter(i=>i.kind!=='service').length,'Active products'],[act.filter(i=>i.kind==='service').length,'Active services'],
+    [items.filter(i=>(i.photos||[]).length||i.video_url||i.voice_note_url||i.brochure_url).length,'With media']].map(([n,l])=>`<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
+  const list=items.filter(i=>(!k||i.kind===k)&&(!st||i.status===st)&&(!q||`${i.name} ${i.category||''} ${i.sku||''} ${i.keywords||''}`.toLowerCase().includes(q)));
+  if(!items.length){$('list').innerHTML=`<div class="empty"><b>No products or services yet</b>Add your first item — the bot starts sending it as soon as it's saved.<div style="margin-top:14px"><button class="btn" onclick="openEditor()">+ Add item</button></div></div>`;return}
+  if(!list.length){$('list').innerHTML=`<div class="empty">No items match.</div>`;return}
+  $('list').innerHTML=`<div class="grid">${list.map(i=>{
+    const ph=(i.photos||[])[0];
+    const media=[(i.photos||[]).length?`📷 ${i.photos.length}`:'',i.video_url?'🎬 Video':'',i.voice_note_url?'🎙️ Voice note':'',i.brochure_url?'📄 Brochure':''].filter(Boolean);
+    return `<div class="item ${i.status==='inactive'?'off':''}" data-id="${esc(i.id)}">
+      <div class="pic">${ph?`<img src="${esc(ph)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:(i.kind==='service'?'🛠️':'📦')}<span class="tag">${i.kind==='service'?'Service':'Product'}</span></div>
+      <div class="body"><h3>${esc(i.name)}</h3><div class="price">${esc(priceText(i))}</div>
+        ${i.short_description?`<div class="desc">${esc(i.short_description)}</div>`:''}
+        ${media.length?`<div class="media">${media.map(m=>`<span>${m}</span>`).join('')}</div>`:''}</div>
+      <div class="foot"><span class="grow">${i.status==='inactive'?'Inactive':i.auto_send===0?'Bot: answers only':'🤖 Bot sends on mention'}${i.category?' · '+esc(i.category):''}</span>
+        <button class="btn sec small" onclick="openEditor('${esc(i.id)}')">Edit</button></div>
+    </div>`}).join('')}</div>`;
+}
+const FIELDS=[['fKindEd','kind'],['fName','name'],['fCategory','category'],['fSku','sku'],['fPrice','price'],['fCurrency','currency'],['fUnit','price_unit'],
+  ['fShort','short_description'],['fDetails','details'],['fFeatures','features'],['fKeywords','keywords'],
+  ['fImg1','image_url_1'],['fImg2','image_url_2'],['fImg3','image_url_3'],['fImg4','image_url_4'],['fImg5','image_url_5'],['fVideo','video_url'],['fVoice','voice_note_url'],['fBrochure','brochure_url']];
+function openEditor(id){
+  editing=id?items.find(i=>String(i.id)===String(id))||null:null;
+  const i=editing||{kind:'product',currency:'INR',auto_send:1,status:'active'};
+  FIELDS.forEach(([el,k])=>{$(el).value=i[k]==null?'':i[k]});
+  if(!$('fCurrency').value)$('fCurrency').value='INR';
+  $('fAuto').checked=i.auto_send!==0;$('fActive').checked=i.status!=='inactive';
+  $('edTitle').textContent=editing?`Edit ${editing.name}`:'Add item';
+  $('delBtn').classList.toggle('hidden',!editing);$('edMsg').textContent='';
+  $('videoHint').textContent='';$('editor').classList.remove('hidden');drawThumbs();setTimeout(()=>$('fName').focus(),30);
+}
+// How the bot will send the video: a Drive MP4 under WhatsApp's 16 MB plays in the chat; anything
+// else goes as a link. Same Drive read the bot uses (worker /ecom/drive-file-size).
+const WA_VIDEO_MAX=16*1024*1024;
+async function checkVideo(){
+  const el=$('videoHint'),u=$('fVideo').value.trim();el.style.color='';
+  if(!u){el.textContent='';return}
+  if(!/^https?:\/\//i.test(u)){el.textContent='Paste a full link (https://…).';el.style.color='var(--danger)';return}
+  if(!/^https?:\/\/(drive|docs)\.google\.com\//i.test(u)){el.textContent='Sent as a link the customer taps to watch.';return}
+  el.textContent='Checking the video…';
+  try{
+    const r=await fetch(`${WORKER_BASE}/ecom/drive-file-size?url=${encodeURIComponent(u)}`);const d=await r.json().catch(()=>({}));
+    if($('fVideo').value.trim()!==u)return;
+    if(!r.ok||d.error){el.textContent=d.error||'Could not read this file — share it as “Anyone with the link can view”.';el.style.color='var(--danger)';return}
+    const mb=(d.size_bytes/1048576).toFixed(1),mp4=/video\/(mp4|3gpp)/i.test(d.content_type||'');
+    el.textContent=mp4&&d.size_bytes<=WA_VIDEO_MAX?`✓ ${mb} MB — plays right in the WhatsApp chat.`:`${mb} MB${mp4?'':' ('+(d.content_type||'not MP4')+')'} — too large or not MP4 for WhatsApp, so it's sent as a link to watch.`;
+  }catch(e){el.textContent=''}
+}
+function closeEditor(){$('editor').classList.add('hidden');editing=null}
+function drawThumbs(){$('thumbs').innerHTML=['fImg1','fImg2','fImg3','fImg4','fImg5'].map(id=>thumb($(id).value)).filter(Boolean).map(u=>`<img src="${esc(u)}" alt="" referrerpolicy="no-referrer" onerror="this.style.opacity=.3">`).join('')}
+async function saveItem(){
+  const body={};FIELDS.forEach(([el,k])=>{body[k]=$(el).value.trim()});
+  body.auto_send=$('fAuto').checked?1:0;body.status=$('fActive').checked?'active':'inactive';
+  if(!body.name){$('edMsg').textContent='Name is required';return}
+  const btn=$('saveBtn');btn.disabled=true;btn.textContent='Saving…';$('edMsg').textContent='';
+  try{
+    const d=editing?await api('PATCH',{id:editing.id,...body}):await api('POST',body);
+    if(editing)items=items.map(i=>String(i.id)===String(d.item.id)?d.item:i);else items.push(d.item);
+    items.sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
+    closeEditor();draw();toast('✓ Saved');
+  }catch(e){$('edMsg').textContent=e.message}
+  finally{btn.disabled=false;btn.textContent='Save'}
+}
+async function removeItem(){
+  if(!editing||!confirm(`Delete “${editing.name}”? This can't be undone.`))return;
+  try{await api('DELETE',{id:editing.id});items=items.filter(i=>String(i.id)!==String(editing.id));closeEditor();draw();toast('Deleted')}
+  catch(e){$('edMsg').textContent=e.message}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('editor').classList.contains('hidden'))closeEditor()});
+if(!sessionToken){$('list').innerHTML='<div class="empty"><b>Please sign in</b>Open this page from your Leadvyne dashboard.</div>';$('addBtn').disabled=true}
+else load();
+</script>
+</body>
+</html>

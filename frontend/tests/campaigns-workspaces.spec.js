@@ -1,0 +1,212 @@
+// Campaigns page (broadcast.html) — Campaigns and Follow-ups workspaces. Hermetic: file://, every
+// Worker request answered by the route stub below, nothing reaches a real backend.
+import { test, expect } from '@playwright/test';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pageUrl = 'file://' + path.resolve(__dirname, '../broadcast.html');
+const now = Date.now();
+const iso = (ms) => new Date(ms).toISOString();
+
+const LEADS = [
+  { Id: 1, Name: 'Asha', Phone: '919800000001', Stage: 'new', Score: 'Hot', LastMsgAt: iso(now - 2 * 3600e3) },
+  { Id: 2, Name: 'Ravi', Phone: '919800000002', Stage: 'contacted', Score: 'Warm', LastMsgAt: iso(now - 3 * 86400e3) },
+  { Id: 3, Name: 'Meera', Phone: '919800000003', Stage: 'new', OptOut: 'Yes', LastMsgAt: iso(now - 86400e3 * 9) },
+];
+const LADDER = [
+  { step: 1, type: 'session', hours: 1, message: 'Hi {name}', message_b: 'Hey {name}' },
+  { step: 2, type: 'session', hours: 6, message: '' },
+  { step: 3, type: 'template', template_name: 'lv_followup_s3' },
+  { step: 4, type: 'template', template_name: '' },
+  { step: 5, type: 'template', template_name: '' },
+];
+const REPORT = {
+  days: 30, in_sequence: 4, currency: 'INR',
+  totals: { sent: 40, replied: 10, reply_rate: 25, converted: 3, revenue: 4500, opted_out: 1, opt_out_rate: 2.5, leads_contacted: 30, leads_reengaged: 9 },
+  steps: [{ step: 1, label: 'Nudge 1 · after 1h', sent: 30, replied: 9, reply_rate: 30, converted: 3, revenue: 4500, opted_out: 1, opt_out_rate: 3.3, conversion_rate: 10, health: 'watch', variants: [{ variant: 'A', sent: 30, replied: 9, reply_rate: 30 }] }],
+  trend: [{ week_start: '2026-10-05', sent: 40, replied: 10, converted: 3 }],
+  heatmap: Array.from({ length: 7 }, () => Array(24).fill(0)), best_slot: null, failures: [], templates: [], benchmark: null, status_counts: {},
+  health: { status: 'healthy', last_success_at: iso(now - 10 * 60e3), checked: 12 },
+};
+
+async function open(page, { v3 = false, query = '', proposals = false } = {}) {
+  const settings = v3
+    ? { enabled: true, enabled_at: iso(now - 86400e3), config: { paused: false, reengage_enabled: true, reengage_after_days: 30, proposal_followups: true }, checklist: [{ key: 'reengage', status: 'PENDING', label: 'Re-engage template' },
+      ...(proposals ? [{ key: 'proposal_p1', step: 7, status: 'APPROVED', label: 'Proposal · day 1 template' }, { key: 'proposal_p2', step: 8, status: 'PENDING', label: 'Proposal · day 3 template' }, { key: 'proposal_p3', step: 9, status: 'REJECTED', label: 'Proposal · day 7 template' },
+        { key: 'reengage_stage', stage: 'qualified', ok: true, status: 'APPROVED', template: 'lv_followup_re_qualified', label: 'Re-engage · Qualified' },
+        { key: 'reengage_stage', stage: 'proposal_sent', ok: false, status: 'PENDING', template: 'lv_followup_re_proposal_sent', label: 'Re-engage · Proposal Sent' }] : [])],
+      stages: proposals ? [{ id: 'qualified', label: 'Qualified' }, { id: 'proposal_sent', label: 'Proposal Sent' }] : [] }
+    : { enabled: false, config: {}, checklist: [] };
+  await page.addInitScript(() => { localStorage.setItem('lv_cid', '42'); localStorage.setItem('lv_session', 'tok'); });
+  await page.route('**/*', (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (url.includes('/records/42')) return json({ Id: 42, client_name: 'Acme Travel', industry: 'travel' });
+    if (url.includes('/records?where=(ClientId')) return json({ list: LEADS, pageInfo: { isLastPage: true } });
+    if (url.includes('/followups/ladder')) return json({ list: LADDER });
+    if (url.includes('/followups/stats')) return json({ list: [{ step: 1, variant: 'A', sent: 12, replied: 3, reply_rate: 25 }] });
+    if (url.includes('/followups/v3/settings')) return json(settings);
+    if (url.includes('/followups/v3/report')) return json(REPORT);
+    if (url.includes('/followups/v3/upcoming')) return json({ list: [{ lead_id: 1, lead_name: 'Asha', status: 'scheduled', next_step: 2, next_due_at: iso(now + 3 * 3600e3), label: 'Nudge 2 · after 6h' }] });
+    if (url.includes('/followups/smart')) return json({ enabled: false });
+    return json({});
+  });
+  await page.goto(pageUrl + query);
+  await expect(page.locator('#main')).toBeVisible();
+}
+
+test('opens on the Campaigns home: start cards, audience numbers, follow-up status', async ({ page }) => {
+  await open(page);
+  await expect(page.locator('#view-home')).toBeVisible();
+  await expect(page.locator('#wsFollowupsHead')).toBeHidden();
+  await expect(page.locator('.cp-card')).toHaveCount(4);
+  await expect(page.locator('#cpDmCount')).toHaveText('1 lead reachable now');
+  await expect(page.locator('#cpAudience')).toContainText('3');
+  await expect(page.locator('#cpFuText')).toContainText('Classic follow-ups');
+  // Follow-up items aren't in the campaign sidebar any more.
+  await expect(page.locator('#csb-fuengine')).toHaveCount(0);
+  await page.locator('.cp-card', { hasText: 'Template broadcast' }).click();
+  await expect(page.locator('#view-meta')).toBeVisible();
+});
+
+test('Follow-ups workspace, V3 off: header, promo, sequence map flags what is missing', async ({ page }) => {
+  await open(page, { query: '?view=followups' });
+  await expect(page.locator('#wsFollowupsHead')).toBeVisible();
+  await expect(page.locator('.campaign-sidebar')).toBeHidden();
+  await expect(page.locator('#fuHeadPill')).toHaveText('Classic');
+  await expect(page.locator('#fuV3Promo')).toBeVisible();
+  await expect(page.locator('#fuHeadKpis')).toContainText('25%');
+  await page.locator('[data-fu="sequence"]').click();
+  const nodes = page.locator('#fuTimeline .fu-node');
+  await expect(nodes).toHaveCount(5);
+  await expect(nodes.nth(0)).toContainText('A/B');
+  await expect(nodes.nth(1)).toContainText('No message yet');
+  await expect(nodes.nth(2)).toContainText('lv_followup_s3');
+  await expect(nodes.nth(3)).toContainText('Pick a template');
+  await page.locator('[data-fu="leads"]').click();
+  await expect(page.locator('#view-followups')).toBeVisible();
+});
+
+test('Follow-ups workspace, V3 on: numbers from the report, re-engage step, upcoming list', async ({ page }) => {
+  await open(page, { v3: true, query: '?view=followups' });
+  await expect(page.locator('#fuHeadPill')).toHaveText('● Healthy');
+  await expect(page.locator('#fuHeadSub')).toContainText('12 leads checked');
+  await expect(page.locator('#fuHeadKpis')).toContainText('INR 4,500');
+  await expect(page.locator('#fuV3Promo')).toBeHidden();
+  await expect(page.locator('#fv3ReportCard')).toBeVisible();
+  await page.locator('[data-fu="sequence"]').click();
+  await expect(page.locator('#fuTimeline .fu-node')).toHaveCount(6);
+  await expect(page.locator('#fuTimeline .fu-node').nth(3)).toContainText('waiting for approval');
+  await page.locator('[data-fu="upcoming"]').click();
+  await expect(page.locator('#fv3Upcoming')).toContainText('Asha');
+});
+
+test('switching workspace from the standalone top bar, and a cross-link into Follow-ups settings', async ({ page }) => {
+  await open(page);
+  await page.locator('.ws-switch [data-ws="followups"]').click();
+  await expect(page.locator('#wsFollowupsHead')).toBeVisible();
+  await page.locator('.ws-switch [data-ws="campaigns"]').click();
+  await expect(page.locator('#view-home')).toBeVisible();
+  await page.evaluate(() => window.showTab('fuengine'));
+  await expect(page.locator('#wsFollowupsHead')).toBeVisible();
+});
+
+test('dashboard: Campaigns and Follow-ups open inside Leadvyne, one shared embedded page', async ({ page }) => {
+  const dashboardUrl = 'file://' + path.resolve(__dirname, '../dashboard.html');
+  // No backend: the embedded page can't load the account, so it must show its own retry message
+  // rather than reloading the whole dashboard.
+  await page.route('**/*', (route) => (route.request().url().startsWith('file://') ? route.continue() : route.abort()));
+  await page.addInitScript(() => { localStorage.setItem('lv_cid', '42'); localStorage.setItem('lv_session', 'tok'); });
+  await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+  const opened = [];
+  await page.exposeFunction('__opened', (u) => opened.push(u));
+  await page.evaluate(() => {
+    document.getElementById('app').classList.add('show');
+    document.getElementById('gate')?.style.setProperty('display', 'none');
+    window.open = (u) => { window.__opened(String(u)); return null; };
+  });
+  await page.locator('#dnFollowupsTab').click();
+  await expect(page.locator('#pageBroadcast')).toBeVisible();
+  await expect(page.locator('#campaignsFrame')).toHaveAttribute('src', 'broadcast.html?embed=1&view=followups');
+  await expect(page.locator('#dnFollowupsTab')).toHaveClass(/active/);
+  await page.locator('#dnCampaignsTab').click();
+  await expect(page.locator('#pageBroadcast')).toBeVisible();
+  await expect(page.locator('#campaignsFrame')).toHaveAttribute('src', 'broadcast.html?embed=1&view=followups'); // not reloaded
+  await expect(page.locator('#dnCampaignsTab')).toHaveClass(/active/);
+  expect(opened).toEqual([]);
+  await expect(page.frameLocator('#campaignsFrame').locator('#gErr')).toContainText('try again');
+  expect(page.url()).toBe(dashboardUrl);
+});
+
+test('Follow-up V3 settings: Pro add-ons are listed, off by default, and saved when switched on', async ({ page }) => {
+  await open(page, { v3: true, query: '?view=followups' });
+  const posts = [];
+  page.on('request', (req) => { if (req.method() === 'POST' && req.url().includes('/followups/v3/settings')) posts.push(JSON.parse(req.postData() || '{}')); });
+  await page.waitForFunction(() => !!document.getElementById('fv3c_pro_quote_pdf'));
+  const flags = ['pro_smart_send', 'pro_nba_home', 'pro_objections', 'pro_quote_pdf', 'pro_auto_language'];
+  for (const k of flags) expect(await page.locator('#fv3c_' + k).isChecked()).toBe(false);
+  await expect(page.locator('#fv3Settings')).toContainText('Pro add-ons');
+  await page.evaluate(() => {
+    document.getElementById('fv3c_pro_quote_pdf').checked = true;
+    document.getElementById('fv3c_pro_auto_language').checked = true;
+    document.getElementById('fv3c_pro_quote_valid_days').value = '10';
+    document.getElementById('fv3c_pro_quote_note').value = '30% advance confirms the booking.';
+    return window.fv3SaveConfig();
+  });
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].config).toMatchObject({ pro_quote_pdf: true, pro_auto_language: true, pro_smart_send: false, pro_nba_home: false, pro_objections: false,
+    pro_quote_valid_days: 10, pro_quote_note: '30% advance confirms the booking.' });
+});
+
+test('Follow-up V3 for proposal accounts: a separate Proposal Sent track, and a switch to turn it off', async ({ page }) => {
+  await open(page, { v3: true, proposals: true, query: '?view=followups' });
+  await page.locator('[data-fu="sequence"]').click();
+  // The normal ladder is unchanged; the proposal templates are their own row.
+  await expect(page.locator('#fuTimeline .fu-node')).toHaveCount(6);
+  const row = page.locator('#fuPropTimeline');
+  await expect(row).toContainText('After a proposal is sent');
+  await expect(row.locator('.fu-node')).toHaveCount(4);
+  await expect(row.locator('.fu-node').nth(3)).toContainText('Re-engage · Proposal Sent');
+  await expect(row.locator('.fu-node').nth(3)).toContainText('waiting for approval');
+  // The main re-engage node counts the stages whose own template is ready.
+  await expect(page.locator('#fuTimeline .fu-node').nth(5)).toContainText('1/2 stages ready');
+  await expect(row.locator('.fu-node').nth(0)).toContainText('Day 1 after');
+  await expect(row.locator('.fu-node').nth(0)).toContainText('✅ Ready');
+  await expect(row.locator('.fu-node').nth(1)).toContainText('waiting for approval');
+  await expect(row.locator('.fu-node').nth(2)).toContainText('Rejected');
+  const posts = [];
+  page.on('request', (req) => { if (req.method() === 'POST' && req.url().includes('/followups/v3/settings')) posts.push(JSON.parse(req.postData() || '{}')); });
+  await page.waitForFunction(() => !!document.getElementById('fv3c_proposal_followups'));
+  expect(await page.locator('#fv3c_proposal_followups').isChecked()).toBe(true);
+  await page.evaluate(() => { document.getElementById('fv3c_proposal_followups').checked = false; return window.fv3SaveConfig(); });
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].config).toMatchObject({ proposal_followups: false });
+});
+
+test('Follow-up V3 without proposals shows no proposal row', async ({ page }) => {
+  await open(page, { v3: true, query: '?view=followups' });
+  await page.locator('[data-fu="sequence"]').click();
+  await expect(page.locator('#fuTimeline .fu-node')).toHaveCount(6);
+  await expect(page.locator('#fuPropTimeline .fu-node')).toHaveCount(0);
+});
+
+test('Follow-up V3 stage editor: the account\'s stages, each with its own re-engage template', async ({ page }) => {
+  await open(page, { v3: true, proposals: true, query: '?view=followups' });
+  const posts = [];
+  page.on('request', (req) => { if (req.method() === 'POST' && req.url().includes('/followups/v3/settings')) posts.push(JSON.parse(req.postData() || '{}')); });
+  await page.waitForFunction(() => !!document.querySelector('[data-fv3-stage="proposal_sent"]'));
+  const prop = page.locator('[data-fv3-stage="proposal_sent"]');
+  await expect(prop.locator('summary')).toContainText('Proposal Sent');
+  await expect(page.locator('[data-fv3-stage="qualified"]')).toContainText('lv_followup_re_qualified');
+  // Pick an own re-engage for Qualified without switching its stage sequence on — it's still saved.
+  await page.evaluate(() => {
+    const q = document.querySelector('[data-fv3-stage="qualified"]');
+    q.querySelector('[data-reengage]').value = 'my_qualified_reengage';
+    q.querySelector('[data-reengage-language]').value = 'en_US';
+    return window.fv3SaveConfig();
+  });
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].config.stage_sequences).toEqual({ qualified: { reengage: { template_name: 'my_qualified_reengage', template_language: 'en_US' } } });
+});

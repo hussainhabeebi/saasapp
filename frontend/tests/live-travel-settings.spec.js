@@ -1,0 +1,169 @@
+// Live Agency → ⚙️ Travel Settings: one page with tabs for live fares & booking, currency, the
+// WhatsApp menu and itineraries (worker /live-travel/travel-settings and the existing endpoints).
+// Hermetic file:// load; the worker API is stubbed.
+import { test, expect } from '@playwright/test';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pageUrl = 'file://' + path.resolve(__dirname, '../live-travel-agency.html') + '?client=7&token=t';
+const bootstrap = { suppliers: [], searches: [], quotes: [], bookings: [], service_requests: [], wallet: [], wallet_entries: [], agents: [], commissions: [], currency_settings: { default_currency: 'AED' }, supported_currencies: [] };
+
+test('live fares & booking: load, preview the chosen style and save only those fields — fare settings load, preview the chosen style and save only the live-fare fields', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: { itin_share_pdf: true, itin_auto_images: true, ...saved } }); }
+      return route.fulfill({ json: { itin_share_pdf: true, itin_auto_images: true, lt_show_fares: true, lt_fare_options: 2, lt_fare_style: 'classic', lt_online_booking: true } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await expect(page.locator('#fsBooking')).toHaveValue('1');
+
+  await expect(page.locator('#fsCount')).toHaveValue('2');
+  await expect(page.locator('#fsStyle')).toHaveValue('classic');
+  await expect(page.locator('#fsPreview')).toContainText('Departs 21:45, arrives 00:25');
+  await page.selectOption('#fsStyle', 'highlighted');
+  await expect(page.locator('#fsPreview')).toContainText('🕗 21:45 → 00:25 (+1)');
+  await expect(page.locator('#fsPreview')).toContainText('💰 Cheapest');
+  await page.selectOption('#fsShow', '0');
+  await expect(page.locator('#fsPreview')).not.toContainText('INR');
+  await page.selectOption('#fsShow', '1');
+  await page.selectOption('#fsCount', '3');
+  // The payment QR links show only while online booking is disabled.
+  await expect(page.locator('#fsQrBox')).toBeHidden();
+  await page.selectOption('#fsBooking', '0');
+  await expect(page.locator('#fsQrBox')).toBeVisible();
+  await page.fill('#fsQr1Label', 'UPI');
+  await page.fill('#fsQr1Url', 'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing');
+  await expect(page.locator('#fsQr1Img')).toHaveAttribute('src', 'https://drive.google.com/thumbnail?id=QRDRIVE1234&sz=w200');
+  await expect(page.locator('#fsQr2Img')).toBeHidden();
+  await page.screenshot({ path: test.info().outputPath('settings.png') });
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#fsMsg')).toContainText('Saved');
+  expect(saved).toEqual({ lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'highlighted', lt_online_booking: false,
+    lt_airline_variety: true, lt_one_fare_per_flight: true,
+    lt_direct_list: false, lt_date_picker: false, lt_passport_details: false,
+    lt_pay_qr_1_label: 'UPI', lt_pay_qr_1_url: 'https://drive.google.com/file/d/QRDRIVE1234/view?usp=sharing', lt_pay_qr_2_label: '', lt_pay_qr_2_url: '' });
+});
+
+test('optional WhatsApp chat extras are off by default, preview the direct flights list and save', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: saved }); }
+      return route.fulfill({ json: { lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'classic', lt_online_booking: true, lt_direct_list: false, lt_date_picker: false, lt_passport_details: false } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  for (const id of ['#fsDirectList', '#fsDatePicker', '#fsPassport']) await expect(page.locator(id)).toHaveValue('0');
+  await page.selectOption('#fsDirectList', '1');
+  await expect(page.locator('#fsPreview')).toContainText('Direct flights (2)');
+  await expect(page.locator('#fsPreview')).toContainText('• 🛫 Departs: CCJ · 20:00');
+  await page.selectOption('#fsShow', '0');
+  await expect(page.locator('#fsPreview')).not.toContainText('💳 Fare');
+  await page.selectOption('#fsShow', '1');
+  await page.selectOption('#fsDatePicker', '1');
+  await page.selectOption('#fsPassport', '1');
+  await expect(page.locator('#main')).toContainText('Passport Expiry Date');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#fsMsg')).toContainText('Saved');
+  expect(saved).toMatchObject({ lt_direct_list: true, lt_date_picker: true, lt_passport_details: true });
+});
+
+test('fare pick options default on and save when turned off', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: saved }); }
+      return route.fulfill({ json: { lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'classic', lt_online_booking: true } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await expect(page.locator('#main')).toContainText('Prefer different airlines in options');
+  await expect(page.locator('#fsVariety')).toHaveValue('1');
+  await expect(page.locator('#fsOnePerFlight')).toHaveValue('1');
+  await page.selectOption('#fsVariety', '0');
+  await page.selectOption('#fsOnePerFlight', '0');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#fsMsg')).toContainText('Saved');
+  expect(saved).toMatchObject({ lt_airline_variety: false, lt_one_fare_per_flight: false });
+});
+
+test('currency, WhatsApp menu and itineraries are tabs of the same page; the old menu items are gone', async ({ page }) => {
+  let itin = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: { ...bootstrap, currency_settings: { default_currency: 'AED', fx_buffer_pct: 1.5, rounding: 'auto', allow_currency_override: 1, auto_detect_phone_currency: 1 }, supported_currencies: [{ code: 'AED', name: 'UAE Dirham' }], fx: { rates: [] } } });
+    if (url.endsWith('/live-travel/whatsapp-menu')) return route.fulfill({ json: { menu: { enabled: false, items: [] }, defaults: { items: [] }, travel_flow: false, flights_connected: true, suggested_routes: [], categories: [], portal_counts: {}, portal_sources: [] } });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { itin = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: { itin_share_pdf: true, itin_auto_images: false } }); }
+      return route.fulfill({ json: { itin_share_pdf: false, itin_auto_images: true, lt_show_fares: true, lt_fare_options: 3, lt_fare_style: 'classic', lt_online_booking: true } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await expect(page.locator('#nav')).not.toContainText('💱 Currency');
+  await expect(page.locator('#nav')).not.toContainText('💬 WhatsApp Menu');
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await page.getByRole('button', { name: '💱 Currency' }).click();
+  await expect(page.locator('#cxCur')).toBeVisible();
+  await page.getByRole('button', { name: '💬 WhatsApp Menu' }).click();
+  await expect(page.getByRole('heading', { name: 'WhatsApp Menu' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '✈️ Live fares & booking' })).toBeVisible();
+  await page.getByRole('button', { name: '🗺️ Itineraries' }).click();
+  await expect(page.locator('#itPdf')).toHaveValue('0');
+  await page.selectOption('#itPdf', '1');
+  await page.selectOption('#itImg', '0');
+  await expect(page.locator('#itCtx')).toHaveValue('1');
+  await page.selectOption('#itCtx', '0');
+  await page.screenshot({ path: test.info().outputPath('itinerary.png') });
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.locator('#itMsg')).toContainText('Saved');
+  expect(itin).toEqual({ itin_share_pdf: true, itin_auto_images: false, lt_contextual_answers: false });
+});
+
+test('Chat Style: Resorts V1 for travel agencies — explained, previewed and saved', async ({ page }) => {
+  let saved = null;
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-settings')) {
+      if (route.request().method() === 'PUT') { saved = JSON.parse(route.request().postData() || '{}'); return route.fulfill({ json: { ...saved } }); }
+      return route.fulfill({ json: { lt_chat_style: '' } });
+    }
+    return route.abort();
+  });
+  await page.goto(pageUrl);
+  await page.getByRole('button', { name: '⚙️ Travel Settings' }).click();
+  await page.getByRole('button', { name: '🧭 Chat Style' }).click();
+  await expect(page.locator('#rv1Opts')).toBeHidden();
+  await page.locator('input[name="flyStyle"][value="resorts_v1"]').check();
+  await expect(page.locator('#rv1Opts')).toBeVisible();
+  await expect(page.locator('#rv1Opts')).toContainText('name, phone, adults, kids, rooms, check-in date and budget');
+  await expect(page.locator('#rv1Opts')).toContainText('bot stays silent');
+  await expect(page.locator('#flyOpts')).toBeHidden();
+  await expect(page.locator('#flyPreviewTitle')).toHaveText('Preview · Resorts V1');
+  await expect(page.locator('#flyPreview')).toContainText('Choose your destination');
+  await expect(page.locator('#flyPreview')).toContainText('Fill details');
+  await expect(page.locator('#flyPreview')).not.toContainText('Book now');
+  await page.getByRole('button', { name: /^Save/ }).first().click();
+  await expect.poll(() => saved?.lt_chat_style).toBe('resorts_v1');
+});

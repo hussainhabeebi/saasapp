@@ -1,0 +1,48 @@
+{
+  "packageId": "com.leadvyne.app",
+  "host": "app.leadvyne.com",
+  "name": "Leadvyne",
+  "launcherName": "Leadvyne",
+  "display": "standalone",
+  "themeColor": "#FFFFFF",
+  "themeColorDark": "#0B2545",
+  "navigationColor": "#FFFFFF",
+  "navigationColorDark": "#0B2545",
+  "navigationDividerColor": "#ECEEF2",
+  "navigationDividerColorDark": "#0B2545",
+  "backgroundColor": "#FFFFFF",
+  "enableNotifications": true,
+  "startUrl": "/m.html?src=twa",
+  "iconUrl": "https://app.leadvyne.com/icons/icon-512.png",
+  "maskableIconUrl": "https://app.leadvyne.com/icons/icon-512-maskable.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./leadvyne-release.keystore",
+    "alias": "leadvyne"
+  },
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://app.leadvyne.com/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://app.leadvyne.com/",
+  "minSdkVersion": 21,
+  "orientation": "portrait",
+  "fingerprints": [
+    {
+      "name": "release",
+      "value": "53:67:C5:B1:91:4C:CF:DC:20:AF:A0:87:EC:03:43:6D:37:5B:47:A1:C2:39:5E:AD:F5:71:70:92:EA:93:7A:20"
+    }
+  ],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "displayOverride": [],
+  "appVersionName": "1.0.0"
+}
