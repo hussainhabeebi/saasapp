@@ -129,3 +129,34 @@ export const HOSP_AI_FOOTNOTE='Rooms are subject to availability at the time of 
 export function hospAiPdfName(property){
   return `Stay-Itinerary-${String(property?.name||'stay').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').slice(0,60)||'stay'}.pdf`;
 }
+
+// ── Agency "Resorts & Hotels" (ta_properties) in the same picker ──
+// A travel agency's Resorts & Hotels list is offered next to the Hospitality module's properties.
+// Its rows get an "a-<id>" id (Hospitality properties keep their plain number) and are reshaped
+// to the hospitality_properties columns the prompt, photos and PDF read. Its "room_types" text
+// ("Deluxe, Pool Villa" or one per line) becomes the room choices, as "a-<id>-r<n>" — no photos.
+export const HOSP_AI_AGENCY_PREFIX='a-';
+export function hospAiParseId(id){
+  const s=String(id??'').trim();
+  const m=/^a-(\d+)(?:-r(\d+))?$/.exec(s);
+  if(m)return {source:'agency',id:Number(m[1]),room:m[2]?Number(m[2]):0};
+  return /^\d+$/.test(s)?{source:'hospitality',id:Number(s),room:0}:null;
+}
+const TYPE_LABEL={resort:'Resort',hotel:'Hotel',villa:'Villa',homestay:'Homestay',houseboat:'Houseboat',apartment:'Apartment',camp:'Camp'};
+export function hospAiAgencyProperty(p){
+  const type=String(p?.property_type||'').toLowerCase();
+  const stars=Number(p?.star_rating)||0;
+  return {
+    id:HOSP_AI_AGENCY_PREFIX+p.id,source:'agency',
+    name:str(p?.name,200),location:str(p?.location,200),
+    description:[stars?`${stars}-star ${TYPE_LABEL[type]||'property'}.`:TYPE_LABEL[type]?`${TYPE_LABEL[type]}.`:'',str(p?.description,1400)].filter(Boolean).join(' '),
+    amenities:str(p?.amenities,1500),
+    image_url_1:str(p?.image_url,1000),image_url_2:str(p?.image_url_2,1000),image_url_3:str(p?.image_url_3,1000),
+    property_type:type,
+  };
+}
+export function hospAiAgencyRooms(p){
+  const seen=new Set();
+  return String(p?.room_types||'').split(/\n|,|;|\|/).map(x=>str(x,120)).filter(x=>{const k=x.toLowerCase();if(!x||seen.has(k))return false;seen.add(k);return true;})
+    .slice(0,20).map((name,i)=>({id:`${HOSP_AI_AGENCY_PREFIX}${p.id}-r${i+1}`,name,unit_type:'',amenities:'',description:''}));
+}

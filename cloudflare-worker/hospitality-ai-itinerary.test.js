@@ -91,3 +91,23 @@ test('who gets the hospitality AI Itinerary', async ()=>{
   assert.equal(hospChatIsOn({industry:'travel',hospitality_enabled:'No'}), false);
   assert.equal(hospChatIsOn({industry:'ecommerce',channel_industry_map:'not json'}), false);
 });
+
+test('Agency Resorts & Hotels rows join the picker with their own ids and room choices', async ()=>{
+  const {hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms}=await import('./hospitality-ai-itinerary.js');
+  assert.deepEqual(hospAiParseId('3'), {source:'hospitality',id:3,room:0});
+  assert.deepEqual(hospAiParseId('a-7'), {source:'agency',id:7,room:0});
+  assert.deepEqual(hospAiParseId('a-7-r2'), {source:'agency',id:7,room:2});
+  assert.equal(hospAiParseId('x-1'), null);
+  const row={id:7,name:'Bay View Resort',property_type:'resort',star_rating:4,location:'Wayanad',description:'Lake-side.',amenities:'Pool',
+    image_url:'https://drive.google.com/file/d/p1/view',image_url_2:'',image_url_3:'https://x.test/3.jpg',price_from:4500,room_types:'Deluxe, Pool Villa\nDeluxe'};
+  const p=hospAiAgencyProperty(row);
+  assert.equal(p.id, 'a-7');
+  assert.equal(p.description, '4-star Resort. Lake-side.');
+  assert.deepEqual(hospAiPhotos(p), ['https://drive.google.com/file/d/p1/view','https://x.test/3.jpg']);
+  assert.equal(JSON.stringify(p).includes('4500'), false);
+  assert.deepEqual(hospAiAgencyRooms(row).map(r=>[r.id,r.name]), [['a-7-r1','Deluxe'],['a-7-r2','Pool Villa']]);
+  // The stay prompt reads it like a Hospitality property.
+  const {system,user}=hospAiItineraryPrompt(p,hospAiAgencyRooms(row)[1],{nights:2});
+  assert.match(system, /check-in at Bay View Resort/);
+  assert.match(user, /Room: Pool Villa/);
+});
