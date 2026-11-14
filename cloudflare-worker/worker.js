@@ -23,6 +23,7 @@ import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-aut
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
+import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -22584,6 +22585,205 @@ async function handleHospitalityChatItinerarySend(request,env){
     attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
   return json({ok:true,photos_sent:photosSent,name,data});
 }
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+   PRODUCTS & SERVICES (General accounts — product-catalog.js)
+   products-services.html (Dashboard → 📦 Products & Services) lists what the account sells: full
+   details, price, photos, a voice note and a brochure, all as Google Drive share links. The bot
+   sends an item's details card and media when a customer names it (engineMaybeSendCatalogItems),
+   its FAQ answers are grounded on the catalogue, and Chats → 📑 AI Proposal drafts a proposal
+   from the chat with the items the agent picks, sent as a PDF after the agent reviews it.
+   Session-gated (requireSession), like the other module pages that write data.
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+const PC_ITEM_COLUMNS=['kind','name','category','sku','short_description','details','features','keywords','price','currency','price_unit',
+  ...PC_IMAGE_FIELDS,'voice_note_url','brochure_url','auto_send','status','sort_order'];
+let _pcSchemaEnsured=false;
+async function pcEnsureSchema(env){
+  if(_pcSchemaEnsured) return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_items (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'product', name TEXT NOT NULL, category TEXT, sku TEXT, short_description TEXT, details TEXT, features TEXT, keywords TEXT, price REAL, currency TEXT NOT NULL DEFAULT 'INR', price_unit TEXT, image_url_1 TEXT, image_url_2 TEXT, image_url_3 TEXT, image_url_4 TEXT, image_url_5 TEXT, voice_note_url TEXT, brochure_url TEXT, auto_send INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pc_items_client ON pc_items(client_id, status)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_media_sent (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, item_id INTEGER NOT NULL, sent_at TEXT NOT NULL, PRIMARY KEY (lead_id, item_id))`),
+  ]);
+  _pcSchemaEnsured=true;
+}
+async function pcItemsFor(env,clientId,{activeOnly=false}={}){
+  await pcEnsureSchema(env);
+  const {results}=await env.DB.prepare(`SELECT * FROM pc_items WHERE client_id=?${activeOnly?` AND status='active'`:''} ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 500`).bind(Number(clientId)).all();
+  return results||[];
+}
+async function pcSessionClient(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return {res:json({error:'Invalid or expired session'},401)};
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c) return {res:json({error:'Client not found'},404)};
+  if(!pcIsOn(c)) return {res:json({error:'Products & Services is for General accounts.'},403)};
+  return {payload,c};
+}
+// The item as the page and Chats show it: stored links as-is, plus display thumbnails.
+const pcItemView=i=>({...i,id:String(i.id),photos:pcPhotos(i).map(u=>engineResolveDirectImageUrl(u)).filter(Boolean)});
+
+// GET    /catalog/items                 → {items:[…]}
+// POST   /catalog/items   {…fields}     → {item}
+// PATCH  /catalog/items   {id, …fields} → {item}
+// DELETE /catalog/items   {id}          → {ok}
+async function handleCatalogItems(request,env){
+  const {res,payload}=await pcSessionClient(request,env);
+  if(res) return res;
+  await pcEnsureSchema(env);
+  const cid=Number(payload.cid);
+  if(request.method==='GET') return json({items:(await pcItemsFor(env,cid)).map(pcItemView)});
+  const body=await request.json().catch(()=>({}));
+  const now=new Date().toISOString();
+  if(request.method==='POST'){
+    const f=pcCleanItem(body);
+    if(f.error) return json({error:f.error},400);
+    const {n}=await env.DB.prepare(`SELECT COUNT(*) AS n FROM pc_items WHERE client_id=?`).bind(cid).first()||{n:0};
+    if(n>=500) return json({error:'You can list up to 500 products and services.'},400);
+    const cols=PC_ITEM_COLUMNS.filter(k=>k in f);
+    const r=await env.DB.prepare(`INSERT INTO pc_items (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+      .bind(cid,...cols.map(k=>f[k]),now,now).run();
+    const row=await env.DB.prepare(`SELECT * FROM pc_items WHERE id=?`).bind(r.meta.last_row_id).first();
+    return json({item:pcItemView(row)});
+  }
+  const id=Number(body?.id)||0;
+  const existing=id?await env.DB.prepare(`SELECT * FROM pc_items WHERE id=? AND client_id=?`).bind(id,cid).first():null;
+  if(!existing) return json({error:'Not found'},404);
+  if(request.method==='DELETE'){
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM pc_items WHERE id=? AND client_id=?`).bind(id,cid),
+      env.DB.prepare(`DELETE FROM pc_media_sent WHERE item_id=? AND client_id=?`).bind(id,cid),
+    ]);
+    return json({ok:true});
+  }
+  const f=pcCleanItem(body,{partial:true});
+  if(f.error) return json({error:f.error},400);
+  const cols=PC_ITEM_COLUMNS.filter(k=>k in f);
+  if(cols.length) await env.DB.prepare(`UPDATE pc_items SET ${cols.map(k=>`${k}=?`).join(', ')}, updated_at=? WHERE id=? AND client_id=?`)
+    .bind(...cols.map(k=>f[k]),now,id,cid).run();
+  return json({item:pcItemView(await env.DB.prepare(`SELECT * FROM pc_items WHERE id=?`).bind(id).first())});
+}
+
+async function pcLeadForChat(env,payload,leadId){
+  const lr=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(leadId)||0}`);
+  const lead=lr.ok?await lr.json().catch(()=>null):null;
+  return lead&&String(lead.ClientId)===String(payload.cid)?lead:null;
+}
+// POST /catalog/ai-proposal {lead_id, items:[{id,qty}], notes?} → the proposal draft (prices from
+// the catalogue; the AI only writes the words, from the chat).
+async function handleCatalogAiProposal(request,env){
+  const {res,payload,c}=await pcSessionClient(request,env);
+  if(res) return res;
+  const body=await request.json().catch(()=>({}));
+  const lead=await pcLeadForChat(env,payload,body?.lead_id);
+  if(!lead) return json({error:'Lead not found'},404);
+  const selection=pcSelection(body?.items,await pcItemsFor(env,payload.cid,{activeOnly:true}));
+  if(!selection.length) return json({error:'Pick at least one product or service.'},400);
+  const {results:rows}=await env.DB.prepare(`SELECT role, content FROM lead_messages WHERE lead_id=? ORDER BY ts DESC LIMIT 60`).bind(Number(lead.Id)).all().catch(()=>({results:[]}));
+  const out=await pcProposalDraft({business:c.quote_header_title||c.client_name||'',customer:String(lead.Name||'').trim(),selection,
+    transcript:pcTranscript((rows||[]).reverse()),notes:String(body?.notes||'')},taAiItineraryGenerator(env,c,'pc-ai-proposal'));
+  if(out.error){
+    await reportOpsError(env,'catalog/ai-proposal — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
+    return json({error:out.error},422);
+  }
+  return json({proposal:out});
+}
+// POST /catalog/chat-proposal/send {lead_id, proposal, caption?, send_photos?} → the item photos
+// (optional, the first photo of up to 3 items) and the proposal PDF go into the chat.
+async function handleCatalogChatProposalSend(request,env){
+  const {res,payload,c}=await pcSessionClient(request,env);
+  if(res) return res;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'},400);
+  const body=await request.json().catch(()=>({}));
+  const lead=await pcLeadForChat(env,payload,body?.lead_id);
+  if(!lead) return json({error:'Lead not found'},404);
+  const leadId=Number(lead.Id);
+  const convId=String(lead.ConversationID||'').trim();
+  if(!convId) return json({error:'This lead has no WhatsApp chat yet.'},400);
+  const access=await chatSendCheckAndClaim(env,c,payload,{leadId,convId});
+  if(!access.ok) return json({error:access.error},403);
+  const items=await pcItemsFor(env,payload.cid);
+  const proposal=pcCleanProposal(body?.proposal,items);
+  if(!proposal.items.length) return json({error:'The proposal has no products or services.'},400);
+  const byId=new Map(items.map(i=>[String(i.id),i]));
+  const customer=String(lead.Name||'').trim();
+  let bytes;
+  try{
+    const logoUrl=String(bcLogoForPdf(await bcForClient(env,c),c)||'').trim();
+    const [logo,...imgs]=await Promise.all([logoUrl?hospChatPdfImage(env,logoUrl):null,
+      ...proposal.items.map(r=>{const u=pcPhotos(byId.get(r.id))[0];return u?hospChatPdfImage(env,u):null;})]);
+    const images=new Map(proposal.items.map((r,i)=>[r.id,imgs[i]]).filter(([,img])=>img));
+    bytes=pcBuildProposalPdf(proposal,{business:c.quote_header_title||c.client_name||'',phone:c.support_phone||c.phone||'',customer,
+      accent:c.quote_accent_color||'',logo,images,ref:`P-${leadId}-${Date.now().toString(36).slice(-5).toUpperCase()}`});
+  }catch(e){ await reportOpsError(env,'Chats AI proposal — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
+  let photosSent=0;
+  if(body?.send_photos){
+    const picks=proposal.items.map(r=>({r,url:pcPhotos(byId.get(r.id))[0]})).filter(x=>x.url).slice(0,3);
+    for(const [i,{r,url}] of picks.entries()){
+      const blob=await hospitalityFetchMediaBlob(env,url,false).catch(()=>null);
+      if(!blob) continue;
+      const cap=`📦 *${r.name}*`;
+      const name=`product-photo${i+1}.${(blob.type.split('/')[1]||'jpg').replace(/[^a-z0-9]/gi,'')}`;
+      const fd=new FormData();
+      fd.append('content',cap); fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]',blob,name);
+      const pr=await hospChatPost(c,convId,fd).catch(()=>null);
+      if(!pr?.ok) continue;
+      photosSent++;
+      const data=await pr.json().catch(()=>({}));const sent=data?.attachments?.[0]||{};
+      await chatsRecordOutgoing(env,payload.cid,leadId,{content:cap,
+        attachment:{kind:'image',type:blob.type||'image/jpeg',name,size:blob.size||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+    }
+  }
+  const caption=String(body?.caption||'').trim().slice(0,1000)||`📄 Here is our proposal${customer?` for you, ${customer}`:''}: *${proposal.title}*.`;
+  const name=pcProposalPdfName(proposal,customer);
+  const fd=new FormData();
+  fd.append('content',caption); fd.append('message_type','outgoing'); fd.append('private','false');
+  fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),name);
+  const r=await hospChatPost(c,convId,fd);
+  if(!r.ok) return json({error:'WhatsApp send failed (HTTP '+r.status+')',photos_sent:photosSent},502);
+  const data=await r.json().catch(()=>({}));
+  const sent=data?.attachments?.[0]||{};
+  await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
+    attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+  return json({ok:true,photos_sent:photosSent,name,total:pcProposalTotals(proposal).total,data});
+}
+
+// Bot: the customer named a catalogue item → its details card, then photos, voice note and
+// brochure, at most once per (lead, item) per PC_MEDIA_RESEND_WINDOW_MS. Items with auto-send off
+// are only answered from the AI context.
+async function engineMaybeSendCatalogItems(env,c,clientId,convId,leadId,userText){
+  if(!pcIsOn(c)||!userText||!leadId||!convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const items=(await pcItemsFor(env,clientId,{activeOnly:true})).filter(i=>i.auto_send!==0);
+    if(!items.length) return;
+    const named=pcFindItemsInText(items,userText);
+    if(!named.length) return;
+    const cutoff=new Date(Date.now()-PC_MEDIA_RESEND_WINDOW_MS).toISOString();
+    for(const item of named){
+      const already=await env.DB.prepare(`SELECT 1 AS x FROM pc_media_sent WHERE lead_id=? AND item_id=? AND sent_at>?`).bind(Number(leadId),item.id,cutoff).first();
+      if(already) continue;
+      // Claim first, so a webhook redelivery of the same message can't send it twice.
+      await env.DB.prepare(`INSERT INTO pc_media_sent (client_id,lead_id,item_id,sent_at) VALUES (?,?,?,?) ON CONFLICT(lead_id,item_id) DO UPDATE SET sent_at=excluded.sent_at`)
+        .bind(Number(clientId),Number(leadId),item.id,new Date().toISOString()).run();
+      const card=pcItemCard(item);
+      await hospitalityChatwootText(c,convId,card);
+      await d1InsertLeadMessage(env,leadId,clientId,{role:'assistant',content:card,ts:new Date().toISOString(),sender_type:'bot'}).catch(()=>{});
+      for(const m of pcMediaPlan(item)){
+        if(m.kind==='image'){
+          const blob=await hospitalityFetchMediaBlob(env,m.url,false).catch(()=>null);
+          if(blob){
+            const fd=new FormData();
+            fd.append('content',m.caption); fd.append('message_type','outgoing'); fd.append('private','false');
+            fd.append('attachments[]',blob,`photo.${(blob.type.split('/')[1]||'jpg').replace(/[^a-z0-9]/gi,'')}`);
+            if((await hospChatPost(c,convId,fd).catch(()=>null))?.ok) continue;
+          }
+        }
+        await sendDriveMediaToChatwoot(c,convId,m.url,m.caption,m.kind==='voice'?'voice-note.mp3':m.kind==='document'?`${item.name}.pdf`:'').catch(()=>false);
+      }
+    }
+  }catch(e){ await reportOpsError(env,'engineMaybeSendCatalogItems',e,{clientId,convId}); }
+}
 export async function ltMenuLoad(env,clientId){
   await ltMenuEnsureSchema(env);
   const row=await env.DB.prepare(`SELECT menu_json FROM live_travel_wa_menu WHERE client_id=?`).bind(Number(clientId)).first();
@@ -30964,6 +31164,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
       else if(c.industry==='ev_charging' && c.ev_charging_enabled==='Yes') contextBlock=await engineBuildEvChargingContext(env, clientId);
+      // General accounts: the Products & Services catalogue, so answers use its real details and prices.
+      if(pcIsOn(c)){
+        const pcCtx=pcContextBlock(await pcItemsFor(env, clientId, {activeOnly:true}).catch(()=>[]));
+        if(pcCtx) contextBlock=(contextBlock||'')+pcCtx;
+      }
       // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
       // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
       if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
@@ -31339,6 +31544,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
     // ever (re_media_sent).
     await engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    // Products & Services (General accounts, product-catalog.js) — the first time in a day this lead
+    // names a catalogue item, its details card, photos, voice note and brochure go into the chat.
+    await engineMaybeSendCatalogItems(env, c, clientId, convId, resolvedLeadId, userText);
     // Ecommerce categories (migrations/0012_ecom_categories.sql) — separate from and never
     // overriding the per-product image send above (orderHandledInline gates it out when a
     // specific product was already handled this turn); see engineMaybeSendEcomCategoryMedia's own
@@ -43235,6 +43443,9 @@ export default {
       else if(url.pathname==='/hospitality/chat-properties' && request.method==='GET'){ res=await handleHospitalityChatProperties(request,env); }
       else if(url.pathname==='/hospitality/ai-itinerary' && request.method==='POST'){ res=await handleHospitalityAiItinerary(request,env); }
       else if(url.pathname==='/hospitality/chat-itinerary/send' && request.method==='POST'){ res=await handleHospitalityChatItinerarySend(request,env); }
+      else if(url.pathname==='/catalog/items' && ['GET','POST','PATCH','DELETE'].includes(request.method)){ res=await handleCatalogItems(request,env); }
+      else if(url.pathname==='/catalog/ai-proposal' && request.method==='POST'){ res=await handleCatalogAiProposal(request,env); }
+      else if(url.pathname==='/catalog/chat-proposal/send' && request.method==='POST'){ res=await handleCatalogChatProposalSend(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
