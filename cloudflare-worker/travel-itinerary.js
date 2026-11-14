@@ -514,7 +514,7 @@ export const taPdf={safe:pdfSafe,esc,wrap,textWidth,hexRgb};
 // Optional (Hospitality → stay itinerary): `tag` replaces "TRAVEL ITINERARY", `facts` replaces the
 // key-fact boxes ([[LABEL,value]…]), `footNote` replaces the price/availability line, and
 // assets.gallery ([{title,text,image}]) adds a "Your Stay" section of photo cards after the intro.
-export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null,galleryMax=6,galleryPhotoH=130}={}){
+export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null,galleryMax=6,galleryPhotoH=130,galleryCols=2,incExcFirst=false}={}){
   const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=64;
   const AC=hexRgb(accent,[0.06,0.45,0.47]).map(v=>v.toFixed(3)).join(' ');
   const plan=taItineraryPlan(pkg,itin);
@@ -622,23 +622,54 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
     section(`About ${dest}`);
     for(const l of wrap(assets.cover.extract,10.5,false,CW,6)){need(15);txt(MX,y-10.5,l,10.5,false,'0.25 0.28 0.32');y-=15;}
   }
-  // ── Your stay: the property's / room's own photos as cards, two per row ──
+  // ── Inclusions / exclusions (a function: incExcFirst draws it before the photos) ──
+  function drawIncExc(){
+  const inc=taList(pkg?.inclusions),exc=taList(pkg?.exclusions);
+  if(inc.length||exc.length){
+    const cols=[[inc,'check','0.09 0.6 0.34','INCLUDED'],[exc,'cross','0.82 0.2 0.2','NOT INCLUDED']].filter(c=>c[0].length);
+    const cw=cols.length>1?(CW-16)/2:CW;
+    const rows=cols.map(([list])=>list.map(x=>wrap(x,10,false,cw-30)));
+    const colH=rows.map(r=>r.reduce((s,l)=>s+l.length*13+5,0)+34);
+    const bh=Math.max(...colH);
+    section(inc.length?"What's Included":"What's Not Included",Math.min(bh,H-BOTTOM-160));
+    cols.forEach(([,mark,rgb,label],ci)=>{
+      const x=MX+ci*(cw+16);let cy=y;
+      const myH=Math.min(bh,y-BOTTOM);
+      round(x,y-myH,cw,myH,8,'0.975 0.98 0.985');
+      txt(x+14,cy-18,label,8,true,rgb);cy-=30;
+      rows[ci].forEach(ls=>{
+        if(cy-ls.length*13<BOTTOM)return;
+        const mx=x+15,my=cy-9.5;
+        o(mark==='check'?`${rgb} RG 1.6 w 1 J 1 j ${mx} ${my+3.5} m ${mx+3} ${my+0.5} l ${mx+8} ${my+7} l S`
+          :`${rgb} RG 1.6 w 1 J ${mx+0.5} ${my+0.5} m ${mx+7} ${my+7} l ${mx+0.5} ${my+7} m ${mx+7} ${my+0.5} l S`);
+        ls.forEach(l=>{txt(x+30,cy-10,l,10,false,'0.2 0.23 0.27');cy-=13;});
+        cy-=5;
+      });
+    });
+    y-=bh+6;
+  }
+  }
+  if(incExcFirst)drawIncExc();
+  // ── Your stay: the property's / room's own photos as cards, two per row (galleryCols=1: one
+  // full-width photo per row, each at its own proportions, so nothing is cropped) ──
   const gallery=(Array.isArray(assets.gallery)?assets.gallery:[]).filter(g=>g&&g.image).slice(0,galleryMax);
   if(gallery.length){
-    const gw=(CW-12)/2,ph=galleryPhotoH;
+    const cols=galleryCols===1?1:2,gw=cols===1?CW:(CW-12)/2;
     const cards=gallery.map(g=>{
+      // One per row: up to 300pt tall (two landscape photos a page), never cropped — scaled to fit.
+      const ph=cols===1?Math.max(180,Math.min(300,gw*(g.image.h/g.image.w||0.66))):galleryPhotoH;
       const head=g.title?wrap(g.title,11,true,gw-20,2):[];
       const body=g.text?wrap(g.text,8.8,false,gw-20,4):[];
-      return {g,head,body,h:head.length||body.length?ph+16+head.length*14+body.length*11.8+8:ph};
+      return {g,ph,head,body,h:head.length||body.length?ph+16+head.length*14+body.length*11.8+8:ph};
     });
     section(galleryTitle,cards[0].h);
-    for(let i=0;i<cards.length;i+=2){
-      const row=cards.slice(i,i+2),rh=Math.max(...row.map(c=>c.h));
+    for(let i=0;i<cards.length;i+=cols){
+      const row=cards.slice(i,i+cols),rh=Math.max(...row.map(c=>c.h));
       need(rh+10);
       row.forEach((c,j)=>{
-        const x=MX+j*(gw+12);
+        const x=MX+j*(gw+12),ph=c.ph;
         round(x,y-rh,gw,rh,8,'0.965 0.972 0.98');
-        image(c.g.image,x,y-ph,gw,ph,{radius:8,topOnly:true});
+        image(c.g.image,x,y-ph,gw,ph,{radius:8,topOnly:!!(c.head.length||c.body.length),fit:cols===1});
         let ty=y-ph-16;
         c.head.forEach(l=>{txt(x+10,ty,l,11,true);ty-=14;});
         c.body.forEach(l=>{txt(x+10,ty,l,8.8,false,'0.36 0.39 0.44');ty-=11.8;});
@@ -701,31 +732,7 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
       y-=6;
     });
   }
-  // ── Inclusions / exclusions ──
-  const inc=taList(pkg?.inclusions),exc=taList(pkg?.exclusions);
-  if(inc.length||exc.length){
-    const cols=[[inc,'check','0.09 0.6 0.34','INCLUDED'],[exc,'cross','0.82 0.2 0.2','NOT INCLUDED']].filter(c=>c[0].length);
-    const cw=cols.length>1?(CW-16)/2:CW;
-    const rows=cols.map(([list])=>list.map(x=>wrap(x,10,false,cw-30)));
-    const colH=rows.map(r=>r.reduce((s,l)=>s+l.length*13+5,0)+34);
-    const bh=Math.max(...colH);
-    section(inc.length?"What's Included":"What's Not Included",Math.min(bh,H-BOTTOM-160));
-    cols.forEach(([,mark,rgb,label],ci)=>{
-      const x=MX+ci*(cw+16);let cy=y;
-      const myH=Math.min(bh,y-BOTTOM);
-      round(x,y-myH,cw,myH,8,'0.975 0.98 0.985');
-      txt(x+14,cy-18,label,8,true,rgb);cy-=30;
-      rows[ci].forEach(ls=>{
-        if(cy-ls.length*13<BOTTOM)return;
-        const mx=x+15,my=cy-9.5;
-        o(mark==='check'?`${rgb} RG 1.6 w 1 J 1 j ${mx} ${my+3.5} m ${mx+3} ${my+0.5} l ${mx+8} ${my+7} l S`
-          :`${rgb} RG 1.6 w 1 J ${mx+0.5} ${my+0.5} m ${mx+7} ${my+7} l ${mx+0.5} ${my+7} m ${mx+7} ${my+0.5} l S`);
-        ls.forEach(l=>{txt(x+30,cy-10,l,10,false,'0.2 0.23 0.27');cy-=13;});
-        cy-=5;
-      });
-    });
-    y-=bh+6;
-  }
+  if(!incExcFirst)drawIncExc();
   // ── Notes & terms ──
   if(plan.notes){section('Good to Know');for(const l of wrap(plan.notes,10,false,CW)){need(14);txt(MX,y-10,l,10,false,'0.25 0.28 0.32');y-=14;}}
   need(40);y-=14;

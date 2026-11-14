@@ -1442,6 +1442,14 @@ function pickHItinProp(id){
  if(p.brochure)return openHBrochure(p);
  drawHItinDetail('profile');
 }
+// Optional Inclusions / Exclusions (one per line) — printed on the PDF; the stay plan's AI also
+// reads them so it never presents an excluded meal or service as included.
+function hItinIncExcFields(t){
+ const ta=(id,label,ph,v)=>`<label class="full">${label}<textarea id="${id}" rows="3" placeholder="${esc(ph)}">${esc(v||'')}</textarea></label>`;
+ return `<div class="full" style="font-size:12px;color:var(--muted)">Inclusions &amp; exclusions — optional, one per line</div>
+  ${ta('hItinInc','✅ Inclusions','Breakfast\nWelcome drink\nAirport pickup',t.inclusions)}${ta('hItinExc','❌ Exclusions','Lunch and dinner\nEntry tickets',t.exclusions)}`;
+}
+const hItinLines=v=>String(v||'').split('\n').map(x=>x.trim()).filter(Boolean);
 // ── Resorts & Hotels (Agency): one PDF, no day-by-day plan ──
 // Location, the price range (pre-filled from the property, editable) and every photo — Photo 1-3
 // and all images in its Google Drive photos folder — go into one PDF. Only the PDF is sent.
@@ -1452,16 +1460,16 @@ async function openHBrochure(p){
  hItin.br.price=hBrochureReadPrice();drawHBrochure();
 }
 function hBrochureReadPrice(){const v=id=>$(id)?($(id).value||'').trim():undefined,o=hItin.br?.price||{};
- return {price_on:true,price_from:v('hItinPriceFrom')??o.price_from,price_to:v('hItinPriceTo')??o.price_to,price_currency:v('hItinPriceCur')??o.price_currency,price_unit:v('hItinPriceUnit')??o.price_unit}}
+ return {inclusions:$('hItinInc')?$('hItinInc').value:o.inclusions,exclusions:$('hItinExc')?$('hItinExc').value:o.exclusions,price_on:true,price_from:v('hItinPriceFrom')??o.price_from,price_to:v('hItinPriceTo')??o.price_to,price_currency:v('hItinPriceCur')??o.price_currency,price_unit:v('hItinPriceUnit')??o.price_unit}}
 function drawHBrochure(){
  const el=$('hItinDetail'),p=hItin.sel,b=hItin.br;if(!el||!p||!b)return;
  const ph=b.photos;
  const photos=ph===null?`<div class="tpl-empty" style="padding:10px"><div class="spinner"></div>Loading photos from the Drive folder…</div>`
-  :ph.length?`<div class="ai-itin-photos" id="hItinPhotos">${ph.map(u=>`<figure>${hImg(u,'',p.name)}</figure>`).join('')}</div><div style="font-size:12.5px;color:var(--muted)">${ph.length} photo${ph.length>1?'s':''} go into the PDF${p.has_folder?' (Photo 1-3 and the Drive folder)':''}.</div>`
+  :ph.length?`<div class="ai-itin-photos" id="hItinPhotos">${ph.map(u=>`<figure>${hImg(u,'',p.name)}</figure>`).join('')}</div><div style="font-size:12.5px;color:var(--muted)">${ph.length} photo${ph.length>1?'s':''} go into the PDF, one per row${p.has_folder?' (Photo 1-3 and the Drive folder)':''}.</div>`
   :`<div style="font-size:12.5px;color:var(--muted)">No photos found${p.has_folder?' — check the Drive folder is shared as "Anyone with the link"':''}. The PDF will have the location and price range only.</div>`;
  const t=b.price||{price_on:true};
  el.innerHTML=`<div class="ai-itin-pkg"><h3>${esc(p.name)}</h3><small>${esc(['Resorts & Hotels',p.location?'📍 '+p.location:''].filter(Boolean).join(' · '))}</small></div>${photos}
- <div class="tpl-form"><div style="font-size:13px;font-weight:600">💰 Price range</div><div id="hBrochurePrice">${hItinPriceFields(t).replace(/<label class="h-itin-check">[\s\S]*?<\/label>/,'')}</div>
+ <div class="tpl-form"><div style="font-size:13px;font-weight:600">💰 Price range</div><div class="ai-itin-prof">${hItinIncExcFields(t)}</div><div id="hBrochurePrice">${hItinPriceFields(t).replace(/<label class="h-itin-check">[\s\S]*?<\/label>/,'')}</div>
  <label>Message with the PDF<input id="hItinCaption" placeholder="${esc(`📄 *${p.name}*${p.location?' · '+p.location:''} + the price range`)}"></label>
  <div style="font-size:12.5px;color:var(--muted)">Only the PDF is sent — the location, price range and photos are inside it.</div><div id="hItinErr" style="color:#d93025;font-size:13px"></div></div>
  <div class="tpl-actions"><button class="ai-itin-btn" id="hItinSendBtn" onclick="hBrochureSend()" ${ph===null?'disabled':''}>📄 Send PDF</button></div>`;
@@ -1472,7 +1480,7 @@ async function hBrochureSend(){
  const btn=$('hItinSendBtn'),err=$('hItinErr');const caption=($('hItinCaption')?.value||'').trim();
  if(btn){btn.disabled=true;btn.textContent='Building PDF…'}if(err)err.textContent='';
  try{
-  const d=await apiJson(WORKER+'/hospitality/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,property_id:p.id,...(price?{price}:{}),...(caption?{caption}:{})})});
+  const d=await apiJson(WORKER+'/hospitality/chat-itinerary/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,property_id:p.id,...(price?{price}:{}),...(hItinLines(t.inclusions).length?{inclusions:hItinLines(t.inclusions)}:{}),...(hItinLines(t.exclusions).length?{exclusions:hItinLines(t.exclusions)}:{}),...(caption?{caption}:{})})});
   closeHospItin();
   const shown=caption||`📄 *${p.name}*${p.location?` · ${p.location}`:''}${price?`\n💰 Price range: ${hItinPriceLine(price)}`:''}`;
   const msg=pushLocal(lead,{role:'assistant',content:shown,attachment:{kind:'document',type:'application/pdf',name:d.name||`${p.name}.pdf`}});setMsgStatus(lead,msg,null);
@@ -1498,6 +1506,7 @@ function hItinForm(){
   <label class="full">Kids' ages<input id="hItinAges" placeholder="e.g. 4, 9" value="${esc(t.child_ages||'')}"></label>
   <label class="full">Pace<select id="hItinPace">${paces.map(([v,l])=>`<option value="${v}" ${t.pace===v?'selected':''}>${l}</option>`).join('')}</select></label>
   <div class="full" style="display:grid;gap:4px;font-size:12px;color:var(--muted)">Interests<div class="ai-itin-chips" id="hItinInterests">${H_ITIN_INTERESTS.map(x=>`<label><input type="checkbox" value="${esc(x)}" ${(t.interests||[]).includes(x)?'checked':''}>${esc(x)}</label>`).join('')}</div><input id="hItinInterestsMore" placeholder="Other interests, comma separated" value="${esc(custom)}" style="width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px"></div>
+  ${hItinIncExcFields(t)}
   ${hItinPriceFields(t)}
  </div></div><div class="tpl-actions"><button class="ai-itin-btn" id="hItinDraftBtn" onclick="hItinDraft()">✨ Draft itinerary</button></div>`;
 }
@@ -1525,6 +1534,7 @@ function hItinRead(){
  const priceOn=!!$('hItinPriceOn')?.checked,old=hItin.stay||{};
  const pv=(id,k)=>$(id)?v(id):old[k];
  return {price_on:priceOn,price_from:pv('hItinPriceFrom','price_from'),price_to:pv('hItinPriceTo','price_to'),price_currency:pv('hItinPriceCur','price_currency'),price_unit:pv('hItinPriceUnit','price_unit'),
+  inclusions:$('hItinInc')?$('hItinInc').value:old.inclusions,exclusions:$('hItinExc')?$('hItinExc').value:old.exclusions,
   room_id:v('hItinRoom'),nights:v('hItinNights')||'2',check_in:v('hItinCheckIn'),adults:v('hItinAdults'),children:v('hItinChildren'),infants:v('hItinInfants'),child_ages:v('hItinAges'),pace:v('hItinPace'),
   interests:[...document.querySelectorAll('#hItinInterests input:checked')].map(c=>c.value).concat(v('hItinInterestsMore').split(',').map(x=>x.trim()).filter(Boolean))};
 }
@@ -1546,7 +1556,8 @@ function drawHItinDetail(state,msg){
  el.innerHTML=head+days+`<div class="tpl-form">${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="hItinSendPhotos" checked>Also send the ${r?'property and room':'property'} photos (up to 3)</label>`:''}<label>Message with the PDF<input id="hItinCaption" value="${esc(`📄 Here is your stay itinerary for *${p.name}*.${hItinPriceOf(t)?` 💰 Price range: ${hItinPriceLine(hItinPriceOf(t))}`:''}`)}"></label><div id="hItinErr" style="color:#d93025;font-size:13px"></div></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawHItinDetail('profile')">✏️ Stay details</button><button class="ai-itin-btn sec" onclick="hItinGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="hItinSendBtn" onclick="hItinSend()">✅ Approve &amp; send</button></div>`;
 }
 const hItinBody=()=>{const t=hItin.stay||{};return {property_id:hItin.sel.id,...(t.room_id?{room_id:t.room_id}:{}),nights:t.nights||'2',...(t.check_in?{check_in:t.check_in}:{}),
- guest:{adults:t.adults,children:t.children,infants:t.infants,child_ages:t.child_ages,pace:t.pace,interests:t.interests||[]}}};
+ guest:{adults:t.adults,children:t.children,infants:t.infants,child_ages:t.child_ages,pace:t.pace,interests:t.interests||[]},
+ ...(hItinLines(t.inclusions).length?{inclusions:hItinLines(t.inclusions)}:{}),...(hItinLines(t.exclusions).length?{exclusions:hItinLines(t.exclusions)}:{})}};
 async function hItinGenerate(){
  const p=hItin.sel;if(!p)return;if(!hItin.stay)hItin.stay=hItinRead();const seq=++hItin.seq;hItin.busy=true;drawHItinDetail('loading');
  try{const d=await apiJson(WORKER+'/hospitality/ai-itinerary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(hItinBody())});
