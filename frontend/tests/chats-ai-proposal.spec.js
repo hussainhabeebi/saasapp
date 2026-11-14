@@ -37,7 +37,7 @@ async function open(page, { industry = 'general', draftFails = false } = {}) {
       if (draftFails) return route.fulfill({ status: 422, json: { error: 'AI timed out' } });
       return route.fulfill({ json: { proposal: DRAFT } });
     }
-    if (url.pathname.endsWith('/catalog/chat-proposal/send')) { calls.send.push(req.postDataJSON()); return route.fulfill({ json: { ok: true, photos_sent: 1, name: 'Proposal-Asha.pdf' } }); }
+    if (url.pathname.endsWith('/catalog/chat-proposal/send')) { calls.send.push(req.postDataJSON()); return route.fulfill({ json: { ok: true, photos_sent: 1, name: 'Proposal-Asha.pdf', stage: 'proposal_sent' } }); }
     return route.abort();
   });
   await page.goto(chatsUrl, { waitUntil: 'domcontentloaded' });
@@ -82,6 +82,8 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
   expect(sent.proposal).toMatchObject({ summary: 'Edited overview.', tax_pct: 18, tax_label: 'GST', valid_days: 15, benefits: ['Local team'] });
   expect(sent.proposal.items.map((r) => [r.id, r.qty, r.unit_price])).toEqual([['1', 2, 40000], ['3', 1, 2500]]);
   await expect(page.locator('#thread .bubble.out')).toContainText('Here is our proposal');
+  // The lead moved to Proposal Sent — only Follow-up V3's proposal templates go to it now.
+  await expect(page.locator('#toast')).toContainText('stage: Proposal Sent');
 });
 
 test('a failed draft can be retried, and ✏️ Items keeps the selection', async ({ page }) => {

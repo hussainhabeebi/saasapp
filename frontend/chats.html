@@ -1622,7 +1622,10 @@ async function aiPropSend(){
   const d=await apiJson(WORKER+'/catalog/chat-proposal/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,proposal:p,caption,send_photos:sendPhotos})});
   closeAiProp();
   const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind:'document',type:'application/pdf',name:d.name||'Proposal.pdf'}});setMsgStatus(lead,msg,null);
-  toast(d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the proposal sent`:'✓ Proposal sent');
+  // The worker moved the lead to "Proposal Sent": from now on only Follow-up V3's proposal templates go to it.
+  if(d.stage){lead.Stage=d.stage;if(lead._rec)lead._rec.Stage=d.stage;if(current===lead){renderInfo();renderHeaderCtl()}}
+  const moved=d.stage==='proposal_sent'?' · stage: Proposal Sent':'';
+  toast((d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the proposal sent`:'✓ Proposal sent')+moved);
  }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent='✅ Approve & send'}}
 }
 function aiPropMore(){aiPropReadPick();$('aiPropMain')?.classList.remove('picked');$('aiPropSearch')?.focus()}

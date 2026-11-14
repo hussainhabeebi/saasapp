@@ -11,7 +11,7 @@ import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
 import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,waShopLoadClient,waShopOnInbound,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
-import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
+import {FV3_PROPOSAL_STAGE,fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
@@ -5783,7 +5783,7 @@ export const BABY_SUMMARY_DEFAULT_MINS=30;
 // in the last 24h.
 export function babyCareSummaryDue(lead, nowMs, mins=BABY_SUMMARY_DEFAULT_MINS){
   if(!lead || !String(lead['Last Product Sku']||'').trim()) return false;
-  if(lead.OptOut==='Yes' || lead.Handover==='Yes' || PIPELINE_TERMINAL_STAGES.has(lead.Stage)) return false;
+  if(lead.OptOut==='Yes' || lead.Handover==='Yes' || followupNormalBlocked(lead.Stage)) return false;
   const lastCustomer=Date.parse(lead.LastCustomerMsgAt||'');
   if(!Number.isFinite(lastCustomer)) return false;
   const silentMs=nowMs-lastCustomer;
@@ -5919,7 +5919,7 @@ async function classicFollowupProcessClient(env, c){
     // Phase 1: filter leads that are due this tick
     const dueTasks=[];
     for(const lead of leadRows){
-      if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+      if(followupNormalBlocked(lead.Stage)) continue;
       if(meetingLeads.has(Number(lead.Id))) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
@@ -12978,6 +12978,9 @@ async function engineMaybeSendProductDescription(env, c, clientId, convId, produ
      site to fire the instant route from, so this tick detects "stored stage !== lead's current
      Stage" itself and resets the cadence the same way, just up to a day later. */
 const PIPELINE_TERMINAL_STAGES=new Set(['won','converted','lost','human_handover','consultation_booked','visit_booked','appt_booked','Converted','Lost','Closed','Opt Out']);
+// Normal follow-ups (classic ladder, Smart Follow-ups, Baby Care summary) never go to a closed lead,
+// nor to one at "Proposal Sent" — that lead gets only Follow-up V3's proposal templates.
+function followupNormalBlocked(stage){ return PIPELINE_TERMINAL_STAGES.has(stage)||stage===FV3_PROPOSAL_STAGE; }
 // Step 1 fires the moment a lead enters a stage; steps 2-4 fire on/after these many days since
 // then; step 5+ repeats every 30 days after that ("...then monthly if stuck").
 const PIPELINE_FOLLOWUP_DAY_THRESHOLDS=[1,3,7,14];
@@ -22616,6 +22619,8 @@ async function pcEnsureSchema(env){
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_items (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'product', name TEXT NOT NULL, category TEXT, sku TEXT, short_description TEXT, details TEXT, features TEXT, keywords TEXT, price REAL, currency TEXT NOT NULL DEFAULT 'INR', price_unit TEXT, image_url_1 TEXT, image_url_2 TEXT, image_url_3 TEXT, image_url_4 TEXT, image_url_5 TEXT, voice_note_url TEXT, brochure_url TEXT, auto_send INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT)`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pc_items_client ON pc_items(client_id, status)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_media_sent (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, item_id INTEGER NOT NULL, sent_at TEXT NOT NULL, PRIMARY KEY (lead_id, item_id))`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', total REAL, currency TEXT NOT NULL DEFAULT '', items_json TEXT NOT NULL DEFAULT '[]', pdf_name TEXT NOT NULL DEFAULT '', sent_by TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pc_proposals_lead ON pc_proposals(client_id, lead_id, sent_at)`),
   ]);
   _pcSchemaEnsured=true;
 }
@@ -22758,7 +22763,39 @@ async function handleCatalogChatProposalSend(request,env){
   const sent=data?.attachments?.[0]||{};
   await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
     attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
-  return json({ok:true,photos_sent:photosSent,name,total:pcProposalTotals(proposal).total,data});
+  const totals=pcProposalTotals(proposal);
+  const sentAt=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO pc_proposals (client_id,lead_id,title,total,currency,items_json,pdf_name,sent_by,sent_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid),leadId,proposal.title,totals.priced?totals.total:null,totals.currency,
+      JSON.stringify(proposal.items.map(r=>({id:r.id,name:r.name,qty:r.qty,unit_price:r.unit_price}))),name,String(payload.email||''),sentAt).run()
+    .catch(e=>reportOpsError(env,'Chats AI proposal — log failed',e,{clientId:payload.cid,leadId}));
+  const stage=await pcMarkProposalSent(env,payload.cid,lead,{at:sentAt,total:totals.priced?totals.total:null});
+  return json({ok:true,photos_sent:photosSent,name,total:totals.total,stage,data});
+}
+// After a proposal goes out: the lead moves to "Proposal Sent" (FV3_PROPOSAL_STAGE), so Follow-up
+// V3 sends only the proposal templates and every other follow-up sender skips it
+// (followupNormalBlocked). A lead already won or booked keeps its stage. Returns the lead's stage.
+const PC_KEEP_STAGES=new Set(['won','converted','Converted','consultation_booked','visit_booked','appt_booked']);
+async function pcMarkProposalSent(env,cid,lead,{at,total}={}){
+  const from=String(lead.Stage||'');
+  if(PC_KEEP_STAGES.has(from)||from===FV3_PROPOSAL_STAGE) return from;
+  const fields={Stage:FV3_PROPOSAL_STAGE,...(total&&!(Number(lead.DealValue)>0)?{DealValue:total}:{})};
+  let r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(lead.Id),...fields}}).catch(()=>null);
+  // DealValue may not exist on every base — the stage is what matters.
+  if(!r?.ok&&fields.DealValue){ delete fields.DealValue; r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(lead.Id),...fields}}).catch(()=>null); }
+  if(!r?.ok){ await reportOpsError(env,'Chats AI proposal — stage update failed',new Error('HTTP '+(r?.status||'?')),{clientId:cid,leadId:lead.Id}).catch(()=>{}); return from; }
+  await chatsV2ApplyLeadPatch(env,lead.Id,fields,{broadcast:engineBroadcastUpdate}).catch(()=>{});
+  await engineJournalStageChange(env,cid,lead.Id,from,FV3_PROPOSAL_STAGE);
+  await fv3Schedule(env,cid).catch(()=>{});
+  return FV3_PROPOSAL_STAGE;
+}
+// Follow-up V3: the latest proposal per lead ({leadId:{at,title}}), for its proposal track.
+async function pcLatestProposals(env,cid,leadId=null){
+  await pcEnsureSchema(env);
+  const {results}=await env.DB.prepare(`SELECT lead_id, title, MAX(sent_at) AS at FROM pc_proposals WHERE client_id=?${leadId?' AND lead_id=?':''} GROUP BY lead_id`)
+    .bind(...(leadId?[Number(cid),Number(leadId)]:[Number(cid)])).all();
+  const out={}; for(const r of results||[]) out[r.lead_id]={at:r.at,title:r.title||''};
+  return out;
 }
 
 // Bot: the customer named a catalogue item → its details card, then photos, voice note and
@@ -39205,6 +39242,10 @@ const FOLLOWUP_V3_DEPS={
     ||(c?.wa_token&&(c.wa_phone_id||c.waba_id)?{waba_id:c.waba_id, wa_phone_id:c.wa_phone_id, wa_token:c.wa_token}:null),
   sendStep:sendFollowupLadderStep,
   chooseVariant:pickLadderVariant,
+  // Proposal track (Chats → 📑 AI Proposal moves a lead to "Proposal Sent"): the latest proposal per
+  // lead, and which accounts get the proposal templates submitted.
+  proposals:(env,cid,leadId)=>pcLatestProposals(env,cid,leadId),
+  proposalsOn:c=>pcIsOn(c)||String(c?.industry||'').toLowerCase()==='saas_digital_marketing',
   sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
   orderPhones:fv3OrderPhones,
   meetingLeadIds:(env,cid)=>mtgActiveLeadIds(env,cid,new Date(),true),
@@ -42802,7 +42843,7 @@ export class LeadFollowupAgent{
     const leadR=await ncFetch(this.env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
     if(!leadR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
     const lead=await leadR.json().catch(()=>null);
-    if(!lead||PIPELINE_TERMINAL_STAGES.has(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
+    if(!lead||followupNormalBlocked(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
     // Skip if a human agent replied more recently than the customer — rep is already in contact.
     const lastCustomerMs=new Date(lead.LastMsgAt||lead.Date||0).getTime();
     if(lead.LastAgentMsgAt && new Date(lead.LastAgentMsgAt).getTime()>lastCustomerMs){ await this._arm(); return; }
@@ -42919,7 +42960,7 @@ async function handleFollowupSmartMigrate(request, env){
   const {list:leads=[]}=await leadsR.json().catch(()=>({}));
   let spawned=0;
   for(const lead of leads){
-    if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+    if(followupNormalBlocked(lead.Stage)) continue;
     const nextStep=[1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes');
     if(!nextStep) continue;
     const doId=env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`);
