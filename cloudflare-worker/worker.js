@@ -18,10 +18,11 @@ import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyO
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
 import {taPropertyClean,taPropertyMediaPlan,taPropertyMediaItems,taPropertyContextLines,taResortLeadCategory,taPropertyFolderId,TA_PROPERTY_FOLDER_SEND_EXPLICIT,TA_PROPERTY_FOLDER_SEND_VOLUNTEERED,taPropertiesSorted} from './ta-properties.js';
-import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
+import {TA_PKG_PREFIX,TA_PKG_PDF_PREFIX,TA_PKG_ENQUIRE_PREFIX,taFindPackageInText,taPackagesForLocation,taPackageHasMedia,taPackageMediaItems,taMoney,taPackagePrice,taPackageFollowUp,taMatchItinerary,taPackageItineraryText,taBuildItineraryPdf,taFetchItineraryAssets,taItineraryPdfName,taPrepareImage,TA_PKG_REGIONS,TA_PKG_REGION_PREFIX,taPackageRegion,taPackageRegionCounts,taRegionInText,taPackagesNamedInText,taPackageListRows,taPackagesByKeyword,taPackageKeywords} from './travel-itinerary.js';
 import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-auto.js';
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
+import {hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -22314,9 +22315,20 @@ async function handleTravelAiItinerary(request,env){
   let pkg=body?.package&&typeof body.package==='object'?body.package:null;
   if(!pkg&&body?.package_id!=null&&c)pkg=await taChatPackage(env,c,payload.cid,body.package_id);
   if(!pkg)return json({error:'Missing package'},400);
-  // A whole trip is a long answer: allow far more time and tokens than a WhatsApp reply.
-  const opts={json:true,temperature:0.4,maxOutputTokens:8192,timeoutMs:90000,caller:'ta-ai-itinerary'};
-  const generate=async(system,user)=>{
+  const generate=taAiItineraryGenerator(env,c,'ta-ai-itinerary');
+  // Optional traveller profile (pax mix, kids' ages, pace, interests, route) — see taAiTraveller.
+  const out=await taAiItinerary(pkg,generate,{traveller:body?.traveller});
+  if(out.error){
+    await reportOpsError(env,'travel/ai-itinerary — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
+    return json({error:out.error},422);
+  }
+  return json(out);
+}
+// (system,user) → model text or {error}: the account's own AI provider, else shared Gemini.
+// A whole trip is a long answer: allow far more time and tokens than a WhatsApp reply.
+function taAiItineraryGenerator(env,c,caller){
+  const opts={json:true,temperature:0.4,maxOutputTokens:8192,timeoutMs:90000,caller};
+  return async(system,user)=>{
     const own=c?await aiClientGenerate(env,c,system,user,opts).catch(e=>({text:null,fallback:true,error:e.message})):null;
     if(own?.text)return own.text;
     if(own&&!own.fallback)return {error:`your AI provider failed (${own.error||'no reply'}) and shared AI fallback is off`};
@@ -22325,13 +22337,6 @@ async function handleTravelAiItinerary(request,env){
     if(shared.text)return shared.text;
     return {error:(own?`your AI provider failed (${own.error||'no reply'}); `:'')+`shared Gemini: ${shared.error}`};
   };
-  // Optional traveller profile (pax mix, kids' ages, pace, interests, route) — see taAiTraveller.
-  const out=await taAiItinerary(pkg,generate,{traveller:body?.traveller});
-  if(out.error){
-    await reportOpsError(env,'travel/ai-itinerary — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
-    return json({error:out.error},422);
-  }
-  return json(out);
 }
 // ── Chats → ✨ AI Itinerary (Travel Agency only) ──
 // Pick a package in a chat, draft the day-by-day plan with AI (POST /travel/ai-itinerary with
@@ -22406,6 +22411,148 @@ async function handleTravelChatItinerarySend(request,env){
   await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
     attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
   return json({ok:true,data});
+}
+// ── Chats → ✨ AI Itinerary (Hospitality accounts) ──
+// Pick a property (and optionally a room) in a chat, fill in the guest profile and stay dates, the
+// AI drafts a day-by-day stay plan (hospitality-ai-itinerary.js); review it with the property's
+// photos, then "Approve & send": the photos (optional) and a stay itinerary PDF go into the chat.
+// Nothing is saved; no price is ever shown — the booking team gives it at checkout.
+const hospChatIsOn=c=>c?.hospitality_enabled==='Yes';
+const hospChatShort=(v,max)=>{const t=String(v??'').replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max-1).trimEnd()+'…':t;};
+async function hospChatLoad(env,clientId,propertyId,roomId){
+  const property=propertyId!=null&&propertyId!==''?await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=? AND client_id=? AND active=1`).bind(Number(propertyId)||0,Number(clientId)).first():null;
+  let room=null;
+  if(property&&roomId!=null&&roomId!==''){
+    room=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE id=? AND client_id=? AND active=1`).bind(Number(roomId)||0,Number(clientId)).first();
+    if(room&&room.property_id!=null&&Number(room.property_id)!==Number(property.id))room=null;
+  }
+  return {property,room};
+}
+// GET /hospitality/chat-properties → {properties:[{id,name,location,description,amenities,photos,rooms:[…]}]}
+// photos are display links (Drive links → thumbnails) for the chat preview.
+async function handleHospitalityChatProperties(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c)return json({error:'Client not found'},404);
+  if(!hospChatIsOn(c))return json({error:'AI Itinerary is for Hospitality accounts.'},403);
+  const [{results:props},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(payload.cid)).all(),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(payload.cid)).all(),
+  ]);
+  const show=row=>hospAiPhotos(row).map(u=>engineResolveDirectImageUrl(u)).filter(Boolean).slice(0,5);
+  const room=u=>({id:String(u.id),name:String(u.name||'').trim(),unit_type:String(u.unit_type||'').trim(),
+    capacity_adults:Number(u.capacity_adults)||0,capacity_children:Number(u.capacity_children)||0,amenities:hospChatShort(u.amenities,200),photos:show(u)});
+  const list=(props||[]).filter(p=>String(p.name||'').trim()).map(p=>{
+    const linked=(units||[]).filter(u=>Number(u.property_id)===Number(p.id));
+    // A property with no rooms linked to it offers the account's unlinked rooms (single-property setups).
+    const rooms=(linked.length?linked:(units||[]).filter(u=>u.property_id==null)).filter(u=>String(u.name||'').trim()).map(room);
+    return {id:String(p.id),name:String(p.name).trim(),location:String(p.location||'').trim(),description:hospChatShort(p.description,300),
+      amenities:hospChatShort(p.amenities,200),photos:show(p),rooms};
+  });
+  return json({properties:list});
+}
+// POST /hospitality/ai-itinerary {property_id, room_id?, nights, check_in?, guest?} → {days}
+async function handleHospitalityAiItinerary(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c)return json({error:'Client not found'},404);
+  if(!hospChatIsOn(c))return json({error:'AI Itinerary is for Hospitality accounts.'},403);
+  const {property,room}=await hospChatLoad(env,payload.cid,body?.property_id,body?.room_id);
+  if(!property)return json({error:'Property not found'},404);
+  const out=await hospAiItinerary(property,room,taAiItineraryGenerator(env,c,'hosp-ai-itinerary'),
+    {nights:body?.nights,checkIn:body?.check_in,guest:body?.guest});
+  if(out.error){
+    await reportOpsError(env,'hospitality/ai-itinerary — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
+    return json({error:out.error},422);
+  }
+  return json({days:out.days});
+}
+async function hospChatPdfImage(env,url){
+  const blob=await hospitalityFetchMediaBlob(env,url,false).catch(()=>null);
+  if(!blob)return null;
+  return await taPrepareImage(new Uint8Array(await blob.arrayBuffer())).catch(()=>null);
+}
+async function hospChatPost(c,convId,fd){
+  return fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+}
+// POST /hospitality/chat-itinerary/send {lead_id, property_id, room_id?, nights, check_in?, guest?,
+// days, caption?, send_photos?} → up to 3 photos (property, then room) and the stay itinerary PDF.
+async function handleHospitalityChatItinerarySend(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c)return json({error:'Client not found'},404);
+  if(!hospChatIsOn(c))return json({error:'AI Itinerary is for Hospitality accounts.'},403);
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token)return json({error:'Chatwoot is not configured for this account.'},400);
+  const leadId=Number(body?.lead_id)||0;
+  if(!leadId)return json({error:'lead_id required'},400);
+  const lr=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  const lead=lr.ok?await lr.json().catch(()=>null):null;
+  if(!lead||String(lead.ClientId)!==String(payload.cid))return json({error:'Lead not found'},404);
+  const convId=String(lead.ConversationID||'').trim();
+  if(!convId)return json({error:'This lead has no WhatsApp chat yet.'},400);
+  const access=await chatSendCheckAndClaim(env,c,payload,{leadId,convId});
+  if(!access.ok)return json({error:access.error},403);
+  const {property,room}=await hospChatLoad(env,payload.cid,body?.property_id,body?.room_id);
+  if(!property)return json({error:'Property not found'},404);
+  const nights=hospAiNights(body?.nights),checkIn=hospAiDate(body?.check_in);
+  const pkg=hospAiStayPkg(property,room,nights);
+  const itin={...taChatDraftItin(pkg,body?.days),...(checkIn?{from_date:checkIn,to_date:hospAiCheckOut(checkIn,nights)}:{})};
+  if(!itin.days.length)return json({error:'The itinerary has no days to send.'},400);
+  const propPhotos=hospAiPhotos(property),roomPhotos=room?hospAiPhotos(room):[];
+  let bytes;
+  try{
+    const [assets,propImgs,roomImgs]=await Promise.all([
+      taFetchItineraryAssets(pkg,itin,{logoUrl:String(bcLogoForPdf(await bcForClient(env,c),c)||'').trim()}),
+      Promise.all(propPhotos.slice(0,3).map(u=>hospChatPdfImage(env,u))),
+      Promise.all(roomPhotos.slice(0,2).map(u=>hospChatPdfImage(env,u))),
+    ]);
+    const pImgs=propImgs.filter(Boolean),rImgs=roomImgs.filter(Boolean);
+    // The property's own photo is the cover (the Wikipedia intro about the location stays).
+    if(pImgs[0])assets.cover={...(assets.cover||{}),image:pImgs[0]};
+    assets.gallery=[
+      ...pImgs.slice(pImgs.length>1?1:0,3).map((image,i)=>({image,title:i===0?property.name:'',text:i===0?hospChatShort(property.amenities,220):''})),
+      ...rImgs.map((image,i)=>({image,title:i===0?room.name:'',text:i===0?hospChatShort([room.unit_type,room.amenities].filter(Boolean).join(' · '),220):''})),
+    ];
+    bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||property.name||'',agencyPhone:c.support_phone||c.phone||'',
+      accent:c.quote_accent_color||'',assets,tag:'Stay Itinerary',facts:hospAiStayFacts(property,room,{nights,checkIn,guest:body?.guest}),footNote:HOSP_AI_FOOTNOTE});
+  }catch(e){ await reportOpsError(env,'Chats hospitality AI itinerary — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
+  // Photos first (property, then room — at most 3), so the guest sees the place before the PDF.
+  let photosSent=0;
+  if(body?.send_photos){
+    const urls=[...propPhotos.slice(0,room?2:3).map(url=>({url,kind:'property'})),...roomPhotos.map(url=>({url,kind:'room'}))].slice(0,3);
+    for(const [i,{url,kind}] of urls.entries()){
+      const blob=await hospitalityFetchMediaBlob(env,url,false).catch(()=>null);
+      if(!blob)continue;
+      const cap=photosSent===0?`🏨 *${property.name}*${property.location?` · ${property.location}`:''}`:'';
+      const name=`${kind}-photo${i+1}.${(blob.type.split('/')[1]||'jpg').replace(/[^a-z0-9]/gi,'')}`;
+      const fd=new FormData();
+      fd.append('content',cap); fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]',blob,name);
+      const r=await hospChatPost(c,convId,fd).catch(()=>null);
+      if(!r?.ok)continue;
+      photosSent++;
+      const data=await r.json().catch(()=>({}));const sent=data?.attachments?.[0]||{};
+      await chatsRecordOutgoing(env,payload.cid,leadId,{content:cap,
+        attachment:{kind:'image',type:blob.type||'image/jpeg',name,size:blob.size||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+    }
+  }
+  const caption=String(body?.caption||'').trim().slice(0,1000)||`📄 Here is your stay itinerary for *${property.name}*.`;
+  const name=hospAiPdfName(property);
+  const fd=new FormData();
+  fd.append('content',caption); fd.append('message_type','outgoing'); fd.append('private','false');
+  fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),name);
+  const r=await hospChatPost(c,convId,fd);
+  if(!r.ok)return json({error:'WhatsApp send failed (HTTP '+r.status+')',photos_sent:photosSent},502);
+  const data=await r.json().catch(()=>({}));
+  const sent=data?.attachments?.[0]||{};
+  await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
+    attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+  return json({ok:true,photos_sent:photosSent,name,data});
 }
 export async function ltMenuLoad(env,clientId){
   await ltMenuEnsureSchema(env);
@@ -43055,6 +43202,9 @@ export default {
       else if(url.pathname==='/travel/ai-itinerary' && request.method==='POST'){ res=await handleTravelAiItinerary(request,env); }
       else if(url.pathname==='/travel/chat-packages' && request.method==='GET'){ res=await handleTravelChatPackages(request,env); }
       else if(url.pathname==='/travel/chat-itinerary/send' && request.method==='POST'){ res=await handleTravelChatItinerarySend(request,env); }
+      else if(url.pathname==='/hospitality/chat-properties' && request.method==='GET'){ res=await handleHospitalityChatProperties(request,env); }
+      else if(url.pathname==='/hospitality/ai-itinerary' && request.method==='POST'){ res=await handleHospitalityAiItinerary(request,env); }
+      else if(url.pathname==='/hospitality/chat-itinerary/send' && request.method==='POST'){ res=await handleHospitalityChatItinerarySend(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }

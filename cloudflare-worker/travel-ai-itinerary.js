@@ -33,14 +33,14 @@ export function taAiTraveller(t){
     pace:TA_AI_PACES[pace]?pace:'',interests:list(t.interests).slice(0,15).map(x=>x.slice(0,60)),
     destinations:list(t.destinations).slice(0,10).map(x=>x.slice(0,120))};
 }
-function travellerFacts(t){
+export function travellerFacts(t){
   const pax=[t.adults&&`${t.adults} adult${t.adults>1?'s':''}`,
     t.children&&`${t.children} child${t.children>1?'ren':''}${t.child_ages.length?` (age${t.child_ages.length>1?'s':''} ${t.child_ages.join(', ')})`:''}`,
     t.infants&&`${t.infants} infant${t.infants>1?'s':''}`].filter(Boolean).join(', ');
   return [['Travellers',pax],['Pace',t.pace?TA_AI_PACES[t.pace]:''],['Interests',t.interests.join('; ')],
     ['Route (in this order)',t.destinations.join(' → ')]];
 }
-function travellerRules(t){
+export function travellerRules(t){
   const r=[];
   if(t.destinations.length)r.push('- Follow the Route in the given order, splitting the nights as written (e.g. "Dubai 3N"); if nights per stop are not given, split them sensibly, with travel between stops on its own transfer item. "overnight" is the stop for that night.');
   if(t.pace)r.push(`- Pace: ${TA_AI_PACES[t.pace]}.`);
@@ -170,7 +170,9 @@ export async function taAiItineraryPhotos(days,pkg,{fetchImpl=globalThis.fetch,t
 // the AI gave no reply (the error is passed on so the agent sees why).
 export async function taAiItinerary(pkg,generate,opts={}){
   if(!str(pkg?.name,200)&&!str(pkg?.destination,200))return {error:'Add a package name or destination first.'};
-  const {system,user}=taAiItineraryPrompt(pkg,opts.traveller);
+  // opts.prompt lets another module (Hospitality → stay itinerary) bring its own prompt and reuse
+  // the parse / retry / photo steps.
+  const {system,user}=opts.prompt||taAiItineraryPrompt(pkg,opts.traveller);
   const why=[];
   const ask=async sys=>{
     const r=await generate(sys,user);

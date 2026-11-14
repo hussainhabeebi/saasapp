@@ -509,7 +509,10 @@ function hexRgb(hex,fallback){
 // title, key facts, an "About <destination>" intro, the day-by-day plan with a photo and short
 // description per place, inclusions / exclusions side by side, notes, and a footer with the agency
 // contact and page numbers. `assets` comes from taFetchItineraryAssets (all optional).
-export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={}}={}){
+// Optional (Hospitality → stay itinerary): `tag` replaces "TRAVEL ITINERARY", `facts` replaces the
+// key-fact boxes ([[LABEL,value]…]), `footNote` replaces the price/availability line, and
+// assets.gallery ([{title,text,image}]) adds a "Your Stay" section of photo cards after the intro.
+export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay'}={}){
   const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=64;
   const AC=hexRgb(accent,[0.06,0.45,0.47]).map(v=>v.toFixed(3)).join(' ');
   const plan=taItineraryPlan(pkg,itin);
@@ -550,7 +553,7 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
     if(first){
       txt(tx,H-38,(agency||'Travel Itinerary').slice(0,40),19,true,'1 1 1');
       if(agencyPhone)txt(tx,H-56,pdfSafe(agencyPhone).slice(0,40),10,false,'0.88 0.96 0.96');
-      const tag='TRAVEL ITINERARY';txt(W-MX-textWidth(tag,9,true),H-38,tag,9,true,'0.88 0.96 0.96');
+      const tag=pdfSafe(tagText).toUpperCase().slice(0,30);txt(W-MX-textWidth(tag,9,true),H-38,tag,9,true,'0.88 0.96 0.96');
     }else{
       txt(tx,H-28,`${agency?agency.slice(0,40)+'  |  ':''}${name.slice(0,50)}`,10,true,'1 1 1');
     }
@@ -586,7 +589,7 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
   }
   // ── Key facts ──
   const price=taMoney(taPackagePrice(pkg),pkg?.currency);
-  const facts=[['DESTINATION',dest],['DURATION',nightsLine(pkg?.nights)],['TRAVEL DATES',dateLine(itin)],['TRAVELLERS',paxLine(pkg)],['PRICE PER PERSON',price]].filter(f=>f[1]).slice(0,4);
+  const facts=Array.isArray(factsIn)?factsIn.map(([k,v])=>[pdfSafe(k).toUpperCase(),pdfSafe(v)]).filter(f=>f[1]).slice(0,4):[['DESTINATION',dest],['DURATION',nightsLine(pkg?.nights)],['TRAVEL DATES',dateLine(itin)],['TRAVELLERS',paxLine(pkg)],['PRICE PER PERSON',price]].filter(f=>f[1]).slice(0,4);
   if(facts.length){
     const gap=10,bw=(CW-gap*(facts.length-1))/facts.length,bh=50;
     facts.forEach(([k,v],i)=>{
@@ -602,6 +605,30 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
   if(assets.cover?.extract){
     section(`About ${dest}`);
     for(const l of wrap(assets.cover.extract,10.5,false,CW,6)){need(15);txt(MX,y-10.5,l,10.5,false,'0.25 0.28 0.32');y-=15;}
+  }
+  // ── Your stay: the property's / room's own photos as cards, two per row ──
+  const gallery=(Array.isArray(assets.gallery)?assets.gallery:[]).filter(g=>g&&g.image).slice(0,6);
+  if(gallery.length){
+    const gw=(CW-12)/2,ph=130;
+    const cards=gallery.map(g=>{
+      const head=g.title?wrap(g.title,11,true,gw-20,2):[];
+      const body=g.text?wrap(g.text,8.8,false,gw-20,4):[];
+      return {g,head,body,h:ph+(head.length||body.length?16:6)+head.length*14+body.length*11.8+8};
+    });
+    section(galleryTitle,cards[0].h);
+    for(let i=0;i<cards.length;i+=2){
+      const row=cards.slice(i,i+2),rh=Math.max(...row.map(c=>c.h));
+      need(rh+10);
+      row.forEach((c,j)=>{
+        const x=MX+j*(gw+12);
+        round(x,y-rh,gw,rh,8,'0.965 0.972 0.98');
+        image(c.g.image,x,y-ph,gw,ph,{radius:8,topOnly:true});
+        let ty=y-ph-16;
+        c.head.forEach(l=>{txt(x+10,ty,l,11,true);ty-=14;});
+        c.body.forEach(l=>{txt(x+10,ty,l,8.8,false,'0.36 0.39 0.44');ty-=11.8;});
+      });
+      y-=rh+10;
+    }
   }
   // ── Day by day ──
   if(plan.days.length){
@@ -686,7 +713,7 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
   // ── Notes & terms ──
   if(plan.notes){section('Good to Know');for(const l of wrap(plan.notes,10,false,CW)){need(14);txt(MX,y-10,l,10,false,'0.25 0.28 0.32');y-=14;}}
   need(40);y-=14;
-  for(const l of wrap(`${price?'Prices are per person. ':''}All services are subject to availability at the time of booking. Please contact us to confirm dates and the final price.`,8.5,false,CW)){txt(MX,y-8.5,l,8.5,false,'0.45 0.5 0.55');y-=11.5;}
+  for(const l of wrap(footNote!=null?String(footNote):`${price?'Prices are per person. ':''}All services are subject to availability at the time of booking. Please contact us to confirm dates and the final price.`,8.5,false,CW)){txt(MX,y-8.5,l,8.5,false,'0.45 0.5 0.55');y-=11.5;}
   if(usedWiki){y-=2;txt(MX,y-8,'Place photos and descriptions: Wikipedia / Wikimedia Commons (CC BY-SA).',7.5,false,'0.55 0.58 0.62');}
   pages.push(ops);
 

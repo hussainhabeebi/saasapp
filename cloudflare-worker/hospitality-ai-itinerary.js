@@ -1,0 +1,131 @@
+// Chats → ✨ AI Itinerary for Hospitality accounts (hospitality_enabled='Yes'): the agent picks one
+// of the account's properties (and optionally a room), fills in the guest profile and the stay
+// dates, and the AI drafts a day-by-day *stay* plan — check-in, on-property experiences from the
+// property's own amenities, and well-known sightseeing around its location, check-out on the last
+// day. The draft shows in the chat with photos (the property's and room's own photos, plus a
+// Wikimedia photo per day's place); "Approve & send" puts a PDF with those photos into the chat.
+//
+// The parse / retry / Wikimedia photo steps are the travel ones (travel-ai-itinerary.js); this
+// module only supplies the stay prompt and the property → package-like shape they read.
+// No price is ever written: the booking team gives the price personally, as in the H3 bot flow.
+
+import {taAiItinerary,taAiTraveller,TA_AI_PACES,TA_AI_MAX_DAYS} from './travel-ai-itinerary.js';
+
+const str=(v,max)=>String(v??'').replace(/\s+/g,' ').trim().slice(0,max);
+export const HOSP_AI_MAX_NIGHTS=TA_AI_MAX_DAYS-1;
+export const HOSP_AI_IMAGE_FIELDS=['image_url_1','image_url_2','image_url_3','image_url_4','image_url_5'];
+
+export function hospAiNights(v){
+  const n=parseInt(v,10);
+  return Math.min(HOSP_AI_MAX_NIGHTS,Math.max(1,Number.isFinite(n)&&n>0?n:2));
+}
+// YYYY-MM-DD or '' — and the check-out date that many nights later.
+export function hospAiDate(v){
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v||'').trim());
+  if(!m)return '';
+  const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3]));
+  return Number.isNaN(d.getTime())||d.toISOString().slice(0,10)!==m[0]?'':m[0];
+}
+export function hospAiCheckOut(checkIn,nights){
+  const d=hospAiDate(checkIn);
+  if(!d)return '';
+  const t=new Date(d+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+hospAiNights(nights));
+  return t.toISOString().slice(0,10);
+}
+export const hospAiPhotos=row=>HOSP_AI_IMAGE_FIELDS.map(f=>str(row?.[f],1000)).filter(u=>/^https?:\/\//i.test(u));
+
+// The property (+ room) as the package shape the travel itinerary code reads. No price fields.
+export function hospAiStayPkg(property,room,nights){
+  const loc=str(property?.location,200);
+  return {
+    name:str(property?.name,200),
+    destination:loc,
+    nights:hospAiNights(nights),
+    type:'stay',
+    // Amenities go to the AI in the prompt and on the PDF's "Your Stay" cards — not as a
+    // "What's Included" list, since an amenity isn't necessarily part of the guest's booking.
+    inclusions:'',exclusions:'',notes:'',
+  };
+}
+
+// Guest profile: pax mix, kids' ages, pace and interests (same rules as the travel profile; a stay
+// has no multi-city route, so destinations are dropped).
+export function hospAiGuest(g){
+  const t=taAiTraveller(g);
+  return {...t,destinations:[]};
+}
+
+export function hospAiItineraryPrompt(property,room,{nights,guest,checkIn}={}){
+  const n=hospAiNights(nights),days=n+1;
+  const t=hospAiGuest(guest);
+  const pname=str(property?.name,200)||'the property';
+  const loc=str(property?.location,200);
+  const rules=[];
+  if(t.pace)rules.push(`- Pace: ${TA_AI_PACES[t.pace]}.`);
+  if(t.interests.length)rules.push('- Favour experiences matching the Interests; still include the area\'s best-known sights.');
+  if(t.children||t.infants)rules.push('- The guests include children/infants: keep days family-friendly, with short drives, rest time and early evenings; note age/height limits where an attraction has them.');
+  const system=`You are the guest-relations manager of ${pname}${loc?`, ${loc}`:''}, writing a warm, customer-facing, day-by-day itinerary for a guest's stay. Write in clear, friendly English. Respond with ONLY compact JSON, no commentary, in exactly this shape:
+{"days":[{"title":"short day title, max 8 words","description":"1-2 short sentences describing the day","overnight":"${pname.replace(/"/g,"'")} for every night, empty string on the last day","meals":["B","L","D" — only meals the property's amenities/inclusions say are included that day],"items":[{"type":"one of: hotel, activity, transfer, meal, note","time":"HH:MM 24h or empty string","description":"one line, max 15 words","place":"name of the landmark/attraction for a photo search, or empty string"}]}]}
+Rules:
+- Exactly ${days} days (${n} night${n>1?'s':''}). Day 1 is arrival and check-in at ${pname}; the last day is check-out and departure.
+- Every night is spent at ${pname} — never suggest another hotel, resort or property.
+- Mix relaxed time at the property (use ONLY the amenities listed — never invent a spa, pool, restaurant or activity it doesn't list) with real, well-known sightseeing, nature and food experiences in and around ${loc||'the property\'s area'} within an easy day trip.
+- Never give any price, rate, discount or total — the booking team gives the price personally. Never invent phone numbers, opening hours or ticket prices.
+- "place" is set for every "activity" item that is a real, named attraction or area near the property (e.g. "Eravikulam National Park"), using its well-known English name — it is used to find a photo. Leave it empty for on-property items.
+- Tailor the plan to the guest profile (Guests, Pace, Interests) when it is given.${rules.length?'\n'+rules.join('\n'):''}`;
+  const pax=[t.adults&&`${t.adults} adult${t.adults>1?'s':''}`,
+    t.children&&`${t.children} child${t.children>1?'ren':''}${t.child_ages.length?` (age${t.child_ages.length>1?'s':''} ${t.child_ages.join(', ')})`:''}`,
+    t.infants&&`${t.infants} infant${t.infants>1?'s':''}`].filter(Boolean).join(', ');
+  const facts=[
+    ['Property',pname],['Location',loc],
+    ['About the property',str(property?.description,1500)],
+    ['Property amenities',str(property?.amenities,1500)],
+    ['Room',str(room?.name,200)],['Room type',str(room?.unit_type,80)],
+    ['Room amenities',str(room?.amenities,800)],['About the room',str(room?.description,800)],
+    ['Nights',String(n)],['Check-in date',hospAiDate(checkIn)],
+    ['Guests',pax],['Pace',t.pace?TA_AI_PACES[t.pace]:''],['Interests',t.interests.join('; ')],
+  ].filter(([,v])=>v).map(([k,v])=>`${k}: ${v}`).join('\n');
+  return {system,user:facts};
+}
+
+// The whole draft: (system,user) → model text generator injected, like taAiItinerary.
+export async function hospAiItinerary(property,room,generate,opts={}){
+  if(!str(property?.name,200))return {error:'This property has no name yet.'};
+  const pkg=hospAiStayPkg(property,room,opts.nights);
+  const prompt=hospAiItineraryPrompt(property,room,opts);
+  const out=await taAiItinerary(pkg,generate,{...opts,prompt});
+  if(out.error)return out;
+  // Property photos are shown on their own; the PDF draws Wikimedia place photos per day.
+  out.days.forEach(d=>{d.image_links=[];});
+  return out;
+}
+
+// Guest line for the PDF's key facts ("2 adults, 1 child").
+export function hospAiGuestLine(g){
+  const t=hospAiGuest(g);
+  return [t.adults&&`${t.adults} adult${t.adults>1?'s':''}`,t.children&&`${t.children} child${t.children>1?'ren':''}`,
+    t.infants&&`${t.infants} infant${t.infants>1?'s':''}`].filter(Boolean).join(', ');
+}
+
+// "20-22 Dec 2026", or "30 Dec - 2 Jan" across months — short enough for a key-fact box.
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+export function hospAiDateRange(from,to){
+  const [fy,fm,fd]=from.split('-').map(Number),[ty,tm,td]=to.split('-').map(Number);
+  if(fy===ty&&fm===tm)return `${fd}-${td} ${MONTHS[fm-1]} ${fy}`;
+  return `${fd} ${MONTHS[fm-1]} - ${td} ${MONTHS[tm-1]}`;
+}
+// Key-fact boxes for the PDF (at most 4 are drawn): location, stay length, dates, guests.
+export function hospAiStayFacts(property,room,{nights,checkIn,guest}={}){
+  const n=hospAiNights(nights),cin=hospAiDate(checkIn);
+  return [
+    ['Location',str(property?.location,120)],
+    ['Stay',`${n} night${n>1?'s':''} / ${n+1} days`],
+    ['Dates',cin?hospAiDateRange(cin,hospAiCheckOut(cin,n)):''],
+    ['Guests',hospAiGuestLine(guest)],
+    ['Room',str(room?.name,80)],
+  ].filter(f=>f[1]).slice(0,4);
+}
+export const HOSP_AI_FOOTNOTE='Rooms are subject to availability at the time of booking. Our team confirms your dates and gives you the price personally when you book.';
+export function hospAiPdfName(property){
+  return `Stay-Itinerary-${String(property?.name||'stay').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').slice(0,60)||'stay'}.pdf`;
+}
