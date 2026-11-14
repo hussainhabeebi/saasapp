@@ -19,7 +19,9 @@ const PROPS = [
     rooms: [{ id: '9', name: 'Valley View Suite', capacity_adults: 3, photos: ['https://img.test/room1.png'], price: { from: 6000, to: 7500, currency: 'INR', unit: 'per night' } }, { id: '10', name: 'Garden Cottage', photos: [] }] },
   { id: '4', name: 'Lake Palace', location: 'Alleppey', photos: [], rooms: [] },
 ];
-const AGENCY = { id: 'a-7', source: 'agency', name: 'Bay View Resort', location: 'Wayanad', photos: ['https://img.test/bay.png'], rooms: [{ id: 'a-7-r1', name: 'Deluxe', photos: [] }] };
+const AGENCY = { id: 'a-7', source: 'agency', brochure: true, has_folder: true, name: 'Bay View Resort', location: 'Wayanad', photos: ['https://img.test/bay.png'],
+  price: { from: 5000, to: 9000, currency: 'INR', unit: 'per night' }, rooms: [{ id: 'a-7-r1', name: 'Deluxe', photos: [] }] };
+const FOLDER = ['https://img.test/bay.png', 'https://img.test/f1.png', 'https://img.test/f2.png', 'https://img.test/f3.png'];
 const DAYS = [
   { day_no: 1, title: 'Arrival & check-in', overnight: 'Misty Hills Resort', meals: ['D'], items: [{ type: 'hotel', time: '14:00', description: 'Check in and settle in' }] },
   { day_no: 2, title: 'Tea country', meals: ['B'], items: [{ type: 'activity', description: 'Eravikulam National Park', image: 'https://img.test/eravikulam.png' }] },
@@ -36,6 +38,7 @@ async function open(page, { industry = 'hospitality', hospitality = 'Yes', draft
     if (url.pathname.endsWith('/session/me')) return route.fulfill({ json: { email: 'owner@x.test', client: { authentik_email: 'owner@x.test', industry, hospitality_enabled: hospitality } } });
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(url.pathname)) return route.fulfill({ json: { list: [LEAD] } });
     if (url.pathname.endsWith('/chat/messages')) return route.fulfill({ json: { messages: MESSAGES } });
+    if (url.pathname.endsWith('/hospitality/chat-property-photos')) { calls.photos = (calls.photos || []).concat(url.searchParams.get('property_id')); return route.fulfill({ json: { photos: FOLDER } }); }
     if (url.pathname.endsWith('/hospitality/chat-properties')) return route.fulfill({ json: { properties: withAgency ? [AGENCY, ...PROPS] : PROPS } });
     if (url.pathname.endsWith('/hospitality/ai-itinerary')) {
       calls.draft.push(req.postDataJSON());
@@ -128,7 +131,7 @@ test('a travel agency with Hospitality on gets both itineraries', async ({ page 
   await expect(page.locator('#hospItinOv .tpl-item')).toHaveCount(2);
 });
 
-test('a travel agency gets stay itineraries from its Resorts & Hotels, listed with the Hospitality properties', async ({ page }) => {
+test('Resorts & Hotels: no day plan — location, price range and all folder photos in one PDF', async ({ page }) => {
   const calls = await open(page, { industry: 'travel', hospitality: 'No', withAgency: true });
   await page.locator('#attachBtn').click();
   await page.locator('#attachMenu #hospItinBtn').click();
@@ -136,10 +139,23 @@ test('a travel agency gets stay itineraries from its Resorts & Hotels, listed wi
   await expect(ov.locator('.tpl-item')).toHaveCount(3);
   await expect(ov.locator('.tpl-item', { hasText: 'Bay View Resort' })).toContainText('Resorts & Hotels · Wayanad');
   await ov.locator('.tpl-item', { hasText: 'Bay View Resort' }).click();
-  await page.locator('#hItinRoom').selectOption('a-7-r1');
-  await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
-  await expect(ov.locator('.ai-itin-day')).toHaveCount(3);
-  expect(calls.draft[0]).toMatchObject({ property_id: 'a-7', room_id: 'a-7-r1' });
+  // Every photo from the Drive folder is previewed; no stay form, no AI draft.
+  await expect(ov.locator('#hItinPhotos img')).toHaveCount(4);
+  await expect(ov).toContainText('4 photos go into the PDF');
+  await expect(ov).toContainText('📍 Wayanad');
+  expect(calls.photos).toEqual(['a-7']);
+  await expect(page.locator('#hItinNights')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '✨ Draft itinerary' })).toHaveCount(0);
+  await expect(page.locator('#hItinSendPhotos')).toHaveCount(0);
+  // Price range pre-filled from the property, editable.
+  await expect(page.locator('#hItinPriceFrom')).toHaveValue('5000');
+  await expect(page.locator('#hItinPriceTo')).toHaveValue('9000');
+  await page.locator('#hItinPriceTo').fill('11000');
+  await page.getByRole('button', { name: '📄 Send PDF' }).click();
+  await expect(ov).toBeHidden();
+  expect(calls.draft).toEqual([]);
+  expect(calls.send).toEqual([{ lead_id: 7, property_id: 'a-7', price: { from: 5000, to: 11000, currency: 'INR', unit: 'per night' } }]);
+  await expect(page.locator('#thread .bubble.out')).toContainText('Price range: INR 5,000 - 11,000 per night');
 });
 
 test('optional price range: off by default, pre-filled from the room, editable, sent with the PDF', async ({ page }) => {
