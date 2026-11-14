@@ -219,3 +219,53 @@ test('brochure PDF: key facts and caption carry the saved price range and the ph
   assert.doesNotMatch(rv1BrochureCaption({name:'X'}), /All photos/);
   assert.match(rv1BrochureCaption({name:'X'}), /Price on request/);
 });
+
+test('trip details form: Flow JSON, when it is due, and reading typed details', async()=>{
+  const m=await import('./hospitality-resorts-v1.js');
+  const flow=m.rv1FormFlowJson();
+  assert.equal(flow.version, '3.0');
+  const form=flow.screens[0].layout.children.find(x=>x.type==='Form');
+  assert.deepEqual(form.children.filter(x=>x.name).map(x=>x.name), ['name','phone','adults','kids','rooms','date','budget']);
+  assert.ok(form.children.filter(x=>x.name).every(x=>x.required===false), 'every field optional — partial details count');
+  const submit=form.children.find(x=>x.type==='Footer');
+  assert.equal(submit['on-click-action'].name, 'data_exchange');
+  assert.equal(submit['on-click-action'].payload.date, '${form.date}');
+
+  // Due once, when a destination is picked.
+  assert.equal(m.rv1FormDue({type:'properties', locKey:'munnar'}, {}, true), true);
+  assert.equal(m.rv1FormDue({type:'properties', locKey:'munnar'}, {form:'sent'}, true), false);
+  assert.equal(m.rv1FormDue({type:'properties', locKey:null, all:true}, {}, true), false, '"All resorts" is not a destination');
+  assert.equal(m.rv1FormDue({type:'locations'}, {}, true), false);
+  assert.equal(m.rv1FormDue({type:'property', propertyId:1}, {}, false), true, 'no location step: the resort is the destination');
+  assert.equal(m.rv1FormDue({type:'property', propertyId:1}, {}, true), false);
+
+  const today=new Date('2026-11-15T00:00:00Z');
+  const p=t=>m.rv1ParseTripDetails(t, today);
+  assert.deepEqual(p('Rahul, 9876543210, 2 adults, 1 kid, 1 room, 20 Dec, budget 25000'),
+    {name:'Rahul', phone:'9876543210', adults:'2', kids:'1', rooms:'1', date:'2026-12-20', budget:'25000'});
+  assert.deepEqual(p('Name: Anu\nPhone: +91 98470 12345\nAdults: 4\nKids: 2\nRooms: 2\nDate: 05/01/2027\nBudget: 50k'),
+    {name:'Anu', phone:'+919847012345', adults:'4', kids:'2', rooms:'2', date:'2027-01-05', budget:'50k'});
+  assert.deepEqual(p('1. Ravi\n2. 9846012345\n3. 2\n4. 0\n5. 1\n6. 24 dec\n7. 30000'),
+    {name:'Ravi', phone:'9846012345', adults:'2', kids:'0', rooms:'1', date:'2026-12-24', budget:'30000'});
+  assert.deepEqual(p('2 adults 1 kid'), {adults:'2', kids:'1'});
+  for(const t of ['is breakfast included?', 'ok', 'Munnar (2)', 'thanks']) assert.deepEqual(p(t), {}, t);
+  // A question with one detail is a question, not the form.
+  assert.equal(m.rv1IsDetailsReply('room for 2 adults?', p('room for 2 adults?')), false);
+  assert.equal(m.rv1IsDetailsReply('2 adults', p('2 adults')), true);
+  // Dates: no year → the next one; Flow DatePicker epoch ms; nonsense → ''.
+  assert.equal(m.rv1ParseDate('20 Dec', today), '2026-12-20');
+  assert.equal(m.rv1ParseDate('5 Jan', today), '2027-01-05');
+  assert.equal(m.rv1ParseDate('1767225600000', today), '2026-01-01');
+  assert.equal(m.rv1ParseDate('31/02/2027', today), '');
+  // AI extraction guard: only values present in the text survive.
+  // (a phone the guest never typed is dropped; "25000" for a written "25k" is too — the parser keeps "25k" as written)
+  assert.deepEqual(m.rv1DetailsInText({name:'Rahul', adults:'2', phone:'9876543210', budget:'25000'}, 'rahul here, 2 adults, budget 25k'), {name:'Rahul', adults:'2'});
+  assert.deepEqual(m.rv1DetailsInText({budget:'25k', adults:'3'}, 'budget 25k for 2 adults'), {budget:'25k'});
+  assert.equal(m.rv1ParseTripDetails('rahul here, 2 adults, budget 25k', today).budget, '25k');
+  // Trip mapping and notes.
+  assert.deepEqual(m.rv1TripQual({adults:'2', kids:'1', date:'2026-12-20', rooms:'1', budget:'25000'}, {location:'Munnar', property:'Misty Hills Resort'}),
+    {destination:'Munnar', package:'Misty Hills Resort', travel_date:'2026-12-20', travel_month:'2026-12', adults:'2', children:'1', rooms:'1', budget:'25000'});
+  assert.deepEqual(m.rv1TripNotes({name:'Rahul', adults:'2', kids:'1', rooms:'1', budget:'25000'}),
+    ['Contact: Rahul', 'Guests: 3 (2 adults, 1 kid)', 'Rooms needed: 1', 'Budget: 25000', 'Not given yet: phone number, check-in date']);
+  assert.match(m.rv1ThanksText('Rahul Kumar', 'Munnar'), /^Thank you Rahul! 🙏 We've received your details for \*Munnar\*\.\n\nOur travel expert will contact you shortly with further details/);
+});

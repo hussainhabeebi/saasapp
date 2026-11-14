@@ -429,3 +429,220 @@ export function rv1AiContext(properties, {location='', property=''}={}){
   lines.push('PRICE RULE (strict): the price ranges above come straight from our Resorts & Hotels records and are the ONLY prices you may mention. Copy a range exactly as written for the resort it belongs to — never give an exact price, a per-night rate, a total, an estimate, a discount, a currency conversion or a range for a resort not in this list. A resort marked "Price on request" has no price: say our booking team will share it. Say our booking team confirms the exact price for the guest\'s dates when they book. Only recommend resorts from this list; it overrides any other source about which stays or destinations we offer. Never invent facts (amenities, rooms, distances, availability) that are not written above — if it is not listed, say our team will confirm. Photos are sent by the system when the guest picks a resort — never say you cannot send photos.');
   return lines.join('\n');
 }
+
+// ── Trip details form ───────────────────────────────────────────────────────────────────────────
+// When a guest picks a destination (a location tap, or a resort tap when there is no location
+// step), a WhatsApp form (a Meta Flow, worker.js) asks for: name, phone, adults, kids, rooms,
+// check-in date and budget — every field optional, so partial details count. Where a Flow can't be
+// sent, the same questions go out as a message and the guest's reply is read (rv1ParseTripDetails).
+// The details become a Trip in the Agency module, the chat is handed to the team, and the bot stays
+// silent for that guest.
+export const RV1_FORM_SCREEN='TRIP';
+export const RV1_FORM_VERSION='1';
+export const RV1_FORM_FIELDS=['name','phone','adults','kids','rooms','date','budget'];
+const FORM_LABEL={name:'Your name', phone:'Phone number', adults:'Adults', kids:'Kids', rooms:'Rooms needed', date:'Check-in date', budget:'Budget'};
+
+// Flow JSON (v3.0) for the form. The destination is shown at the top from the message's data. The
+// Submit button posts to the shared Flow endpoint (data_exchange), so the answers reach the worker
+// directly rather than through the chat relay.
+export function rv1FormFlowJson(){
+  const input=(name, type)=>({type:'TextInput', name, label:FORM_LABEL[name], 'input-type':type, required:false});
+  const fields=[
+    input('name', 'text'), input('phone', 'phone'), input('adults', 'number'), input('kids', 'number'),
+    input('rooms', 'number'),
+    {type:'DatePicker', name:'date', label:FORM_LABEL.date, required:false},
+    {type:'TextInput', name:'budget', label:'Budget (total, approx.)', 'input-type':'text', required:false},
+  ];
+  return {
+    version:'3.0',
+    screens:[
+      {id:RV1_FORM_SCREEN, title:'Plan your stay', terminal:false,
+        data:{destination:{type:'string', __example__:'Munnar'}},
+        layout:{type:'SingleColumnLayout', children:[
+          {type:'TextSubheading', text:'${data.destination}'},
+          {type:'TextBody', text:'Share what you know — every field is optional. Our team will send you the best options.'},
+          {type:'Form', name:'form', children:[
+            ...fields,
+            {type:'Footer', label:'Submit', 'on-click-action':{name:'data_exchange', payload:Object.fromEntries(fields.map(f=>[f.name, '${form.'+f.name+'}']))}},
+          ]},
+        ]}},
+      {id:'SUCCESS', title:'Thank you', terminal:true, success:true, data:{}, layout:{type:'SingleColumnLayout', children:[
+        {type:'TextBody', text:'Thanks! Our travel expert will contact you shortly with further details.'},
+      ]}},
+    ],
+  };
+}
+// Whether this step is the guest picking a destination and the form hasn't gone out yet.
+export function rv1FormDue(action, ctx={}, useLoc=true){
+  if(!action || ctx.form) return false;
+  if(action.type==='properties') return action.locKey!=null && !!useLoc && !action.all;
+  if(action.type==='property') return !useLoc;
+  return false;
+}
+export function rv1FormInviteText(dest){
+  return `📝 Planning a stay${dest?` in *${dest}*`:''}? Tap *Fill details* and share your dates, guests, rooms and budget — even partly is fine. Our travel expert will send you the best options. 🌴`;
+}
+export function rv1FormTextFallback(dest){
+  return `📝 To plan your stay${dest?` in *${dest}*`:''}, please reply with these details (share whatever you know):\n\n1️⃣ Name\n2️⃣ Phone number\n3️⃣ Adults\n4️⃣ Kids\n5️⃣ Rooms needed\n6️⃣ Check-in date\n7️⃣ Budget\n\nExample: _Rahul, 9876543210, 2 adults, 1 kid, 1 room, 20 Dec, budget 25000_`;
+}
+export function rv1ThanksText(name, dest){
+  const first=String(name||'').trim().split(/\s+/)[0];
+  return `Thank you${first?` ${first}`:''}! 🙏 We've received your details${dest?` for *${dest}*`:''}.\n\nOur travel expert will contact you shortly with further details and the best price. 😊`;
+}
+
+const MONTHS3=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+const pad=n=>String(n).padStart(2, '0');
+// A month name (full or short) as one capture of its first three letters.
+const MONTH_RE='\\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:uary|ruary|ch|il|e|y|ust|t|tember|ober|ember)?\\b';
+function isoDate(y, m, d){
+  const dt=new Date(Date.UTC(y, m-1, d));
+  return dt.getUTCFullYear()===y && dt.getUTCMonth()===m-1 && dt.getUTCDate()===d ? `${y}-${pad(m)}-${pad(d)}` : '';
+}
+// A check-in date as YYYY-MM-DD: ISO, dd/mm/yyyy, dd-mm-yy, "20 Dec", "Dec 20 2026", a Flow
+// DatePicker's epoch-ms string. A date without a year is the next one from today.
+export function rv1ParseDate(v, today=new Date()){
+  const s=String(v??'').trim().toLowerCase();
+  if(!s) return '';
+  if(/^\d{12,14}$/.test(s)){ const d=new Date(Number(s)); return isNaN(d)?'':d.toISOString().slice(0, 10); }
+  let m=s.match(/\b(20\d\d)-(\d{1,2})-(\d{1,2})\b/);
+  if(m) return isoDate(+m[1], +m[2], +m[3]);
+  const y0=today.getUTCFullYear();
+  const withYear=(d, mo, y)=>{
+    if(y){ y=+y; if(y<100) y+=2000; return isoDate(y, mo, d); }
+    const t=isoDate(y0, mo, d);
+    if(!t) return '';
+    return t>=today.toISOString().slice(0, 10)?t:isoDate(y0+1, mo, d);
+  };
+  // Every candidate is tried — "2 adults … 20 Dec" must not stop at "2 adu".
+  for(const m of s.matchAll(/\b(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](\d{2,4}))?\b/g)){
+    if(+m[2]<=12){ const d=withYear(+m[1], +m[2], m[3]); if(d) return d; }
+  }
+  for(const m of s.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:of\\s+)?${MONTH_RE}\\.?(?:,?\\s*(\\d{4}))?\\b`, 'g'))){
+    if(MONTHS3.includes(m[2])){ const d=withYear(+m[1], MONTHS3.indexOf(m[2])+1, m[3]); if(d) return d; }
+  }
+  for(const m of s.matchAll(new RegExp(`${MONTH_RE}\\.?\\s*(\\d{1,2})(?:st|nd|rd|th)?\\b(?:,?\\s*(\\d{4})\\b)?`, 'g'))){
+    if(MONTHS3.includes(m[1])){ const d=withYear(+m[2], MONTHS3.indexOf(m[1])+1, m[3]); if(d) return d; }
+  }
+  return '';
+}
+const count=v=>{ const m=String(v??'').match(/\d{1,3}/); const n=m?Number(m[0]):NaN; return Number.isFinite(n)&&n>=0&&n<=500?String(n):''; };
+function cleanPhone(v){
+  const s=String(v??'').trim();
+  const digits=s.replace(/\D/g, '');
+  return digits.length>=7 && digits.length<=15 ? (s.startsWith('+')?'+':'')+digits : '';
+}
+function cleanBudget(v){
+  const s=String(v??'').replace(/\s+/g, ' ').trim();
+  if(!s || !/\d/.test(s)) return '';
+  return s.slice(0, 60);
+}
+function cleanName(v){
+  const s=String(v??'').replace(/\s+/g, ' ').trim();
+  if(!s || /\d{3,}/.test(s) || s.length<2) return '';
+  return s.slice(0, 80);
+}
+// Cleans a set of answers (from the Flow or the parser): only well-formed values are kept.
+export function rv1CleanTripDetails(raw={}, today=new Date()){
+  const out={};
+  const name=cleanName(raw.name); if(name) out.name=name;
+  const phone=cleanPhone(raw.phone); if(phone) out.phone=phone;
+  for(const k of ['adults','kids','rooms']){ const n=count(raw[k]); if(n!=='') out[k]=n; }
+  const date=rv1ParseDate(raw.date, today); if(date) out.date=date;
+  const budget=cleanBudget(raw.budget); if(budget) out.budget=budget;
+  return out;
+}
+// A typed message counts as the guest's details: at least one detail, or two when it's a question
+// ("do you have a room for 2 adults?" is a question, not the form).
+export function rv1IsDetailsReply(text, f){
+  const n=RV1_FORM_FIELDS.filter(k=>f?.[k]!=null && String(f[k])!=='').length;
+  return /[?؟]/.test(String(text||''))?n>=2:n>=1;
+}
+export function rv1HasTripDetails(f){
+  return !!f && RV1_FORM_FIELDS.some(k=>f[k]!=null && String(f[k])!=='');
+}
+// Reads trip details the guest typed: "Name: Rahul" lines, the numbered answers to the questions
+// (1–7), or free text ("2 adults 1 kid 1 room 20 Dec budget 25000"). Only what is actually written
+// is returned — nothing is guessed.
+const LABELS=[
+  ['name', /^(?:name|full\s*name|my\s+name(?:\s+is)?)$/],
+  ['phone', /^(?:phone|phone\s*(?:no|number)|mobile|mobile\s*(?:no|number)|contact(?:\s*(?:no|number))?|whatsapp|number)$/],
+  ['adults', /^(?:adults?|no\.?\s*of\s*adults|guests?|no\.?\s*of\s*guests|persons?|people|pax)$/],
+  ['kids', /^(?:kids?|child(?:ren)?|no\.?\s*of\s*(?:kids|children))$/],
+  ['rooms', /^(?:rooms?(?:\s*needed)?|no\.?\s*of\s*rooms)$/],
+  ['date', /^(?:date|check\s*-?\s*in(?:\s*date)?|travel\s*date|arrival(?:\s*date)?|from)$/],
+  ['budget', /^(?:budget|price|amount)$/],
+];
+export function rv1ParseTripDetails(text, today=new Date()){
+  const src=String(text||'').replace(/\r/g, '').trim();
+  if(!src) return {};
+  const raw={};
+  const lines=src.split(/\n+/).map(l=>l.replace(/^\s*(?:\d+\s*[.)\-:]|\d️⃣|[•*-])\s*/u, '').trim()).filter(Boolean);
+  // 1. "Label: value" lines.
+  for(const line of lines){
+    const m=line.match(/^([a-z.\s-]{2,30}?)\s*[:=\-–]\s*(.+)$/i);
+    if(!m) continue;
+    const label=m[1].trim().toLowerCase().replace(/\s+/g, ' ');
+    const hit=LABELS.find(([, re])=>re.test(label));
+    if(hit && raw[hit[0]]==null) raw[hit[0]]=m[2].trim();
+  }
+  // 2. Free text anywhere in the message.
+  const all=src.replace(/\n/g, ' ');
+  const grab=(re, k)=>{ if(raw[k]==null){ const m=all.match(re); if(m) raw[k]=m[1]; } };
+  grab(/\b(\d{1,3})\s*(?:adults?|adlts?|elders|pax|persons?|people)\b/i, 'adults');
+  grab(/\b(\d{1,2})\s*(?:kids?|child(?:ren)?|infants?)\b/i, 'kids');
+  grab(/\b(\d{1,2})\s*rooms?\b/i, 'rooms');
+  grab(/\bbudget\s*(?:is|of|:|-)?\s*((?:₹|rs\.?|inr|aed|\$)?\s*[\d,.]+\s*(?:k|l|lakhs?|thousand)?(?:\s*(?:-|to)\s*(?:₹|rs\.?)?\s*[\d,.]+\s*(?:k|l|lakhs?|thousand)?)?)/i, 'budget');
+  // Phone: digits with single spaces / dashes, never across lines.
+  if(raw.phone==null){ const m=src.match(/((?:\+|\b)\d(?:[ -]?\d){7,14})\b/); if(m) raw.phone=m[1]; }
+  if(raw.date==null){ const d=rv1ParseDate(all, today); if(d) raw.date=d; }
+  // 3. Comma / line answers in the questions' order ("Rahul, 9876543210, 2, 1, 1, 20 Dec, 25000").
+  const parts=(lines.length>=3?lines:src.split(/\s*[,;]\s*/)).map(x=>x.trim()).filter(Boolean);
+  if(parts.length>=3 && parts.every(p=>!/[:=]/.test(p))){
+    parts.slice(0, RV1_FORM_FIELDS.length).forEach((p, i)=>{
+      const k=RV1_FORM_FIELDS[i];
+      if(raw[k]!=null) return;
+      // A part that says what it is ("2 adults") was read above; only bare answers go by position.
+      if(/[a-z]/i.test(p) && k!=='name' && k!=='date' && k!=='budget') return;
+      raw[k]=p;
+    });
+  }
+  return rv1CleanTripDetails(raw, today);
+}
+// Keeps only the answers whose value is actually in the guest's text (guards an AI extraction).
+export function rv1DetailsInText(fields, text){
+  const t=String(text||'').toLowerCase(), digits=t.replace(/\D/g, '');
+  const out={};
+  for(const [k, v] of Object.entries(fields||{})){
+    const s=String(v).toLowerCase();
+    if(k==='phone'){ if(digits.includes(s.replace(/\D/g, '').slice(-7))) out[k]=v; continue; }
+    if(k==='date'){ out[k]=v; continue; } // validated by rv1ParseDate; written forms vary
+    if(k==='budget'){ const n=s.replace(/[^\d]/g, ''); if(n && digits.includes(n.slice(0, 3))) out[k]=v; continue; }
+    if(/^\d+$/.test(s)){ if(new RegExp(`\\b${s}\\b`).test(t) || (s==='1' && /\b(?:one|a|single)\b/.test(t)) || (s==='2' && /\b(?:two|couple)\b/.test(t))) out[k]=v; continue; }
+    if(t.includes(s)) out[k]=v;
+  }
+  return out;
+}
+// The trip details → the qualification answers trips are made from (trip-requests.js), and the
+// extra lines for the trip's notes.
+export function rv1TripQual(f, {location='', property=''}={}){
+  const q={destination:String(location||property||'').trim()};
+  if(property) q.package=String(property).trim();
+  if(f.date){ q.travel_date=f.date; q.travel_month=f.date.slice(0, 7); }
+  if(f.adults) q.adults=f.adults;
+  if(f.kids) q.children=f.kids;
+  if(f.rooms) q.rooms=f.rooms;
+  if(f.budget) q.budget=f.budget;
+  return q;
+}
+export function rv1TripNotes(f){
+  const lines=[];
+  const guests=(Number(f.adults)||0)+(Number(f.kids)||0);
+  if(f.name || f.phone) lines.push(`Contact: ${[f.name, f.phone].filter(Boolean).join(' · ')}`);
+  if(guests) lines.push(`Guests: ${guests}${f.adults?` (${f.adults} adult${f.adults==='1'?'':'s'}${f.kids?`, ${f.kids} kid${f.kids==='1'?'':'s'}`:''})`:''}`);
+  else if(f.kids) lines.push(`Kids: ${f.kids}`);
+  if(f.rooms) lines.push(`Rooms needed: ${f.rooms}`);
+  if(f.budget) lines.push(`Budget: ${f.budget}`);
+  const missing=RV1_FORM_FIELDS.filter(k=>!f[k]).map(k=>FORM_LABEL[k].toLowerCase());
+  if(missing.length) lines.push(`Not given yet: ${missing.join(', ')}`);
+  return lines;
+}
