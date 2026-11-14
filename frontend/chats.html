@@ -988,7 +988,8 @@ function buildShell(){
    <button onclick="pickFiles('image/*',true)"><span class="dot" style="background:#ff2e74">${IC.cam}</span>Camera</button>
    <button onclick="pickFiles('audio/*')"><span class="dot" style="background:#ff7f23">${IC.audio}</span>Audio</button>
    <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
-   ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:isHospAcct()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
+   ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
+   ${isHospAcct()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">🏨</span>${isTravelAcct()?'AI Stay Itinerary':'AI Itinerary'}</button>`:''}
   </div>
   <div class="input-wrap" id="inputWrap">
    <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
@@ -1404,7 +1405,14 @@ function closeAiItin(){const ov=$('aiItinOv');if(ov){ov.classList.add('hidden');
 // drafts a day-by-day stay plan; review it with the property's / room's photos and a photo per
 // place, then "Approve & send" puts the photos (optional) and the stay PDF into this chat
 // (worker /hospitality/chat-itinerary/send). No price is shown — the team gives it at checkout.
-function isHospAcct(){return !isTravelAcct()&&clientRecord.hospitality_enabled==='Yes'}
+// Hospitality is on when it is the account's industry, its module flag is on (any casing), or —
+// multi-industry accounts — one of its channels is a hospitality channel. A travel agency that
+// also runs hospitality gets both itineraries (packages, and stays).
+function isHospAcct(){
+ const c=clientRecord||{};
+ if(String(c.industry||'').toLowerCase()==='hospitality'||/^(yes|true|1|on)$/i.test(String(c.hospitality_enabled??'').trim()))return true;
+ try{const m=JSON.parse(c.channel_industry_map||'[]');return Array.isArray(m)&&m.some(x=>String(x?.industry||'').toLowerCase()==='hospitality')}catch{return false}
+}
 let hItin={props:null,sel:null,days:null,busy:false,seq:0,stay:null};
 const H_ITIN_INTERESTS=['Relaxation','Nature','Sightseeing','Adventure','Wellness & spa','Food','Culture & history','Shopping','Photography',"Kids' activities"];
 const hImg=(u,cls,alt)=>`<img class="${cls||''}" src="${esc(u)}" alt="${esc(alt||'')}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;

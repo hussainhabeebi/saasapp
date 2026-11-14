@@ -81,3 +81,13 @@ test('the stay PDF has its own tag, facts and foot note, and draws the gallery p
   assert.doesNotMatch(pdf, /PRICE PER PERSON|TRAVEL ITINERARY|final price/);
   assert.doesNotMatch(pdf, /What's Included/);
 });
+
+test('who gets the hospitality AI Itinerary', async ()=>{
+  const {hospChatIsOn}=await import('./worker.js');
+  assert.equal(hospChatIsOn({hospitality_enabled:'Yes'}), true);
+  assert.equal(hospChatIsOn({hospitality_enabled:'yes'}), true);
+  assert.equal(hospChatIsOn({industry:'hospitality'}), true);
+  assert.equal(hospChatIsOn({industry:'travel',channel_industry_map:'[{"inbox_id":1,"industry":"hospitality"}]'}), true);
+  assert.equal(hospChatIsOn({industry:'travel',hospitality_enabled:'No'}), false);
+  assert.equal(hospChatIsOn({industry:'ecommerce',channel_industry_map:'not json'}), false);
+});

@@ -22417,7 +22417,12 @@ async function handleTravelChatItinerarySend(request,env){
 // AI drafts a day-by-day stay plan (hospitality-ai-itinerary.js); review it with the property's
 // photos, then "Approve & send": the photos (optional) and a stay itinerary PDF go into the chat.
 // Nothing is saved; no price is ever shown — the booking team gives it at checkout.
-const hospChatIsOn=c=>c?.hospitality_enabled==='Yes';
+// Same test as isHospAcct in chats.html: the industry, the module flag, or a hospitality channel.
+export function hospChatIsOn(c){
+  if(!c)return false;
+  if(String(c.industry||'').toLowerCase()==='hospitality'||/^(yes|true|1|on)$/i.test(String(c.hospitality_enabled??'').trim()))return true;
+  try{const m=JSON.parse(c.channel_industry_map||'[]');return Array.isArray(m)&&m.some(x=>String(x?.industry||'').toLowerCase()==='hospitality');}catch(e){return false;}
+}
 const hospChatShort=(v,max)=>{const t=String(v??'').replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max-1).trimEnd()+'…':t;};
 async function hospChatLoad(env,clientId,propertyId,roomId){
   const property=propertyId!=null&&propertyId!==''?await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=? AND client_id=? AND active=1`).bind(Number(propertyId)||0,Number(clientId)).first():null;

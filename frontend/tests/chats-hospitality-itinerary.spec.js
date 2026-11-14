@@ -110,3 +110,18 @@ test('the hospitality AI Itinerary only shows when Hospitality is on', async ({ 
   await page.locator('#attachBtn').click();
   await expect(page.locator('#attachMenu button', { hasText: 'AI Itinerary' })).toHaveCount(0);
 });
+
+test('shows for a hospitality-industry account even without the module flag', async ({ page }) => {
+  await open(page, { industry: 'hospitality', hospitality: '' });
+  await page.locator('#attachBtn').click();
+  await expect(page.locator('#attachMenu #hospItinBtn')).toHaveText(/AI Itinerary/);
+});
+
+test('a travel agency with Hospitality on gets both itineraries', async ({ page }) => {
+  await open(page, { industry: 'travel', hospitality: 'Yes' });
+  await page.locator('#attachBtn').click();
+  await expect(page.locator('#attachMenu #aiItinBtn')).toBeVisible();
+  await expect(page.locator('#attachMenu #hospItinBtn')).toHaveText(/AI Stay Itinerary/);
+  await page.locator('#attachMenu #hospItinBtn').click();
+  await expect(page.locator('#hospItinOv .tpl-item')).toHaveCount(2);
+});
