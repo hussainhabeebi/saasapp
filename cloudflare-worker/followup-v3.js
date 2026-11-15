@@ -34,7 +34,9 @@
 //   orderPhones(env,c)→{digits10:{date,total}}|null, objectionPlaybook(c)→[{category,approved_response}],
 //   leadColumns(env)→[column titles of the leads table],
 //   proposals(env,cid,leadId?)→{leadId:{at,title}} (latest proposal sent, product-catalog proposals),
-//   proposalsOn(c)→bool (submit the proposal templates for this account) }
+//   proposalsOn(c)→bool (submit the proposal templates for this account),
+//   meetingStates(env,cid,leadId?)→{leadId:{state,start_at,end_at,outcome}} (meetings module, mtgLeadState),
+//   meetingsOn(c, env)→bool (the account schedules meetings from Chats: Meeting Scheduled stage + templates) }
 
 import {FP_DEFAULTS, fpAccountHour, fpParseLater, fpScriptLang, fpLeadLanguage, fpLangName, fpTemplateLanguages, fpObjectionFor, FP_OBJECTION_GUIDE,
   fpNbaScore, fpMatchProducts, fpQuoteItem, fpQuoteTotals, fpQuoteNumber, fpQuoteFileName, fpFetchQuoteAssets, fpBuildQuotePdf} from './followup-pro.js';
@@ -62,6 +64,7 @@ export const FV3_DEFAULTS={
   attribution_hours:72,       // a reply within this many hours of a follow-up counts for it
   weekly_digest:true,         // Monday email to the account owner
   proposal_followups:true,    // leads at "Proposal Sent" get the proposal templates (day 1/3/7) instead of the normal ladder
+  meeting_followups:true,     // leads at "Meeting Scheduled": nothing before the meeting, then the after-meeting templates (day 1/3)
   // Pro add-ons (followup-pro.js) — every one off until the account switches it on.
   ...FP_DEFAULTS,
 };
@@ -81,7 +84,21 @@ const REENGAGE_STEP=6;
 export const FV3_PROPOSAL_STAGE='proposal_sent';
 export const FV3_PROPOSAL_STEPS={7:{kind:'p1', hours:24, label:'Proposal · day 1'}, 8:{kind:'p2', hours:72, label:'Proposal · day 3'}, 9:{kind:'p3', hours:168, label:'Proposal · day 7'}};
 export const FV3_PROPOSAL_KINDS=Object.values(FV3_PROPOSAL_STEPS).map(x=>x.kind);
-const PROPOSAL_STEP_BY_KIND=Object.fromEntries(Object.entries(FV3_PROPOSAL_STEPS).map(([s, x])=>[x.kind, Number(s)]));
+// Meeting track: a lead at "Meeting Scheduled" (Chats → 📅 Meeting, or a Cal.com booking) gets nothing
+// while the meeting is ahead (the meetings module sends the confirmation and reminders), then — from
+// the meeting's end, or the customer's reply since — the after-meeting templates on day 1 / 3. Steps
+// 10-11 (kind 'meeting'). A "not interested" outcome ends it.
+export const FV3_MEETING_STAGE='meeting_scheduled';
+export const FV3_MEETING_STEPS={10:{kind:'m1', hours:24, label:'After meeting · day 1'}, 11:{kind:'m2', hours:72, label:'After meeting · day 3'}};
+export const FV3_MEETING_KINDS=Object.values(FV3_MEETING_STEPS).map(x=>x.kind);
+// Stage tracks: these stages never get the normal ladder — only their own templates, then the
+// stage's re-engage. `reason` prefixes the status reasons (…_off, …_template_pending, …_done).
+export const FV3_STAGE_TRACKS={
+  [FV3_PROPOSAL_STAGE]:{steps:FV3_PROPOSAL_STEPS, kind:'proposal', cfgKey:'proposal_followups', reason:'proposal', name:'proposal follow-up', label:'Proposal'},
+  [FV3_MEETING_STAGE]:{steps:FV3_MEETING_STEPS, kind:'meeting', cfgKey:'meeting_followups', reason:'after_meeting', name:'after-meeting follow-up', label:'Meeting Scheduled'},
+};
+const TRACK_STEP_BY_KIND=Object.fromEntries([...Object.entries(FV3_PROPOSAL_STEPS), ...Object.entries(FV3_MEETING_STEPS)].map(([s, x])=>[x.kind, Number(s)]));
+export const fv3TrackStep=step=>FV3_PROPOSAL_STEPS[step]||FV3_MEETING_STEPS[step]||null;
 // ── Re-engage per stage ──────────────────────────────────────────────────────────────────────────
 // Every open pipeline stage has its own re-engage template (kind re_<stage>, lv_followup_re_<stage>)
 // worded for that stage; "new" and stages outside the pipeline (bot flow steps) keep the generic
@@ -112,8 +129,9 @@ const titleCase=id=>String(id||'').replace(/_/g,' ').replace(/\b\w/g,ch=>ch.toUp
 export function fv3StageSlug(id){ return String(id||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40); }
 export function fv3ReengageKind(stage){ const slug=fv3StageSlug(stage); return slug?'re_'+slug:null; }
 // The account's open pipeline stages [{id,label}] that get their own re-engage template.
-// `proposals`: the account sends proposals (Chats → AI Proposal), so "Proposal Sent" is one of them.
-export function fv3PipelineStages(c,{proposals=false}={}){
+// `proposals`: the account sends proposals (Chats → AI Proposal), so "Proposal Sent" is one of them;
+// `meetings`: it schedules meetings from Chats, so "Meeting Scheduled" is too.
+export function fv3PipelineStages(c,{proposals=false, meetings=false}={}){
   let flow={}; try{ flow=JSON.parse(c?.flow_json||'{}')||{}; }catch(e){}
   const industry=String(c?.industry||'general').toLowerCase();
   const labels=flow.labels&&typeof flow.labels==='object'?flow.labels:{};
@@ -126,9 +144,12 @@ export function fv3PipelineStages(c,{proposals=false}={}){
     seen.add(id); out.push({id, label:String(labels[id]||label||titleCase(id)).replace(/\s+/g,' ').trim().slice(0,40)});
   };
   list.forEach(([id,label])=>add(id,label));
+  if(meetings) add(FV3_MEETING_STAGE,'Meeting Scheduled');
   if(proposals) add(FV3_PROPOSAL_STAGE,'Proposal Sent');
   return out.slice(0,FV3_MAX_STAGE_REENGAGE);
 }
+// Which optional stages this account has (for fv3PipelineStages).
+const stageOpts=async(deps, c, env)=>({proposals:!!(await deps.proposalsOn?.(c)), meetings:!!(await deps.meetingsOn?.(c, env))});
 // Which re-engage template a lead at `stage` gets: the merchant's own for the stage, else the
 // stage's automatic one (null while not approved), else — "new"/unlisted stages — the generic one.
 // → {template:{name,language,params?,own?}|null, kind, stageLabel}
@@ -145,12 +166,13 @@ export function fv3ReengageFor(stage, {templates=[], cfg={}, stages=[]}={}){
   return {template:templates.find(x=>x.kind==='reengage' && x.status==='APPROVED')||null, kind:'reengage', stageLabel:''};
 }
 
-// Approved proposal templates by step ({7:row, …}) from followup_v3_templates rows.
-export function fv3ProposalTemplates(templates){
+// Approved stage-track templates by step ({7:row, …, 10:row, …}) from followup_v3_templates rows.
+export function fv3TrackTemplates(templates){
   const out={};
-  for(const t of templates||[]) if(PROPOSAL_STEP_BY_KIND[t.kind] && t.status==='APPROVED') out[PROPOSAL_STEP_BY_KIND[t.kind]]=t;
+  for(const t of templates||[]) if(TRACK_STEP_BY_KIND[t.kind] && t.status==='APPROVED') out[TRACK_STEP_BY_KIND[t.kind]]=t;
   return out;
 }
+export const fv3ProposalTemplates=fv3TrackTemplates;
 const CONVERSION_WINDOW_DAYS=14;
 
 function clampInt(v, min, max, dflt){ const n=parseInt(v, 10); return Number.isFinite(n)?Math.min(max, Math.max(min, n)):dflt; }
@@ -175,7 +197,7 @@ export function fv3Config(raw){
     reengage_max:clampInt(o.reengage_max, 1, 6, d.reengage_max),
     auto_templates:b('auto_templates'), ai_variant_b:b('ai_variant_b'),
     attribution_hours:clampInt(o.attribution_hours, 1, 336, d.attribution_hours),
-    weekly_digest:b('weekly_digest'), proposal_followups:b('proposal_followups'),
+    weekly_digest:b('weekly_digest'), proposal_followups:b('proposal_followups'), meeting_followups:b('meeting_followups'),
     pro_smart_send:b('pro_smart_send'), pro_nba_home:b('pro_nba_home'), pro_objections:b('pro_objections'),
     pro_quote_pdf:b('pro_quote_pdf'), pro_auto_language:b('pro_auto_language'),
     pro_quote_valid_days:clampInt(o.pro_quote_valid_days, 1, 90, d.pro_quote_valid_days),
@@ -270,7 +292,7 @@ export function fv3StepLabel(step, cfg){
   if(step===3) return 'Template · day 1';
   if(step===4) return 'Template · day 3';
   if(step===5) return 'Template · day 7';
-  if(FV3_PROPOSAL_STEPS[step]) return FV3_PROPOSAL_STEPS[step].label;
+  if(fv3TrackStep(step)) return fv3TrackStep(step).label;
   return 'Re-engage';
 }
 
@@ -282,20 +304,27 @@ function parseSkip(state){ try{ const s=JSON.parse(state?.skip_json||'{}'); retu
 //      enabledAt, now, tz, hasOrder, reengageReady, terminalStages?}
 export function fv3Decide(input){
   const {lead, steps:baseSteps={}, cfg=fv3Config({}), state=null, sends=[], enabledAt=null, now=Date.now(), tz='Asia/Kolkata', hasOrder=false, reengageReady=false, hasMeeting=false,
-    proposal=null, proposalTemplates={}}=input;
+    proposal=null, meeting=null}=input;
+  const trackTemplates=input.trackTemplates||input.proposalTemplates||{};
   const steps=fv3StepsForLead(baseSteps,cfg,lead);
   const stage=String(lead?.Stage||'');
   const lastCust=fv3LastCustomerMs(lead);
-  // Proposal track: timed from the proposal, or from the customer's reply since, whichever is later.
-  const proposalTrack=stage===FV3_PROPOSAL_STAGE;
-  const anchor=proposalTrack?Math.max(ms(proposal?.at)||0, lastCust||0)||null:lastCust;
-  const out=(status, reason, text, extra={})=>({status, reason, text, next:null, steps:proposalTrack?proposalRows(null):stepRows(null), cycle:anchor?new Date(anchor).toISOString():null, ...extra});
+  // Stage tracks (Proposal Sent, Meeting Scheduled) replace the normal ladder. The proposal track is
+  // timed from the proposal, the meeting track from the meeting's end — or from the customer's reply
+  // since, whichever is later.
+  const track=FV3_STAGE_TRACKS[stage]||null;
+  const proposalTrack=!!track;
+  const meetingTrack=stage===FV3_MEETING_STAGE;
+  const meetingEnd=meeting?(ms(meeting.end_at)||(ms(meeting.start_at)?ms(meeting.start_at)+H:0)):0;
+  const trackFrom=meetingTrack?meetingEnd:(stage===FV3_PROPOSAL_STAGE?ms(proposal?.at):0);
+  const anchor=track?Math.max(trackFrom||0, lastCust||0)||null:lastCust;
+  const out=(status, reason, text, extra={})=>({status, reason, text, next:null, steps:track?proposalRows(null):stepRows(null), cycle:anchor?new Date(anchor).toISOString():null, ...extra});
   const sorted=[...sends].sort((a, b)=>(ms(a.sent_at)||0)-(ms(b.sent_at)||0));
   const cycleSends=lastCust?sorted.filter(s=>(ms(s.sent_at)||0)>lastCust):[];
   const ladderSent=new Map(); cycleSends.filter(s=>(s.kind||'ladder')!=='reengage' && s.step<=5).forEach(s=>ladderSent.set(Number(s.step), s));
   const skip=parseSkip(state);
   const skipped=new Set(anchor && skip.cycle===new Date(anchor).toISOString() ? (skip.steps||[]).map(Number) : []);
-  const proposalSent=new Map(); if(proposalTrack) sorted.filter(s=>s.kind==='proposal' && (ms(s.sent_at)||0)>anchor).forEach(s=>proposalSent.set(Number(s.step), s));
+  const proposalSent=new Map(); if(track) sorted.filter(s=>s.kind===track.kind && (ms(s.sent_at)||0)>anchor).forEach(s=>proposalSent.set(Number(s.step), s));
   const stepState={};
   function stepRows(nextStep){
     const rows=[];
@@ -309,7 +338,7 @@ export function fv3Decide(input){
     return rows;
   }
   function proposalRows(nextStep){
-    return Object.entries(FV3_PROPOSAL_STEPS).map(([k, def])=>{
+    return Object.entries(track.steps).map(([k, def])=>{
       const s=Number(k), sent=proposalSent.get(s);
       return {step:s, type:'template', label:def.label, state:sent?'sent':(stepState[s]||(nextStep===s?'next':'upcoming')),
         sent_at:sent?.sent_at||null, replied_at:sent?.replied_at||null, variant:sent?.variant||null, due_at:stepState['due'+s]||null};
@@ -322,11 +351,18 @@ export function fv3Decide(input){
   if(FV3_BOOKED_STAGES.has(stage)) return out('goal_reached', 'booked', 'Lead booked — sequence finished.');
   if(cfg.exit_stages.includes(stage)) return out('goal_reached', 'exit_stage', `Lead reached "${stage}" — sequence finished.`);
   if(lead?.Handover==='Yes' || stage==='human_handover') return out('human', 'human_handling', 'A person from your team is handling this chat — follow-ups are on hold.');
-  if(hasMeeting) return out('meeting', 'meeting_booked', 'A meeting is booked or agreed with this lead — follow-ups are on hold until its outcome is logged (meeting reminders still go out).');
+  // Meeting Scheduled: held only until the meeting has happened; then the after-meeting track runs.
+  if(meetingTrack && meeting){
+    if(meeting.outcome==='not_interested') return out('stopped', 'closed', 'Meeting outcome: not interested — no more follow-ups.');
+    if(meeting.state==='pending' || (meeting.state==='scheduled' && (!meetingEnd || now<meetingEnd+30*60000)))
+      return out('meeting', 'meeting_booked', 'A meeting is scheduled with this lead — the after-meeting follow-ups start once it has happened (meeting reminders still go out).');
+  } else if(hasMeeting) return out('meeting', 'meeting_booked', 'A meeting is booked or agreed with this lead — follow-ups are on hold until its outcome is logged (meeting reminders still go out).');
   if(FV3_CLOSED_STAGES.has(stage) || input.terminalStages?.has?.(stage)) return out('stopped', 'closed', 'Lead is closed — no more follow-ups.');
   const created=ms(lead?.CreatedAt)||ms(lead?.Date);
   // A proposal sent by the team enrols the lead, whenever it came in — it is a deliberate ask for follow-ups.
-  if(proposalTrack && !cfg.proposal_followups) return out('stopped', 'proposal_off', 'Proposal sent — proposal follow-ups are switched off, and normal follow-ups don\'t go to leads with a proposal.');
+  if(track && !cfg[track.cfgKey]) return out('stopped', track.reason+'_off', meetingTrack
+    ? 'Meeting scheduled — after-meeting follow-ups are switched off, and normal follow-ups don\'t go to leads at this stage.'
+    : 'Proposal sent — proposal follow-ups are switched off, and normal follow-ups don\'t go to leads with a proposal.');
   if(!proposalTrack && !cfg.include_existing_leads && ms(enabledAt) && (!created || created<ms(enabledAt))) return out('not_enrolled', 'existing_lead', 'Lead came in before Follow-up V3 was switched on, so it isn\'t enrolled.');
   if(!anchor) return out('not_enrolled', 'no_message', 'Waiting for the customer\'s first message.');
   const agentAt=ms(lead?.LastAgentMsgAt);
@@ -356,25 +392,26 @@ export function fv3Decide(input){
   let prefHour=(cfg.smart_send_time||cfg.pro_smart_send)?fv3PreferredHour(state?.hours_json):null;
   if(prefHour===null && cfg.pro_smart_send && Number.isInteger(input.accountHour)) prefHour=input.accountHour;
   let pendingTemplate=null;
-  if(proposalTrack){
+  if(track){
     const cycle=new Date(anchor).toISOString();
-    for(const [k, def] of Object.entries(FV3_PROPOSAL_STEPS)){
+    for(const [k, def] of Object.entries(track.steps)){
       const s=Number(k);
       if(proposalSent.has(s)) continue;
       if(skipped.has(s)){ stepState[s]='skipped'; continue; }
-      if(!proposalTemplates?.[s]){ stepState[s]='pending_template'; if(!pendingTemplate) pendingTemplate=s; continue; }
+      if(!trackTemplates?.[s]){ stepState[s]='pending_template'; if(!pendingTemplate) pendingTemplate=s; continue; }
       const base=anchor+def.hours*H;
       if(now>base+STALE_TEMPLATE_HOURS*H){ stepState[s]='expired'; continue; }
       let due=fv3NextAllowedMs(Math.max(gapFloor(base), staffFloor), tz, cfg.quiet_start, cfg.quiet_end);
       if(prefHour!==null) due=fv3NextAllowedMs(fv3AlignToHour(due, tz, prefHour), tz, cfg.quiet_start, cfg.quiet_end);
       if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
       stepState['due'+s]=new Date(due).toISOString();
-      const next={step:s, kind:'proposal', type:'template', label:def.label, due_at:new Date(due).toISOString()};
+      const next={step:s, kind:track.kind, type:'template', label:def.label, due_at:new Date(due).toISOString()};
       const isDue=due<=now;
+      const nm=track.name.charAt(0).toUpperCase()+track.name.slice(1);
       return {status:isDue?'due':'scheduled', reason:isDue?'due':'scheduled',
-        text:isDue?`Proposal follow-up (${def.label}) is going out now.`:`Next: ${def.label} — proposal follow-up.`, next, steps:proposalRows(s), cycle, ...snoozeInfo};
+        text:isDue?`${nm} (${def.label}) is going out now.`:`Next: ${def.label} — ${track.name}.`, next, steps:proposalRows(s), cycle, ...snoozeInfo};
     }
-    if(pendingTemplate) return out('waiting_template', 'proposal_template_pending', `${FV3_PROPOSAL_STEPS[pendingTemplate].label} is waiting for its WhatsApp template to be approved.`);
+    if(pendingTemplate) return out('waiting_template', track.reason+'_template_pending', `${track.steps[pendingTemplate].label} is waiting for its WhatsApp template to be approved.`);
     // Proposal templates done — the Proposal Sent stage's own re-engage follows (below).
   }
   if(!proposalTrack) for(let s=1; s<=5; s++){
@@ -411,8 +448,8 @@ export function fv3Decide(input){
       next, steps:stepRows(s), cycle:new Date(lastCust).toISOString(), ...snoozeInfo};
   }
   // Ladder (or proposal templates) done for this silence — the stage's re-engage, if switched on.
-  const doneReason=proposalTrack?'proposal_done':'ladder_done';
-  const doneText=proposalTrack?'All proposal follow-ups sent — no reply yet.':'All follow-ups sent — no reply yet.';
+  const doneReason=track?track.reason+'_done':'ladder_done';
+  const doneText=track?`All ${track.name}s sent — no reply yet.`:'All follow-ups sent — no reply yet.';
   const reSends=sorted.filter(s=>s.kind==='reengage');
   const reAfterLast=reSends.filter(s=>(ms(s.sent_at)||0)>anchor);
   const stageNote=input.reengageStage?` for "${input.reengageStage}"`:'';
@@ -428,11 +465,11 @@ export function fv3Decide(input){
     const next={step:REENGAGE_STEP, kind:'reengage', type:'template', label:input.reengageStage?`Re-engage · ${input.reengageStage}`:'Re-engage', due_at:new Date(due).toISOString()};
     const isDue=due<=now;
     return {status:isDue?'due':'scheduled', reason:isDue?'due':'reengage',
-      text:isDue?`Re-engage message${stageNote} is going out now.`:`${proposalTrack?'All proposal follow-ups':'All follow-ups'} sent with no reply — re-engage message${stageNote} ${reAfterLast.length+1} of ${cfg.reengage_max} is scheduled.`,
+      text:isDue?`Re-engage message${stageNote} is going out now.`:`${track?`All ${track.name}s`:'All follow-ups'} sent with no reply — re-engage message${stageNote} ${reAfterLast.length+1} of ${cfg.reengage_max} is scheduled.`,
       next, steps:proposalTrack?proposalRows(null):stepRows(null), cycle:new Date(anchor).toISOString(), ...snoozeInfo};
   }
   if(pendingTemplate) return out('waiting_template', 'template_pending', `Follow-up ${pendingTemplate} is waiting for its WhatsApp template to be approved.`);
-  if(proposalTrack) return out('completed', 'proposal_done', proposalSent.size?doneText:'No proposal follow-up could go out in time (sent too long ago).');
+  if(track) return out('completed', doneReason, proposalSent.size?doneText:`No ${track.name} could go out in time (${meetingTrack?'the meeting was':'sent'} too long ago).`);
   return out('completed', 'ladder_done', ladderSent.size?doneText:'No follow-up could go out in this silence window (24h session closed or steps not set).');
 }
 
@@ -457,6 +494,9 @@ export const FV3_REASON_INFO={
   proposal_done:{label:'Proposal sent — all proposal follow-ups done', ok:true},
   proposal_template_pending:{label:'Proposal sent — waiting for a proposal template to be approved', fix:'The proposal day 1/3/7 templates are submitted automatically — use "Re-check templates" below.'},
   proposal_off:{label:'Proposal sent — proposal follow-ups are off', fix:'Turn on "Follow up sent proposals" in Settings below.', setting:'proposal_followups'},
+  after_meeting_done:{label:'Meeting held — all after-meeting follow-ups done', ok:true},
+  after_meeting_template_pending:{label:'Meeting held — waiting for an after-meeting template to be approved', fix:'The after-meeting day 1/3 templates are submitted automatically — use "Re-check templates" below.'},
+  after_meeting_off:{label:'Meeting scheduled — after-meeting follow-ups are off', fix:'Turn on "Follow up after meetings" in Settings below.', setting:'meeting_followups'},
   delivery_unknown:{label:'Delivery needs verification',fix:'Check send attempts below. Verify the provider conversation before allowing a retry.'},
   unknown:{label:'Not checked yet', fix:'The 15-minute sweep hasn\'t evaluated these leads yet. If this stays for more than an hour, check Settings → Logs for "followup v3 sweep".'},
 };
@@ -519,14 +559,18 @@ const TEMPLATE_BODIES={
   p1:'Hi {{1}}, this is {{2}}. Did you get a chance to go through {{3}} we shared with you? Happy to answer any questions or adjust anything you need. Reply STOP to opt out.',
   p2:'Hello {{1}}, just following up on {{2}} from {{3}}. If you would like changes to the items, quantities or terms, reply here and we will update it for you. Reply STOP to opt out.',
   p3:'Hi {{1}}, a final reminder from {{2}} about {{3}}. If you are ready to go ahead, reply YES and our team will confirm the next steps today. Reply STOP to opt out.',
+  m1:'Hi {{1}}, thank you for your time with {{2}}. Do you have any questions about {{3}}, or shall we go ahead with the next step? Just reply to this message. Reply STOP to opt out.',
+  m2:'Hello {{1}}, following up on your meeting with {{2}} about {{3}}. If anything is unclear or you would like another call, reply here and we will set it up. Reply STOP to opt out.',
 };
 const TEMPLATE_PARAMS={s3:['name', 'business', 'interest'], s4:['name', 'interest', 'business'], s5:['name', 'business', 'interest'], reengage:['name', 'business'],
-  p1:['name', 'business', 'proposal'], p2:['name', 'proposal', 'business'], p3:['name', 'business', 'proposal']};
+  p1:['name', 'business', 'proposal'], p2:['name', 'proposal', 'business'], p3:['name', 'business', 'proposal'],
+  m1:['name', 'business', 'interest'], m2:['name', 'business', 'interest']};
 // A stage's re-engage wording, picked by what the stage is about (quote, proposal, visit/demo,
 // payment, paperwork, qualifying); anything else names the stage. Placeholders: {{1}} name,
 // {{2}} business, {{3}} what they asked about (or the proposal, for a proposal stage).
 const STAGE_REENGAGE=[
   [/proposal/i, ['name','business','proposal'], ()=>'Hi {{1}}, this is {{2}}. It has been a while since we shared {{3}} with you. If your plans have changed, we can update it for you, just reply to this message. Reply STOP to opt out.'],
+  [/meeting.?scheduled|meeting held|met\b/i, ['name','business','interest'], ()=>'Hi {{1}}, thank you again for your time with {{2}}. It has been a while since we met about {{3}}. If you would like to continue, reply here and we will pick up where we left off. Reply STOP to opt out.'],
   [/quot|estimate|offer|pricing|price/i, ['name','business','interest'], ()=>'Hi {{1}}, it has been a while since {{2}} sent you a quotation for {{3}}. Prices and availability may have changed, so reply here and we will share an updated one. Reply STOP to opt out.'],
   [/demo|visit|survey|drive|viewing|meeting|interview|appointment|consult|counsel/i, ['name','business','interest'], l=>`Hello {{1}}, {{2}} here. We never got to complete the ${l} for {{3}}. Would you like to pick a new time? Reply to this message and we will arrange it. Reply STOP to opt out.`],
   [/negotiat|payment|fee|advance|cart|checkout|finance|booking|deposit/i, ['name','business','interest'], l=>`Hi {{1}}, your ${l} with {{2}} for {{3}} is still open. If you would like to go ahead, reply here and we will help you finish it today. Reply STOP to opt out.`],
@@ -804,11 +848,12 @@ export async function fv3Setup(env, deps, c, settings, {resubmit=false}={}){
     const proposalsOn=!!deps.proposalsOn?.(c);
     // One re-engage template per open pipeline stage (unless the merchant picked their own for it).
     const stagePresets=cfg.reengage_enabled
-      ? fv3PipelineStages(c, {proposals:proposalsOn}).filter(st=>!cfg.stage_sequences?.[st.id]?.reengage?.template_name)
+      ? fv3PipelineStages(c, await stageOpts(deps, c, env)).filter(st=>!cfg.stage_sequences?.[st.id]?.reengage?.template_name)
         .map(st=>fv3StageReengagePreset(st.id, st.label, {industry:c.industry||settings.industry, businessName:c.client_name}))
       : [];
     const presetByKind=Object.fromEntries(stagePresets.map(p=>[p.kind, p]));
-    const kinds=[...FV3_TEMPLATE_KINDS, ...(cfg.proposal_followups && proposalsOn?FV3_PROPOSAL_KINDS:[]), ...stagePresets.map(p=>p.kind)];
+    const kinds=[...FV3_TEMPLATE_KINDS, ...(cfg.proposal_followups && proposalsOn?FV3_PROPOSAL_KINDS:[]),
+      ...(cfg.meeting_followups && await deps.meetingsOn?.(c, env)?FV3_MEETING_KINDS:[]), ...stagePresets.map(p=>p.kind)];
     for(const kind of kinds){
       const step=/^s\d$/.test(kind)?Number(kind.slice(1)):null;
       let t=existing.find(x=>x.kind===kind);
@@ -846,17 +891,19 @@ async function checklist(env, deps, c, settings){
   const re=templates.find(x=>x.kind==='reengage');
   items.push({key:'reengage', ok:re?.status==='APPROVED', status:re?.status||'NOT_SUBMITTED', template:re?.name||'', error:re?.error||'', label:'Re-engage template', optional:!settings.cfg.reengage_enabled});
   // Each open stage's own re-engage (the generic one above covers "new" and unlisted stages).
-  for(const st of fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)})){
+  for(const st of fv3PipelineStages(c, await stageOpts(deps, c, env))){
     const own=settings.cfg.stage_sequences?.[st.id]?.reengage;
     const t=own?.template_name?null:templates.find(x=>x.kind===fv3ReengageKind(st.id));
     items.push({key:'reengage_stage', stage:st.id, ok:own?.template_name?true:t?.status==='APPROVED', status:own?.template_name?'OWN':t?.status||'NOT_SUBMITTED',
       template:own?.template_name||t?.name||'', error:t?.error||'', label:`Re-engage · ${st.label}`, optional:!settings.cfg.reengage_enabled});
   }
-  if(deps.proposalsOn?.(c)) for(const [k, def] of Object.entries(FV3_PROPOSAL_STEPS)){
+  const trackRows=(prefix, stepsDef, cfgKey)=>{ for(const [k, def] of Object.entries(stepsDef)){
     const t=templates.find(x=>x.kind===def.kind);
-    items.push({key:'proposal_'+def.kind, step:Number(k), ok:t?.status==='APPROVED', status:t?.status||'NOT_SUBMITTED', template:t?.name||'', error:t?.error||'',
-      label:`${def.label} template`, optional:!settings.cfg.proposal_followups});
-  }
+    items.push({key:prefix+def.kind, step:Number(k), ok:t?.status==='APPROVED', status:t?.status||'NOT_SUBMITTED', template:t?.name||'', error:t?.error||'',
+      label:`${def.label} template`, optional:!settings.cfg[cfgKey]});
+  } };
+  if(deps.proposalsOn?.(c)) trackRows('proposal_', FV3_PROPOSAL_STEPS, 'proposal_followups');
+  if(await deps.meetingsOn?.(c, env)) trackRows('meeting_', FV3_MEETING_STEPS, 'meeting_followups');
   return items;
 }
 
@@ -1012,10 +1059,11 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
   const steps=await ladderRows(env, cid);
   const templates=await templateRows(env, cid);
   const tplByName={}; templates.forEach(t=>{ tplByName[t.name]=t; });
-  const proposalTemplates=fv3ProposalTemplates(templates);
-  const reStages=fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)});
+  const proposalTemplates=fv3TrackTemplates(templates);
+  const reStages=fv3PipelineStages(c, await stageOpts(deps, c, env));
   const reFor=(lead, cfgNow)=>fv3ReengageFor(lead?.Stage, {templates, cfg:cfgNow, stages:reStages});
   const proposals=await deps.proposals?.(env, cid).catch(()=>null)||{};
+  const meetings=await deps.meetingStates?.(env, cid).catch(()=>null)||{};
   const {results:sendRows}=await env.DB.prepare(`SELECT id, lead_id, step, kind, variant, sent_at, replied_at, converted_at FROM followup_sends WHERE client_id=? AND sent_at>=?`)
     .bind(cid, new Date(now-200*D).toISOString()).all();
   const sendsByLead={}; (sendRows||[]).forEach(r=>{ (sendsByLead[r.lead_id]||(sendsByLead[r.lead_id]=[])).push(r); });
@@ -1050,7 +1098,7 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       const hasOrder=lead.Phone?fv3OrderCounts((await getOrders())?.[digits10(lead.Phone)], lead):false;
       const re=reFor(lead, cfg);
       const d=fv3Decide({lead, steps, cfg, state, sends, enabledAt:settings.enabled_at, now, tz, hasOrder, reengageReady:!!re.template, reengageStage:re.stageLabel, hasMeeting:meetingLeads.has(Number(lead.Id)), accountHour,
-        proposal:proposals[lead.Id]||null, proposalTemplates});
+        proposal:proposals[lead.Id]||null, meeting:meetings[lead.Id]||null, proposalTemplates});
       checked++; reasons[d.reason]=(reasons[d.reason]||0)+1;
       if(sample.length<100) sample.push({lead_id:lead.Id,name:lead.Name,status:d.status,reason:d.reason,next:d.next});
       if(!preview && d.status==='goal_reached' && recent) stateWrites.push(markConversion(env, cid, lead, sends, now, hasOrder?orders?.[digits10(lead.Phone)]:null));
@@ -1090,7 +1138,7 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       if(String(live.ClientId)!==String(cid)) throw new Error('Pre-send lead ownership mismatch');
       const latestSettings=await fv3GetSettings(env,cid);
       if(!latestSettings?.enabled || latestSettings.cfg.paused) return;
-      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reFor(live, latestSettings.cfg).template,reengageStage:reFor(live, latestSettings.cfg).stageLabel,accountHour,proposal:proposals[lead.Id]||null,proposalTemplates});
+      const latest=fv3Decide({lead:live,steps,cfg:latestSettings.cfg,state,sends:sendsByLead[lead.Id]||[],enabledAt:settings.enabled_at,now:Date.now(),tz,hasOrder:cfg.exit_on_order&&deps.orderPhones?fv3OrderCounts((await deps.orderPhones(env,c,{fresh:true}))?.[digits10(live.Phone)],live):false,hasMeeting:!!(await deps.leadHasMeeting?.(env,cid,lead.Id)),reengageReady:!!reFor(live, latestSettings.cfg).template,reengageStage:reFor(live, latestSettings.cfg).stageLabel,accountHour,proposal:proposals[lead.Id]||null,meeting:(await deps.meetingStates?.(env,cid,lead.Id).catch(()=>null)||{})[lead.Id]||null,proposalTemplates});
       if(latest.status!=='due' || latest.cycle!==d.cycle || latest.next.step!==step) return;
       lead={...live, ProposalTitle:proposals[lead.Id]?.title||''};
       const leadSteps=fv3StepsForLead(steps,latestSettings.cfg,lead);
@@ -1099,8 +1147,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
       if(step===REENGAGE_STEP && !reTpl) return;
       // A merchant's own re-engage template carries no stored params — sized from Meta at send time.
       const stepCfg=step===REENGAGE_STEP?(reTpl.own?{step, type:'template', template_name:reTpl.name, template_language:reTpl.language, template_category:'MARKETING', template_body_vars:1, own:true}:tplStep(reTpl))
-        :FV3_PROPOSAL_STEPS[step]?tplStep(proposalTemplates[step]):leadSteps[step];
-      const selectedVariant=FV3_PROPOSAL_STEPS[step]?'A':stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
+        :fv3TrackStep(step)?tplStep(proposalTemplates[step]):leadSteps[step];
+      const selectedVariant=fv3TrackStep(step)?'A':stepCfg.type==='template'&&deps.chooseVariant?await deps.chooseVariant(env,c.Id,step,stepCfg):'A';
       const selectedTemplate=selectedVariant==='B'&&stepCfg.template_name_b?{name:stepCfg.template_name_b,language:stepCfg.template_language_b||stepCfg.template_language}:{name:stepCfg.template_name,language:stepCfg.template_language};
       const opts={selectedVariant:stepCfg.type==='template'?selectedVariant:undefined,v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
       const pro=latestSettings.cfg;
@@ -1269,9 +1317,10 @@ export async function fv3LeadStatus(env, deps, c, lead, {now=Date.now()}={}){
   let accountHour=null;
   if(cfg.pro_smart_send){ const {results:hr}=await env.DB.prepare(`SELECT hours_json FROM followup_v3_leads WHERE client_id=?`).bind(Number(c.Id)).all(); accountHour=fpAccountHour(hr||[]); }
   const proposal=(await deps.proposals?.(env, c.Id, lead.Id).catch(()=>null)||{})[lead.Id]||null;
-  const re=fv3ReengageFor(lead.Stage, {templates, cfg, stages:fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)})});
+  const meeting=(await deps.meetingStates?.(env, c.Id, lead.Id).catch(()=>null)||{})[lead.Id]||null;
+  const re=fv3ReengageFor(lead.Stage, {templates, cfg, stages:fv3PipelineStages(c, await stageOpts(deps, c, env))});
   const d=fv3Decide({lead, steps, cfg, state, sends:sends||[], enabledAt:settings.enabled_at, now, tz:clientTz(c), hasOrder, reengageReady:!!re.template, reengageStage:re.stageLabel, hasMeeting, accountHour,
-    proposal, proposalTemplates:fv3ProposalTemplates(templates)});
+    proposal, meeting, proposalTemplates:fv3TrackTemplates(templates)});
   const lastFail=await env.DB.prepare(`SELECT error_message, error_code, failed_at, step FROM followup_send_failures WHERE lead_id=? AND failed_at>=? ORDER BY failed_at DESC LIMIT 1`)
     .bind(Number(lead.Id), new Date(now-3*D).toISOString()).first().catch(()=>null);
   // Pro add-ons on the lead card — only the parts the account switched on.
@@ -1334,7 +1383,7 @@ export async function fv3HandleRoute(request, env, deps, url){
   if(path==='/settings' && method==='GET'){
     const s=await fv3GetSettings(env, cid);
     return json({enabled:s.enabled, enabled_at:s.enabled_at, config:s.cfg, health:fv3Health(s), defaults:FV3_DEFAULTS, last_setup:s.last_setup||{}, checklist:s.enabled?await checklist(env, deps, c, s):[],
-      stages:fv3PipelineStages(c, {proposals:!!deps.proposalsOn?.(c)})});
+      stages:fv3PipelineStages(c, await stageOpts(deps, c, env))});
   }
   if(path==='/settings' && method==='POST'){
     const body=await request.json().catch(()=>({}));

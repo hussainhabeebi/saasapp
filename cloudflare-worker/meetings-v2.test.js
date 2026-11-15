@@ -192,6 +192,57 @@ describe('routes', ()=>{
   });
   afterEach(()=>{ globalThis.fetch=origFetch; db.close(); });
 
+  test('Chats → 📅 Meeting: Google Meet is scheduled, confirmed in the chat and moves the lead; a Cal.com link is shared; the calendar lists it', async ()=>{
+    Object.assign(client, {chatwoot_base:'https://cw.test', chatwoot_account_id:1, chatwoot_token:'t'});
+    Object.assign(lead, {ConversationID:'55'});
+    const chat=[], patches=[];
+    const base=globalThis.fetch;
+    globalThis.fetch=async (url, init={})=>{
+      const u=String(url);
+      if(u.startsWith('https://cw.test/')){ chat.push(JSON.parse(init.body).content); return new Response(JSON.stringify({id:9})); }
+      if(u.startsWith('https://noco.test/') && init.method==='PATCH'){ patches.push(JSON.parse(init.body)); return new Response(JSON.stringify({Id:42})); }
+      return base(url, init);
+    };
+    try{
+      // Not set up yet → refused clearly.
+      let r=await call('/meetings/chat-share', {lead_id:42, kind:'meet', start_at:new Date(Date.now()+86400e3).toISOString()});
+      assert.equal(r.status, 400); assert.match(r.data.error, /Google Meet link/);
+      await call('/meetings/config', {links:[{name:'Intro call', url:'https://cal.com/biz/intro'}], settings:{meet_url:'https://meet.google.com/abc-defg-hij'}});
+      const cfg=await call('/meetings/config');
+      assert.equal(cfg.data.config.chat_enabled, true); assert.equal(cfg.data.config.settings.meet_url, 'https://meet.google.com/abc-defg-hij');
+
+      const start=new Date(Date.now()+2*86400e3).toISOString();
+      r=await call('/meetings/chat-share', {lead_id:42, kind:'meet', start_at:start, duration_min:30, title:'Product demo'});
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+      assert.equal(r.data.stage, 'meeting_scheduled');
+      assert.match(chat[0], /Your Product demo is confirmed for/); assert.match(chat[0], /Join: https:\/\/meet\.google\.com\/abc-defg-hij/);
+      assert.deepEqual(patches.find(p=>p.Stage), {Id:42, Stage:'meeting_scheduled'});
+      const m=row(r.data.id);
+      assert.equal(m.status, 'scheduled'); assert.equal(m.join_url, 'https://meet.google.com/abc-defg-hij'); assert.equal(m.source, 'chat');
+      assert.equal(m.notify, 1, 'reminders still go out'); assert.ok(m.confirm_at, 'no second confirmation from the cron');
+      assert.equal(graphCalls.length, 0, 'sent in the chat, not as a separate WhatsApp message');
+
+      // A second one is refused unless forced; a Cal.com link is refused while a meeting is booked.
+      assert.equal((await call('/meetings/chat-share', {lead_id:42, kind:'meet', start_at:start})).data.code, 'MEETING_EXISTS');
+      assert.equal((await call('/meetings/chat-share', {lead_id:42, kind:'cal'})).data.code, 'MEETING_EXISTS');
+      r=await call('/meetings/chat-share', {lead_id:42, kind:'cal', force:true, message:'Pick any slot that suits you: {link}'});
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+      assert.match(chat[1], /^Pick any slot that suits you: https:\/\/w\.test\/m\/[a-z0-9]+$/);
+      assert.equal(row(r.data.id).status, 'link_sent');
+
+      // Calendar: the scheduled meeting, in range only.
+      const from=new Date(Date.now()).toISOString(), to=new Date(Date.now()+7*86400e3).toISOString();
+      const cal=await call(`/meetings/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      assert.equal(cal.data.meetings.length, 1);
+      assert.deepEqual({...cal.data.meetings[0], id:0, start_at:0, end_at:0}, {id:0, lead_id:42, lead_name:'Asha K', title:'Product demo', status:'scheduled', start_at:0, end_at:0,
+        mode:'video', location:'', join_url:'https://meet.google.com/abc-defg-hij', owner:'rita@biz.com', source:'chat', outcome:null});
+      assert.equal((await call(`/meetings/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(new Date(Date.now()+90*86400e3).toISOString())}`)).status, 400);
+    } finally {
+      globalThis.fetch=base;
+      delete client.chatwoot_base; delete client.chatwoot_account_id; delete client.chatwoot_token; delete lead.ConversationID;
+    }
+  });
+
   test('mark scheduled → confirmation; a second mark is refused; reschedule resets reminders', async ()=>{
     const start=new Date(Date.now()+2*86400e3).toISOString();
     const a=await call('/meetings/manual', {lead_id:42, start_at:start, duration_min:45, title:'Site visit', mode:'in_person', location:'MG Road office', notify:true});

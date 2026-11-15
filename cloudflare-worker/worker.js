@@ -11,7 +11,7 @@ import {shopifySyncHandleRoute,shopifySyncOnWebhook,SHOPIFY_SYNC_WEBHOOK_TOPICS,
 import {shopFlowParse,shopFlowIsGreeting,shopFlowIsTrackRequest,shopFlowOrderNumber,shopFlowIsPurchaseIntent,shopFlowInStock,shopFlowMoney,shopFlowMenuItems,shopFlowFindCategory,shopFlowCategoryProducts,shopFlowFindProduct,shopFlowProductHandle,shopFlowSizeOptions,shopFlowMatchOption,shopFlowCartLink,shopFlowProductCaption,shopFlowPhoneKey,shopFlowOrderSummary,shopFlowCustomerOrders,shopFlowProductId} from './shopify-flow.js';
 import {waShopHandleRoute,waShopMaybeSendCatalog,waShopDailySync,waShopLoadClient,waShopOnInbound,WA_SHOP_CONFIG_FIELD} from './wa-commerce.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,chatsV2MessageStatus,toWhatsApp} from './chats-v2.js';
-import {FV3_PROPOSAL_STAGE,fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
+import {FV3_PROPOSAL_STAGE,FV3_MEETING_STAGE,fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings,fv3EnsureSchema,fv3GetSettings,fv3RunClient,fv3Schedule,fv3DeliveryStatus} from './followup-v3.js';
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
@@ -12989,8 +12989,8 @@ async function engineMaybeSendProductDescription(env, c, clientId, convId, produ
      Stage" itself and resets the cadence the same way, just up to a day later. */
 const PIPELINE_TERMINAL_STAGES=new Set(['won','converted','lost','human_handover','consultation_booked','visit_booked','appt_booked','Converted','Lost','Closed','Opt Out']);
 // Normal follow-ups (classic ladder, Smart Follow-ups, Baby Care summary) never go to a closed lead,
-// nor to one at "Proposal Sent" — that lead gets only Follow-up V3's proposal templates.
-function followupNormalBlocked(stage){ return PIPELINE_TERMINAL_STAGES.has(stage)||stage===FV3_PROPOSAL_STAGE; }
+// nor to one at "Proposal Sent" or "Meeting Scheduled" — those get only Follow-up V3's stage templates.
+function followupNormalBlocked(stage){ return PIPELINE_TERMINAL_STAGES.has(stage)||stage===FV3_PROPOSAL_STAGE||stage===FV3_MEETING_STAGE; }
 // Step 1 fires the moment a lead enters a stage; steps 2-4 fire on/after these many days since
 // then; step 5+ repeats every 30 days after that ("...then monthly if stuck").
 const PIPELINE_FOLLOWUP_DAY_THRESHOLDS=[1,3,7,14];
@@ -16528,6 +16528,9 @@ export function mtgNormalizeSettings(s){
   out.points=mtgNormalizePoints(src.points);
   out.template_name=String(src.template_name||'').trim().replace(/[^a-z0-9_]/gi,'').slice(0,100);
   out.template_lang=String(src.template_lang||'en').trim().replace(/[^a-z_]/gi,'').slice(0,10)||'en';
+  // A standing Google Meet (or Zoom/Teams) room link — the default for Chats → 📅 Meeting → Google Meet.
+  const meet=String(src.meet_url||'').trim();
+  out.meet_url=/^https:\/\/\S+$/i.test(meet)?meet.slice(0,300):'';
   return out;
 }
 export function mtgNormalizePoints(p){
@@ -17011,6 +17014,11 @@ export async function handleCalcomMeetingsWebhook(request, env, clientId){
     sent=await mtgSendKind(env, c, clientId, cfg, row, kind);
     if(sent.ok && kind==='confirm') await mtgUpdate(env, row.id, {confirm_at:nowIso});
   }
+  // General accounts: a booked Cal.com link moves the lead to "Meeting Scheduled".
+  if(status==='scheduled' && row.lead_id && pcIsOn(c)){
+    const bookedLead=await mtgFindLead(env, clientId, {leadId:row.lead_id}).catch(()=>null);
+    if(bookedLead) await leadMoveStage(env, clientId, bookedLead, FV3_MEETING_STAGE).catch(()=>{});
+  }
   return json({ok:true, id:row.id, status, notified:kind?!!sent?.ok:undefined});
 }
 
@@ -17029,7 +17037,8 @@ export async function handleMeetingLinkRedirect(request, env, token){
 
 function mtgConfigOut(cfg){
   const {client_id, exists, ...rest}=cfg;
-  return {...rest, enabled:cfg.links.length>0};
+  // chat_enabled: Chats → 📅 Meeting is offered (General accounts) — a Cal.com link or a Meet link is set.
+  return {...rest, enabled:cfg.links.length>0, chat_enabled:cfg.links.length>0||!!cfg.settings?.meet_url};
 }
 // GET /meetings/config
 async function handleMeetingsConfigGet(request, env){
@@ -17132,8 +17141,12 @@ async function handleMeetingsOutcome(request, env){
 async function handleMeetingsManual(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return mtgSaveManual(env, payload, await request.json().catch(()=>({})));
+}
+// Shared by POST /meetings/manual and Chats → 📅 Meeting (Google Meet). A General account's lead moves
+// to "Meeting Scheduled" once a time is fixed.
+async function mtgSaveManual(env, payload, body){
   if(!(await mtgEnsureSchema(env))) return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503);
-  const body=await request.json().catch(()=>({}));
   const clientId=Number(payload.cid);
   const status=body.status==='agreed'?'agreed':'scheduled';
   const nowMs=Date.now(), nowIso=new Date(nowMs).toISOString();
@@ -17199,7 +17212,112 @@ async function handleMeetingsManual(request, env){
     notified=res.ok; notify_error=res.ok?undefined:res.error;
     if(res.ok && kind==='confirm') await mtgUpdate(env, id, {confirm_at:nowIso});
   }
-  return json({ok:true, id, state:mtgLeadState(await mtgLeadRows(env, clientId, lead.Id)), notified, notify_error});
+  let stage;
+  if(status==='scheduled'){
+    const c=await getClientById(env, clientId).catch(()=>null);
+    if(pcIsOn(c)) stage=await leadMoveStage(env, clientId, lead, FV3_MEETING_STAGE);
+  }
+  return json({ok:true, id, state:mtgLeadState(await mtgLeadRows(env, clientId, lead.Id)), notified, notify_error, stage});
+}
+// ── Chats → 📅 Meeting (General accounts with the meetings module on) ──
+// POST /meetings/chat-share {lead_id, kind:'cal'|'meet', link_index?, start_at?, duration_min?, title?,
+// meet_url?, message?, force?}. 'cal': a tracked Cal.com booking link goes into the chat; the lead
+// moves to "Meeting Scheduled" when they book (handleCalcomMeetingsWebhook). 'meet': the meeting is
+// scheduled now with the Google Meet link, the confirmation goes into the chat, the 24h / 1h
+// reminders follow from the cron, and the lead moves to "Meeting Scheduled" (mtgSaveManual).
+export function mtgChatText(message, fallback, link){
+  const m=String(message||'').trim().slice(0,1000);
+  if(!m) return fallback;
+  if(!link) return m;
+  return m.includes('{link}')?m.split('{link}').join(link):(m.includes(link)?m:`${m}\n${link}`);
+}
+async function mtgChatPost(env, c, payload, leadId, convId, text){
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST', headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+    body:JSON.stringify({content:text, message_type:'outgoing', private:false})}).catch(()=>null);
+  if(!r?.ok) return {ok:false, error:'WhatsApp send failed (HTTP '+(r?.status||'network')+')'};
+  await chatsRecordOutgoing(env, payload.cid, leadId, {content:text}, payload).catch(()=>{});
+  return {ok:true};
+}
+async function handleMeetingsChatShare(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid).catch(()=>null);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!pcIsOn(c)) return json({error:'Meetings from Chats are for General accounts.'}, 403);
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const cfg=await mtgGetConfig(env, payload.cid);
+  if(!cfg || !(await mtgEnsureSchema(env))) return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const lead=await pcLeadForChat(env, payload, body?.lead_id);
+  if(!lead) return json({error:'Lead not found'}, 404);
+  const leadId=Number(lead.Id), convId=String(lead.ConversationID||'').trim();
+  if(!convId) return json({error:'This lead has no WhatsApp chat yet.'}, 400);
+  const access=await chatSendCheckAndClaim(env, c, payload, {leadId, convId});
+  if(!access.ok) return json({error:access.error}, 403);
+  const tz=monthlyMktClientTimezone(c), clientId=Number(payload.cid);
+  const me=String(payload.email||'').trim().toLowerCase().slice(0,200)||null;
+  if(body?.kind==='cal'){
+    if(!cfg.links.length) return json({error:'Add a Cal.com meeting link in Settings → Integrations → 📞 Cal.com Meetings first.'}, 400);
+    if(!body.force){
+      const st=mtgLeadState(await mtgLeadRows(env, clientId, leadId));
+      if(st?.state==='scheduled') return json({error:`${lead.Name||'This lead'} already has a meeting on ${mtgFormatWhen(st.start_at, tz)}.`, code:'MEETING_EXISTS', existing:st}, 409);
+    }
+    const link=cfg.links[Number(body.link_index)||0]||cfg.links[0];
+    const nowIso=new Date().toISOString(), token=mtgRandomToken(16);
+    const ins=await env.DB.prepare(`INSERT INTO meetings (client_id, token, lead_id, lead_name, phone, email, link_name, link_url, sent_by, sent_at, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'link_sent',?,?)`)
+      .bind(clientId, token, leadId, String(lead.Name||'').slice(0,120), mtgDigits(lead.Phone), String(lead.Email||'').trim().toLowerCase().slice(0,200), link.name, link.url, me, nowIso, nowIso, nowIso).run();
+    const row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(Number(ins.meta.last_row_id)).first();
+    await mtgUpdate(env, row.id, {source:'chat'}).catch(()=>{});
+    const url=mtgTrackedUrl(env, row);
+    const text=mtgChatText(body.message, `Hi ${mtgFirstName(lead.Name)}! 📅 Here's the link to pick a time for our ${link.name}: ${url}`, url);
+    const sent=await mtgChatPost(env, c, payload, leadId, convId, text);
+    if(!sent.ok){ await env.DB.prepare(`DELETE FROM meetings WHERE id=?`).bind(row.id).run().catch(()=>{}); return json({error:sent.error}, 502); }
+    return json({ok:true, kind:'cal', id:row.id, url, text, stage:String(lead.Stage||'')});
+  }
+  // Google Meet (or any video link): scheduled now.
+  const meetUrl=String(body?.meet_url||cfg.settings.meet_url||'').trim();
+  if(!/^https:\/\/\S+$/i.test(meetUrl)) return json({error:'Paste the Google Meet link (https://meet.google.com/…).'}, 400);
+  const saved=await mtgSaveManual(env, payload, {lead_id:leadId, status:'scheduled', start_at:body?.start_at, duration_min:body?.duration_min,
+    title:String(body?.title||'').trim()||'Google Meet', mode:'video', join_url:meetUrl, owner:me, note:'Shared from Chats', notify:false, force:!!body?.force});
+  const d=await saved.json().catch(()=>({}));
+  if(!saved.ok) return json(d, saved.status);
+  // Our own confirmation goes into the chat now; the cron still sends the 24h / 1h reminders.
+  const nowIso=new Date().toISOString();
+  await mtgUpdate(env, d.id, {notify:1, confirm_at:nowIso, source:'chat'});
+  const row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(Number(d.id)).first();
+  const text=mtgChatText(body?.message, mtgMessage('confirm', row, cfg, tz, env).text, meetUrl);
+  const sent=await mtgChatPost(env, c, payload, leadId, convId, text);
+  return json({ok:sent.ok, kind:'meet', id:d.id, text, stage:d.stage||String(lead.Stage||''), state:d.state, ...(sent.ok?{}:{error:'Meeting saved, but the message was not sent: '+sent.error})}, sent.ok?200:502);
+}
+// GET /meetings/calendar?from=&to= — every meeting starting in [from, to) (at most 62 days), for the
+// 📅 Meetings calendar (month and day views).
+async function handleMeetingsCalendar(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!(await mtgEnsureSchema(env))) return json({meetings:[], unavailable:true});
+  const u=new URL(request.url);
+  const from=Date.parse(u.searchParams.get('from')||''), to=Date.parse(u.searchParams.get('to')||'');
+  if(!Number.isFinite(from)||!Number.isFinite(to)||to<=from) return json({error:'from and to are required (ISO dates).'}, 400);
+  if(to-from>62*86400e3) return json({error:'Ask for at most 62 days at a time.'}, 400);
+  const rows=(await env.DB.prepare(`SELECT id, lead_id, lead_name, title, link_name, status, start_at, end_at, mode, location, join_url, scheduled_by, sent_by, source, outcome, calcom_uid FROM meetings WHERE client_id=? AND start_at>=? AND start_at<? ORDER BY start_at ASC LIMIT 1000`)
+    .bind(Number(payload.cid), new Date(from).toISOString(), new Date(to).toISOString()).all().catch(()=>({results:[]})))?.results||[];
+  return json({meetings:rows.map(r=>({id:r.id, lead_id:r.lead_id, lead_name:r.lead_name||'', title:r.title||r.link_name||'Meeting', status:r.status,
+    start_at:r.start_at, end_at:r.end_at, mode:r.mode||(r.join_url?'video':''), location:r.location||'', join_url:r.join_url||'',
+    owner:r.scheduled_by||r.sent_by||'', source:r.source||(r.calcom_uid?'calcom':'manual'), outcome:r.outcome||null}))});
+}
+// Follow-up V3's meeting track: each lead's meeting state ({leadId:{state,start_at,end_at,outcome}}),
+// including finished ones (a "not interested" outcome ends the after-meeting follow-ups).
+async function mtgStatesForFollowups(env, cid, leadId=null){
+  if(!(await mtgEnsureSchema(env))) return {};
+  const since=new Date(Date.now()-120*86400e3).toISOString();
+  const rows=(await env.DB.prepare(`SELECT id, lead_id, status, start_at, end_at, sent_at, created_at, updated_at, outcome, outcome_at, token, calcom_uid FROM meetings WHERE client_id=? AND lead_id IS NOT NULL${leadId?' AND lead_id=?':''} AND (created_at>=? OR start_at>=?)`)
+    .bind(...(leadId?[Number(cid), Number(leadId)]:[Number(cid)]), since, since).all().catch(()=>({results:[]})))?.results||[];
+  const byLead={};
+  for(const r of rows) (byLead[r.lead_id]||(byLead[r.lead_id]=[])).push(r);
+  const out={};
+  for(const [id, list] of Object.entries(byLead)){ const st=mtgLeadState(list); if(st) out[id]={state:st.state, start_at:st.start_at, end_at:st.end_at, outcome:st.outcome}; }
+  return out;
 }
 // POST /meetings/cancel {id}
 async function handleMeetingsCancel(request, env){
@@ -23143,17 +23261,23 @@ async function handleCatalogChatProposalSend(request,env){
 // (followupNormalBlocked). A lead already won or booked keeps its stage. Returns the lead's stage.
 const PC_KEEP_STAGES=new Set(['won','converted','Converted','consultation_booked','visit_booked','appt_booked']);
 async function pcMarkProposalSent(env,cid,lead,{at,total}={}){
+  return leadMoveStage(env,cid,lead,FV3_PROPOSAL_STAGE,total&&!(Number(lead.DealValue)>0)?{DealValue:total}:{});
+}
+// Moves a lead to `stage` (Proposal Sent, Meeting Scheduled): Leads, the Chats v2 read model, the
+// stage journal and the follow-up schedule. A lead already won or booked keeps its stage. `extra`
+// fields (DealValue) are dropped if the base doesn't have them. Returns the lead's stage.
+async function leadMoveStage(env,cid,lead,stage,extra={}){
   const from=String(lead.Stage||'');
-  if(PC_KEEP_STAGES.has(from)||from===FV3_PROPOSAL_STAGE) return from;
-  const fields={Stage:FV3_PROPOSAL_STAGE,...(total&&!(Number(lead.DealValue)>0)?{DealValue:total}:{})};
+  if(PC_KEEP_STAGES.has(from)||from===stage) return from;
+  const fields={Stage:stage,...extra};
   let r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(lead.Id),...fields}}).catch(()=>null);
   // DealValue may not exist on every base — the stage is what matters.
   if(!r?.ok&&fields.DealValue){ delete fields.DealValue; r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(lead.Id),...fields}}).catch(()=>null); }
-  if(!r?.ok){ await reportOpsError(env,'Chats AI proposal — stage update failed',new Error('HTTP '+(r?.status||'?')),{clientId:cid,leadId:lead.Id}).catch(()=>{}); return from; }
+  if(!r?.ok){ await reportOpsError(env,`Lead stage → ${stage} — update failed`,new Error('HTTP '+(r?.status||'?')),{clientId:cid,leadId:lead.Id}).catch(()=>{}); return from; }
   await chatsV2ApplyLeadPatch(env,lead.Id,fields,{broadcast:engineBroadcastUpdate}).catch(()=>{});
-  await engineJournalStageChange(env,cid,lead.Id,from,FV3_PROPOSAL_STAGE);
+  await engineJournalStageChange(env,cid,lead.Id,from,stage);
   await fv3Schedule(env,cid).catch(()=>{});
-  return FV3_PROPOSAL_STAGE;
+  return stage;
 }
 // Follow-up V3: the latest proposal per lead ({leadId:{at,title}}), for its proposal track.
 async function pcLatestProposals(env,cid,leadId=null){
@@ -39699,6 +39823,9 @@ const FOLLOWUP_V3_DEPS={
   // lead, and which accounts get the proposal templates submitted.
   proposals:(env,cid,leadId)=>pcLatestProposals(env,cid,leadId),
   proposalsOn:c=>pcIsOn(c)||String(c?.industry||'').toLowerCase()==='saas_digital_marketing',
+  // Meeting Scheduled track (Chats → 📅 Meeting): each lead's meeting state, and which accounts use it.
+  meetingStates:(env,cid,leadId)=>mtgStatesForFollowups(env,cid,leadId),
+  meetingsOn:async(c,env)=>{ if(!pcIsOn(c)||!env) return false; const cfg=await mtgGetConfig(env,c.Id).catch(()=>null); return !!cfg&&mtgConfigOut(cfg).chat_enabled; },
   sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
   orderPhones:fv3OrderPhones,
   meetingLeadIds:(env,cid)=>mtgActiveLeadIds(env,cid,new Date(),true),
@@ -44381,6 +44508,8 @@ export default {
       else if(url.pathname==='/meetings/outcome' && request.method==='POST'){ res=await handleMeetingsOutcome(request, env); }
       else if(url.pathname==='/meetings/manual' && request.method==='POST'){ res=await handleMeetingsManual(request, env); }
       else if(url.pathname==='/meetings/cancel' && request.method==='POST'){ res=await handleMeetingsCancel(request, env); }
+      else if(url.pathname==='/meetings/chat-share' && request.method==='POST'){ res=await handleMeetingsChatShare(request, env); }
+      else if(url.pathname==='/meetings/calendar' && request.method==='GET'){ res=await handleMeetingsCalendar(request, env); }
       else if(url.pathname==='/meetings/lead-states' && request.method==='GET'){ res=await handleMeetingsLeadStates(request, env); }
       else if(url.pathname==='/meetings/lead' && request.method==='GET'){ res=await handleMeetingsForLead(request, env); }
       else if(url.pathname==='/meetings/points' && request.method==='GET'){ res=await handleMeetingsPoints(request, env); }

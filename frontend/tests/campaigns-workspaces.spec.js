@@ -30,12 +30,14 @@ const REPORT = {
   health: { status: 'healthy', last_success_at: iso(now - 10 * 60e3), checked: 12 },
 };
 
-async function open(page, { v3 = false, query = '', proposals = false } = {}) {
+async function open(page, { v3 = false, query = '', proposals = false, meetings = false } = {}) {
   const settings = v3
     ? { enabled: true, enabled_at: iso(now - 86400e3), config: { paused: false, reengage_enabled: true, reengage_after_days: 30, proposal_followups: true }, checklist: [{ key: 'reengage', status: 'PENDING', label: 'Re-engage template' },
       ...(proposals ? [{ key: 'proposal_p1', step: 7, status: 'APPROVED', label: 'Proposal · day 1 template' }, { key: 'proposal_p2', step: 8, status: 'PENDING', label: 'Proposal · day 3 template' }, { key: 'proposal_p3', step: 9, status: 'REJECTED', label: 'Proposal · day 7 template' },
         { key: 'reengage_stage', stage: 'qualified', ok: true, status: 'APPROVED', template: 'lv_followup_re_qualified', label: 'Re-engage · Qualified' },
-        { key: 'reengage_stage', stage: 'proposal_sent', ok: false, status: 'PENDING', template: 'lv_followup_re_proposal_sent', label: 'Re-engage · Proposal Sent' }] : [])],
+        { key: 'reengage_stage', stage: 'proposal_sent', ok: false, status: 'PENDING', template: 'lv_followup_re_proposal_sent', label: 'Re-engage · Proposal Sent' }] : []),
+      ...(meetings ? [{ key: 'meeting_m1', step: 10, status: 'APPROVED', label: 'After meeting · day 1 template' }, { key: 'meeting_m2', step: 11, status: 'PENDING', label: 'After meeting · day 3 template' },
+        { key: 'reengage_stage', stage: 'meeting_scheduled', ok: true, status: 'APPROVED', template: 'lv_followup_re_meeting_scheduled', label: 'Re-engage · Meeting Scheduled' }] : [])],
       stages: proposals ? [{ id: 'qualified', label: 'Qualified' }, { id: 'proposal_sent', label: 'Proposal Sent' }] : [] }
     : { enabled: false, config: {}, checklist: [] };
   await page.addInitScript(() => { localStorage.setItem('lv_cid', '42'); localStorage.setItem('lv_session', 'tok'); });
@@ -209,4 +211,23 @@ test('Follow-up V3 stage editor: the account\'s stages, each with its own re-eng
   });
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0].config.stage_sequences).toEqual({ qualified: { reengage: { template_name: 'my_qualified_reengage', template_language: 'en_US' } } });
+});
+
+test('Follow-up V3 for meeting accounts: a Meeting Scheduled row — nothing before the meeting, then after-meeting templates', async ({ page }) => {
+  await open(page, { v3: true, meetings: true, query: '?view=followups' });
+  await page.locator('[data-fu="sequence"]').click();
+  const row = page.locator('#fuPropTimeline');
+  await expect(row).toContainText('After a meeting is scheduled');
+  await expect(row.locator('.fu-node')).toHaveCount(4);
+  await expect(row.locator('.fu-node').nth(0)).toContainText('Reminders 24h & 1h before');
+  await expect(row.locator('.fu-node').nth(1)).toContainText('Day 1 after');
+  await expect(row.locator('.fu-node').nth(1)).toContainText('✅ Ready');
+  await expect(row.locator('.fu-node').nth(2)).toContainText('waiting for approval');
+  await expect(row.locator('.fu-node').nth(3)).toContainText('Re-engage · Meeting Scheduled');
+  const posts = [];
+  page.on('request', (req) => { if (req.method() === 'POST' && req.url().includes('/followups/v3/settings')) posts.push(JSON.parse(req.postData() || '{}')); });
+  await page.waitForFunction(() => !!document.getElementById('fv3c_meeting_followups'));
+  await page.evaluate(() => { document.getElementById('fv3c_meeting_followups').checked = false; return window.fv3SaveConfig(); });
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].config).toMatchObject({ meeting_followups: false });
 });
