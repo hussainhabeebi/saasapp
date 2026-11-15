@@ -70,6 +70,8 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .prop-row{display:flex;gap:10px;align-items:center}.prop-row>span{flex:1;min-width:0}.prop-row>span b{display:block;font-size:14px;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.prop-row>span small{color:var(--muted)}.prop-row label{width:78px;flex:none}.prop-row .h-thumb{width:44px;height:44px}
 .prop-item{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid #f0f2f5}.prop-item b{font-size:14.5px}.prop-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.prop-grid3{grid-template-columns:1fr 1fr 1fr}
 .prop-totals{display:grid;gap:4px;font-size:13.5px}.prop-totals div{display:flex;justify-content:space-between;gap:10px}.prop-totals .tot{border-top:1px solid #e9edef;padding-top:6px;font-size:15px;color:#0d9c93}.prop-totals small{color:var(--muted)}
+.mtg-tabs{display:flex;gap:6px;flex-wrap:wrap}.mtg-tabs button{border:1px solid #d1d7db;background:#fff;border-radius:18px;padding:7px 14px;font-weight:600;cursor:pointer;color:#3b4a54}.mtg-tabs button.active{background:#0d9c93;border-color:#0d9c93;color:#fff}
+.mtg-busy{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center}.mtg-busy:empty{display:none}.mtg-busy .slot{background:#f0f2f5;border-radius:12px;padding:2px 9px;color:#3b4a54}.mtg-busy .slot.clash{background:#fde8e8;color:#b42318;font-weight:600}.mtg-busy .ok{color:#0a7d55}.mtg-busy .clash-msg{flex-basis:100%;color:#b42318;font-weight:600}
 @media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
 /* voice / audio player */
@@ -595,6 +597,7 @@ async function boot(){
  let me;
  try{me=await apiJson(WORKER+'/session/me')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.';return}
  clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();
+ loadMtgChatCfg();
  const show=()=>{$('loading').classList.add('hidden');$('app').classList.remove('hidden')};
  // v2: paint the last-seen list from this browser at once, then bootstrap + list + counts in
  // parallel. Any failure in that first round drops back to v1, as if v2 didn't exist.
@@ -993,7 +996,7 @@ function buildShell(){
    <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
    ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
    ${hItinOn()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">🏨</span>${isTravelAcct()?'AI Stay Itinerary':'AI Itinerary'}</button>`:''}
-   ${isGeneralAcct()?`<button onclick="openAiProp()" id="aiPropBtn"><span class="dot" style="background:#0d9c93">📑</span>AI Proposal</button>`:''}
+   ${isGeneralAcct()?`<button onclick="openAiProp()" id="aiPropBtn"><span class="dot" style="background:#0d9c93">📑</span>AI Proposal</button><button onclick="openMtgShare()" id="mtgChatBtn" style="${window.mtgChat?.cfg?.chat_enabled?'':'display:none'}"><span class="dot" style="background:#1a73e8">📅</span>Meeting</button>`:''}
   </div>
   <div class="input-wrap" id="inputWrap">
    <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
@@ -1682,6 +1685,106 @@ function aiPropMore(){aiPropReadPick();$('aiPropMain')?.classList.remove('picked
 function aiPropBack(){const m=$('aiPropMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){aiPropReadPick();m.classList.remove('picked');return}closeAiProp()}
 function closeAiProp(){const ov=$('aiPropOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}aiProp.sel=[];aiProp.draft=null;aiProp.seq++}
 
+// ── 📅 Meeting (General accounts with the meetings module on) ────────────────────────────────────
+// Attach → Meeting: schedule a Google Meet (date, time, Meet link — the confirmation goes into this
+// chat, reminders follow, the lead moves to "Meeting Scheduled") or share a tracked Cal.com booking
+// link (the lead moves to "Meeting Scheduled" when they book). Worker /meetings/chat-share; the
+// module is on when Settings → Integrations → 📞 Cal.com Meetings has a Cal.com or Google Meet link.
+window.mtgChat=window.mtgChat||{cfg:null,tab:'meet',busy:false};
+async function loadMtgChatCfg(){
+ if(!isGeneralAcct())return;
+ try{mtgChat.cfg=(await apiJson(WORKER+'/meetings/config')).config||null}catch{mtgChat.cfg=null}
+ const b=$('mtgChatBtn');if(b)b.style.display=mtgChat.cfg?.chat_enabled?'':'none';
+}
+const mtgPad=n=>String(n).padStart(2,'0');
+function mtgDefaultStart(){const d=new Date(Date.now()+86400e3);d.setMinutes(0,0,0);if(d.getHours()<10||d.getHours()>18)d.setHours(11);return d}
+function openMtgShare(){
+ closePopovers();if(!current||isIg(current)||!mtgChat.cfg?.chat_enabled)return;
+ let ov=$('mtgOv');if(!ov){ov=document.createElement('div');ov.id='mtgOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
+ const cfg=mtgChat.cfg,hasCal=(cfg.links||[]).length>0;
+ mtgChat.lead=current;mtgChat.tab=mtgChat.tab==='cal'&&hasCal?'cal':'meet';mtgChat.busy=false;
+ const d=mtgDefaultStart(),date=`${d.getFullYear()}-${mtgPad(d.getMonth()+1)}-${mtgPad(d.getDate())}`,time=`${mtgPad(d.getHours())}:${mtgPad(d.getMinutes())}`;
+ ov.classList.remove('hidden');
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="closeMtgShare()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📅 Meeting with <b>${esc(who(current)||'contact')}</b></div></div>
+ <div class="tpl-detail" style="flex:1"><div style="max-width:640px;width:100%;margin:0 auto;display:grid;gap:14px">
+  <div class="mtg-tabs" role="tablist"><button role="tab" id="mtgTabMeet" onclick="mtgTab('meet')">📹 Google Meet</button>${hasCal?`<button role="tab" id="mtgTabCal" onclick="mtgTab('cal')">🔗 Booking link (Cal.com)</button>`:''}</div>
+  <div class="tpl-form" id="mtgMeetForm">
+   <div style="font-size:13px;color:var(--muted)">Fix the time now — the confirmation with the Meet link goes into this chat, the customer gets reminders 24h and 1h before, and the lead moves to <b>Meeting Scheduled</b>.</div>
+   <label>Title<input id="mtgTitle" value="Meeting" maxlength="120"></label>
+   <div class="ai-itin-prof"><label>Date<input type="date" id="mtgDate" value="${date}" onchange="mtgLoadBusy()"></label><label>Time<input type="time" id="mtgTime" value="${time}" oninput="mtgDrawBusy()"></label><label>Duration<select id="mtgDur" onchange="mtgDrawBusy()">${[15,30,45,60,90].map(m=>`<option value="${m}" ${m===30?'selected':''}>${m} min</option>`).join('')}</select></label></div>
+   <div id="mtgBusy" class="mtg-busy" aria-live="polite"></div>
+   <label>Google Meet link<input id="mtgMeetUrl" value="${esc(cfg.settings?.meet_url||'')}" placeholder="https://meet.google.com/abc-defg-hij"></label>
+   <div style="font-size:12.5px"><a href="https://meet.google.com/new" target="_blank" rel="noopener">➕ Create a new Google Meet ↗</a> <span style="color:var(--muted)">— then paste its link above</span></div>
+   <label>Message (optional)<textarea id="mtgMeetMsg" rows="3" placeholder="Leave blank for: Hi ${esc(String(who(current)||'').split(' ')[0]||'there')}! ✅ Your meeting is confirmed for … Join: <Meet link>"></textarea></label>
+  </div>
+  ${hasCal?`<div class="tpl-form" id="mtgCalForm">
+   <div style="font-size:13px;color:var(--muted)">The customer picks a time themselves. The lead moves to <b>Meeting Scheduled</b> when they book; if they don't, a reminder to book goes out after a day.</div>
+   <label>Booking link<select id="mtgCalLink">${cfg.links.map((l,i)=>`<option value="${i}">${esc(l.name)}</option>`).join('')}</select></label>
+   <label>Message (optional — <code>{link}</code> marks where the link goes)<textarea id="mtgCalMsg" rows="3" placeholder="Leave blank for: Hi! 📅 Here's the link to pick a time for our …: <link>"></textarea></label>
+  </div>`:''}
+  <div class="tpl-form"><label>📝 Pre-meeting notes <span style="font-weight:400">— only your team sees these (calendar, meeting history, the 30-min brief)</span><textarea id="mtgNote" rows="3" maxlength="2000" placeholder="Agenda, what the customer needs, what to prepare…"></textarea></label></div>
+  <div id="mtgErr" style="color:#d93025;font-size:13px"></div>
+  <div class="tpl-actions"><button class="ai-itin-btn sec" onclick="closeMtgShare()">Cancel</button><button class="ai-itin-btn" id="mtgSendBtn" onclick="mtgSend()"></button></div>
+ </div></div>`;
+ mtgTab(mtgChat.tab);
+ mtgLoadBusy();
+}
+// One meeting per slot: the chosen day's meetings are shown, and a clash is caught before sending
+// (the worker refuses it too — SLOT_TAKEN).
+async function mtgLoadBusy(){
+ const el=$('mtgBusy'),v=$('mtgDate')?.value;if(!el||!v)return;
+ const from=new Date(`${v}T00:00`),to=new Date(from.getTime()+86400e3),seq=mtgChat.busySeq=(mtgChat.busySeq||0)+1;
+ el.textContent='Checking that day…';mtgChat.busyList=null;
+ try{const d=await apiJson(`${WORKER}/meetings/calendar?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`);
+  if(seq!==mtgChat.busySeq)return;mtgChat.busyList=(d.meetings||[]).filter(m=>m.status==='scheduled')}
+ catch{if(seq===mtgChat.busySeq){mtgChat.busyList=[];el.textContent=''}return}
+ mtgDrawBusy();
+}
+const mtgHm=d=>d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+function mtgClash(){
+ const v=$('mtgDate')?.value,t=$('mtgTime')?.value;if(!v||!t||!mtgChat.busyList)return null;
+ const s=new Date(`${v}T${t}`).getTime(),e=s+(Number($('mtgDur')?.value)||30)*60e3;
+ return mtgChat.busyList.find(m=>{const ms=Date.parse(m.start_at),me=Date.parse(m.end_at||'')||ms+30*60e3;return ms<e&&me>s})||null;
+}
+function mtgDrawBusy(){
+ const el=$('mtgBusy');if(!el||!mtgChat.busyList)return;const list=mtgChat.busyList,clash=mtgClash();
+ el.innerHTML=!list.length?'<span class="ok">✓ No other meetings that day</span>'
+  :`<span>Already booked that day:</span> ${list.map(m=>`<span class="slot${clash&&clash.id===m.id?' clash':''}">${esc(mtgHm(new Date(m.start_at)))}–${esc(mtgHm(new Date(m.end_at||Date.parse(m.start_at)+30*60e3)))} · ${esc(m.lead_name||m.title)}</span>`).join(' ')}${clash?'<div class="clash-msg">⚠️ That time overlaps a booked meeting — pick another slot.</div>':''}`;
+}
+function mtgTab(t){
+ mtgChat.tab=t;const meet=t==='meet';
+ $('mtgMeetForm').style.display=meet?'':'none';if($('mtgCalForm'))$('mtgCalForm').style.display=meet?'none':'';
+ $('mtgTabMeet')?.classList.toggle('active',meet);$('mtgTabCal')?.classList.toggle('active',!meet);
+ $('mtgTabMeet')?.setAttribute('aria-selected',String(meet));$('mtgTabCal')?.setAttribute('aria-selected',String(!meet));
+ $('mtgSendBtn').textContent=meet?'📅 Schedule & send':'🔗 Send booking link';$('mtgErr').textContent='';
+}
+async function mtgSend(force=false){
+ const lead=mtgChat.lead;if(!lead||mtgChat.busy)return;const err=$('mtgErr'),btn=$('mtgSendBtn');err.textContent='';
+ let body;
+ if(mtgChat.tab==='meet'){
+  const date=$('mtgDate').value,time=$('mtgTime').value,url=$('mtgMeetUrl').value.trim();
+  if(!date||!time){err.textContent='Pick the date and time.';return}
+  if(!/^https:\/\/\S+$/i.test(url)){err.textContent='Paste the Google Meet link (https://meet.google.com/…).';return}
+  const start=new Date(`${date}T${time}`);if(start.getTime()<Date.now()-5*60e3){err.textContent='That time has already passed.';return}
+  const clash=mtgClash();if(clash){err.textContent=`That time is already taken — ${clash.title} with ${clash.lead_name||'a lead'} at ${mtgHm(new Date(clash.start_at))}. Pick another slot.`;return}
+  body={lead_id:lead.Id,kind:'meet',start_at:start.toISOString(),duration_min:Number($('mtgDur').value)||30,title:$('mtgTitle').value.trim()||'Meeting',meet_url:url,message:$('mtgMeetMsg').value.trim(),note:$('mtgNote').value.trim(),force};
+ }else body={lead_id:lead.Id,kind:'cal',link_index:Number($('mtgCalLink').value)||0,message:$('mtgCalMsg').value.trim(),note:$('mtgNote').value.trim(),force};
+ mtgChat.busy=true;const label=btn.textContent;btn.disabled=true;btn.textContent='Sending…';
+ try{
+  const r=await fetch(WORKER+'/meetings/chat-share',{method:'POST',headers:headers({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(r.status===409&&d.code==='SLOT_TAKEN'){mtgChat.busy=false;btn.disabled=false;btn.textContent=label;err.textContent=d.error;mtgLoadBusy();return}
+  if(r.status===409&&d.code==='MEETING_EXISTS'){mtgChat.busy=false;btn.disabled=false;btn.textContent=label;if(confirm(`${d.error}\n\n${body.kind==='cal'?'Send a booking link anyway?':'Schedule another meeting anyway?'}`))return mtgSend(true);return}
+  if(!r.ok&&!d.id)throw new Error(d.error||'HTTP '+r.status);
+  closeMtgShare();
+  if(d.text){const msg=pushLocal(lead,{role:'assistant',content:d.text});setMsgStatus(lead,msg,r.ok?null:'failed')}
+  if(d.stage){lead.Stage=d.stage;if(lead._rec)lead._rec.Stage=d.stage;if(current===lead){renderInfo();renderHeaderCtl()}}
+  loadMeetingChip(lead);
+  toast(!r.ok?(d.error||'Meeting saved, message not sent'):body.kind==='cal'?'✓ Booking link sent':`✓ Meeting scheduled${d.stage==='meeting_scheduled'?' · stage: Meeting Scheduled':''}`);
+ }catch(e){err.textContent='Not sent: '+e.message;btn.disabled=false;btn.textContent=label;mtgChat.busy=false}
+}
+function closeMtgShare(){const ov=$('mtgOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}mtgChat.busy=false}
+
 // ── Voice & audio playback ───────────────────────────────────────────────────────────────────
 // One shared <audio>: starting a note stops the previous one, and progress survives the thread
 // being redrawn by a background refresh because players are matched back up by src.
@@ -2201,7 +2304,7 @@ function stepThreadSearch(d){if(!tsHits.length)return;tsIdx=(tsIdx+d+tsHits.leng
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
 document.addEventListener('click',e=>{if(!ddJustOpened&&!e.target.closest('.dd'))closeDd();if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions')){$('chatMenu')?.classList.add('hidden');syncBackdrop()}});
-document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if($('aiItinOv')&&!$('aiItinOv').classList.contains('hidden'))return aiItinBack();if($('hospItinOv')&&!$('hospItinOv').classList.contains('hidden'))return hItinBack();if($('aiPropOv')&&!$('aiPropOv').classList.contains('hidden'))return aiPropBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if($('aiItinOv')&&!$('aiItinOv').classList.contains('hidden'))return aiItinBack();if($('hospItinOv')&&!$('hospItinOv').classList.contains('hidden'))return hItinBack();if($('aiPropOv')&&!$('aiPropOv').classList.contains('hidden'))return aiPropBack();if($('mtgOv')&&!$('mtgOv').classList.contains('hidden'))return closeMtgShare();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
  const {channel:ch,leadId}=e.data;

@@ -644,3 +644,68 @@ describe('re-engage per stage', ()=>{
       {negotiation:{reengage:{template_name:'my_nego', template_language:'en'}}, quote_sent:{}});
   });
 });
+
+// Meeting track: a lead at "Meeting Scheduled" gets nothing before the meeting, then the after-meeting
+// templates (day 1/3 after it), then its stage's re-engage — never the normal ladder.
+import {FV3_MEETING_STAGE, FV3_MEETING_STEPS, fv3TrackTemplates} from './followup-v3.js';
+describe('meeting follow-ups', ()=>{
+  const TPL={10:{name:'lv_followup_m1', language:'en'}, 11:{name:'lv_followup_m2', language:'en'}};
+  const MTG={state:'scheduled', start_at:'2026-10-14T10:00:00Z', end_at:'2026-10-14T10:30:00Z', outcome:null};
+  // Customer last wrote on the 10th; the agent shared the meeting on the 12th.
+  const mLead={Stage:FV3_MEETING_STAGE, LastAgentMsgAt:'2026-10-12T09:00:00Z'};
+  const md=(o={})=>fv3Decide({lead:lead({...mLead, ...o.lead}), steps, cfg:o.cfg||cfg, state:null, sends:o.sends||[], enabledAt:ENABLED, now:o.now, tz:'UTC',
+    reengageReady:o.reengageReady??true, reengageStage:'Meeting Scheduled', meeting:o.meeting===undefined?MTG:o.meeting, trackTemplates:o.tpl||TPL, hasMeeting:o.hasMeeting??true});
+
+  test('nothing before the meeting (reminders come from the meetings module), no normal nudges', ()=>{
+    for(const now of ['2026-10-12T12:00:00Z', '2026-10-14T10:45:00Z']){
+      const d=md({now:T(now)});
+      assert.equal(d.status, 'meeting'); assert.equal(d.reason, 'meeting_booked');
+      assert.deepEqual(d.steps.map(s=>s.step), [10, 11]);
+    }
+  });
+
+  test('day 1 and day 3 after the meeting, then the stage re-engage', ()=>{
+    // "Completed" by the cron, no outcome logged yet — the after-meeting track runs.
+    const held={...MTG, state:'awaiting_outcome'};
+    let d=md({meeting:held, now:T('2026-10-15T09:00:00Z')});
+    assert.equal(d.status, 'scheduled'); assert.equal(d.next.step, 10); assert.equal(d.next.kind, 'meeting');
+    assert.equal(d.next.due_at, '2026-10-15T10:30:00.000Z');
+    d=md({meeting:held, now:T('2026-10-15T10:31:00Z')});
+    assert.equal(d.status, 'due'); assert.equal(d.cycle, '2026-10-14T10:30:00.000Z');
+    const s10={step:10, kind:'meeting', sent_at:'2026-10-15T10:31:00Z'};
+    d=md({meeting:held, sends:[s10], now:T('2026-10-16T10:00:00Z')});
+    assert.equal(d.next.step, 11); assert.equal(d.next.due_at, '2026-10-17T10:30:00.000Z');
+    const s11={step:11, kind:'meeting', sent_at:'2026-10-17T10:30:00Z'};
+    d=md({meeting:held, sends:[s10, s11], now:T('2026-11-14T11:00:00Z')});
+    assert.equal(d.next.kind, 'reengage'); assert.equal(d.next.label, 'Re-engage · Meeting Scheduled');
+    d=md({meeting:held, sends:[s10, s11], now:T('2026-11-14T11:00:00Z'), reengageReady:false});
+    assert.equal(d.reason, 'after_meeting_done');
+  });
+
+  test('a customer reply after the meeting restarts it; not interested ends it; it can be switched off', ()=>{
+    const held={...MTG, state:'awaiting_outcome'};
+    let d=md({meeting:held, lead:{LastCustomerMsgAt:'2026-10-15T12:00:00Z'}, now:T('2026-10-15T13:00:00Z')});
+    assert.equal(d.next.due_at, '2026-10-16T12:00:00.000Z');
+    d=md({meeting:{...held, state:'done', outcome:'not_interested'}, now:T('2026-10-16T13:00:00Z')});
+    assert.equal(d.status, 'stopped'); assert.equal(d.reason, 'closed');
+    d=md({meeting:held, cfg:fv3Config({meeting_followups:false}), now:T('2026-10-16T13:00:00Z')});
+    assert.equal(d.reason, 'after_meeting_off');
+    d=md({meeting:held, tpl:{}, now:T('2026-10-16T13:00:00Z')});
+    assert.equal(d.reason, 'after_meeting_template_pending');
+  });
+
+  test('a time agreed but not fixed yet still holds; other stages keep the old meeting hold', ()=>{
+    assert.equal(md({meeting:{state:'pending'}, now:T('2026-10-20T13:00:00Z')}).reason, 'meeting_booked');
+    const d=fv3Decide({lead:lead({Stage:'qualified'}), steps, cfg, sends:[], enabledAt:ENABLED, now:T('2026-10-10T12:00:00Z'), tz:'UTC', hasMeeting:true});
+    assert.equal(d.reason, 'meeting_booked');
+  });
+
+  test('after-meeting templates and the stage list', ()=>{
+    const p=fv3TemplatePreset('m1', {businessName:'Acme'});
+    assert.match(p.body, /thank you for your time with \{\{2\}\}/); assert.match(p.body, /Reply STOP to opt out\.$/);
+    assert.deepEqual(Object.keys(fv3TrackTemplates([{kind:'m1', status:'APPROVED'}, {kind:'p1', status:'APPROVED'}, {kind:'m2', status:'PENDING'}])), ['7', '10']);
+    assert.deepEqual(fv3PipelineStages({industry:'general'}, {proposals:true, meetings:true}).map(s=>s.id), ['meeting_scheduled', 'proposal_sent']);
+    assert.match(fv3StageReengagePreset('meeting_scheduled', 'Meeting Scheduled').body, /thank you again for your time/);
+    assert.equal(FV3_MEETING_STEPS[11].label, 'After meeting · day 3');
+  });
+});

@@ -214,3 +214,18 @@ describe('webhook + cron end to end', ()=>{
     assert.equal(graphCalls.length, 3);
   });
 });
+
+// Chats → 📅 Meeting: the agent's own message keeps the link; a Meet room link is a setting.
+import {mtgChatText as _chatText, mtgNormalizeSettings as _normSettings} from './worker.js';
+test('chat meeting message: default, {link} placeholder, link appended when missing', ()=>{
+  const link='https://meet.google.com/abc-defg-hij';
+  assert.equal(_chatText('', 'Default text', link), 'Default text');
+  assert.equal(_chatText('Join here: {link} at 5pm', 'x', link), `Join here: ${link} at 5pm`);
+  assert.equal(_chatText('See you tomorrow!', 'x', link), `See you tomorrow!\n${link}`);
+  assert.equal(_chatText(`Link: ${link}`, 'x', link), `Link: ${link}`);
+});
+test('the Meet room link setting must be an https link', ()=>{
+  assert.equal(_normSettings({meet_url:' https://meet.google.com/abc-defg-hij '}).meet_url, 'https://meet.google.com/abc-defg-hij');
+  assert.equal(_normSettings({meet_url:'meet.google.com/abc'}).meet_url, '');
+  assert.equal(_normSettings({}).meet_url, '');
+});

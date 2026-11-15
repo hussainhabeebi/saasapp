@@ -399,7 +399,7 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 #pageChats:not(.hidden){display:flex}
 #pageChats{padding-bottom:0!important}
 #chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#efeae2}
-#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageBroadcast{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageMeetingscalendar,#pageBroadcast{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageBizai:not(.hidden){display:flex;flex-direction:column}
@@ -1605,6 +1605,7 @@ const MODULE_PERMISSIONS = [
   {key:'ecommerce', label:'🛒 Ecommerce'},
   {key:'businessservices', label:'🏢 Business Services'},
   {key:'productsservices', label:'📦 Products & Services'},
+  {key:'meetingscalendar', label:'📅 Meetings calendar'},
   {key:'saasops', label:'🚀 SaaS Ops'},
   {key:'b2b', label:'🤝 B2B'},
   {key:'agency', label:'🏢 Agency / Travel'},
@@ -1759,6 +1760,7 @@ const ROLES = {
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" id="dnProductsTab" style="display:none" data-page="productsservices">📦 Products &amp; Services</button>
+    <button class="dnTab" id="dnMeetingsCalTab" style="display:none" data-page="meetingscalendar">📅 Meetings</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="followups" id="dnFollowupsTab">🔁 Follow-ups</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -2444,6 +2446,13 @@ const ROLES = {
          an item's details and media when a customer names it; Chats → 📑 AI Proposal uses the items. -->
     <div class="page hidden" id="pageProductsservices">
       <iframe id="productsServicesFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- 📅 MEETINGS CALENDAR (General accounts) — meetings-calendar.html: month view + day timeline of
+         every meeting with a lead (Chats → 📅 Meeting, marked by hand, Cal.com). Session token like
+         Products & Services: GET /meetings/calendar is session-gated. -->
+    <div class="page hidden" id="pageMeetingscalendar">
+      <iframe id="meetingsCalendarFrame" title="Meetings calendar" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (iframe-embed pattern, same as Real Estate/B2B above — travel-agency.html
@@ -3513,6 +3522,10 @@ const ROLES = {
               <div class="s-note" style="margin-bottom:6px">One per meeting type, e.g. "15-min intro" → https://cal.com/yourname/intro</div>
               <div id="mtgLinksList"></div>
               <button class="btn-ghost" type="button" onclick="mtgAddLinkRow()" style="margin:2px 0 14px">+ Add meeting type</button>
+              <!-- Google Meet room link — the default for Chats → 📅 Meeting → Google Meet (General accounts). -->
+              <label class="form-label" for="mtgMeetUrl">Google Meet link (optional)</label>
+              <div class="s-note" style="margin-bottom:6px">Your standing Google Meet room, e.g. https://meet.google.com/abc-defg-hij. In Chats, <b>Attach → 📅 Meeting</b> schedules a meeting with this link (you can paste a different one each time). A Cal.com link or a Google Meet link turns the Chats option on.</div>
+              <input class="form-input" id="mtgMeetUrl" placeholder="https://meet.google.com/abc-defg-hij" style="margin-bottom:14px">
 
               <div id="mtgSetupMore" style="display:none">
                 <label class="form-label">2. Connect Cal.com (bookings sync back here)</label>
@@ -4855,6 +4868,7 @@ const ROLES = {
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" id="mbProductsTab" style="display:none" data-page="productsservices"><span class="bnIcon">📦</span><span class="bnLabel">Products &amp; Services</span></button>
+      <button class="more-item" id="mbMeetingsCalTab" style="display:none" data-page="meetingscalendar"><span class="bnIcon">📅</span><span class="bnLabel">Meetings</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
   </div>
@@ -5311,7 +5325,7 @@ const ROLES = {
         <input class="form-input" id="mtgFWhere" type="text" style="margin-top:6px">
       </div>
       <div class="form-group"><label class="form-label">Owner</label><select class="form-input" id="mtgFOwner"></select></div>
-      <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" id="mtgFNote" type="text" placeholder="What to prepare"></div>
+      <div class="form-group"><label class="form-label" for="mtgFNote">📝 Pre-meeting notes (optional — only your team sees these)</label><textarea class="form-input" id="mtgFNote" rows="3" maxlength="2000" placeholder="Agenda, what the customer needs, what to prepare…"></textarea></div>
       <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="mtgFNotify"> Send the lead a WhatsApp confirmation and reminders</label>
     </div>
     <div id="mtgModalOutcome" style="display:none"></div>
@@ -6373,6 +6387,7 @@ function navigate(page){
   if(page==='education') renderEducation();
   if(page==='businessservices') renderBusinessServices();
   if(page==='productsservices') renderProductsServices();
+  if(page==='meetingscalendar') renderMeetingsCalendar();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
@@ -7466,9 +7481,9 @@ const DEFAULT_PIPELINE_STAGES={
 function pipelineUsesStatusBoard(){ return clientRecord?.industry==='travel'; }
 function defaultPipelineStages(){
   const ind=clientRecord?.industry||'general';
-  // General accounts send proposals (Chats → 📑 AI Proposal moves a lead to Proposal Sent), so the
-  // board needs that column even without a default pipeline.
-  if(NO_DEFAULT_PIPELINE_INDUSTRIES.has(ind)) return ind==='general'?[{id:'proposal_sent',label:'Proposal Sent'}]:[];
+  // General accounts schedule meetings and send proposals from Chats (📅 Meeting → Meeting Scheduled,
+  // 📑 AI Proposal → Proposal Sent), so the board needs those columns even without a default pipeline.
+  if(NO_DEFAULT_PIPELINE_INDUSTRIES.has(ind)) return ind==='general'?[{id:'meeting_scheduled',label:'Meeting Scheduled'},{id:'proposal_sent',label:'Proposal Sent'}]:[];
   return (DEFAULT_PIPELINE_STAGES[ind]||DEFAULT_PIPELINE_STAGES._default).map(s=>({...s}));
 }
 // The client's customised list, or null when never customised (→ industry defaults).
@@ -7709,6 +7724,11 @@ function renderBusinessServices(){
 function renderProductsServices(){
   const frame=$id('productsServicesFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`products-services.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+// 📅 Meetings calendar — same session-token embed as Products & Services.
+function renderMeetingsCalendar(){
+  const frame=$id('meetingsCalendarFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`meetings-calendar.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 // General accounts — 'general', no industry, or a free-text one the dashboard doesn't know. Every
 // other industry has its own catalogue module. Same rule as the worker's pcIsOn (product-catalog.js).
@@ -16380,6 +16400,7 @@ function mtgRenderConfig(){
   $id('mtgPointsInputs').innerHTML=MTG_POINT_FIELDS.map(([k,label])=>`<label style="display:flex;align-items:center;justify-content:space-between;gap:6px">${label}<input class="form-input mtg-pt" data-k="${k}" type="number" min="-100" max="100" step="1" value="${esc(pts[k]??'')}" style="width:64px;padding:5px 6px"></label>`).join('');
   $id('mtgTplName').value=s.template_name||'';
   $id('mtgTplLang').value=s.template_lang||'en';
+  if($id('mtgMeetUrl')) $id('mtgMeetUrl').value=s.meet_url||'';
   const conn=$id('mtgConnStatus');
   if(cfg.last_event_at){
     conn.innerHTML=`✅ Connected — last event from Cal.com <b>${esc(mtgAgo(cfg.last_event_at))}</b> (${esc(cfg.last_event_type||'')})`;
@@ -16407,12 +16428,15 @@ async function mtgSaveConfig(){
   })).filter(l=>l.url);
   const bad=links.find(l=>!/^https:\/\/\S+$/i.test(l.url));
   if(bad){ msg.textContent='Links must start with https://'; msg.className='save-msg err'; return; }
+  const meetUrl=($id('mtgMeetUrl')?.value||'').trim();
+  if(meetUrl && !/^https:\/\/\S+$/i.test(meetUrl)){ msg.textContent='The Google Meet link must start with https://'; msg.className='save-msg err'; return; }
   const settings={
     confirm:$id('mtgOptConfirm').checked, remind24:$id('mtgOptRemind24').checked, remind1:$id('mtgOptRemind1').checked,
     cancel_followup:$id('mtgOptCancel').checked, nudge:$id('mtgOptNudge').checked, bot_share:$id('mtgOptBotShare').checked,
     rep_brief:$id('mtgOptRepBrief').checked,
     points:Object.fromEntries([...document.querySelectorAll('#mtgPointsInputs .mtg-pt')].map(i=>[i.dataset.k, i.value])),
     template_name:$id('mtgTplName').value.trim(), template_lang:$id('mtgTplLang').value.trim()||'en',
+    meet_url:meetUrl,
   };
   btn.disabled=true; msg.textContent='Saving…'; msg.className='save-msg';
   try{
@@ -16641,7 +16665,7 @@ async function openMeetingModal(leadId, mode='schedule'){
     $id('mtgFMode').value=st?.mode||'video';
     $id('mtgFWhere').value=st?.mode==='in_person'?(st.location||''):(st?.join_url||'');
     $id('mtgFOwner').innerHTML=teamMemberOptions(st?.owner||lead.Owner||myEmail||'');
-    $id('mtgFNote').value='';
+    $id('mtgFNote').value=mode==='reschedule'?(st?.note||''):'';
     $id('mtgFNotify').checked=!!lead.Phone && !isIgLead(lead);
     mtgModeChanged();
   }
@@ -16691,6 +16715,8 @@ async function mtgModalSave(force=false){
     closeModal('modalMeeting');
     const pts=!m.id&&window._mtgPoints?.scheduled?` · +${window._mtgPoints.scheduled} pts once it's held`:'';
     showToast((d.notified?'📅 Meeting saved — confirmation sent on WhatsApp':d.notified===false?`📅 Meeting saved (WhatsApp not sent: ${d.notify_error||'error'})`:'📅 Meeting saved')+pts, d.notified===false?'err':'ok');
+    // General accounts: the worker moved the lead to Meeting Scheduled.
+    if(d.stage){ const l=allLeads.find(x=>x.Id===m.leadId); if(l) l.Stage=d.stage; }
     mtgAfterChange(m.leadId, d.state);
   }catch(e){ showToast('Error: '+e.message,'err'); }
   finally{ btn.disabled=false; }
@@ -20299,7 +20325,7 @@ function applyTheme(industryKey){
     const target=el.dataset.industry;
     el.style.display=(industryKey===target)?'':'none';
   });
-  ['dnProductsTab','mbProductsTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
+  ['dnProductsTab','mbProductsTab','dnMeetingsCalTab','mbMeetingsCalTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=(industryKey==='travel'||clientRecord?.ta_enabled==='Yes')?'block':'none';
   // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list

@@ -41,11 +41,13 @@ test('industries get default stages; Won/Lost sit after Human Handover', async (
   expect(await page.evaluate(() => stageLabel('won'))).toBe('Deal Closed');
 });
 
-test('travel gets no default stages; general only Proposal Sent (Chats → AI Proposal moves leads there)', async ({ page }) => {
+test('travel gets no default stages; general only Meeting Scheduled and Proposal Sent (set from Chats)', async ({ page }) => {
   await setup(page, { industry: 'travel' });
   expect(await board(page)).toEqual(['new', 'human_handover']);
   await setup(page, { industry: 'general' });
-  expect(await board(page)).toEqual(['new', 'proposal_sent', 'human_handover']);
+  expect(await board(page)).toEqual(['new', 'meeting_scheduled', 'proposal_sent', 'human_handover']);
+  // @ts-ignore
+  expect(await page.evaluate(() => stageLabel('meeting_scheduled'))).toBe('Meeting Scheduled');
   // @ts-ignore
   expect(await page.evaluate(() => stageLabel('proposal_sent'))).toBe('Proposal Sent');
 });
@@ -105,5 +107,5 @@ test('general clients can add their own stages', async ({ page }) => {
   await page.dispatchEvent('#plNewStage', 'keydown', { key: 'Enter' });
   // @ts-ignore
   await page.evaluate(() => savePipelineStages());
-  expect(await board(page)).toEqual(['new', 'proposal_sent', 'quoted', 'human_handover']);
+  expect(await board(page)).toEqual(['new', 'meeting_scheduled', 'proposal_sent', 'quoted', 'human_handover']);
 });
