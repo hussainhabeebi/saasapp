@@ -17788,10 +17788,15 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, 
 // Deliberately hardcodes a Gemini model here rather than using the client's own `c.model` — the
 // point of this fallback is specifically "still get a Gemini-quality answer", not "fall back to
 // whatever model this client happens to have configured".
+// The client's own AI Models provider (aiClientFirst) runs first; this shared ladder only runs
+// when there is none, or it failed and the client allowed the fallback — never both on success.
+// opts.cfBackup adds Workers AI as a last resort, inside the same ladder, for callers that had it.
 async function engineGeminiGenerateWithFallback(env, c, systemText, userText, opts={}){
-  const own=await aiClientGenerate(env, c, systemText, userText, opts);
-  if(own?.text) return own.text;
-  if(own && !own.fallback) return null;
+  return aiClientFirst(env, c, systemText, userText, opts, async()=>
+    await engineSharedGenerate(env, c, systemText, userText, opts)
+    || (opts.cfBackup?await engineCfAiGenerate(env, systemText, userText, opts):null));
+}
+async function engineSharedGenerate(env, c, systemText, userText, opts={}){
   const direct=await engineGeminiGenerate(env, systemText, userText, opts);
   if(direct) return direct;
   if(!c?.openrouter_key) return null;
@@ -17815,7 +17820,7 @@ async function engineGeminiGenerateWithFallback(env, c, systemText, userText, op
    it instead of the shared Gemini key. Config lives in D1 (migrations/0105); the key is AES-GCM
    encrypted with the AI_KEY_ENC_SECRET Worker secret and never returned to the browser. With no
    enabled row for a client, aiClientGenerate returns null and every caller takes its original
-   shared-Gemini path unchanged. Voice transcription and image reading stay on Gemini — not every
+   shared-Gemini path unchanged. Voice transcription stays on Gemini — not every
    provider accepts audio. See SETUP.md "AI Models (bring your own key)". */
 export const AI_PROVIDERS={
   anthropic:{label:'Claude (Anthropic)', format:'anthropic', base:'https://api.anthropic.com/v1',
@@ -17884,7 +17889,8 @@ export async function aiDecryptSecret(env, stored){
 // `effort` isn't accepted by Haiku 4.5 or older models, so it is only sent where supported
 // (Haiku 5.5 does accept it).
 function aiAnthropicBody(model, systemText, userText, opts){
-  const body={model, max_tokens:Math.max(2048, (opts.maxOutputTokens||300)*4), messages:[{role:'user', content:userText}]};
+  const content=opts.image?[{type:'image', source:{type:'base64', media_type:opts.image.mimeType, data:opts.image.base64}}, {type:'text', text:userText}]:userText;
+  const body={model, max_tokens:Math.max(2048, (opts.maxOutputTokens||300)*4), messages:[{role:'user', content}]};
   if(systemText) body.system=systemText;
   if(/^claude-(opus|sonnet|fable|mythos)-(5|4-[678])/.test(model)) body.output_config={effort:'low'};
   // Haiku 5.5 thinks by default at effort medium; low keeps short WhatsApp replies fast and cheap.
@@ -17892,7 +17898,8 @@ function aiAnthropicBody(model, systemText, userText, opts){
   return body;
 }
 function aiOpenAiBody(provider, model, systemText, userText, opts){
-  const messages=[...(systemText?[{role:'system', content:systemText}]:[]), {role:'user', content:userText}];
+  const userContent=opts.image?[{type:'text', text:userText}, {type:'image_url', image_url:{url:`data:${opts.image.mimeType};base64,${opts.image.base64}`}}]:userText;
+  const messages=[...(systemText?[{role:'system', content:systemText}]:[]), {role:'user', content:userContent}];
   // OpenAI's own current models are reasoning models: they take max_completion_tokens (which
   // includes reasoning) and reject a non-default temperature. Other compatible APIs keep the
   // classic parameters.
@@ -17931,7 +17938,8 @@ export async function aiProviderCall(cfg, systemText, userText, opts={}){
       return text?{ok:true, text}:{ok:false, error:`Empty reply (stop_reason: ${d?.stop_reason||'unknown'})`};
     }
     if(p.format==='gemini'){
-      const reqBody={contents:[{role:'user', parts:[{text:userText}]}], generationConfig:engineGeminiGenerationConfig(model, opts)};
+      const parts=[{text:userText}, ...(opts.image?[{inline_data:{mime_type:opts.image.mimeType, data:opts.image.base64}}]:[])];
+      const reqBody={contents:[{role:'user', parts}], generationConfig:engineGeminiGenerationConfig(model, opts)};
       if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
       const r=await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
         method:'POST', headers:{'x-goog-api-key':cfg.apiKey, 'Content-Type':'application/json'}, body:JSON.stringify(reqBody), signal
@@ -18022,6 +18030,9 @@ async function aiRecordResult(env, rt, res){
 export async function aiClientGenerate(env, c, systemText, userText, opts={}){
   const rt=await aiLoadClientRuntime(env, c);
   if(!rt) return null;
+  // An image the selected model can't take (provider without vision, or a format/size it rejects)
+  // goes down the shared path exactly as if no own provider were set.
+  if(opts.image && !aiSupportsImage(rt, opts.image)) return null;
   const res=await aiProviderCall(rt, systemText, userText, opts);
   await aiRecordResult(env, rt, res);
   if(res.ok){
@@ -18029,6 +18040,22 @@ export async function aiClientGenerate(env, c, systemText, userText, opts={}){
     return {text:res.text, fallback:rt.fallback};
   }
   return {text:null, fallback:rt.fallback, error:res.error};
+}
+// Which own providers can read a photo in the same call. Claude takes jpeg/png/gif/webp up to
+// ~5 MB base64; Gemini takes the same plus heic/heif; OpenAI's own models take data-URL images.
+// Generic OpenAI-compatible endpoints are left on the shared reader — many serve text-only models.
+const AI_IMAGE_TYPES={anthropic:/^image\/(jpeg|png|gif|webp)$/, gemini:/^image\/(jpeg|png|gif|webp|heic|heif)$/, openai:/^image\/(jpeg|png|gif|webp)$/};
+export function aiSupportsImage(rt, image){
+  const p=AI_PROVIDERS[rt?.provider];
+  if(!p || !image?.base64) return false;
+  const kind=p.format==='openai'?(rt.provider==='openai'?'openai':null):p.format;
+  if(!kind || !AI_IMAGE_TYPES[kind].test(String(image.mimeType||''))) return false;
+  return kind!=='anthropic' || image.base64.length<=5*1024*1024;
+}
+// Reads a photo with the client's own model when it can see images. Same contract as
+// aiClientGenerate: null → no own vision-capable provider (caller takes its shared path).
+async function aiClientReadImage(env, c, prompt, image, opts={}){
+  return aiClientGenerate(env, c, '', prompt, {...opts, image});
 }
 // Client's own provider first; `shared` (the original code path) only when there is no own
 // provider, or it failed and the client allowed the fallback.
@@ -20771,8 +20798,26 @@ export function engineInboundMediaFields(mediaType, mediaUrl, caption, cwId){
   return {userAttachment:{kind:/\.(mp4|mov|3gp|webm)$/i.test(name)?'video':'document', url:mediaUrl, name, ...(Number(cwId)?{cw_id:Number(cwId)}:{})}};
 }
 
+// Downloads a photo for the client's own vision-capable model (aiClientReadImage). Null on any failure.
+async function engineFetchImageForAi(mediaUrl){
+  try{
+    const r=await fetch(mediaUrl);
+    if(!r.ok) return null;
+    const buf=await r.arrayBuffer();
+    if(!buf.byteLength || buf.byteLength>15*1024*1024) return null;
+    return {base64:engineArrayBufferToBase64(buf), mimeType:engineImageMimeType(r.headers.get('content-type'))};
+  }catch(e){ return null; }
+}
 async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
+    // The client's own AI Models provider reads the photo when it can see images (Claude, Gemini,
+    // OpenAI); the shared Gemini reader below runs only when it can't, or failed with fallback on.
+    if(await aiLoadClientRuntime(env, c)){
+      const img=await engineFetchImageForAi(mediaUrl);
+      const own=img?await aiClientReadImage(env, c, ENGINE_IMAGE_DESCRIBE_PROMPT, img, {temperature:0.2, maxOutputTokens:100, caller:'image-read'}):null;
+      if(own?.text) return own.text;
+      if(own && !own.fallback) return ENGINE_IMAGE_UNREADABLE_NOTE;
+    }
     const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
     if(geminiDesc) return geminiDesc;
     if(!c.openrouter_key) return ENGINE_IMAGE_UNREADABLE_NOTE;
@@ -20849,9 +20894,13 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // with zero trace of why. reportOpsError here closes that blind spot (same fix already applied
   // to voice transcription and Sarvam TTS above).
   let aiResult=null;
+  // sharedRan: the shared ladder ran (no own AI Models provider, or it failed with fallback on).
+  // The client's legacy OpenRouter backup below only follows that ladder — never a second paid
+  // call on top of the client's own model.
+  let sharedRan=false;
   try{
     const raw=await aiClientFirst(env, c, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'},
-      async()=>await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
+      async()=>(sharedRan=true) && await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
         || await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'}));
     if(raw){
       try{ aiResult=JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]); }
@@ -20859,7 +20908,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
     }
   }catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier request threw', e); }
 
-  if(!aiResult && c.openrouter_key){
+  if(!aiResult && c.openrouter_key && (sharedRan || !(await aiLoadClientRuntime(env, c)))){
     try{
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
@@ -26180,12 +26229,14 @@ async function engineLocalizeReply(env, c, text, targetLang){
     if(mw.length) manglishNote=` MANGLISH RULE: Do NOT translate these words — keep them exactly as they appear in the source text: ${mw.join(', ')}.`;
   }
   const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote}${engineBusinessNameMlRule(c, targetLang).replace(/\n+/g,' ')} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  let sharedRan=false;
   try{
     const geminiRaw=await aiClientFirst(env, c, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'},
-      ()=>engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'}));
+      ()=>{ sharedRan=true; return engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'}); });
     if(geminiRaw) return geminiRaw;
   }catch(e){}
-  if(c.openrouter_key){
+  // Legacy OpenRouter backup only after the shared ladder — not on top of the client's own model.
+  if(c.openrouter_key && (sharedRan || !(await aiLoadClientRuntime(env, c).catch(()=>null)))){
     try{
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
@@ -26324,8 +26375,7 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // this engine, so an option label must never be allowed to inherit the reply's own language here.
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
-    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'})
-      || await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:150, caller:'extract-options'}))||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options', cfBackup:true}))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const parsed=JSON.parse(m[0]);
@@ -37322,19 +37372,24 @@ function fpAiNormalizeParsedExpense(parsed, defaultCurrency){
     notes:String(parsed.notes||'').trim().slice(0,500),
   };
 }
-async function fpAiParseExpenseText(env, text, defaultCurrency){
+async function fpAiParseExpenseText(env, text, defaultCurrency, c){
   if((!env.AI && !env.GEMINI_API_KEY) || !text) return null;
   const today=new Date().toISOString().slice(0,10);
   const system=`You convert a small business owner's plain description of a purchase or expense into one structured bookkeeping record. They are not an accountant — never use accounting jargon back at them. Today's date is ${today}. Default currency is ${defaultCurrency} unless the text clearly states another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"who was paid, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. Resolve relative dates ("yesterday", "last Friday") against today's date. If you cannot tell the amount at all, set amount to 0.`;
-  const raw=await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, caller:'fp-expense-parse'})
-    || await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
+  const raw=await aiClientFirst(env, c, system, text, {temperature:0.1, maxOutputTokens:250, json:true, caller:'fp-expense-parse'},
+    async()=>await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, caller:'fp-expense-parse'})
+      || await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true}));
   if(!raw) return null;
   try{ return fpAiNormalizeParsedExpense(JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]), defaultCurrency); }catch(e){ return null; }
 }
-async function fpAiParseExpenseImage(env, base64, mimeType, defaultCurrency){
-  if(!env.GEMINI_API_KEY || !base64) return null;
+async function fpAiParseExpenseImage(env, base64, mimeType, defaultCurrency, c){
+  if(!base64) return null;
   const today=new Date().toISOString().slice(0,10);
   const prompt=`This image is a photo of a receipt or bill for a small business expense. Today's date is ${today}. Read the vendor/merchant name, the total amount actually paid, and the date printed on it (if no date is visible, use today). Default currency is ${defaultCurrency} unless the receipt clearly shows another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"merchant name, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. If the total amount isn't legible, set amount to 0.`;
+  const own=await aiClientReadImage(env, c, prompt, {base64, mimeType:engineImageMimeType(mimeType)}, {temperature:0.1, maxOutputTokens:250, json:true, caller:'fp-expense-image'}).catch(()=>null);
+  if(own?.text){ try{ return fpAiNormalizeParsedExpense(JSON.parse((own.text.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[own.text])[0]), defaultCurrency); }catch(e){ return null; } }
+  if(own && !own.fallback) return null;
+  if(!env.GEMINI_API_KEY) return null;
   try{
     const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -37362,9 +37417,9 @@ async function handleFpAiParseExpense(request, env){
   let parsed=null;
   if(body.imageBase64){
     if(String(body.imageBase64).length>20*1024*1024) return json({error:'Image is too large.'}, 400);
-    parsed=await fpAiParseExpenseImage(env, body.imageBase64, body.mimeType, defaultCurrency);
+    parsed=await fpAiParseExpenseImage(env, body.imageBase64, body.mimeType, defaultCurrency, {Id:clientId});
   }else if(body.text){
-    parsed=await fpAiParseExpenseText(env, String(body.text).slice(0,500), defaultCurrency);
+    parsed=await fpAiParseExpenseText(env, String(body.text).slice(0,500), defaultCurrency, {Id:clientId});
   }else{
     return json({error:'text or imageBase64 required'}, 400);
   }
@@ -37431,8 +37486,9 @@ async function handleFpAiAsk(request, env){
   if(!question) return json({error:'question required'}, 400);
   const data=await fpAiComputeSnapshotData(env, Number(payload.cid));
   const system=`You are a friendly bookkeeping assistant for a small business owner who has no accounting background. Answer their question using ONLY the JSON data below — never invent or estimate a number that isn't in it. If the data doesn't cover what they're asking, say so plainly and suggest what to check instead. Keep the answer to 2-4 short sentences, warm and jargon-free (say "money customers owe you" not "receivables", "profit" not "net position"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const answer=await engineCfAiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'})
-    || await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'});
+  const answer=await aiClientFirst(env, {Id:Number(payload.cid)}, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'},
+    async()=>await engineCfAiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'})
+      || await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'}));
   if(!answer) return json({error:"Couldn't reach the AI assistant just now — try again in a moment."}, 502);
   return json({answer, data});
 }
@@ -37440,8 +37496,9 @@ async function handleFpAiAsk(request, env){
 async function fpAiGenerateSnapshotNarrative(env, clientId){
   const data=await fpAiComputeSnapshotData(env, clientId);
   const system=`You are a friendly bookkeeping assistant writing a one-paragraph monthly business snapshot for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, encouraging but honest tone; 3-5 short sentences; no jargon (say "money customers owe you" not "receivables", "profit" not "net position"). Mention: how much came in, how much went out, whether they're up or down, and the single biggest expense category if there is one. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const text=await engineCfAiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'})
-    || await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'});
+  const text=await aiClientFirst(env, {Id:Number(clientId)}, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'},
+    async()=>await engineCfAiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'})
+      || await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'}));
   return {text, data};
 }
 async function fpAiGetOrRefreshSnapshot(env, clientId, force){
@@ -37518,8 +37575,9 @@ async function handleFpAiForecast(request, env){
   }
   if(!env.GEMINI_API_KEY) return json({forecast:row?.ai_forecast_text||null, data, error:'AI features are not configured for this deployment yet.'});
   const system=`You are a friendly bookkeeping assistant writing a short cash-flow outlook for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, jargon-free (say "money still to come in" not "receivables", "bills still to pay" not "payables"), 2-4 short sentences, mention the money expected in before month end, what's still due to go out for fixed costs, and the rough net position that leaves. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const forecast=await engineCfAiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'})
-    || await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'});
+  const forecast=await aiClientFirst(env, {Id:clientId}, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'},
+    async()=>await engineCfAiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'})
+      || await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'}));
   if(forecast){
     const now=new Date().toISOString();
     await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, ai_forecast_text, ai_forecast_period, updated_at) VALUES (?,1,1,?,?,?)
@@ -37543,8 +37601,9 @@ async function fpAiDraftReminder(env, due){
   const overdueDays=Math.max(0, Math.floor((Date.now()-new Date(due.due_date).getTime())/86400000));
   const system=`Write one short, warm WhatsApp message to a customer reminding them a payment is due. Not robotic or threatening — this is a small business owner following up personally. Use the customer's name naturally. 1-3 sentences, end with a light thank-you. No subject line, no signature block, plain message text only.`;
   const userPrompt=`Customer: ${due.customer_name||'the customer'}\nAmount due: ${due.currency} ${balance.toFixed(2)}\nBilling period: ${due.period_key}\nDays overdue: ${overdueDays>0?overdueDays:'not yet overdue, due soon'}`;
-  const drafted=await engineCfAiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'})
-    || await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'});
+  const drafted=await aiClientFirst(env, {Id:Number(due.client_id)}, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'},
+    async()=>await engineCfAiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'})
+      || await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'}));
   return drafted||fallback;
 }
 async function handleFpAiDraftReminder(request, env){
@@ -37620,7 +37679,7 @@ async function fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType,
       if(imgR.ok){
         const mimeType=(imgR.headers.get('content-type')||'image/jpeg').split(';')[0].trim();
         const buf=await imgR.arrayBuffer();
-        if(buf.byteLength<=15*1024*1024) imageParsed=await fpAiParseExpenseImage(env, engineArrayBufferToBase64(buf), mimeType, defaultCurrency);
+        if(buf.byteLength<=15*1024*1024) imageParsed=await fpAiParseExpenseImage(env, engineArrayBufferToBase64(buf), mimeType, defaultCurrency, c);
       }
     }catch(e){}
     if(!imageParsed || !imageParsed.amount){ await engineSendChatwootReply(env, c, clientId, convId, "Couldn't read an amount off that photo — could you type the expense instead, e.g. \"paid 2000 for fuel\"?"); return; }
@@ -37631,12 +37690,13 @@ async function fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType,
   if(!imageParsed && looksLikeQuestion && trimmed){
     const data=await fpAiComputeSnapshotData(env, clientId);
     const system=`You are a friendly bookkeeping assistant replying over WhatsApp to a small business owner with no accounting background. Answer using ONLY the JSON data below — never invent or estimate a number that isn't in it. Keep it to 2-3 short sentences, warm and jargon-free (say "money customers owe you" not "receivables"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-    const answer=await engineGeminiGenerate(env, system, trimmed, {temperature:0.3, maxOutputTokens:200});
+    const answer=await aiClientFirst(env, c, system, trimmed, {temperature:0.3, maxOutputTokens:200, caller:'fp-ask'},
+      ()=>engineGeminiGenerate(env, system, trimmed, {temperature:0.3, maxOutputTokens:200}));
     await engineSendChatwootReply(env, c, clientId, convId, answer||"Couldn't reach the AI assistant just now — try again in a moment.");
     return;
   }
 
-  const parsed=imageParsed || (trimmed?await fpAiParseExpenseText(env, trimmed, defaultCurrency):null);
+  const parsed=imageParsed || (trimmed?await fpAiParseExpenseText(env, trimmed, defaultCurrency, c):null);
   if(!parsed || !parsed.amount){
     await engineSendChatwootReply(env, c, clientId, convId, "Couldn't catch an amount in that — try something like \"paid 3500 for electricity yesterday\", a voice note, or a photo of the receipt.");
     return;
@@ -39390,8 +39450,17 @@ async function hospitalitySuiteSendTemplate(env, c, phone, templateName, languag
 }
 // Web check-in ID scan: reads the fields off a guest's ID photo (Gemini, same model and image
 // handling as engineGeminiDescribeImage). Returns null when it can't be read.
-async function hospitalitySuiteReadId(env, mediaUrl){
-  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+const HS_READ_ID_PROMPT='This is a photo of an identity document for hotel guest registration. Return ONLY a JSON object with keys name, id_type (Aadhaar, Passport, Driving Licence, Voter ID or Other), id_number, dob (YYYY-MM-DD), nationality. Use "" for anything you cannot read. If it is not an ID document, return {}.';
+async function hospitalitySuiteReadId(env, mediaUrl, cid){
+  if(!mediaUrl) return null;
+  if(cid && await aiLoadClientRuntime(env, {Id:Number(cid)})){
+    const c={Id:Number(cid)};
+    const img=await engineFetchImageForAi(mediaUrl);
+    const own=img?await aiClientReadImage(env, c, HS_READ_ID_PROMPT, img, {temperature:0, maxOutputTokens:200, json:true, caller:'hs-id-scan'}).catch(()=>null):null;
+    if(own?.text){ try{ const obj=JSON.parse((own.text.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||['{}'])[0]); return obj&&typeof obj==='object'?obj:null; }catch(e){ return null; } }
+    if(own && !own.fallback) return null;
+  }
+  if(!env.GEMINI_API_KEY) return null;
   try{
     const imgR=await fetch(mediaUrl);
     if(!imgR.ok) return null;
@@ -39399,7 +39468,7 @@ async function hospitalitySuiteReadId(env, mediaUrl){
     if(!buf.byteLength || buf.byteLength>15*1024*1024) return null;
     const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{role:'user', parts:[
-        {text:'This is a photo of an identity document for hotel guest registration. Return ONLY a JSON object with keys name, id_type (Aadhaar, Passport, Driving Licence, Voter ID or Other), id_number, dob (YYYY-MM-DD), nationality. Use "" for anything you cannot read. If it is not an ID document, return {}.'},
+        {text:HS_READ_ID_PROMPT},
         {inline_data:{mime_type:engineImageMimeType(imgR.headers.get('content-type')), data:engineArrayBufferToBase64(buf)}}]}],
         generationConfig:{responseMimeType:'application/json', temperature:0}})});
     if(!r.ok) return null;
@@ -39414,7 +39483,8 @@ const HS_DEPS={
   findConversation:apptFindConversation,
   sendTemplate:hospitalitySuiteSendTemplate,
   readIdImage:hospitalitySuiteReadId,
-  aiText:(env, system, user)=>engineGeminiGenerate(env, system, user, {temperature:0.5, maxOutputTokens:400, caller:'hospitality-review-reply'}),
+  aiText:(env, system, user, c)=>aiClientFirst(env, c, system, user, {temperature:0.5, maxOutputTokens:400, caller:'hospitality-review-reply'},
+    ()=>engineGeminiGenerate(env, system, user, {temperature:0.5, maxOutputTokens:400, caller:'hospitality-review-reply'})),
   razorpayLink:hpRazorpayLink,
 };
 
@@ -39982,8 +40052,7 @@ async function hospH3AiResolve(env, c, userText, candidates){
   const system='You map a hotel guest\'s short WhatsApp message to ONE of the listed options when the message clearly names or picks that option — allow typos, partial names, spacing differences, nicknames and other languages or scripts (e.g. Malayalam, Manglish). If the message is a question, a date, a greeting, a general request, or could fit more than one option, answer null. Reply with JSON only: {"option": "<the option text exactly as listed>"} or {"option": null}.';
   const user=`Options:\n${candidates.map(x=>`- ${x.label}`).join('\n')}\n\nGuest message: ${text}`;
   try{
-    const raw=(await engineGeminiGenerateWithFallback(env, c, system, user, {temperature:0, maxOutputTokens:80, json:true, caller:'h3-resolve'})
-      || await engineCfAiGenerate(env, system, user, {temperature:0, maxOutputTokens:80, caller:'h3-resolve'}))||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, user, {temperature:0, maxOutputTokens:80, json:true, caller:'h3-resolve', cfBackup:true}))||'';
     const m=String(raw).replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const hit=h3PickCandidate(candidates, JSON.parse(m[0]).option);
@@ -40377,8 +40446,7 @@ async function hospRv1ReadDetails(env, c, text){
   if(!/\d/.test(String(text||'')) || (!env.GEMINI_API_KEY && !c.openrouter_key && !env.AI)) return parsed;
   try{
     const system='Extract hotel booking details a guest typed. Return JSON only: {"name":string|null,"phone":string|null,"adults":number|null,"kids":number|null,"rooms":number|null,"date":"YYYY-MM-DD"|null,"budget":string|null}. Use null for anything not written in the message — never guess. Today is '+new Date().toISOString().slice(0,10)+'.';
-    const raw=(await engineGeminiGenerateWithFallback(env, c, system, String(text).slice(0,600), {temperature:0, maxOutputTokens:150, json:true, caller:'rv1-details'})
-      || await engineCfAiGenerate(env, system, String(text).slice(0,600), {temperature:0, maxOutputTokens:150, caller:'rv1-details'}))||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, String(text).slice(0,600), {temperature:0, maxOutputTokens:150, json:true, caller:'rv1-details', cfBackup:true}))||'';
     const m=String(raw).replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return parsed;
     const ai=rv1DetailsInText(rv1CleanTripDetails(JSON.parse(m[0])), text);

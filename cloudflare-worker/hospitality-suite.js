@@ -31,7 +31,7 @@
 // deps shape: HP deps (json, requireSession, getClientById, reportOpsError, sendText, sendButtons,
 //   sendPrivateNote, getLead, isTakeover) plus
 //   findConversation(env,c,clientId,phone)→convId|null, sendTemplate(env,c,phone,name,lang,params),
-//   readIdImage(env,url)→{name,id_type,id_number,dob,nationality}|null, aiText(env,system,user)→text|null,
+//   readIdImage(env,url,cid)→{name,id_type,id_number,dob,nationality}|null, aiText(env,system,user,c)→text|null,
 //   razorpayLink(env,clientId,opts)→{url,id}|null, fetch and now() (optional, for tests).
 
 import {
@@ -954,7 +954,7 @@ async function hsCheckinTurn(ctx, st){
   if(st.step==='ids'){
     if(ctx.isMedia){
       let fields={};
-      if(hsOn(cfg, 'id_scan') && ctx.deps.readIdImage) fields=hsMaskId(await ctx.deps.readIdImage(env, ctx.t.mediaUrl).catch(()=>null)||{});
+      if(hsOn(cfg, 'id_scan') && ctx.deps.readIdImage) fields=hsMaskId(await ctx.deps.readIdImage(env, ctx.t.mediaUrl, ctx.cid).catch(()=>null)||{});
       await run(env, `INSERT INTO hosp_suite_idscans (client_id, booking_id, image_url, fields_json, created_at) VALUES (?,?,?,?,?)`, cid, b.id, String(ctx.t.mediaUrl).slice(0,1000), JSON.stringify(fields), nowIso);
       const n=Number((await one(env, `SELECT COUNT(*) n FROM hosp_suite_idscans WHERE client_id=? AND booking_id=?`, cid, b.id))?.n)||1;
       await hsSaveState(env, cid, leadId, st, nowMs);
@@ -1761,7 +1761,7 @@ export async function hsHandleRoute(request, env, deps, url){
     if(!rv) return json({error:'Not found'}, 404);
     const biz=c.client_name||c.business_name||'our property';
     const system=`You write public replies to online reviews for ${biz}, a hospitality business (style: ${c.hospitality_style||'hotel'}). Reply in the same language as the review. Be warm, specific to what the guest said, and short (40-90 words). Thank them; for criticism, apologise sincerely without excuses, say what is being done, and invite them to contact the manager directly. Never invent facts, offers, names or prices. Sign off as "Team ${biz}". Output only the reply text.`;
-    const draft=deps.aiText?await deps.aiText(env, system, `Review on ${rv.source}${rv.rating?` (${rv.rating}/5)`:''} by ${rv.author||'a guest'}:\n\n${rv.text}`).catch(()=>null):null;
+    const draft=deps.aiText?await deps.aiText(env, system, `Review on ${rv.source}${rv.rating?` (${rv.rating}/5)`:''} by ${rv.author||'a guest'}:\n\n${rv.text}`, c).catch(()=>null):null;
     if(!draft) return json({error:'Could not draft a reply right now — please try again.'}, 502);
     await run(env, `UPDATE hosp_suite_reviews SET reply=?, status='drafted', updated_at=? WHERE id=?`, draft.slice(0,4000), nowIso, rv.id);
     return json({ok:true, reply:draft});
