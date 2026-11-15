@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Store · onshope</title>
+<link rel="icon" type="image/png" href="/onshope-favicon.png">
+<link rel="apple-touch-icon" href="/onshope-apple-touch.png">
+<link rel="manifest" href="/onshope-manifest.json">
 <!-- onshope.com per-client storefront. Deliberately a separate file from saasapp's own
      frontend/store.html — same backend (cloudflare-worker/worker.js's /ecom/public/* routes),
      but its own brand/design since onshope.com is its own public-facing product, not part of
@@ -21,7 +24,8 @@ a{color:inherit}
 .hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:14px 18px;display:flex;flex-direction:column;gap:10px}
 .hdr-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .brand-row{display:flex;align-items:center;gap:10px;min-width:0}
-.brand{font-size:13px;font-weight:700;color:var(--accent-ink);text-decoration:none;white-space:nowrap}
+.brand{display:flex;align-items:center;flex-shrink:0;text-decoration:none}
+.brand img{display:block;height:15px;width:auto}
 .divider{width:1px;height:16px;background:var(--line)}
 .store-name{font-size:17px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wa-btn{display:inline-flex;align-items:center;gap:6px;background:var(--wa);color:#fff;border:none;border-radius:20px;padding:9px 16px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0}
@@ -52,7 +56,7 @@ a{color:inherit}
 <div class="hdr">
   <div class="hdr-top">
     <div class="brand-row">
-      <a class="brand" href="/">onshope</a>
+      <a class="brand" href="/" aria-label="onshope home"><img src="/onshope-logo.png" alt="onshope" width="842" height="122"></a>
       <div class="divider"></div>
       <div class="store-name" id="storeName">Store</div>
     </div>
