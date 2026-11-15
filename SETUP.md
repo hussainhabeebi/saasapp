@@ -3020,8 +3020,18 @@ disabled one, takes exactly the same code path as before.
 - Every `engineGeminiGenerateWithFallback` helper (dashboard AI assist, option extraction, spoken
   replies)
 
-Voice-note transcription, image reading and the Financial Planner helpers stay on the shared Gemini
-key.
+- Customer photo reading, receipt photos and guest-ID scans — when the model can see images
+  (Claude, Gemini, OpenAI); other providers fall back to the shared Gemini reader
+- Financial Planner helpers (expense parsing, Ask Your Books, snapshot, forecast, reminders) and
+  hospitality review-reply drafts
+
+Only voice-note transcription, spoken replies (TTS), the live voice agent and memory embeddings stay
+on the shared Gemini key — Claude has no audio or embedding endpoint.
+
+**One model per call, never two:** the shared Gemini / Workers AI / legacy OpenRouter ladder runs only
+when the client has no own provider, or their provider failed **and** "fall back to Leadvyne AI" is
+ticked. A successful own-model reply never also spends Gemini tokens; with the fallback unticked a
+failure spends nothing else.
 
 **Safety:**
 - **Keys are write-only.** `GET /ai-provider/config` returns only the last 4 characters. A blank key

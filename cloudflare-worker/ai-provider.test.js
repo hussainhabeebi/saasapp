@@ -15,6 +15,7 @@ import {
   aiProviderListModels,
   aiClientGenerate,
   aiVisibleProviders,
+  aiSupportsImage,
 } from './worker.js';
 
 function d1(db){
@@ -223,5 +224,33 @@ describe('Leadvyne Claude (Worker key) provider', ()=>{
     assert.match(r.error, /Only claude-haiku-5-5/);
     assert.deepEqual(await aiProviderListModels({provider:'leadvyne_claude', apiKey:'k'}), {ok:true, models:['claude-haiku-5-5']});
     assert.equal(calls.length, 0);
+  });
+});
+
+describe('own provider reads photos', ()=>{
+  test('Claude: image block sent before the text in the same message', async()=>{
+    stubFetch(()=>({json:{content:[{type:'text', text:'A red sofa'}], stop_reason:'end_turn'}}));
+    const r=await aiProviderCall({provider:'leadvyne_claude', model:'claude-haiku-5-5', apiKey:'k'}, '', 'Describe', {maxOutputTokens:100, image:{base64:'QUJD', mimeType:'image/png'}});
+    assert.deepEqual(r, {ok:true, text:'A red sofa'});
+    assert.deepEqual(calls[0].body.messages[0].content, [
+      {type:'image', source:{type:'base64', media_type:'image/png', data:'QUJD'}}, {type:'text', text:'Describe'}]);
+    assert.equal(calls[0].body.system, undefined);
+  });
+  test('Gemini and OpenAI shapes carry the image too', async()=>{
+    stubFetch(()=>({json:{candidates:[{content:{parts:[{text:'ok'}]}}], choices:[{message:{content:'ok'}}]}}));
+    await aiProviderCall({provider:'gemini', model:'gemini-2.5-flash', apiKey:'k'}, '', 'D', {image:{base64:'QUJD', mimeType:'image/jpeg'}});
+    assert.deepEqual(calls[0].body.contents[0].parts[1], {inline_data:{mime_type:'image/jpeg', data:'QUJD'}});
+    await aiProviderCall({provider:'openai', model:'gpt-5', apiKey:'k'}, '', 'D', {image:{base64:'QUJD', mimeType:'image/jpeg'}});
+    assert.equal(calls[1].body.messages[0].content[1].image_url.url, 'data:image/jpeg;base64,QUJD');
+  });
+  test('aiSupportsImage: Claude/Gemini/OpenAI yes, generic compatible endpoints and odd formats no', ()=>{
+    const img={base64:'QUJD', mimeType:'image/jpeg'};
+    assert.equal(aiSupportsImage({provider:'leadvyne_claude'}, img), true);
+    assert.equal(aiSupportsImage({provider:'anthropic'}, img), true);
+    assert.equal(aiSupportsImage({provider:'gemini'}, {base64:'QUJD', mimeType:'image/heic'}), true);
+    assert.equal(aiSupportsImage({provider:'anthropic'}, {base64:'QUJD', mimeType:'image/heic'}), false);
+    assert.equal(aiSupportsImage({provider:'openai'}, img), true);
+    assert.equal(aiSupportsImage({provider:'groq'}, img), false);
+    assert.equal(aiSupportsImage({provider:'anthropic'}, {base64:'x'.repeat(5*1024*1024+1), mimeType:'image/jpeg'}), false);
   });
 });
