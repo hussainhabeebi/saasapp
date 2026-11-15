@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const at = (date, h, m = 0) => new Date(`${date}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`).toISOString();
 const DAY = '2026-11-16';
 const MEETINGS = [
-  { id: 1, lead_id: 7, lead_name: 'Asha Nair', title: 'Product demo', status: 'scheduled', start_at: at(DAY, 11), end_at: at(DAY, 11, 45), mode: 'video', join_url: 'https://meet.google.com/abc-defg-hij', owner: 'rita@biz.com', source: 'chat' },
+  { id: 1, lead_id: 7, lead_name: 'Asha Nair', title: 'Product demo', status: 'scheduled', start_at: at(DAY, 11), end_at: at(DAY, 11, 45), mode: 'video', join_url: 'https://meet.google.com/abc-defg-hij', owner: 'rita@biz.com', source: 'chat', note: 'Asked about bulk pricing' },
   { id: 2, lead_id: 8, lead_name: 'Ravi', title: 'Intro call', status: 'scheduled', start_at: at(DAY, 11, 30), end_at: at(DAY, 12), mode: 'phone', join_url: '', source: 'calcom' },
   { id: 3, lead_id: 9, lead_name: 'Meera', title: 'Site visit', status: 'cancelled', start_at: at(DAY, 15), end_at: at(DAY, 16), mode: 'in_person', location: 'MG Road office' },
   { id: 4, lead_id: 10, lead_name: 'Old', title: 'Demo', status: 'completed', outcome: 'interested', start_at: at('2026-11-03', 10), end_at: at('2026-11-03', 10, 30), mode: 'video' },
@@ -21,6 +21,7 @@ async function open(page, query = `date=${DAY}`) {
   await page.route('**/*', (route) => {
     const url = new URL(route.request().url());
     if (url.protocol === 'file:') return route.continue();
+    if (url.pathname.endsWith('/meetings/notes')) { const b = route.request().postDataJSON(); calls.push({ notes: b }); return route.fulfill({ json: { ok: true, note: b.note } }); }
     if (url.pathname.endsWith('/meetings/calendar')) {
       calls.push({ from: url.searchParams.get('from'), to: url.searchParams.get('to'), auth: route.request().headers().authorization });
       const f = Date.parse(url.searchParams.get('from')), t = Date.parse(url.searchParams.get('to'));
@@ -92,4 +93,22 @@ test('a failed load says why', async ({ page }) => {
   });
   await page.goto('file://' + path.resolve(__dirname, '../meetings-calendar.html') + '?token=bad&embed=1');
   await expect(page.locator('#cal')).toContainText('Invalid or expired session');
+});
+
+test('pre-meeting notes: shown on the agenda, added and edited in place', async ({ page }) => {
+  const calls = await open(page, `date=${DAY}&view=day`);
+  const agenda = page.locator('.agenda');
+  const asha = agenda.locator('.item', { hasText: 'Product demo' });
+  await expect(asha.locator('.note')).toHaveText('📝 Asked about bulk pricing');
+  await expect(page.locator('.block', { hasText: 'Asha Nair' })).toContainText('📝');
+  const ravi = agenda.locator('.item', { hasText: 'Intro call' });
+  await ravi.getByRole('button', { name: /Add pre-meeting notes/ }).click();
+  await page.locator('#noteText').fill('Decision maker joins; send the deck first');
+  await page.getByRole('button', { name: 'Save notes' }).click();
+  await expect(ravi.locator('.note')).toHaveText('📝 Decision maker joins; send the deck first');
+  expect(calls.find((c) => c.notes).notes).toEqual({ id: 2, note: 'Decision maker joins; send the deck first' });
+  await asha.getByRole('button', { name: /Edit notes/ }).click();
+  await expect(page.locator('#noteText')).toHaveValue('Asked about bulk pricing');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(asha.locator('.note')).toHaveText('📝 Asked about bulk pricing');
 });

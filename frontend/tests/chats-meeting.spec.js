@@ -12,7 +12,7 @@ const MESSAGES = [{ role: 'user', content: 'Can we talk tomorrow?', ts: minsAgo(
 const LEAD = { Id: 7, ClientId: '48', Name: 'Asha Nair', Phone: '919800000000', ConversationID: '55', LastMsgAt: minsAgo(5), ConvHistory: JSON.stringify(MESSAGES) };
 const CFG = { enabled: true, chat_enabled: true, links: [{ name: 'Intro call', url: 'https://cal.com/biz/intro' }, { name: 'Demo', url: 'https://cal.com/biz/demo' }], settings: { meet_url: 'https://meet.google.com/abc-defg-hij' } };
 
-async function open(page, { industry = 'general', cfg = CFG, exists = false } = {}) {
+async function open(page, { industry = 'general', cfg = CFG, exists = false, busy = [], slotTaken = false } = {}) {
   const calls = [];
   let refused = exists;
   await page.route('**/*', async (route) => {
@@ -24,9 +24,11 @@ async function open(page, { industry = 'general', cfg = CFG, exists = false } = 
     if (url.pathname.endsWith('/chat/messages')) return route.fulfill({ json: { messages: MESSAGES } });
     if (url.pathname.endsWith('/meetings/config')) return route.fulfill({ json: { config: cfg } });
     if (url.pathname.endsWith('/meetings/lead')) return route.fulfill({ json: { meetings: [], state: null } });
+    if (url.pathname.endsWith('/meetings/calendar')) return route.fulfill({ json: { meetings: busy } });
     if (url.pathname.endsWith('/meetings/chat-share')) {
       const body = req.postDataJSON(); calls.push(body);
       if (refused && !body.force) return route.fulfill({ status: 409, json: { error: 'Asha Nair already has a meeting on Mon, 16 Nov, 11:00 AM.', code: 'MEETING_EXISTS' } });
+      if (slotTaken) return route.fulfill({ status: 409, json: { error: 'That time is already taken — Demo with Ravi on Mon, 16 Nov, 11:00 AM. Pick another slot.', code: 'SLOT_TAKEN' } });
       return route.fulfill({ json: body.kind === 'meet'
         ? { ok: true, kind: 'meet', id: 3, stage: 'meeting_scheduled', text: 'Hi Asha! ✅ Your Product demo is confirmed for Mon, 16 Nov, 11:00 AM.\nJoin: https://meet.google.com/abc-defg-hij' }
         : { ok: true, kind: 'cal', id: 4, url: 'https://w.test/m/tok', stage: 'new', text: 'Hi Asha! 📅 Here\'s the link to pick a time for our Demo: https://w.test/m/tok' } });
@@ -53,10 +55,13 @@ test('schedule a Google Meet: date, time, Meet link → confirmation in the chat
   await page.locator('#mtgDate').fill(date);
   await page.locator('#mtgTime').fill('11:00');
   await page.locator('#mtgDur').selectOption('45');
+  await expect(page.locator('#mtgBusy')).toContainText('No other meetings that day');
+  await page.locator('#mtgNote').fill('Asked about bulk pricing — bring the case study');
   await page.getByRole('button', { name: '📅 Schedule & send' }).click();
   await expect(ov).toBeHidden();
   expect(calls).toHaveLength(1);
-  expect(calls[0]).toMatchObject({ lead_id: 7, kind: 'meet', duration_min: 45, title: 'Product demo', meet_url: 'https://meet.google.com/abc-defg-hij', message: '', force: false });
+  expect(calls[0]).toMatchObject({ lead_id: 7, kind: 'meet', duration_min: 45, title: 'Product demo', meet_url: 'https://meet.google.com/abc-defg-hij', message: '', force: false,
+    note: 'Asked about bulk pricing — bring the case study' });
   expect(new Date(calls[0].start_at).getTime()).toBe(new Date(`${date}T11:00`).getTime());
   await expect(page.locator('#thread .bubble.out')).toContainText('Your Product demo is confirmed');
   await expect(page.locator('#toast')).toContainText('stage: Meeting Scheduled');
@@ -71,7 +76,7 @@ test('share a Cal.com booking link with a custom message', async ({ page }) => {
   await page.locator('#mtgCalMsg').fill('Pick a slot: {link}');
   await page.getByRole('button', { name: '🔗 Send booking link' }).click();
   await expect(page.locator('#mtgOv')).toBeHidden();
-  expect(calls[0]).toEqual({ lead_id: 7, kind: 'cal', link_index: 1, message: 'Pick a slot: {link}', force: false });
+  expect(calls[0]).toEqual({ lead_id: 7, kind: 'cal', link_index: 1, message: 'Pick a slot: {link}', note: '', force: false });
   await expect(page.locator('#toast')).toContainText('Booking link sent');
 });
 
@@ -106,4 +111,31 @@ test('Google Meet only (no Cal.com links): no booking-link tab', async ({ page }
   await page.locator('#attachBtn').click();
   await page.locator('#attachMenu #mtgChatBtn').click();
   await expect(page.getByRole('tab')).toHaveCount(1);
+});
+
+test('one meeting per slot: the day\'s bookings are shown, a clash is blocked before sending, and the server\'s refusal is shown', async ({ page }) => {
+  const d = new Date(Date.now() + 2 * 86400e3);
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const busy = [{ id: 9, lead_name: 'Ravi', title: 'Demo', status: 'scheduled', start_at: new Date(`${date}T11:00`).toISOString(), end_at: new Date(`${date}T11:45`).toISOString() },
+    { id: 10, lead_name: 'Old', title: 'Call', status: 'cancelled', start_at: new Date(`${date}T15:00`).toISOString() }];
+  const calls = await open(page, { busy, slotTaken: true });
+  await page.evaluate(() => openMtgShare());
+  await page.locator('#mtgDate').fill(date);
+  await page.locator('#mtgDate').dispatchEvent('change');
+  await page.locator('#mtgTime').fill('11:30');
+  const box = page.locator('#mtgBusy');
+  await expect(box).toContainText('Already booked that day');
+  await expect(box.locator('.slot')).toHaveCount(1); // the cancelled one frees its slot
+  await expect(box.locator('.slot.clash')).toContainText('Ravi');
+  await expect(box).toContainText('overlaps a booked meeting');
+  await page.getByRole('button', { name: '📅 Schedule & send' }).click();
+  await expect(page.locator('#mtgErr')).toContainText('That time is already taken — Demo with Ravi');
+  expect(calls).toHaveLength(0);
+  // Back-to-back is fine on this side; the worker still has the final say.
+  await page.locator('#mtgTime').fill('11:45');
+  await expect(box.locator('.slot.clash')).toHaveCount(0);
+  await page.getByRole('button', { name: '📅 Schedule & send' }).click();
+  await expect(page.locator('#mtgErr')).toContainText('already taken');
+  await expect(page.locator('#mtgOv')).toBeVisible();
+  expect(calls).toHaveLength(1);
 });

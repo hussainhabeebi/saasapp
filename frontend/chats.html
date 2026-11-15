@@ -71,6 +71,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .prop-item{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid #f0f2f5}.prop-item b{font-size:14.5px}.prop-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.prop-grid3{grid-template-columns:1fr 1fr 1fr}
 .prop-totals{display:grid;gap:4px;font-size:13.5px}.prop-totals div{display:flex;justify-content:space-between;gap:10px}.prop-totals .tot{border-top:1px solid #e9edef;padding-top:6px;font-size:15px;color:#0d9c93}.prop-totals small{color:var(--muted)}
 .mtg-tabs{display:flex;gap:6px;flex-wrap:wrap}.mtg-tabs button{border:1px solid #d1d7db;background:#fff;border-radius:18px;padding:7px 14px;font-weight:600;cursor:pointer;color:#3b4a54}.mtg-tabs button.active{background:#0d9c93;border-color:#0d9c93;color:#fff}
+.mtg-busy{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center}.mtg-busy:empty{display:none}.mtg-busy .slot{background:#f0f2f5;border-radius:12px;padding:2px 9px;color:#3b4a54}.mtg-busy .slot.clash{background:#fde8e8;color:#b42318;font-weight:600}.mtg-busy .ok{color:#0a7d55}.mtg-busy .clash-msg{flex-basis:100%;color:#b42318;font-weight:600}
 @media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
 /* voice / audio player */
@@ -1710,7 +1711,8 @@ function openMtgShare(){
   <div class="tpl-form" id="mtgMeetForm">
    <div style="font-size:13px;color:var(--muted)">Fix the time now — the confirmation with the Meet link goes into this chat, the customer gets reminders 24h and 1h before, and the lead moves to <b>Meeting Scheduled</b>.</div>
    <label>Title<input id="mtgTitle" value="Meeting" maxlength="120"></label>
-   <div class="ai-itin-prof"><label>Date<input type="date" id="mtgDate" value="${date}"></label><label>Time<input type="time" id="mtgTime" value="${time}"></label><label>Duration<select id="mtgDur">${[15,30,45,60,90].map(m=>`<option value="${m}" ${m===30?'selected':''}>${m} min</option>`).join('')}</select></label></div>
+   <div class="ai-itin-prof"><label>Date<input type="date" id="mtgDate" value="${date}" onchange="mtgLoadBusy()"></label><label>Time<input type="time" id="mtgTime" value="${time}" oninput="mtgDrawBusy()"></label><label>Duration<select id="mtgDur" onchange="mtgDrawBusy()">${[15,30,45,60,90].map(m=>`<option value="${m}" ${m===30?'selected':''}>${m} min</option>`).join('')}</select></label></div>
+   <div id="mtgBusy" class="mtg-busy" aria-live="polite"></div>
    <label>Google Meet link<input id="mtgMeetUrl" value="${esc(cfg.settings?.meet_url||'')}" placeholder="https://meet.google.com/abc-defg-hij"></label>
    <div style="font-size:12.5px"><a href="https://meet.google.com/new" target="_blank" rel="noopener">➕ Create a new Google Meet ↗</a> <span style="color:var(--muted)">— then paste its link above</span></div>
    <label>Message (optional)<textarea id="mtgMeetMsg" rows="3" placeholder="Leave blank for: Hi ${esc(String(who(current)||'').split(' ')[0]||'there')}! ✅ Your meeting is confirmed for … Join: <Meet link>"></textarea></label>
@@ -1720,10 +1722,34 @@ function openMtgShare(){
    <label>Booking link<select id="mtgCalLink">${cfg.links.map((l,i)=>`<option value="${i}">${esc(l.name)}</option>`).join('')}</select></label>
    <label>Message (optional — <code>{link}</code> marks where the link goes)<textarea id="mtgCalMsg" rows="3" placeholder="Leave blank for: Hi! 📅 Here's the link to pick a time for our …: <link>"></textarea></label>
   </div>`:''}
+  <div class="tpl-form"><label>📝 Pre-meeting notes <span style="font-weight:400">— only your team sees these (calendar, meeting history, the 30-min brief)</span><textarea id="mtgNote" rows="3" maxlength="2000" placeholder="Agenda, what the customer needs, what to prepare…"></textarea></label></div>
   <div id="mtgErr" style="color:#d93025;font-size:13px"></div>
   <div class="tpl-actions"><button class="ai-itin-btn sec" onclick="closeMtgShare()">Cancel</button><button class="ai-itin-btn" id="mtgSendBtn" onclick="mtgSend()"></button></div>
  </div></div>`;
  mtgTab(mtgChat.tab);
+ mtgLoadBusy();
+}
+// One meeting per slot: the chosen day's meetings are shown, and a clash is caught before sending
+// (the worker refuses it too — SLOT_TAKEN).
+async function mtgLoadBusy(){
+ const el=$('mtgBusy'),v=$('mtgDate')?.value;if(!el||!v)return;
+ const from=new Date(`${v}T00:00`),to=new Date(from.getTime()+86400e3),seq=mtgChat.busySeq=(mtgChat.busySeq||0)+1;
+ el.textContent='Checking that day…';mtgChat.busyList=null;
+ try{const d=await apiJson(`${WORKER}/meetings/calendar?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`);
+  if(seq!==mtgChat.busySeq)return;mtgChat.busyList=(d.meetings||[]).filter(m=>m.status==='scheduled')}
+ catch{if(seq===mtgChat.busySeq){mtgChat.busyList=[];el.textContent=''}return}
+ mtgDrawBusy();
+}
+const mtgHm=d=>d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+function mtgClash(){
+ const v=$('mtgDate')?.value,t=$('mtgTime')?.value;if(!v||!t||!mtgChat.busyList)return null;
+ const s=new Date(`${v}T${t}`).getTime(),e=s+(Number($('mtgDur')?.value)||30)*60e3;
+ return mtgChat.busyList.find(m=>{const ms=Date.parse(m.start_at),me=Date.parse(m.end_at||'')||ms+30*60e3;return ms<e&&me>s})||null;
+}
+function mtgDrawBusy(){
+ const el=$('mtgBusy');if(!el||!mtgChat.busyList)return;const list=mtgChat.busyList,clash=mtgClash();
+ el.innerHTML=!list.length?'<span class="ok">✓ No other meetings that day</span>'
+  :`<span>Already booked that day:</span> ${list.map(m=>`<span class="slot${clash&&clash.id===m.id?' clash':''}">${esc(mtgHm(new Date(m.start_at)))}–${esc(mtgHm(new Date(m.end_at||Date.parse(m.start_at)+30*60e3)))} · ${esc(m.lead_name||m.title)}</span>`).join(' ')}${clash?'<div class="clash-msg">⚠️ That time overlaps a booked meeting — pick another slot.</div>':''}`;
 }
 function mtgTab(t){
  mtgChat.tab=t;const meet=t==='meet';
@@ -1740,12 +1766,14 @@ async function mtgSend(force=false){
   if(!date||!time){err.textContent='Pick the date and time.';return}
   if(!/^https:\/\/\S+$/i.test(url)){err.textContent='Paste the Google Meet link (https://meet.google.com/…).';return}
   const start=new Date(`${date}T${time}`);if(start.getTime()<Date.now()-5*60e3){err.textContent='That time has already passed.';return}
-  body={lead_id:lead.Id,kind:'meet',start_at:start.toISOString(),duration_min:Number($('mtgDur').value)||30,title:$('mtgTitle').value.trim()||'Meeting',meet_url:url,message:$('mtgMeetMsg').value.trim(),force};
- }else body={lead_id:lead.Id,kind:'cal',link_index:Number($('mtgCalLink').value)||0,message:$('mtgCalMsg').value.trim(),force};
+  const clash=mtgClash();if(clash){err.textContent=`That time is already taken — ${clash.title} with ${clash.lead_name||'a lead'} at ${mtgHm(new Date(clash.start_at))}. Pick another slot.`;return}
+  body={lead_id:lead.Id,kind:'meet',start_at:start.toISOString(),duration_min:Number($('mtgDur').value)||30,title:$('mtgTitle').value.trim()||'Meeting',meet_url:url,message:$('mtgMeetMsg').value.trim(),note:$('mtgNote').value.trim(),force};
+ }else body={lead_id:lead.Id,kind:'cal',link_index:Number($('mtgCalLink').value)||0,message:$('mtgCalMsg').value.trim(),note:$('mtgNote').value.trim(),force};
  mtgChat.busy=true;const label=btn.textContent;btn.disabled=true;btn.textContent='Sending…';
  try{
   const r=await fetch(WORKER+'/meetings/chat-share',{method:'POST',headers:headers({'Content-Type':'application/json'}),body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({}));
+  if(r.status===409&&d.code==='SLOT_TAKEN'){mtgChat.busy=false;btn.disabled=false;btn.textContent=label;err.textContent=d.error;mtgLoadBusy();return}
   if(r.status===409&&d.code==='MEETING_EXISTS'){mtgChat.busy=false;btn.disabled=false;btn.textContent=label;if(confirm(`${d.error}\n\n${body.kind==='cal'?'Send a booking link anyway?':'Schedule another meeting anyway?'}`))return mtgSend(true);return}
   if(!r.ok&&!d.id)throw new Error(d.error||'HTTP '+r.status);
   closeMtgShare();

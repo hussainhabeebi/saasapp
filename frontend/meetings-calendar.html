@@ -82,10 +82,13 @@ main{padding:16px 16px 32px}
 .agenda h2{font-family:var(--disp);font-size:15px}
 .item{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:4px;cursor:pointer;background:var(--card);text-align:left;width:100%}
 .item:hover,.item.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
-.item .t{font-weight:700;font-size:13px}
+.item .t{font-weight:700;font-size:13px;border:0;background:none;padding:0;text-align:left;cursor:pointer;color:inherit}
 .item .w{font-size:12.5px;color:var(--muted)}
 .item .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
 .item .acts a,.item .acts button{font-size:12px;font-weight:600;border:1px solid var(--line);border-radius:8px;padding:4px 9px;background:#fff;color:var(--accent-ink);text-decoration:none;cursor:pointer}
+.note{font-size:12.5px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:6px 9px;white-space:pre-wrap;color:#5b4a12}
+.note-ed{display:grid;gap:6px}.note-ed textarea{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;resize:vertical}
+.note-ed .row{display:flex;gap:6px;align-items:center}.note-ed .err{color:var(--bad);font-size:12px}
 .badge{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);margin-left:6px;vertical-align:1px}
 .badge.cancelled{background:var(--bad-soft);color:var(--bad)}.badge.completed{background:var(--done-soft);color:var(--done)}
 .empty{color:var(--muted);font-size:13px;padding:6px 2px}
@@ -117,7 +120,7 @@ const MODE={video:'📹',phone:'📞',in_person:'📍'};
 const OUTCOME={interested:'👍 Interested',not_interested:'👎 Not interested',follow_up:'🔁 Follow-up',no_show:'🚫 No-show'};
 let view=params.get('view')==='day'?'day':'month';
 let cursor=startOfDay(params.get('date')?new Date(params.get('date')+'T00:00'):new Date());
-let meetings=[], loadedKey='', selId=null, seq=0;
+let meetings=[], loadedKey='', selId=null, seq=0, editing=null;
 
 function startOfDay(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
 function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
@@ -198,7 +201,7 @@ function drawDay(start,end){
     const s=new Date(it.s), top=((s.getHours()-from)*60+s.getMinutes())/60*HOUR_PX, h=Math.max(26,(it.e-it.s)/3600e3*HOUR_PX-2);
     const w=100/it.lanes, m=it.m;
     return `<button class="block ${cls(m)}${selId===m.id?' sel':''}" style="top:${top}px;height:${h}px;left:calc(${w*it.lane}% + 2px);width:calc(${w}% - 4px)" onclick="select(${m.id})" aria-label="${esc(fmtTime(s)+' '+m.title+' with '+(m.lead_name||'a lead'))}">
-      ${h<44?`<b>${MODE[m.mode]||'📅'} ${esc(fmtTime(s))} · ${esc(m.lead_name||m.title)}</b>`:`<b>${MODE[m.mode]||'📅'} ${esc(m.lead_name||m.title)}</b><small>${esc(fmtTime(s))}–${esc(fmtTime(endOf(m)))} · ${esc(m.title)}</small>`}</button>`;
+      ${h<44?`<b>${MODE[m.mode]||'📅'} ${esc(fmtTime(s))} · ${esc(m.lead_name||m.title)}${m.note?' 📝':''}</b>`:`<b>${MODE[m.mode]||'📅'} ${esc(m.lead_name||m.title)}${m.note?' 📝':''}</b><small>${esc(fmtTime(s))}–${esc(fmtTime(endOf(m)))} · ${esc(m.title)}</small>`}</button>`;
   }).join('');
   const now=new Date();
   const nowLine=sameDay(now,start)&&now.getHours()>=from&&now.getHours()<to?`<div class="now" style="top:${((now.getHours()-from)*60+now.getMinutes())/60*HOUR_PX}px"></div>`:'';
@@ -209,11 +212,26 @@ function item(m){
   const s=startOf(m);
   const st=m.status==='cancelled'?'<span class="badge cancelled">Cancelled</span>':m.status==='completed'?`<span class="badge completed">${esc(OUTCOME[m.outcome]||'Held')}</span>`:'';
   const where=m.mode==='video'?(m.join_url?'Video call':'Video call — no link yet'):m.mode==='phone'?'Phone call':m.mode==='in_person'?(m.location||'In person'):'';
-  return `<div class="item${selId===m.id?' sel':''}" id="it${m.id}" role="button" tabindex="0" onclick="select(${m.id})" onkeydown="if(event.key==='Enter')select(${m.id})">
-    <div class="t">${MODE[m.mode]||'📅'} ${esc(fmtTime(s))}–${esc(fmtTime(endOf(m)))} · ${esc(m.title)}${st}</div>
+  return `<div class="item${selId===m.id?' sel':''}" id="it${m.id}" onclick="select(${m.id})">
+    <button type="button" class="t" onclick="event.stopPropagation();select(${m.id})">${MODE[m.mode]||'📅'} ${esc(fmtTime(s))}–${esc(fmtTime(endOf(m)))} · ${esc(m.title)}${st}</button>
     <div class="w">${esc(m.lead_name||'Lead')}${where?' · '+esc(where):''}${m.owner?' · '+esc(m.owner.split('@')[0]):''}${m.source==='calcom'?' · Cal.com':m.source==='chat'?' · from Chats':''}</div>
-    <div class="acts">${m.join_url&&m.status!=='cancelled'?`<a href="${esc(m.join_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Join ↗</a>`:''}${m.lead_id?`<button type="button" onclick="event.stopPropagation();openChat(${m.lead_id})">💬 Open chat</button>`:''}</div>
+    ${editing===m.id?`<div class="note-ed" onclick="event.stopPropagation()"><textarea id="noteText" rows="4" maxlength="2000" aria-label="Pre-meeting notes" placeholder="Agenda, what the customer needs, what to prepare…">${esc(m.note||'')}</textarea><div class="row"><button type="button" class="btn" id="noteSave" onclick="saveNote(${m.id})">Save notes</button><button type="button" class="btn" onclick="editNote(null)">Cancel</button><span class="err" id="noteErr"></span></div></div>`
+      :m.note?`<div class="note">📝 ${esc(m.note)}</div>`:''}
+    <div class="acts">${m.join_url&&m.status!=='cancelled'?`<a href="${esc(m.join_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Join ↗</a>`:''}${m.lead_id?`<button type="button" onclick="event.stopPropagation();openChat(${m.lead_id})">💬 Open chat</button>`:''}${editing===m.id?'':`<button type="button" onclick="event.stopPropagation();editNote(${m.id})">📝 ${m.note?'Edit notes':'Add pre-meeting notes'}</button>`}</div>
   </div>`;
+}
+// Pre-meeting notes — only the team sees them (here, the lead's meeting history and the rep's brief).
+function editNote(id){ editing=id; if(id) selId=id; const {start,end}=range(); draw(start,end); if(id) setTimeout(()=>$('noteText')?.focus(),0); }
+async function saveNote(id){
+  const btn=$('noteSave'), note=$('noteText').value.trim();
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await fetch(`${WORKER_BASE}/meetings/notes`,{method:'POST',headers:{Authorization:'Bearer '+sessionToken,'Content-Type':'application/json'},body:JSON.stringify({id, note})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const m=meetings.find(x=>x.id===id); if(m) m.note=d.note??note;
+    editNote(null);
+  }catch(e){ $('noteErr').textContent='Not saved: '+e.message; btn.disabled=false; btn.textContent='Save notes'; }
 }
 function select(id){
   selId=id; const {start,end}=range(); draw(start,end);
@@ -224,11 +242,11 @@ function openChat(leadId){
   try{ if(window.parent!==window && typeof window.parent.openLeadChat==='function'){ window.parent.openLeadChat(leadId); return; } }catch(e){}
   window.open(`chats.html?lead=${encodeURIComponent(leadId)}`,'_blank');
 }
-function setView(v){ view=v; selId=null; load(); }
+function setView(v){ view=v; selId=null; editing=null; load(); }
 function openDay(date){ cursor=startOfDay(new Date(date+'T00:00')); view='day'; selId=null; load(); }
 function shift(n){
   cursor=view==='month'?new Date(cursor.getFullYear(), cursor.getMonth()+n, 1):addDays(cursor,n);
-  selId=null; load();
+  selId=null; editing=null; load();
 }
 function goToday(){ cursor=startOfDay(new Date()); selId=null; load(); }
 document.addEventListener('keydown',e=>{ if(e.target.closest?.('input,select,textarea')) return; if(e.key==='ArrowLeft') shift(-1); else if(e.key==='ArrowRight') shift(1); });

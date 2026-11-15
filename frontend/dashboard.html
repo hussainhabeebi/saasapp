@@ -5325,7 +5325,7 @@ const ROLES = {
         <input class="form-input" id="mtgFWhere" type="text" style="margin-top:6px">
       </div>
       <div class="form-group"><label class="form-label">Owner</label><select class="form-input" id="mtgFOwner"></select></div>
-      <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" id="mtgFNote" type="text" placeholder="What to prepare"></div>
+      <div class="form-group"><label class="form-label" for="mtgFNote">📝 Pre-meeting notes (optional — only your team sees these)</label><textarea class="form-input" id="mtgFNote" rows="3" maxlength="2000" placeholder="Agenda, what the customer needs, what to prepare…"></textarea></div>
       <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="mtgFNotify"> Send the lead a WhatsApp confirmation and reminders</label>
     </div>
     <div id="mtgModalOutcome" style="display:none"></div>
@@ -16665,7 +16665,7 @@ async function openMeetingModal(leadId, mode='schedule'){
     $id('mtgFMode').value=st?.mode||'video';
     $id('mtgFWhere').value=st?.mode==='in_person'?(st.location||''):(st?.join_url||'');
     $id('mtgFOwner').innerHTML=teamMemberOptions(st?.owner||lead.Owner||myEmail||'');
-    $id('mtgFNote').value='';
+    $id('mtgFNote').value=mode==='reschedule'?(st?.note||''):'';
     $id('mtgFNotify').checked=!!lead.Phone && !isIgLead(lead);
     mtgModeChanged();
   }

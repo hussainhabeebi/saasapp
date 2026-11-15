@@ -12,7 +12,7 @@ import worker, {
   mtgBotPromptText,
   mtgRepPoints,
   mtgNormalizePoints,
-  mtgBriefDue,
+  mtgBriefDue, mtgSlotConflict,
   mtgBriefText,
   mtgActiveLeadIds,
   runMeetingsForAllClients,
@@ -158,6 +158,22 @@ test('mtgBriefDue / mtgBriefText', ()=>{
   assert.match(text, /lead=1/);
 });
 
+test('one meeting per slot: overlaps clash, back-to-back and cancelled do not, a meeting never clashes with itself', ()=>{
+  const at=h=>Date.parse(`2026-11-20T${String(h).padStart(2,'0')}:00:00Z`);
+  const rows=[{id:1, status:'scheduled', start_at:'2026-11-20T11:00:00Z', end_at:'2026-11-20T11:45:00Z'},
+    {id:2, status:'cancelled', start_at:'2026-11-20T14:00:00Z', end_at:'2026-11-20T15:00:00Z'},
+    {id:3, status:'scheduled', start_at:'2026-11-20T16:00:00Z'}];
+  assert.equal(mtgSlotConflict(rows, at(11)+30*60e3, at(12))?.id, 1);
+  assert.equal(mtgSlotConflict(rows, at(10)+30*60e3, at(11)+60e3)?.id, 1);
+  assert.equal(mtgSlotConflict(rows, at(11)+45*60e3, at(12)+15*60e3), null, 'starts as the other ends');
+  assert.equal(mtgSlotConflict(rows, at(10), at(11)), null, 'ends as the other starts');
+  assert.equal(mtgSlotConflict(rows, at(14), at(15)), null, 'cancelled frees the slot');
+  assert.equal(mtgSlotConflict(rows, at(16)+15*60e3, at(17))?.id, 3, 'no end time = 30 minutes');
+  assert.equal(mtgSlotConflict(rows, at(11), at(12), 1), null, 'rescheduling within its own slot');
+  assert.match(mtgBriefText({title:'Demo', lead_name:'Asha', start_at:'2026-11-20T11:00:00Z', note:'Wants pricing for 3 branches; bring the case study.'}, {}, 'UTC'),
+    /📝 Pre-meeting notes: Wants pricing for 3 branches; bring the case study\./);
+});
+
 test('Follow-up V3 holds a lead with a meeting', ()=>{
   const lead={Id:1, Stage:'contacted', LastCustomerMsgAt:new Date(Date.now()-3*3600e3).toISOString(), Date:new Date(Date.now()-86400e3).toISOString()};
   const d=fv3Decide({lead, steps:{1:{step:1, type:'session', message:'Hi', hours:1}}, hasMeeting:true});
@@ -192,6 +208,32 @@ describe('routes', ()=>{
   });
   afterEach(()=>{ globalThis.fetch=origFetch; db.close(); });
 
+  test('one meeting per slot across the account — even forced; pre-meeting notes are saved and editable', async ()=>{
+    const t=new Date(Date.now()+3*86400e3); t.setUTCHours(10,0,0,0);
+    const iso=m=>new Date(t.getTime()+m*60e3).toISOString();
+    const a=await call('/meetings/manual', {lead_id:42, start_at:iso(0), duration_min:60, title:'Demo', notify:false, note:'Bring the price list'});
+    assert.equal(a.status, 200, JSON.stringify(a.data));
+    assert.equal(row(a.data.id).note, 'Bring the price list');
+    // Overlapping slot (another lead, or forced) → refused with the clashing meeting.
+    const b=await call('/meetings/manual', {lead_id:42, start_at:iso(30), duration_min:30, force:true, notify:false});
+    assert.equal(b.status, 409); assert.equal(b.data.code, 'SLOT_TAKEN');
+    assert.match(b.data.error, /already taken — Demo with Asha K/);
+    assert.equal(b.data.conflict.id, a.data.id);
+    // Back-to-back is fine; moving the meeting within its own slot is fine.
+    const c=await call('/meetings/manual', {lead_id:42, start_at:iso(60), duration_min:30, force:true, notify:false});
+    assert.equal(c.status, 200, JSON.stringify(c.data));
+    assert.equal((await call('/meetings/manual', {id:a.data.id, lead_id:42, start_at:iso(-15), duration_min:60, notify:false})).status, 200);
+    // …but not onto the next one.
+    assert.equal((await call('/meetings/manual', {id:a.data.id, lead_id:42, start_at:iso(30), duration_min:60, notify:false})).data.code, 'SLOT_TAKEN');
+    // A cancelled meeting frees its slot.
+    await call('/meetings/cancel', {id:c.data.id});
+    assert.equal((await call('/meetings/manual', {lead_id:42, start_at:iso(60), duration_min:30, force:true, notify:false})).status, 200);
+    // Notes: edited later, scoped to the account.
+    const n=await call('/meetings/notes', {id:a.data.id, note:'  Wants 3 branches; bring the case study.  '});
+    assert.equal(n.status, 200); assert.equal(row(a.data.id).note, 'Wants 3 branches; bring the case study.');
+    assert.equal((await call('/meetings/notes', {id:999, note:'x'})).status, 404);
+  });
+
   test('Chats → 📅 Meeting: Google Meet is scheduled, confirmed in the chat and moves the lead; a Cal.com link is shared; the calendar lists it', async ()=>{
     Object.assign(client, {chatwoot_base:'https://cw.test', chatwoot_account_id:1, chatwoot_token:'t'});
     Object.assign(lead, {ConversationID:'55'});
@@ -212,7 +254,7 @@ describe('routes', ()=>{
       assert.equal(cfg.data.config.chat_enabled, true); assert.equal(cfg.data.config.settings.meet_url, 'https://meet.google.com/abc-defg-hij');
 
       const start=new Date(Date.now()+2*86400e3).toISOString();
-      r=await call('/meetings/chat-share', {lead_id:42, kind:'meet', start_at:start, duration_min:30, title:'Product demo'});
+      r=await call('/meetings/chat-share', {lead_id:42, kind:'meet', start_at:start, duration_min:30, title:'Product demo', note:'Asked about bulk pricing'});
       assert.equal(r.status, 200, JSON.stringify(r.data));
       assert.equal(r.data.stage, 'meeting_scheduled');
       assert.match(chat[0], /Your Product demo is confirmed for/); assert.match(chat[0], /Join: https:\/\/meet\.google\.com\/abc-defg-hij/);
@@ -220,22 +262,24 @@ describe('routes', ()=>{
       const m=row(r.data.id);
       assert.equal(m.status, 'scheduled'); assert.equal(m.join_url, 'https://meet.google.com/abc-defg-hij'); assert.equal(m.source, 'chat');
       assert.equal(m.notify, 1, 'reminders still go out'); assert.ok(m.confirm_at, 'no second confirmation from the cron');
+      assert.equal(m.note, 'Asked about bulk pricing');
+      assert.doesNotMatch(chat[0], /bulk pricing/, 'notes never go to the customer');
       assert.equal(graphCalls.length, 0, 'sent in the chat, not as a separate WhatsApp message');
 
       // A second one is refused unless forced; a Cal.com link is refused while a meeting is booked.
       assert.equal((await call('/meetings/chat-share', {lead_id:42, kind:'meet', start_at:start})).data.code, 'MEETING_EXISTS');
       assert.equal((await call('/meetings/chat-share', {lead_id:42, kind:'cal'})).data.code, 'MEETING_EXISTS');
-      r=await call('/meetings/chat-share', {lead_id:42, kind:'cal', force:true, message:'Pick any slot that suits you: {link}'});
+      r=await call('/meetings/chat-share', {lead_id:42, kind:'cal', force:true, message:'Pick any slot that suits you: {link}', note:'Decision maker joins'});
       assert.equal(r.status, 200, JSON.stringify(r.data));
       assert.match(chat[1], /^Pick any slot that suits you: https:\/\/w\.test\/m\/[a-z0-9]+$/);
-      assert.equal(row(r.data.id).status, 'link_sent');
+      assert.equal(row(r.data.id).status, 'link_sent'); assert.equal(row(r.data.id).note, 'Decision maker joins');
 
       // Calendar: the scheduled meeting, in range only.
       const from=new Date(Date.now()).toISOString(), to=new Date(Date.now()+7*86400e3).toISOString();
       const cal=await call(`/meetings/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
       assert.equal(cal.data.meetings.length, 1);
       assert.deepEqual({...cal.data.meetings[0], id:0, start_at:0, end_at:0}, {id:0, lead_id:42, lead_name:'Asha K', title:'Product demo', status:'scheduled', start_at:0, end_at:0,
-        mode:'video', location:'', join_url:'https://meet.google.com/abc-defg-hij', owner:'rita@biz.com', source:'chat', outcome:null});
+        mode:'video', location:'', join_url:'https://meet.google.com/abc-defg-hij', owner:'rita@biz.com', source:'chat', outcome:null, note:'Asked about bulk pricing'});
       assert.equal((await call(`/meetings/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(new Date(Date.now()+90*86400e3).toISOString())}`)).status, 400);
     } finally {
       globalThis.fetch=base;
