@@ -26,7 +26,7 @@ import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmT
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {hospAiList,HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
 import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
-import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
+import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcClientFields,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -10940,6 +10940,9 @@ async function handleBusinessContactsGet(request,env){
   if(!c) return json({error:'Client not found'},404);
   const saved=await bcLoad(env,payload.cid);
   const data=saved||bcEmpty();
+  // Brand colour is shared with Quotation settings' accent and the chat widget: the client record wins.
+  const shared=String(c.brand_color||c.quote_accent_color||'').trim().toLowerCase();
+  if(/^#[0-9a-f]{6}$/.test(shared)) data.identity.brand_color=shared;
   let teammates=[];
   try{ const meta=await tmMetaAll(env,payload.cid); teammates=tmMembers(c,meta).filter(m=>m.status!=='removed').map(m=>({email:m.email,name:m.name||m.email})); }catch(e){}
   const ownerEmail=tmEmail(c.authentik_email);
@@ -10965,7 +10968,13 @@ async function handleBusinessContactsSave(request,env){
   await env.DB.prepare(`INSERT INTO business_contacts (client_id,data_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET data_json=excluded.data_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
     .bind(a.cid,JSON.stringify(data),a.me,now).run();
   await tmAudit(env,a.cid,a.me,'contacts_saved','',{departments:data.departments.length}).catch(()=>{});
-  return json({ok:true,data:{...data,updated_at:now},prompt_block:bcPromptBlock(data)});
+  // Company Profile → client record (PDF footer address & contacts, accent / brand colour, name, bio).
+  const client_fields=bcClientFields(data);
+  try{
+    await ensureClientColumns(env,Object.keys(client_fields));
+    await patchClientFields(env,a.cid,client_fields);
+  }catch(e){ await reportOpsError(env,'Company profile — sync to client record failed',e,{clientId:a.cid}).catch(()=>{}); }
+  return json({ok:true,data:{...data,updated_at:now},prompt_block:bcPromptBlock(data),client_fields});
 }
 const BC_LOGO_TYPES={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}; // no SVG: it can carry script
 const BC_LOGO_MAX_BYTES=2*1024*1024;
