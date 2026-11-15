@@ -2002,6 +2002,7 @@ const ROLES = {
           <div style="margin-top:14px">
             <label class="form-label">Footer Address (printed on every page)</label>
             <textarea class="form-input" id="quoteFooterAddress" rows="2" placeholder="e.g. 123 Sheikh Zayed Road, Dubai, UAE — +971 4 123 4567"></textarea>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">Filled in from your company address, phone, email and website in <a href="#" onclick="navigate('peoplecontacts');return false">Settings → 📇 People &amp; Contacts</a> every time that is saved — change them there to update every document.</div>
           </div>
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
@@ -6441,7 +6442,7 @@ function taMergeLocal(){const loc=taLoadLocal();if(loc.ta_enabled&&!clientRecord
 function showApp(){
   $id('gate').classList.add('hidden');
   $id('app').classList.add('show');
-  $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
+  $id('hChip').textContent=companyDisplayName();
   updateProfileMenu();
   applyHeaderLogo();
   taMergeLocal();
@@ -14833,6 +14834,11 @@ $id('saveQuoteTemplate').addEventListener('click',async()=>{
     quote_tax_percent:parseFloat($id('quoteTaxPercent').value)||0,
     quote_validity_days:parseInt($id('quoteValidityDays').value)||7,
   });
+  // One brand colour: the travel home, chat page and 📇 Company Profile read brand_color too.
+  const accent=$id('quoteAccentColorHex').value.trim().toLowerCase();
+  if(/^#[0-9a-f]{6}$/.test(accent)&&accent!==String(clientRecord.brand_color||'').toLowerCase()){
+    try{ await ensureClientField('brand_color'); await patchClient({brand_color:accent}); clientRecord.brand_color=accent; if(typeof tvApplyBrand==='function') tvApplyBrand(); }catch(e){}
+  }
 });
 
 function quoteEligibleLeads(){
@@ -14992,11 +14998,16 @@ async function quoteRemoveLogo(){
   applyHeaderLogo();
 }
 
+// The company's name for the CRM: the official name from 📇 People & Contacts (synced to
+// business_name on save), else the account name.
+function companyDisplayName(){ return String(clientRecord?.business_name||'').trim()||clientRecord?.client_name||('Client #'+clientId); }
 // Reuses the same uploaded logo (Quotation module) to brand the top nav bar app-wide.
 function applyHeaderLogo(){
+  const chip=$id('hChip'); if(chip&&clientRecord) chip.textContent=companyDisplayName();
   const img=$id('hLogo'),text=$id('hBrandText');
   if(!img||!text) return;
   const url=clientRecord?.quote_logo_url||'';
+  img.alt=companyDisplayName()+' logo';
   if(url){img.src=url;img.style.display='inline-block';text.style.display='none';}
   else{img.style.display='none';text.style.display='';}
 }
@@ -18214,7 +18225,7 @@ async function saveCompanyProfile(){
   try{
     await billingApi('/billing/company-profile',{method:'POST',body:JSON.stringify({client_name, company_address, billing_email, gstin, billing_state})});
     Object.assign(clientRecord,{client_name, company_address, billing_email, gstin, billing_state});
-    $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
+    $id('hChip').textContent=companyDisplayName();
     renderBillingPage();
     msg.textContent='Saved.';
   }catch(e){ msg.textContent='Error: '+e.message; }
@@ -25385,14 +25396,14 @@ async function deleteHospBooking(id){
 <script src="followup-status.js?v=2"></script>
 <script src="followup-pro-ui.js?v=1"></script>
 <script src="travel-status.js?v=10"></script>
-<script src="travel-view.js?v=9"></script>
+<script src="travel-view.js?v=10"></script>
 <script src="travel-crm.js?v=4"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>
 <script src="commerce-view.js?v=3"></script>
 <script src="staff-performance.js?v=1"></script>
 <script src="ads-report.js?v=4"></script>
-<script src="people-contacts.js?v=3"></script>
+<script src="people-contacts.js?v=4"></script>
 <script>
 
 /* ── PWA install prompt ──

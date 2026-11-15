@@ -122,3 +122,29 @@ test('ordinary messages and customers sharing their own number are not contact r
 test('a contact request gets the default card when no department word matches', () => {
   assert.equal(bcContactCard(data, 'Contact number'), '👤 Sales — Rahul\n📞 +971 52 931 9100 (call / WhatsApp)');
 });
+
+test('company profile: tagline, bio with line breaks, licence and brand colour', async()=>{
+  const {bcNormalize, bcPromptBlock, bcAboutLine, bcClientFields, bcHasContent}=await import('./business-contacts.js');
+  const {data, errors}=bcNormalize({identity:{official_name:'Kerala Holidays LLP', tagline:'Kerala, handpicked', licence:'IATA 14-3 1234',
+    brand_color:'#0369A1', about:'We plan Kerala trips.\r\n\r\n\r\nSince 2009.  \nFamily run.', address:'MG Road, Kochi', phone:'+91 98470 00000',
+    whatsapp:'+91 98470 00001', email:'Hello@KH.in', website:'https://kh.in/'}});
+  assert.deepEqual(errors, []);
+  assert.equal(data.identity.about, 'We plan Kerala trips.\n\nSince 2009.\nFamily run.');
+  assert.equal(data.identity.brand_color, '#0369a1');
+  assert.equal(bcHasContent({identity:{about:'Hi'}}), true);
+  const block=bcPromptBlock(data);
+  assert.match(block, /About the business: We plan Kerala trips\. Since 2009\. Family run\./);
+  assert.match(block, /Licence \/ registration: IATA 14-3 1234/);
+  assert.equal(bcNormalize({identity:{brand_color:'blue'}}).errors[0], 'Brand colour must be a hex colour like #0369a1.');
+  assert.equal(bcAboutLine('One. Two three four. '+'x'.repeat(50), 30), 'One. Two three four.');
+
+  const f=bcClientFields(data);
+  assert.equal(f.quote_footer_address, 'MG Road, Kochi\n+91 98470 00000 · WhatsApp +91 98470 00001 · hello@kh.in · kh.in');
+  assert.equal(f.brand_color, '#0369a1'); assert.equal(f.quote_accent_color, '#0369a1');
+  assert.equal(f.business_name, 'Kerala Holidays LLP');
+  assert.equal(f.business_tagline, 'Kerala, handpicked');
+  assert.equal(f.business_about, data.identity.about);
+  // An empty profile never wipes the PDF address or colour set elsewhere.
+  const empty=bcClientFields(bcNormalize({identity:{}}).data);
+  assert.equal('quote_footer_address' in empty, false); assert.equal('brand_color' in empty, false); assert.equal('business_name' in empty, false);
+});

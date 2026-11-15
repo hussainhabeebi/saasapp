@@ -16,7 +16,12 @@ export const BC_DEFAULT_DEPARTMENTS=[
   {name:'Sales',handles:'packages, bookings, prices, new enquiries'},
   {name:'Tech support',handles:'payment links, website or app problems'},
 ];
-const IDENTITY_FIELDS={official_name:120,short_name:60,address:300,map_url:500,hours:120,phone:40,whatsapp:40,email:120,website:300,logo_url:600,logo_wide_url:600,logo_print_url:600};
+const IDENTITY_FIELDS={official_name:120,short_name:60,address:300,map_url:500,hours:120,phone:40,whatsapp:40,email:120,website:300,logo_url:600,logo_wide_url:600,logo_print_url:600,
+  tagline:140,licence:80,brand_color:7};
+// Company Bio / About: the business's introduction, shown on the CRM home and the bot reads a
+// one-line copy. Kept with its line breaks (the other fields are single lines).
+export const BC_ABOUT_MAX=1500;
+export const BC_COLOR_RE=/^#[0-9a-f]{6}$/i;
 const DEPT_FIELDS={name:60,person:80,phone:40,email:120,hours:120,handles:200,teammate:120};
 export const BC_EMAIL_RE=/^[^\s@,<>]+@[^\s@,<>]+\.[a-z]{2,}$/i;
 
@@ -31,7 +36,7 @@ const safeUrl=s=>{ const v=clip(s,600); return !v||/^https:\/\/[^\s"'<>]+$/i.tes
 const deptId=()=>'d'+Math.random().toString(36).slice(2,9);
 
 export function bcEmpty(){
-  return {identity:Object.fromEntries(Object.keys(IDENTITY_FIELDS).map(k=>[k,''])),
+  return {identity:{...Object.fromEntries(Object.keys(IDENTITY_FIELDS).map(k=>[k,''])),about:''},
     departments:BC_DEFAULT_DEPARTMENTS.map((d,i)=>({id:'d'+(i+1),name:d.name,person:'',phone:'',whatsapp:true,email:'',hours:'',handles:d.handles,public:true,is_default:i===0,teammate:''})),
     guard:true,handover_contact:true};
 }
@@ -43,6 +48,9 @@ export function bcNormalize(input){
   const id=src.identity&&typeof src.identity==='object'?src.identity:{};
   const identity={};
   for(const [k,n] of Object.entries(IDENTITY_FIELDS)) identity[k]=clip(id[k],n);
+  identity.about=String(id.about??'').replace(/\r/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim().slice(0,BC_ABOUT_MAX);
+  identity.brand_color=identity.brand_color.toLowerCase();
+  if(identity.brand_color&&!BC_COLOR_RE.test(identity.brand_color)){ errors.push('Brand colour must be a hex colour like #0369a1.'); identity.brand_color=''; }
   identity.phone=bcTidyPhone(identity.phone);
   identity.whatsapp=bcTidyPhone(identity.whatsapp);
   identity.email=identity.email.toLowerCase();
@@ -91,7 +99,7 @@ export function bcParse(raw){
 export function bcHasContent(data){
   if(!data) return false;
   const id=data.identity||{};
-  return ['official_name','address','phone','whatsapp','email','website','hours'].some(k=>id[k])
+  return ['official_name','address','phone','whatsapp','email','website','hours','about'].some(k=>id[k])
     ||(data.departments||[]).some(d=>d.public&&(d.phone||d.email||d.person));
 }
 
@@ -111,6 +119,9 @@ export function bcPromptBlock(data){
   if(id.whatsapp&&bcPhoneKey(id.whatsapp)!==bcPhoneKey(id.phone)) add('WhatsApp',id.whatsapp);
   add('Email',id.email);
   add('Website',id.website);
+  add('Licence / registration',id.licence);
+  add('Tagline',id.tagline);
+  if(id.about) add('About the business',bcAboutLine(id.about));
   const depts=(data.departments||[]).filter(d=>d.public&&(d.phone||d.email||d.person));
   if(depts.length){
     lines.push('','## Official contacts by department — share ONLY these');
@@ -125,6 +136,32 @@ export function bcPromptBlock(data){
     '- Never invent, guess, change, shorten or "complete" a name, phone number, email, address or link. Copy them exactly as written above.',
     '- If a detail is not written above, do not make one up: say the team will share it.');
   return lines.join('\n');
+}
+
+// The About text on one line, for the bot block (a long bio is cut at a sentence end).
+export function bcAboutLine(about,max=600){
+  const one=String(about||'').replace(/\s+/g,' ').trim();
+  if(one.length<=max) return one;
+  const cut=one.slice(0,max), end=Math.max(cut.lastIndexOf('. '),cut.lastIndexOf('! '),cut.lastIndexOf('? '));
+  return (end>max*0.5?cut.slice(0,end+1):cut.replace(/\s+\S*$/,'')+'…').trim();
+}
+
+// Company Profile → the client record, so every place that already reads those fields shows the
+// same name, address, contacts and colour: quotation / invoice / itinerary PDFs
+// (quote_footer_address, quote_accent_color), the chat widget (brand_color) and the CRM header and
+// travel home (business_name / business_tagline / business_about). Only fields the profile
+// actually has are written, so an empty profile never wipes what was set elsewhere.
+export function bcClientFields(data){
+  const id=data?.identity||{}, out={};
+  const contacts=[id.phone, id.whatsapp&&bcPhoneKey(id.whatsapp)!==bcPhoneKey(id.phone)?`WhatsApp ${id.whatsapp}`:'', id.email, id.website?id.website.replace(/^https:\/\//i,'').replace(/\/$/,''):''].filter(Boolean);
+  const footer=[id.address, contacts.join(' · ')].filter(Boolean).join('\n');
+  if(footer) out.quote_footer_address=footer;
+  if(id.brand_color&&BC_COLOR_RE.test(id.brand_color)){ out.brand_color=id.brand_color; out.quote_accent_color=id.brand_color; }
+  if(id.official_name) out.business_name=id.official_name;
+  out.business_tagline=id.tagline||'';
+  out.business_about=id.about||'';
+  out.business_licence=id.licence||'';
+  return out;
 }
 
 // Everything a reply may legitimately quote: the visible contacts plus any extra text (the system

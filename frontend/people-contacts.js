@@ -12,8 +12,10 @@
     .then(async r=>{ const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||'HTTP '+r.status); return d; });
   const newId=()=>'d'+Math.random().toString(36).slice(2,9);
   const ID_FIELDS=[
-    ['official_name','Official name','Tripcode Travels LLC','text'],
+    ['official_name','Official company name','Tripcode Travels LLC','text'],
     ['short_name','Short name (casual replies)','Tripcode','text'],
+    ['tagline','Tagline','Handpicked holidays since 2009','text'],
+    ['licence','Licence / registration no.','IATA 14-3 1234 · Trade licence 123456','text'],
     ['address','Address','Office 12, Al Rigga Road, Deira, Dubai','textarea'],
     ['map_url','Google Maps link','https://maps.app.goo.gl/…','url'],
     ['hours','Office hours','Mon–Sat 9am–9pm','text'],
@@ -21,12 +23,14 @@
     ['whatsapp','Main WhatsApp','+971 52 931 9100','tel'],
     ['email','Main email','hello@yourbusiness.com','email'],
     ['website','Website','https://yourbusiness.com','url'],
+    ['about','About the company (Bio)','Who you are, what you offer, since when, what makes you different — shown on your CRM home and used by the bot.','about'],
   ];
 
   function msg(id,text,ok){ const el=$(id); if(!el) return; el.textContent=text||''; el.style.color=ok===false?'var(--red,#c0392b)':''; }
   function readForm(){
     const d=S.data;
     for(const [k] of ID_FIELDS){ const el=$('pcId_'+k); if(el) d.identity[k]=el.value.trim(); }
+    const bc=$('pcBrandHex'); if(bc) d.identity.brand_color=bc.value.trim().toLowerCase();
     d.guard=$('pcGuard')?.checked!==false;
     d.handover_contact=$('pcHandover')?.checked!==false;
     document.querySelectorAll('#pcDeptRows [data-dept]').forEach(row=>{
@@ -86,6 +90,8 @@
     const k=s=>String(s||'').replace(/\D/g,'').slice(-9);
     if(id.whatsapp&&k(id.whatsapp)!==k(id.phone)) add('WhatsApp',id.whatsapp);
     add('Email',id.email); add('Website',id.website);
+    add('Licence / registration',id.licence); add('Tagline',id.tagline);
+    if(id.about){ const one=id.about.replace(/\s+/g,' ').trim(); add('About the business',one.length>600?one.slice(0,600)+'…':one); }
     const deps=d.departments.filter(x=>x.public!==false&&(x.phone||x.email||x.person));
     if(!L.length&&!deps.length) return '(Nothing saved yet — the bot uses only its prompt.)';
     const out=['## Official business details — use exactly as written',...L];
@@ -114,9 +120,16 @@
         <div class="s-note" style="margin-top:0">The square logo is the one official logo: quotations, invoices, receipts and itinerary PDFs, emails, your store / order / booking / chat pages and the top bar all use it.${!d.identity.logo_url&&quoteLogo()?' Showing the logo from Quotation settings — upload here to make it official everywhere.':''}</div>
         <span class="save-msg" id="pcLogoMsg"></span>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
-          ${ID_FIELDS.map(([k,l,ph,t])=>`<div${t==='textarea'?' style="grid-column:1/-1"':''}><label class="form-label">${h(l)}</label>${t==='textarea'
-            ?`<textarea class="form-input" id="pcId_${k}" rows="2" placeholder="${h(ph)}" oninput="pcRefreshPreview()"${dis}>${h(d.identity[k])}</textarea>`
+          ${ID_FIELDS.map(([k,l,ph,t])=>`<div${t==='textarea'||t==='about'?' style="grid-column:1/-1"':''}><label class="form-label">${h(l)}</label>${t==='textarea'||t==='about'
+            ?`<textarea class="form-input" id="pcId_${k}" rows="${t==='about'?5:2}"${t==='about'?' maxlength="1500"':''} placeholder="${h(ph)}" oninput="pcRefreshPreview()"${dis}>${h(d.identity[k])}</textarea>`
             :`<input class="form-input" id="pcId_${k}" type="${t}" value="${h(d.identity[k])}" placeholder="${h(ph)}" oninput="pcRefreshPreview()"${dis}>`}</div>`).join('')}
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+          <label class="form-label" style="margin:0">Brand colour</label>
+          <input type="color" id="pcBrandSwatch" value="${h(d.identity.brand_color||'#0369a1')}" oninput="pcBrandPick(this.value)"${dis} style="width:42px;height:32px;padding:0;border:1px solid var(--line,#ddd);border-radius:6px;background:none">
+          <input class="form-input" id="pcBrandHex" value="${h(d.identity.brand_color||'')}" placeholder="#0369a1" maxlength="7" style="max-width:110px" oninput="pcBrandTyped(this.value)"${dis}>
+          ${S.canManage?`<button class="save-btn" style="background:transparent;color:var(--accent,#2563eb);border:1px solid var(--line,#ddd)" onclick="pcUseLogoColour()">🎨 Use logo colour</button>`:''}
+          <span class="s-note" style="margin:0">Used on your CRM home, quotation / invoice / itinerary PDFs and your chat page. Empty = taken from your logo.</span>
         </div>
         ${S.canManage&&(S.billing.client_name||S.billing.company_address||S.billing.billing_email)?`<button class="save-btn" style="margin-top:10px;background:transparent;color:var(--accent,#2563eb);border:1px solid var(--line,#ddd)" onclick="pcCopyBilling()">Same as billing (Company Profile)</button>`:''}
       </div></div>
@@ -148,6 +161,17 @@
   }
 
   window.pcRefreshPreview=function(){ const el=$('pcPreview'); if(el&&S.data) el.textContent=previewText(); };
+  window.pcBrandPick=function(v){ const hx=$('pcBrandHex'); if(hx) hx.value=v; };
+  window.pcBrandTyped=function(v){ if(/^#[0-9a-f]{6}$/i.test(v.trim())){ const sw=$('pcBrandSwatch'); if(sw) sw.value=v.trim(); } };
+  function setBrand(hex){ const hx=$('pcBrandHex'), sw=$('pcBrandSwatch'); if(hx) hx.value=hex; if(sw) sw.value=hex; S.data.identity.brand_color=hex; }
+  window.pcUseLogoColour=async function(){
+    const src=S.lastLogoFile?URL.createObjectURL(S.lastLogoFile):quoteLogo();
+    if(!src){ msg('pcLogoMsg','Upload a logo first.',false); return; }
+    const hex=await window.lvLogoColor(src);
+    if(S.lastLogoFile) URL.revokeObjectURL(src);
+    if(!hex){ msg('pcLogoMsg','Couldn\'t find a clear colour in the logo — pick one with the swatch.',false); return; }
+    setBrand(hex); msg('pcLogoMsg',`Brand colour ${hex} taken from your logo — press Save to keep it.`);
+  };
   window.pcAddDept=function(){ readForm(); S.data.departments.push({id:newId(),name:'',person:'',phone:'',whatsapp:true,email:'',hours:'',handles:'',public:true,is_default:!S.data.departments.length,teammate:''}); render(); };
   window.pcRemoveDept=function(id){ readForm(); S.data.departments=S.data.departments.filter(x=>x.id!==id); render(); };
   window.pcCopyBilling=function(){
@@ -163,8 +187,11 @@
     try{
       const r=await api('/settings/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:readForm()})});
       S.data=r.data; render();
+      // The same name, address, contacts and colour now feed Quotations, itinerary PDFs, the top bar and the travel home.
+      if(typeof tvSetProfile==='function') tvSetProfile(r.data?.identity);
+      if(r.client_fields) window.lvApplyCompanyProfile?.(r.client_fields);
       const el=$('pcPreview'); if(el) el.textContent=r.prompt_block?r.prompt_block.trim():'(Nothing saved yet — the bot uses only its prompt.)';
-      msg('pcSaveMsg','✓ Saved — the bot uses these from its next reply.');
+      msg('pcSaveMsg','✓ Saved — your company profile is updated across the CRM, documents and the bot.');
     }catch(e){ msg('pcSaveMsg',e.message,false); }
     finally{ const b=$('pcSaveBtn'); if(b) b.disabled=false; }
   };
@@ -223,7 +250,15 @@
       const r=await window.pcSetOfficialLogo(f,variant);
       S.data.identity[variant==='wide'?'logo_wide_url':'logo_url']=r.url;
       if(r.print_url) S.data.identity.logo_print_url=r.print_url;
-      render(); msg('pcLogoMsg',variant==='square'?'✓ Logo saved — now used on documents, emails, pages and the top bar.':'✓ Wide logo saved.');
+      if(variant==='square') S.lastLogoFile=f;
+      render();
+      let note='';
+      // No brand colour yet → take it from the new logo (saved with the next Save).
+      if(variant==='square'&&!S.data.identity.brand_color){
+        const u=URL.createObjectURL(f), hex=await window.lvLogoColor(u).catch(()=>''); URL.revokeObjectURL(u);
+        if(hex){ setBrand(hex); note=` Brand colour ${hex} taken from it — press Save to keep it.`; }
+      }
+      msg('pcLogoMsg',variant==='square'?'✓ Logo saved — now used on documents, emails, pages and the top bar.'+note:'✓ Wide logo saved.');
     }catch(e){ msg('pcLogoMsg',e.message,false); }
   };
   window.pcLogoRemove=async function(variant){
@@ -247,3 +282,55 @@
     }catch(e){ root.innerHTML=`<div class="s-note" style="color:var(--red,#c0392b)">Couldn't load People &amp; Contacts: ${h(e.message)}</div>`; }
   };
 })();
+
+/* ── Company profile helpers shared by the dashboard and the travel workspace ──
+   lvLogoColor(url): the logo's main colour as #rrggbb ('' when it has none: a black / white / grey
+   logo). Same-origin or data: URLs only (a canvas can't read other sites' pixels).
+   lvBrandShades(hex): accent / ink / soft / line shades from one colour, darkened until white text
+   on it is readable.
+   lvApplyCompanyProfile(fields): a saved profile's synced client fields → clientRecord, then the
+   top bar and the travel home redraw. */
+window.lvLogoColor=function(url){
+  return new Promise(res=>{
+    if(!url) return res('');
+    const im=new Image();
+    im.onload=()=>{
+      try{
+        const n=64, cv=document.createElement('canvas'); cv.width=n; cv.height=n;
+        const g=cv.getContext('2d'); g.drawImage(im,0,0,n,n);
+        const px=g.getImageData(0,0,n,n).data, buckets={};
+        for(let i=0;i<px.length;i+=4){
+          const r=px[i], gg=px[i+1], b=px[i+2], a=px[i+3];
+          if(a<200) continue;
+          const mx=Math.max(r,gg,b)/255, mn=Math.min(r,gg,b)/255, l=(mx+mn)/2, d=mx-mn;
+          const sat=d===0?0:d/(1-Math.abs(2*l-1));
+          if(sat<0.28||l>0.9||l<0.1) continue; // background, outline and grey text don't count
+          const k=(r>>4)+'-'+(gg>>4)+'-'+(b>>4);
+          const o=buckets[k]||(buckets[k]={w:0,r:0,g:0,b:0});
+          const w=0.5+sat; o.w+=w; o.r+=r*w; o.g+=gg*w; o.b+=b*w;
+        }
+        const best=Object.values(buckets).sort((x,y)=>y.w-x.w)[0];
+        if(!best||best.w<12) return res('');
+        const hx=v=>Math.round(v/best.w).toString(16).padStart(2,'0');
+        res('#'+hx(best.r)+hx(best.g)+hx(best.b));
+      }catch(e){ res(''); }
+    };
+    im.onerror=()=>res('');
+    im.src=url;
+  });
+};
+window.lvBrandShades=function(hex){
+  if(!/^#[0-9a-f]{6}$/i.test(String(hex||''))) return null;
+  let [r,g,b]=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
+  const lum=(r,g,b)=>{ const f=c=>{ c/=255; return c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4); }; return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b); };
+  // White text needs ≥4.5:1 → luminance ≤ ~0.18.
+  for(let i=0;i<20&&lum(r,g,b)>0.18;i++){ r*=0.9; g*=0.9; b*=0.9; }
+  const mix=(t,w)=>'#'+[r,g,b].map(c=>Math.round(c*(1-w)+t*w).toString(16).padStart(2,'0')).join('');
+  return {accent:mix(0,0), ink:mix(0,0.3), soft:mix(255,0.88), line:mix(255,0.72), light:mix(255,0.35), base:String(hex).toLowerCase()};
+};
+window.lvApplyCompanyProfile=function(fields){
+  try{ if(typeof clientRecord!=='undefined'&&clientRecord&&fields) Object.assign(clientRecord,fields); }catch(e){}
+  try{ if(typeof applyHeaderLogo==='function') applyHeaderLogo(); }catch(e){}
+  try{ if(typeof tvApplyBrand==='function') tvApplyBrand(); }catch(e){}
+  try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
+};

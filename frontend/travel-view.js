@@ -146,6 +146,22 @@ html:not(.tv-mode) .tv-only{display:none!important}
 .tv-legend .tv-ev{display:inline-block;margin:0 4px 0 0;padding:0 6px}
 @media(max-width:640px){.tv-day{min-height:58px}.tv-ev{font-size:9px;padding:1px 3px}}
 .tv-frame-page{padding:0!important}
+.tv-hero{background:linear-gradient(135deg,var(--accent),var(--tv-brand-2,#38BDF8))}
+.tv-brand{display:flex;align-items:center;gap:14px;min-width:0}
+.tv-logo{width:64px;height:64px;border-radius:14px;background:#fff;display:flex;align-items:center;justify-content:center;padding:6px;flex-shrink:0;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+.tv-logo img{max-width:100%;max-height:100%;object-fit:contain}
+.tv-company{font-family:var(--disp);font-size:22px;font-weight:800;line-height:1.15;overflow-wrap:anywhere}
+.tv-tagline{opacity:.92;font-size:13px;margin-top:2px}
+.tv-greet{opacity:.85;font-size:12.5px;margin-top:6px}
+.tv-about{display:grid;grid-template-columns:1.4fr 1fr;gap:18px}
+@media(max-width:900px){.tv-about{grid-template-columns:1fr}}
+.tv-bio{font-size:13.5px;line-height:1.55;white-space:pre-line;color:var(--ink)}
+.tv-bio.clamp{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+.tv-contact{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line);overflow-wrap:anywhere}
+.tv-contact:last-child{border-bottom:none}
+.tv-contact a{color:var(--accent-ink);text-decoration:none;font-weight:600}
+.tv-contact .ic{width:20px;flex-shrink:0;text-align:center}
+@media(max-width:640px){.tv-logo{width:52px;height:52px}.tv-company{font-size:18px}}
 `;
   document.head.appendChild(st);
 }
@@ -277,6 +293,7 @@ function tvApply(){
   }
   tvBuildClassicEntry();
   if(on){ tvSeedFromCache(); tvSchedulePreload(); }
+  tvApplyBrand();
 }
 
 /* ── speed: cached trip data + background preload ── */
@@ -449,6 +466,75 @@ function tvCategoryReportHtml(leads){
 
 /* ── 🏠 TODAY ── */
 // Narrowed to a teammate's own leads like the classic Home (dashboard.html withHomeScope).
+/* ── Company branding (Settings → 📇 People & Contacts = the company profile) ──
+   The travel workspace takes its accent from the company's brand colour (brand_color, kept in
+   step with Quotation settings' accent), else the main colour of its logo; the Today home shows
+   the logo, official name, tagline, bio and contacts. Contacts come from /settings/contacts, read
+   once per page load (any teammate may read it). */
+let _tvLogoColor={src:'',hex:''};
+let _tvProfile=null, _tvProfileLoading=false;
+function tvBrandHex(){
+  const c=String(clientRecord?.brand_color||clientRecord?.quote_accent_color||'').trim().toLowerCase();
+  if(/^#[0-9a-f]{6}$/.test(c)) return c;
+  return _tvLogoColor.src&&_tvLogoColor.src===(clientRecord?.quote_logo_url||'')?_tvLogoColor.hex:'';
+}
+async function tvApplyBrand(){
+  if(!clientRecord) return;
+  const logo=clientRecord.quote_logo_url||'';
+  if(!tvBrandHex() && logo && _tvLogoColor.src!==logo && typeof window.lvLogoColor==='function'){
+    _tvLogoColor={src:logo,hex:''};
+    _tvLogoColor.hex=await window.lvLogoColor(logo).catch(()=>'');
+  }
+  const sh=typeof window.lvBrandShades==='function'?window.lvBrandShades(tvBrandHex()):null;
+  let st=$id('tvBrandStyle');
+  if(!sh){ if(st) st.remove(); return; }
+  if(!st){ st=document.createElement('style'); st.id='tvBrandStyle'; document.head.appendChild(st); }
+  // Light mode only for the app accent (dark mode keeps its own readable accents); the hero uses it in both.
+  st.textContent=`html.tv-mode:not(.dark){--accent:${sh.accent};--accent-ink:${sh.ink};--accent-soft:${sh.soft}}
+html.tv-mode .tv-hero{background:linear-gradient(135deg,${sh.accent},${sh.light})}`;
+}
+function tvLoadProfile(){
+  if(_tvProfile||_tvProfileLoading||typeof CONFIG==='undefined'||typeof sessionToken==='undefined'||!sessionToken) return;
+  _tvProfileLoading=true;
+  fetch(`${CONFIG.WORKER_BASE}/settings/contacts`,{headers:{Authorization:'Bearer '+sessionToken}})
+    .then(r=>r.ok?r.json():null).then(d=>{ _tvProfile={identity:d?.data?.identity||{}, canManage:!!d?.can_manage}; })
+    .catch(()=>{ _tvProfile={identity:{},canManage:false}; })
+    .finally(()=>{ _tvProfileLoading=false; if(!$id('pageTravelhome')?.classList.contains('hidden')) renderTravelHome(); });
+}
+// Called after 📇 People & Contacts is saved, with what it saved.
+function tvSetProfile(identity){ if(identity) _tvProfile={...(_tvProfile||{canManage:true}),identity}; }
+function tvCompanyName(){
+  const n=String(_tvProfile?.identity?.official_name||clientRecord?.business_name||'').trim();
+  return n||(typeof companyDisplayName==='function'?companyDisplayName():clientRecord?.client_name||'');
+}
+function tvAboutCardHtml(){
+  const id=_tvProfile?.identity||{};
+  const about=String(id.about||clientRecord?.business_about||'').trim();
+  const digits=v=>String(v||'').replace(/\D/g,'');
+  const safe=u=>/^https:\/\//i.test(String(u||''))?String(u):'';
+  const rows=[
+    id.address&&['📍',esc(id.address)+(safe(id.map_url)?` · <a href="${esc(safe(id.map_url))}" target="_blank" rel="noopener">Map</a>`:'')],
+    id.phone&&['📞',`<a href="tel:+${digits(id.phone)}">${esc(id.phone)}</a>`],
+    id.whatsapp&&['💬',`<a href="https://wa.me/${digits(id.whatsapp)}" target="_blank" rel="noopener">${esc(id.whatsapp)}</a>`],
+    id.email&&['✉️',`<a href="mailto:${esc(id.email)}">${esc(id.email)}</a>`],
+    safe(id.website)&&['🌐',`<a href="${esc(safe(id.website))}" target="_blank" rel="noopener">${esc(safe(id.website).replace(/^https:\/\//i,'').replace(/\/$/,''))}</a>`],
+    id.hours&&['🕘',esc(id.hours)],
+    (id.licence||clientRecord?.business_licence)&&['🪪',esc(id.licence||clientRecord.business_licence)],
+  ].filter(Boolean);
+  const canEdit=_tvProfile?.canManage||(typeof isAccountOwner==='function'&&isAccountOwner());
+  const edit=canEdit?`<button class="btn btn-secondary btn-sm" onclick="navigate('peoplecontacts')">✏️ Edit company profile</button>`:'';
+  if(!about&&!rows.length){
+    return canEdit?`<div class="card" style="margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:200px"><div class="card-title" style="margin-bottom:4px">🏢 Your company profile</div><div class="tv-meta">Add your logo, brand colour, bio, address and contacts once — they appear here and on every quotation, itinerary and invoice.</div></div>${edit}</div>`:'';
+  }
+  const long=about.length>420;
+  return `<div class="card" style="margin-bottom:14px" id="tvAboutCard">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><div class="card-title" style="margin:0;flex:1">🏢 About ${esc(tvCompanyName())}</div>${edit}</div>
+    <div class="tv-about">
+      <div>${about?`<div class="tv-bio${long?' clamp':''}" id="tvBio">${esc(about)}</div>${long?`<a href="#" style="font-size:12.5px" onclick="const b=$id('tvBio');b.classList.toggle('clamp');this.textContent=b.classList.contains('clamp')?'Read more':'Show less';return false">Read more</a>`:''}`:`<div class="tv-empty">${canEdit?'No company bio yet — add one in the company profile.':'No company bio yet.'}</div>`}</div>
+      <div>${rows.map(([ic,v])=>`<div class="tv-contact"><span class="ic">${ic}</span><span>${v}</span></div>`).join('')||'<div class="tv-empty">No contact details yet.</div>'}</div>
+    </div></div>`;
+}
+
 function renderTravelHome(){
   const r=typeof withHomeScope==='function'?withHomeScope(renderTravelHomeScoped):renderTravelHomeScoped();
   // 🏆 Weekly Arena (call-score.js) — team-wide, so drawn after the scoped render, and skipped when
@@ -505,6 +591,10 @@ function renderTravelHomeScoped(){
 
   const hour=new Date().getHours();
   const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+  tvLoadProfile();
+  const logo=String(clientRecord?.quote_logo_url||'').trim();
+  const company=tvCompanyName();
+  const tagline=String(_tvProfile?.identity?.tagline||clientRecord?.business_tagline||'').trim();
   const kpi=(label,val,sub,go,warn)=>`<div class="stat tv-kpi${warn?' warn':''}" onclick="${go}"><div class="stat-lbl">${esc(label)}</div><div class="stat-val">${val}</div><div class="stat-sub">${sub}</div></div>`;
   const row=(date,main,meta,amt,go)=>`<div class="tv-row" onclick="${go}"><span class="tv-date">${esc(date)}</span><div class="tv-main">${main}<div class="tv-meta">${meta}</div></div>${amt?`<span class="tv-amt">${amt}</span>`:''}</div>`;
   const cur=b=>esc((b.currency||'').toUpperCase());
@@ -517,8 +607,12 @@ function renderTravelHomeScoped(){
 
   el.innerHTML=`
     <div class="tv-hero">
-      <div><h2>${greet}${clientRecord?.client_name?', '+esc(clientRecord.client_name):''} ✈️</h2>
-        <div class="tv-sub">${depToday.length} departure${depToday.length===1?'':'s'} today · ${newToday.length} new inquir${newToday.length===1?'y':'ies'} · ${waiting.length} waiting for an agent</div></div>
+      <div class="tv-brand">
+        ${logo?`<div class="tv-logo"><img src="${esc(logo)}" alt="${esc(company)} logo"></div>`:''}
+        <div style="min-width:0"><div class="tv-company">${esc(company||'Your travel agency')}</div>
+          ${tagline?`<div class="tv-tagline">${esc(tagline)}</div>`:''}
+          <div class="tv-greet">${greet} ✈️ · ${depToday.length} departure${depToday.length===1?'':'s'} today · ${newToday.length} new inquir${newToday.length===1?'y':'ies'} · ${waiting.length} waiting for an agent</div></div>
+      </div>
       <div class="tv-actions">
         <button onclick="openAddLead()">+ Inquiry</button>
         ${agency?`<button onclick="tvNew('tvquotes')">+ Itinerary</button><button onclick="tvNew('tvtrips')">+ Quote / Booking</button>`:''}
@@ -527,6 +621,7 @@ function renderTravelHomeScoped(){
     </div>
     ${agency?'':`<div class="tv-banner">✈️ Turn on the <b>Travel Agency</b> module to track trips, quotes, departures and payments here.
       ${isAccountOwner()?`<button class="btn btn-primary btn-sm" onclick="navigate('modules')">Enable in Settings → Modules</button>`:'Ask your account owner to enable it.'}</div>`}
+    ${tvAboutCardHtml()}
     <div id="tvHomeArena" style="display:none;margin-bottom:14px"></div>
     <div class="tv-kpis">
       ${kpi('Departures today',depToday.length,`${depWeek.length+umrahWeek.length} in the next 7 days`,"navigate('departures')")}
