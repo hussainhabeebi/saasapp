@@ -418,7 +418,8 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
         <div class="form-group"><label class="form-label">Client Name</label><input class="form-input" id="itinClientName" placeholder="e.g. Mr. Rahul Menon"></div>
         <div class="form-group"><label class="form-label">Client Phone</label><input class="form-input" id="itinClientPhone" placeholder="e.g. +971 50 123 4567"></div>
-        <div class="form-group" style="grid-column:1/-1"><label class="form-label">Client Address</label><textarea class="form-input" id="itinClientAddress" rows="2" placeholder="Shown on the itinerary PDF under &quot;To&quot;"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">From Address</label><textarea class="form-input" id="itinFromAddress" rows="2" placeholder="Shown on the itinerary PDF under &quot;From&quot; — leave empty to use your business address"></textarea></div>
+        <div class="form-group" style="grid-column:1/-1"><label class="form-label">To Address (Client)</label><textarea class="form-input" id="itinClientAddress" rows="2" placeholder="Shown on the itinerary PDF under &quot;To&quot;"></textarea></div>
       </div>
       <div class="sec-hd">Travellers &amp; Rates</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:6px">
@@ -1254,6 +1255,8 @@ const TA_ADDED_COLUMNS={
     // JSON {layout, color, cover} — this itinerary's own PDF format (itinPdfFormat).
     {title:'pdf_format',uidt:'LongText'},
     {title:'client_name',uidt:'SingleLineText'},{title:'client_phone',uidt:'SingleLineText'},{title:'client_address',uidt:'LongText'},
+    // The PDF's "From" address — this itinerary's own; empty = the business address (quote_footer_address).
+    {title:'from_address',uidt:'LongText'},
     // Special pricing: 'amount' (off the total) or 'percent'; applied on the PDF's price table.
     {title:'discount_type',uidt:'SingleLineText'},{title:'discount_value',uidt:'Decimal'},{title:'discount_label',uidt:'SingleLineText'},
   ],
@@ -2172,6 +2175,7 @@ function openItinModal(id, prefill) {
   itinSetSelect('itinCurrency',String(it.currency||'AED').trim().toUpperCase()||'AED');
   $id('itinClientName').value=it.client_name||''; $id('itinClientPhone').value=it.client_phone||'';
   $id('itinClientAddress').value=it.client_address||'';
+  $id('itinFromAddress').value=it.from_address||'';
   $id('itinDiscountType').value=it.discount_type==='percent'?'percent':'amount';
   $id('itinDiscountValue').value=parseFloat(it.discount_value)||''; $id('itinDiscountLabel').value=it.discount_label||'';
   $id('itinAdultPrice').value=it.adult_price||''; $id('itinChildPrice').value=it.child_price||'';
@@ -2634,6 +2638,7 @@ function itinFormRecord(){
     currency:$id('itinCurrency').value,adult_price:num('itinAdultPrice'),child_price:num('itinChildPrice'),child_nobed_price:num('itinChildNoBedPrice'),infant_price:num('itinInfantPrice'),
     inclusions:lines('itinInclusions'),exclusions:lines('itinExclusions'),pdf_format:JSON.stringify(_itinFormat),
     client_name:$id('itinClientName').value.trim(),client_phone:$id('itinClientPhone').value.trim(),client_address:$id('itinClientAddress').value.trim(),
+    from_address:$id('itinFromAddress').value.trim(),
     discount_type:$id('itinDiscountType').value==='percent'?'percent':'amount',discount_value:num('itinDiscountValue'),discount_label:$id('itinDiscountLabel').value.trim()};
   return it;
 }
@@ -2665,7 +2670,7 @@ const ITIN_FIELD_LABELS={title:'Title',destination:'Destination',from_date:'From
   nights:'Nights',departure_city:'Departure city',hotel_category:'Hotel category',meal_plan:'Meal plan',transport:'Transport',adults:'Adults',children:'Children',
   children_nobed:'Children (no bed)',infants:'Infants',currency:'Currency',adult_price:'Adult price',child_price:'Child price',child_nobed_price:'Child (no bed) price',
   infant_price:'Infant price',inclusions:'Inclusions',exclusions:'Exclusions',pdf_format:'PDF format',client_name:'Client name',client_phone:'Client phone',
-  client_address:'Client address',discount_type:'Discount type',discount_value:'Discount',discount_label:'Discount label'};
+  client_address:'To address',from_address:'From address',discount_type:'Discount type',discount_value:'Discount',discount_label:'Discount label'};
 // Names of the fields whose stored value doesn't match what was sent. A failed read-back (network)
 // reports nothing — the save itself already succeeded.
 async function itinVerifySaved(rowId,sent){
@@ -3203,8 +3208,8 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
   y+=20;
 
   // From (this business) / To (the lead) block — identical layout and colors to the Quotation
-  // PDF's own FROM/TO block.
-  const fromAddr=(clientRecord.quote_footer_address||'').trim();
+  // PDF's own FROM/TO block. The itinerary's own From Address wins over the business address.
+  const fromAddr=(String(it.from_address||'').trim()||clientRecord.quote_footer_address||'').trim();
   const fromLines=fromAddr?doc.splitTextToSize(fromAddr,contentW/2-30):[];
   // The itinerary's own Client fields fill in whatever the lead doesn't have, plus the address.
   const toName=lead.Name||String(it.client_name||'').trim()||lead.Phone||String(it.client_phone||'').trim()||'Customer';
@@ -3223,6 +3228,7 @@ function itinBuildFullPdfDoc(lead,it,quoteNumber){
 
   const toX=marginX+contentW/2+10;
   doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(...accentInk);
+  doc.text('FROM',marginX,y-11);
   doc.text('TO',toX,y-11);
   doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(20);
   doc.text(toName,toX,y);
@@ -4962,6 +4968,7 @@ async function printItinerary(id){
   const facts=[it.destination,it.nights?`${it.nights} nights / ${days.length} days`:`${days.length} days`,it.departure_city?'From '+it.departure_city:'',it.hotel_category,it.meal_plan,it.transport,taPaxSummary(it)].filter(Boolean);
   let body=`<h1>${esc(it.title||'Itinerary')}</h1><p>${facts.map(esc).join(' &middot; ')}</p>`;
   const forWho=[it.client_name,it.client_phone].map(x=>String(x||'').trim()).filter(Boolean);
+  if(String(it.from_address||'').trim()) body+=`<p class="facts"><b>From:</b><br>${esc(it.from_address.trim()).replace(/\n/g,'<br>')}</p>`;
   if(forWho.length||String(it.client_address||'').trim()) body+=`<p class="facts"><b>Prepared for:</b> ${forWho.map(esc).join(' &middot; ')}${String(it.client_address||'').trim()?`<br>${esc(it.client_address.trim()).replace(/\n/g,'<br>')}`:''}</p>`;
   days.forEach(d=>{
     const date=itinDayDate(it.from_date,d.day_no);

@@ -2176,6 +2176,12 @@ const ROLES = {
               <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:1;min-width:110px;padding:9px 10px">
                 <option value="">All categories</option>
               </select>
+              <!-- Destination — travel agencies: the customer's preferred destination (Destination,
+                   else the destination routing / bot answers; leadDestination). "Goa" shows only Goa
+                   enquiries; select all → Assign to… hands them to one teammate. -->
+              <select class="form-input" id="leadDestFilter" onchange="onLeadsFilterChange()" style="display:none;flex:1;min-width:130px;padding:9px 10px" title="Filter by travel destination">
+                <option value="">All destinations</option>
+              </select>
               <!-- Brand/Product Detected — chat-derived InterestedProduct (see engineClassifyIntent()
                    in worker.js), surfaced as a first-class filter alongside Score/Owner rather than
                    buried in the detail-panel signal chips only. -->
@@ -5006,7 +5012,7 @@ const ROLES = {
           <!-- options filled from LEAD_CATEGORIES in applyTheme() -->
         </select>
       </div>
-      <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" placeholder="Dubai, Bali, Paris…" /></div>
+      <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" list="fDestinationList" placeholder="Goa, Dubai, Bali…" /><datalist id="fDestinationList"></datalist></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="form-group"><label class="form-label">Travel Date (From)</label><input class="form-input" id="fTravelFrom" type="date" /></div>
         <div class="form-group"><label class="form-label">Travel Date (To)</label><input class="form-input" id="fTravelTo" type="date" /></div>
@@ -8376,6 +8382,8 @@ function applyLeadsViewFilter(leads){
   if(sf) out=out.filter(l=>l.Score===sf);
   const cf=$id('leadCategoryFilter')?.value||'';
   if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
+  const df=$id('leadDestFilter')?.value||'';
+  if(df) out=out.filter(l=>df==='__none'?!leadDestKey(leadDestination(l)):leadDestKey(leadDestination(l))===df);
   const pf=$id('leadProductFilter')?.value||'';
   if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
   const srcf=$id('leadSourceFilter')?.value||'';
@@ -8590,6 +8598,7 @@ function selectLeadsView(id){
   if($id('leadCallFilter')) $id('leadCallFilter').value=saved?.call||'';
   if($id('leadMeetingFilter')) $id('leadMeetingFilter').value=saved?.meeting||'';
   if($id('leadCountryFilter')) $id('leadCountryFilter').value=saved?.country||'';
+  if($id('leadDestFilter')){ if(saved?.destination) renderLeadsDestFilterOptions(); $id('leadDestFilter').value=saved?.destination||''; }
   _leadsPage=1;
   renderLeadsCurrentView();
 }
@@ -8601,6 +8610,7 @@ async function promptSaveLeadsView(){
     owner:$id('leadOwnerFilter')?.value||'', mineOnly:_leadsOwnerScope==='mine', score:$id('leadScoreFilter')?.value||'',
     product:$id('leadProductFilter')?.value||'', source:$id('leadSourceFilter')?.value||'',
     call:$id('leadCallFilter')?.value||'', meeting:$id('leadMeetingFilter')?.value||'', country:$id('leadCountryFilter')?.value||'',
+    destination:$id('leadDestFilter')?.value||'',
   };
   const list=[...getLeadSavedViews(), view];
   try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
@@ -8827,12 +8837,72 @@ function renderLeadsFilterOptions(){
   if(ctyf && ctyf!=='__none' && !ctyCounts[ctyf]) ctys.push(ctyf);
   $id('leadCountryFilter').innerHTML='<option value="">All countries</option>'+ctys.map(c=>`<option value="${esc(c)}"${ctyf===c?' selected':''}>${esc(c)} (${ctyCounts[c]||0})</option>`).join('')
     +(ctyNone?`<option value="__none"${ctyf==='__none'?' selected':''}>Unknown (${ctyNone})</option>`:'');
+  renderLeadsDestFilterOptions();
   renderLeadsActiveFilters();
+}
+/* ── Destination (travel agencies): the customer's preferred travel destination on each lead ──
+   Read from the lead's Destination field, else what Destination Staff Routing recorded, else the
+   bot's qualifying answers. Grouped case-insensitively on the place before any comma, so "Goa",
+   "goa" and "Goa, India" are one destination. */
+function travelLeadFieldsOn(){ return clientRecord?.industry==='travel'||clientRecord?.ta_enabled==='Yes'; }
+function leadDestination(l){
+  let d=String(l?.Destination||'').trim();
+  if(!d){
+    const routed=String(l?.DsrDestination||'').trim();
+    // A routed flight is "Kochi → Dubai": the destination is where they fly to.
+    if(routed) d=routed.includes('→')?routed.split('→').pop().trim():routed;
+  }
+  if(!d){ try{ const q=JSON.parse(l?.QualAnswers||'{}')||{}; const k=Object.keys(q).find(k=>/^destination$/i.test(k.trim())); d=String(k?q[k]:'').trim(); }catch(e){} }
+  return d;
+}
+function leadDestKey(d){ return String(d||'').split(/[,;|]/)[0].replace(/\s+/g,' ').trim().toLowerCase(); }
+function leadDestLabel(d){
+  const s=String(d||'').split(/[,;|]/)[0].replace(/\s+/g,' ').trim();
+  return s===s.toLowerCase()?s.replace(/\b\p{L}/gu,c=>c.toUpperCase()):s;
+}
+// key → {label, n}, most enquiries first. Counts only leads this user can see.
+function leadDestinationIndex(list){
+  const idx={}, spell={};
+  for(const l of list){
+    const d=leadDestination(l), k=leadDestKey(d); if(!k) continue;
+    const lab=leadDestLabel(d);
+    idx[k]=idx[k]||{key:k, n:0}; idx[k].n++;
+    spell[k]=spell[k]||{}; spell[k][lab]=(spell[k][lab]||0)+1;
+  }
+  return Object.values(idx).map(x=>({...x, label:Object.entries(spell[x.key]).sort((a,b)=>b[1]-a[1])[0][0]}))
+    .sort((a,b)=>b.n-a.n||a.label.localeCompare(b.label));
+}
+function renderLeadsDestFilterOptions(){
+  const sel=$id('leadDestFilter'); if(!sel) return;
+  const on=travelLeadFieldsOn();
+  sel.style.display=on?'':'none';
+  if(!on){ sel.value=''; return; }
+  const cur=sel.value||'';
+  const visible=leadsInScope(allLeads);
+  const dests=leadDestinationIndex(visible);
+  const none=visible.filter(l=>!leadDestKey(leadDestination(l))).length;
+  if(cur && cur!=='__none' && !dests.some(d=>d.key===cur)) dests.push({key:cur, label:leadDestLabel(cur), n:0});
+  sel.innerHTML='<option value="">All destinations</option>'+dests.map(d=>`<option value="${esc(d.key)}"${cur===d.key?' selected':''}>${esc(d.label)} (${d.n})</option>`).join('')
+    +(none?`<option value="__none"${cur==='__none'?' selected':''}>No destination (${none})</option>`:'');
+  const dl=$id('fDestinationList');
+  if(dl) dl.innerHTML=leadDestinationIndex(allLeads).map(d=>`<option value="${esc(d.label)}"></option>`).join('');
+}
+function leadDestChipHTML(l){
+  if(!travelLeadFieldsOn()) return '';
+  const d=leadDestination(l); if(!d) return '';
+  const k=leadDestKey(d);
+  return `<span class="tag" style="cursor:pointer;background:#E0F2FE;color:#075985;border-color:#BAE6FD" title="Show only ${esc(leadDestLabel(d))} enquiries" onclick="event.stopPropagation();setLeadsDestination(${esc(JSON.stringify(k))})">🌍 ${esc(d)}</span>`;
+}
+function setLeadsDestination(key){
+  renderLeadsDestFilterOptions();
+  const sel=$id('leadDestFilter'); if(!sel) return;
+  sel.value=key||'';
+  onLeadsFilterChange();
 }
 // Active-filter pills (HubSpot/Pipedrive style): each set dropdown shows as a removable pill, so on
 // a phone — where the dropdowns are folded away — it's still obvious why the list is narrowed.
 const LEADS_PILL_FILTERS=[['leadOwnerFilter','👤'],['leadScoreFilter',''],['leadSourceFilter','Source: '],['leadCallFilter',''],['leadMeetingFilter',''],
-  ['leadCountryFilter','🌍 '],['leadCategoryFilter',''],['leadProductFilter','']];
+  ['leadCountryFilter','🌍 '],['leadCategoryFilter',''],['leadDestFilter','📍 '],['leadProductFilter','']];
 function renderLeadsActiveFilters(){
   const box=$id('leadsActiveFilters'); if(!box) return;
   const pills=[];
@@ -8888,6 +8958,7 @@ function renderLeadsList(){
         <div class="li-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||mtgBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${mtgBadge}${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
+        ${leadDestChipHTML(l)?`<div class="tags-row" style="margin-top:4px">${leadDestChipHTML(l)}</div>`:''}
         ${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
         ${typeof tsInlineCategoryHTML==='function'&&clientRecord?.industry==='travel'?`<div class="ts-inline" onclick="event.stopPropagation()">${tsInlineCategoryHTML(l)}</div>`:''}
@@ -9258,7 +9329,7 @@ function renderLeadsTable(){
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th><th>Category</th>':''}<th>Score</th><th>Brand/Product</th><th>Owner</th>
+    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th><th>Category</th>':''}<th>Score</th>${travelLeadFieldsOn()?'<th>Destination</th>':''}<th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -9277,6 +9348,7 @@ function renderLeadsTable(){
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}${leadMeetingBadge(l)?`<br>${leadMeetingBadge(l)}`:''}</td>
       ${tsCol?`<td class="td-wide" onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td class="td-wide" onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
       <td>${scoreBadge(l.Score)}</td>
+      ${travelLeadFieldsOn()?`<td>${leadDestination(l)?leadDestChipHTML(l):'<span style="color:var(--muted)">—</span>'}</td>`:''}
       <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
       <td>${esc(qGet('age'))}</td>
@@ -10314,7 +10386,7 @@ function openAddLead(){
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
   $id('fSource').value=''; $id('fBrand').value='';
-  if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
+  if(travelLeadFieldsOn()){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
   populateFormSelects('');
   renderLeadSharedField(null);
   populateSourceBrandDatalists();
@@ -10330,7 +10402,7 @@ function openEditLead(lead){
   $id('fSource').value=lead.Source||''; $id('fBrand').value=lead.InterestedProduct||'';
   populateSourceBrandDatalists();
   // Travel fields
-  if(clientRecord?.industry==='travel'){
+  if(travelLeadFieldsOn()){
     const dates=(lead.TravelDates||'').split('→');
     const sc=$id('fServiceCategory'), cat=String(lead.ServiceCategory||'').trim();
     // A category saved before the list changed stays selectable, so saving doesn't wipe it.
@@ -10485,10 +10557,12 @@ async function saveLeadNow(){
     if(co){ body.CompanyDomain=co.domain; body.CompanyName=co.name; }
   }
   // Travel fields
-  if(clientRecord?.industry==='travel'){
+  if(travelLeadFieldsOn()){
     const from=$id('fTravelFrom').value;const to=$id('fTravelTo').value;
     if(from||to)body.TravelDates=from+(to?' → '+to:'');
-    if($id('fDestination').value)body.Destination=$id('fDestination').value.trim();
+    // Editing may also clear it; a new lead only sends one when typed.
+    const dest=$id('fDestination').value.trim();
+    if(dest||String(original?.Destination||'').trim())body.Destination=dest;
     const adults=parseInt($id('fPaxAdults').value)||0;const children=parseInt($id('fPaxChildren').value)||0;
     if(adults||children)body.PaxCount=(adults+children)+' ('+adults+'A'+(children?' '+children+'C':'')+')';
     if($id('fBudget').value)body.Budget=parseInt($id('fBudget').value)||0;
@@ -20216,7 +20290,7 @@ function applyTheme(industryKey){
   });
   ['dnProductsTab','mbProductsTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
   // Show/hide travel fields in lead form
-  const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
+  const tf=$id('travelFields');if(tf)tf.style.display=(industryKey==='travel'||clientRecord?.ta_enabled==='Yes')?'block':'none';
   // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list
   const cf=$id('leadCategoryFilter');
   if(cf) cf.style.display=industryKey==='travel'?'':'none';
