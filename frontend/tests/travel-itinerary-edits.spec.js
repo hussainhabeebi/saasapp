@@ -129,3 +129,35 @@ test('an amount discount with no traveller counts shows as "off" and never excee
   }));
   expect(out).toEqual({ text: 'AED 500 off', capped: 1200, pct: 1000 });
 });
+
+test('From Address and To Address are both saved, edited and shown on the PDF', async ({ page }) => {
+  const { rows } = await open(page);
+  await page.evaluate(() => openItinModal(null, { title: 'Goa 3N', days: [{ day_no: 1, title: 'Arrive', items: [] }] }));
+  await expect(page.locator('label', { hasText: 'From Address' })).toBeVisible();
+  await expect(page.locator('label', { hasText: 'To Address (Client)' })).toBeVisible();
+  await page.locator('#itinClientName').fill('Rahul Menon');
+  await page.locator('#itinFromAddress').fill('Branch Office\nCalicut 673001');
+  await page.locator('#itinClientAddress').fill('12 MG Road\nKochi 682016');
+  await page.evaluate(() => saveItin());
+  await expect(page.locator('#saveItinMsg')).toHaveText('✓ Saved');
+  expect(rows.get(1)).toMatchObject({ from_address: 'Branch Office\nCalicut 673001', client_address: '12 MG Road\nKochi 682016' });
+
+  const pdf = await page.evaluate(async (rec) => {
+    await loadJsPdf();
+    return itinBuildFullPdfDoc({}, { ...rec, days: JSON.parse(rec.days) }, 'ITN-0001').output();
+  }, rows.get(1));
+  for (const text of ['FROM', 'Branch Office', 'Calicut 673001', 'TO', '12 MG Road', 'Kochi 682016']) expect(pdf).toContain(text);
+
+  // Empty From Address → the business address, as before.
+  const fallback = await page.evaluate(async (rec) => {
+    // @ts-ignore
+    clientRecord.quote_footer_address = 'Head Office, Dubai';
+    return itinBuildFullPdfDoc({}, { ...rec, from_address: '', days: JSON.parse(rec.days) }, 'ITN-0001').output();
+  }, rows.get(1));
+  expect(fallback).toContain('Head Office, Dubai');
+  expect(fallback).not.toContain('Branch Office');
+
+  await page.evaluate((rec) => { _taFresh = true; _taItineraries = [{ ...rec, days: JSON.parse(rec.days) }]; openItinModal(String(rec.Id)); }, rows.get(1));
+  await expect(page.locator('#itinFromAddress')).toHaveValue('Branch Office\nCalicut 673001');
+  await expect(page.locator('#itinClientAddress')).toHaveValue('12 MG Road\nKochi 682016');
+});

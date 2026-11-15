@@ -15,6 +15,7 @@ import {FV3_PROPOSAL_STAGE,fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3On
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
+import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText} from './dest-staff-routing.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -2206,7 +2207,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
   // team_whatsapp / hot_lead_alert_config / meta_leadgen_* have their own routes (/team/whatsapp,
   // /hot-alerts/*, /meta-leadgen/*) that let a teammate edit only their own number — the raw
   // passthrough stays owner-only for them.
-  const PROTECTED_CLIENT_FIELDS=['team_permissions','team_chatwoot_passwords','chatwoot_owner_password','team_whatsapp','hot_lead_alert_config','meta_leadgen_config','meta_leadgen_page_id'];
+  const PROTECTED_CLIENT_FIELDS=['team_permissions','team_chatwoot_passwords','chatwoot_owner_password','team_whatsapp','hot_lead_alert_config','meta_leadgen_config','meta_leadgen_page_id','dest_staff_routing'];
   const isClientPatch=method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && !!body;
   let parsedBody=null;
   if(isClientPatch){ try{ parsedBody=JSON.parse(body); }catch(e){} }
@@ -18649,6 +18650,251 @@ async function handleHotAlertsTest(request, env){
   return json({error:out.detail+(cfg.template_name?'':' — no template set, so plain text only reaches someone who messaged your business number in the last 24h. Create the template first.')}, 502);
 }
 
+/* ── DESTINATION STAFF ROUTING (dest-staff-routing.js · Lead Routing → 📍 Destination Staff Routing) ──
+   Travel agencies: a customer who picks a destination on the main number (a Resorts V1 location, a
+   Flyindo destination, a package, or a flight route) is handed to the teammate whose rule matches.
+   The lead is classified and assigned to them, the customer gets the teammate's name and WhatsApp
+   number in one last message, the bot on the main number goes silent for that customer
+   (engineHandoverSilenceTurn), the teammate gets a WhatsApp alert on their own number, and — when
+   they have their own WhatsApp channel and an approved intro template — the first message to the
+   customer goes out from that number. Settings: CLIENTS.dest_staff_routing (JSON). ── */
+const DSR_LEAD_COLUMNS=['DsrStaff','DsrKind','DsrDestination','DsrAt'];
+// The teammate's own WhatsApp channel (Channels → inbox assignment), when it has a number on file.
+async function dsrStaffInbox(env, c, clientId, email, excludeInbox){
+  if(!env?.DB || !email) return null;
+  try{
+    const {results}=await env.DB.prepare(`SELECT inbox_id FROM channel_inbox_assignments WHERE client_id=? AND lower(assigned_email)=? ORDER BY inbox_id`)
+      .bind(Number(clientId), String(email).trim().toLowerCase()).all();
+    const creds=parseMetaChannelCredentials(c);
+    for(const row of results||[]){
+      const id=String(row.inbox_id);
+      if(excludeInbox && id===String(excludeInbox)) continue;
+      const cr=creds.find(x=>String(x.inbox_id)===id);
+      const phone=String(cr?.display_phone||'').replace(/\D/g,'');
+      if(cr && (phone || cr.wa_phone_id)) return {inboxId:id, phone, cred:cr};
+    }
+  }catch(e){}
+  return null;
+}
+// The routing decision for what the customer just picked (ask = {kind, destination, names?,
+// origin?, keepReply?}), or null: off, no rule matches, or this lead is already with a teammate.
+export async function engineDsrResolve(env, c, clientId, state, ask){
+  if(!ask || !dsrOn(c)) return null;
+  if(state?.lead?.DsrStaff && state.lead.Handover==='Yes') return null;
+  const cfg=dsrSettings(c);
+  const present=presentStaffEmails(c), away=staffOnLeave(c);
+  const hit=dsrMatch(cfg, ask, e=>present.has(e) && !away.has(e));
+  if(!hit) return null;
+  const team=parseTeamWhatsapp(c);
+  const inbox=await dsrStaffInbox(env, c, clientId, hit.email, state?.inboxId);
+  return {ask, cfg, email:hit.email, entry:hit.entry, staffName:staffDisplayName(c, hit.email),
+    staffPhone:hit.rule.phone||inbox?.phone||team[hit.email]||'', alertPhone:team[hit.email]||'', inbox,
+    destination:dsrDestinationLabel(ask)};
+}
+function dsrBusinessName(c){ return String(c?.lt_flyindo_agency_name||c?.business_name||c?.client_name||'').trim(); }
+// A guided-flow turn that picked a destination (turn.dsr) → the handoff turn when a rule matches:
+// the flow's own step is replaced by the "your expert will message you" text (a package's details
+// are still sent first: keepReply), and the chat is handed over. Returns the turn to persist.
+export async function engineDsrApply(env, c, clientId, state, turn){
+  if(!turn?.dsr || turn.dsrPlan) return turn;
+  const plan=await engineDsrResolve(env, c, clientId, state, turn.dsr).catch(e=>{ reportOpsError(env, 'Destination staff routing failed', e, {clientId}).catch(()=>{}); return null; });
+  if(!plan) return turn;
+  const lang=turn.lang||c.language||'en';
+  const text=dsrCustomerText({customText:plan.cfg.customer_text, customerName:state?.lead?.Name||state?.name||'', destination:plan.destination,
+    kind:plan.ask.kind, staffName:plan.staffName, staffPhone:plan.staffPhone, business:dsrBusinessName(c)});
+  const keep=plan.ask.keepReply===true;
+  const prev=String(turn.text||turn.reply||'');
+  const qual={...(turn.qualAnswers||state?.qualAnswers||{})};
+  if(plan.ask.kind==='flight'){
+    if(plan.ask.origin?.name||plan.ask.origin?.code) qual.departure_city=qual.departure_city||plan.ask.origin.name||plan.ask.origin.code;
+    if(plan.ask.destination?.name||plan.ask.destination?.code) qual.destination=qual.destination||plan.ask.destination.name||plan.ask.destination.code;
+  }else if(!qual.destination && plan.destination) qual.destination=plan.destination;
+  const out={...turn, route:'human', next:'human_handover', preserveCrmStage:false, intent:'BOOKING', lang, qualAnswers:qual,
+    buttons:[], quickReplies:null, mediaUrl:keep?turn.mediaUrl:'', dsrPlan:plan, text:keep&&prev?`${prev}\n\n${text}`:text,
+    deliver:async()=>{
+      if(keep){
+        if(turn.deliver) await turn.deliver();
+        else if(prev) await engineDeliverReply(env, c, clientId, state.convId, prev, {mediaType:'text', langCode:lang, quickReplies:turn.buttons||[]});
+      }
+      await engineDeliverReply(env, c, clientId, state.convId, text, {mediaType:'text', langCode:lang});
+      await engineSendHandoverLabel(c, state.convId).catch(()=>{});
+      return null;
+    }};
+  delete out.reply;
+  return out;
+}
+// Lead fields for a routed lead: classified, owned by the teammate, handed over.
+export function engineDsrLeadFields(plan, now=new Date().toISOString()){
+  return {Owner:plan.email, Handover:'Yes', Stage:'human_handover', DsrStaff:plan.email, DsrKind:plan.ask.kind,
+    DsrDestination:String(plan.destination||'').slice(0,200), DsrAt:now,
+    ...(plan.ask.kind==='package'||plan.ask.kind==='resort'?{Destination:String(plan.destination||'').slice(0,200)}:{}),
+    ...(plan.ask.kind==='flight'&&plan.destination?{TravelRoute:String(plan.destination).slice(0,200)}:{})};
+}
+async function dsrSendWa(creds, to, msg){
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:String(to).replace(/\D/g,''), ...msg})});
+  const data=await r.json().catch(()=>({}));
+  return r.ok?{ok:true, detail:data?.messages?.[0]?.id||'sent'}:{ok:false, detail:data?.error?.message||'HTTP '+r.status};
+}
+// After the routed turn is saved: the teammate's alert, the optional first message from their own
+// number, Chatwoot assignee + a private note, and guided-flow progress cleared. Never throws.
+export async function engineDsrAfterHandoff(env, c, clientId, leadId, state, body, plan){
+  const out={alert:'', intro:''};
+  try{
+    const cfg=plan.cfg, kind=plan.ask.kind;
+    const name=body?.Name||state?.lead?.Name||state?.name||'';
+    const phone=String(body?.Phone||state?.phone||state?.lead?.Phone||'');
+    const business=dsrBusinessName(c);
+    await engineSyncChatwootAssignee(c, state?.convId, plan.email).catch(()=>{});
+    if(env?.DB && phone){ await flyindoClear(env, clientId, phone).catch(()=>{}); await tfClearState(env, clientId, phone).catch(()=>{}); }
+    // 1. The teammate (and the account owner when asked, or when the teammate has no number).
+    const team=parseTeamWhatsapp(c), recipients=[];
+    const add=e=>{ const em=String(e||'').trim().toLowerCase(), p=team[em]; if(em && p && !recipients.some(r=>r.phone===p)) recipients.push({email:em, phone:p}); };
+    add(plan.email);
+    if(!recipients.length || cfg.notify_owner_too) add(c?.authentik_email);
+    await hotAlertEnsureSchema(env).catch(()=>{});
+    if(!recipients.length){
+      out.alert='not sent — no WhatsApp number on the teammate\'s profile';
+      await hotAlertLog(env, clientId, leadId, null, 'destination', 'skipped', 'No staff WhatsApp number on file (User Management → profile)');
+    }else{
+      const creds=await resolveOrDetectMetaCredentials(env, c, clientId, {inbox_id:state?.inboxId||body?.InboxId||''});
+      if(!creds?.wa_phone_id || !creds?.wa_token){
+        out.alert='not sent — WhatsApp Business API not connected';
+        await hotAlertLog(env, clientId, leadId, null, 'destination', 'skipped', 'WhatsApp Business API not connected');
+      }else{
+        const params=dsrStaffAlertParams({kind, customerName:name, customerPhone:engineIsInstagramLeadKey(phone)?'':phone, destination:plan.destination, staffName:plan.staffName, business});
+        const msg=cfg.staff_template_name
+          ?{type:'template', template:{name:cfg.staff_template_name, language:{code:cfg.staff_template_lang}, components:[{type:'body', parameters:params.map(text=>({type:'text', text}))}]}}
+          :{type:'text', text:{body:dsrStaffAlertText(params)}};
+        const res=[];
+        for(const r of recipients){
+          const one=await dsrSendWa(creds, r.phone, msg).catch(e=>({ok:false, detail:e.message}));
+          if(one.ok && cfg.staff_template_name) await logWaTemplateSend(env, clientId, 'dsr_alert', {template:cfg.staff_template_name, phone:r.phone, leadId}).catch(()=>{});
+          await hotAlertLog(env, clientId, leadId, r, 'destination', one.ok?'sent':'failed', one.detail);
+          res.push(one.ok?`sent to +${r.phone}`:`failed for +${r.phone} (${one.detail})`);
+        }
+        out.alert=res.join(', ');
+      }
+    }
+    // 2. The first message from the teammate's own WhatsApp channel (needs an approved template —
+    // that number has no open chat with the customer yet).
+    const cr=plan.inbox?.cred;
+    const custDigits=engineIsInstagramLeadKey(phone)?'':phone.replace(/\D/g,'');
+    if(cfg.start_from_staff_number && cr?.wa_phone_id && cr?.wa_token && custDigits){
+      if(!cfg.customer_template_name) out.intro='not sent — no intro template set';
+      else{
+        const params=dsrCustomerTemplateParams({customerName:name, staffName:plan.staffName, business, destination:plan.destination});
+        const one=await dsrSendWa(cr, custDigits, {type:'template', template:{name:cfg.customer_template_name, language:{code:cfg.customer_template_lang},
+          components:[{type:'body', parameters:params.map(text=>({type:'text', text}))}]}}).catch(e=>({ok:false, detail:e.message}));
+        if(one.ok) await logWaTemplateSend(env, clientId, 'dsr_intro', {template:cfg.customer_template_name, phone:custDigits, leadId}).catch(()=>{});
+        out.intro=one.ok?`sent from +${plan.inbox.phone||plan.staffPhone}`:`failed (${one.detail})`;
+      }
+    }
+    // 3. A private note on the main number's chat, so the team sees why the bot stopped.
+    if(state?.convId && c?.chatwoot_base && c?.chatwoot_account_id && c?.chatwoot_token){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${state.convId}/messages`, {method:'POST',
+        headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+        body:JSON.stringify({content:dsrNoteText({kind, destination:plan.destination, staffName:plan.staffName, staffEmail:plan.email, staffPhone:plan.staffPhone, alert:out.alert, intro:out.intro}),
+          message_type:'outgoing', private:true})}).catch(()=>{});
+    }
+    await engineBroadcastUpdate(env, clientId, {type:'lead_updated', lead_ids:[Number(leadId)], fields:['Owner',...DSR_LEAD_COLUMNS], by:'auto', at:new Date().toISOString()}).catch(()=>{});
+  }catch(e){ await reportOpsError(env, 'Destination staff routing — after handoff', e, {clientId, leadId}).catch(()=>{}); }
+  return out;
+}
+// A flight route typed on the main number ("Kochi to Dubai", "COK-DXB") that a teammate's flight
+// rule matches → a handoff turn (persisted by enginePersistFirstGreetingTurn), else null.
+export async function engineDsrFlightTurn(env, c, clientId, state, userText, mediaType){
+  if(mediaType!=='text' || !dsrOn(c) || dsrSettings(c).kinds.flight===false) return null;
+  const text=String(userText||'').trim();
+  if(!text || text.length>200) return null;
+  const r=ltParseFlightRoute(text.split('\n').slice(0,3).join(' '));
+  if(!r) return null;
+  const side=code=>({code:String(code||''), name:ltAirportCityName(code)||String(code||'')});
+  const ask={kind:'flight', origin:side(r.origin), destination:side(r.destination)};
+  const turn={route:'travel_flight', next:state.stage||'new', preserveCrmStage:true, intent:'FLOW_ENTRY', lang:c.language||'en', text:'',
+    historyUserText:text, serviceCategory:'Air Ticket', qualAnswers:state.qualAnswers||{}, dsr:ask};
+  const out=await engineDsrApply(env, c, clientId, state, turn);
+  return out.dsrPlan?out:null;
+}
+function dsrPresets(){
+  const p=t=>({name:t.name, language:t.language, body:t.body});
+  return {staff:p(DSR_STAFF_TEMPLATE), customer:p(DSR_CUSTOMER_TEMPLATE)};
+}
+async function dsrTeamView(env, c, clientId){
+  const team=parseTeamWhatsapp(c);
+  const out=[];
+  for(const email of presentStaffEmails(c)){
+    const inbox=await dsrStaffInbox(env, c, clientId, email, '');
+    out.push({email, name:staffDisplayName(c, email), whatsapp:team[email]||'', inbox_id:inbox?.inboxId||'', inbox_phone:inbox?.phone||'', inbox_can_send:!!(inbox?.cred?.wa_phone_id&&inbox?.cred?.wa_token)});
+  }
+  return out;
+}
+// GET/POST /dest-routing/settings — owner edits; teammates may read (to see their own rules).
+async function handleDsrSettings(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(request.method==='POST'){
+    if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can change destination routing.'}, 403);
+    if(!dsrIsAgency(c)) return json({error:'Destination staff routing is for travel agencies (travel industry or the Agency module on).'}, 400);
+    const body=await request.json().catch(()=>({}));
+    const present=presentStaffEmails(c);
+    const saved=dsrSettingsPatch(body||{}, dsrSettings(c), e=>present.has(e));
+    await ensureClientColumns(env, ['dest_staff_routing']);
+    await patchClientFields(env, payload.cid, {dest_staff_routing:JSON.stringify(saved)});
+    c.dest_staff_routing=JSON.stringify(saved);
+  }
+  return json({ok:true, agency:dsrIsAgency(c), config:dsrSettings(c), team:await dsrTeamView(env, c, payload.cid), presets:dsrPresets()});
+}
+// POST /dest-routing/template-preset {which:'staff'|'customer'} — creates the template in the
+// client's WABA and saves its name on the settings.
+async function handleDsrTemplatePreset(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can create templates here.'}, 403);
+  const {which}=await request.json().catch(()=>({}));
+  const preset=which==='customer'?DSR_CUSTOMER_TEMPLATE:DSR_STAFF_TEMPLATE;
+  const res=await createPresetWaTemplate(env, c, payload.cid, preset);
+  if(res.status===200){
+    const key=which==='customer'?'customer':'staff';
+    const saved=dsrNormalizeSettings({...dsrSettings(c), [`${key}_template_name`]:preset.name, [`${key}_template_lang`]:preset.language});
+    await ensureClientColumns(env, ['dest_staff_routing']);
+    await patchClientFields(env, payload.cid, {dest_staff_routing:JSON.stringify(saved)});
+  }
+  return res;
+}
+// POST /dest-routing/preview {kind, destination} — which teammate a destination goes to and the
+// message the customer would get. Sends nothing.
+async function handleDsrPreview(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const b=await request.json().catch(()=>({}));
+  const kind=DSR_KINDS.includes(b.kind)?b.kind:'package';
+  const dest=String(b.destination||'').trim().slice(0,120);
+  if(!dest) return json({error:'Type a destination or route to test.'}, 400);
+  let ask={kind, destination:dest};
+  if(kind==='flight'){
+    const r=ltParseFlightRoute(dest);
+    const side=code=>({code:String(code||''), name:ltAirportCityName(code)||String(code||'')});
+    ask=r?{kind, origin:side(r.origin), destination:side(r.destination)}:{kind, destination:{code:'', name:dest}};
+  }
+  const cfg=dsrSettings(c);
+  const present=presentStaffEmails(c);
+  const hit=dsrMatch({...cfg, enabled:true}, ask, e=>present.has(e));
+  if(!hit) return json({ok:true, matched:false, destination:dsrDestinationLabel(ask)});
+  const team=parseTeamWhatsapp(c), inbox=await dsrStaffInbox(env, c, payload.cid, hit.email, '');
+  const staffPhone=hit.rule.phone||inbox?.phone||team[hit.email]||'';
+  const destination=dsrDestinationLabel(ask);
+  return json({ok:true, matched:true, email:hit.email, staff_name:staffDisplayName(c, hit.email), entry:hit.entry, staff_phone:staffPhone, destination,
+    alert_to:team[hit.email]||'', customer_text:dsrCustomerText({customText:cfg.customer_text, customerName:'Priya', destination, kind, staffName:staffDisplayName(c, hit.email), staffPhone, business:dsrBusinessName(c)})});
+}
+
 /* ── META LEAD ADS → INSTANT WHATSAPP (Integrations → 📋 Facebook & Instagram Lead Forms) ────────
    Meta calls /meta/leadgen/webhook with a leadgen_id the moment someone submits an Instant Form
    on a Facebook or Instagram ad. We fetch the answers with the connected Page's token, create (or
@@ -23245,7 +23491,7 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
     });
     const reply=`🏝️ We have ${inLocation.length} packages${where?` for *${where}*`:''}:\n\n${lines.join('\n')}\n\nTap a package below (or type its name) for the full itinerary.`;
     const buttons=shown.slice(0,3).map(p=>({title:engineTruncateButtonTitle(String(p.name).trim(),20),value:TA_PKG_PREFIX+taPkgId(p)}));
-    return {turn:{...base,historyUserText:text,text:reply,
+    return {turn:{...base,historyUserText:text,text:reply,...(where?{dsr:{kind:'package',destination:where,names:[text],keepReply:true}}:{}),
       deliver:async()=>{
         await taDeliverPackageMedia(env,c,clientId,convId,shown.filter(taPackageHasMedia).slice(0,3),{leadId,full:false});
         return engineSendChatwootQuickReply(env,c,clientId,convId,reply,buttons);
@@ -23257,6 +23503,9 @@ export async function engineHandleTravelPackage(env,c,clientId,state,userText,me
   }
   const id=taPkgId(pkg),name=String(pkg.name).trim();
   const bookBtn={title:'✅ Book Now',value:TA_PKG_ENQUIRE_PREFIX+id};
+  // Destination Staff Routing: the package's details still go out, then the teammate takes over.
+  const pkgDest=String(pkg.destination||'').split(/[,/&;|]/)[0].trim();
+  base.dsr={kind:'package',destination:pkgDest||name,names:[name,String(pkg.destination||'')],keepReply:true};
   if(mode==='enquire'){
     return {turn:{...base,intent:'BOOKING',historyUserText:`Book: ${name}`,
       text:`👍 Great choice — *${name}*.\n\nPlease send:\n• your travel date\n• number of travellers (adults / children)\n• your full name\n\nOur team will confirm availability and the final price here on WhatsApp.`,buttons:human}};
@@ -23512,6 +23761,7 @@ export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,use
   }
   const restart=ltMenuIsMenuRequest(text)||ltMenuIsGreeting(text)||/^(?:restart|start over|new booking|book again|plan (?:a|another) trip)$/i.test(text);
   let fs=await flyindoLoad(env,clientId,phone).catch(()=>null),note='',userShown=text,resume=true,adv=null;
+  const destBefore=fs?.destination||'';
   if(!fs){
     // The booking request was already handed over: the consultant has the chat now.
     if((state.stage==='human_handover'||state.lead?.Handover==='Yes')&&!restart)return null;
@@ -23547,7 +23797,9 @@ export async function engineHandleFlyindo(env,c,clientId,state,phone,inboxId,use
       deliver:async()=>{await engineDeliverReply(env,c,clientId,convId,p.text,{mediaType:'text',langCode:lang});await engineSendHandoverLabel(c,convId);return null;}}};
   }
   await flyindoSave(env,clientId,phone,fs);
-  return {turn:{...base,text:p.text,...(fs.destination?{tripRequest:{complete:false}}:{}),deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
+  // A destination just picked → Destination Staff Routing may hand the chat to that teammate.
+  const dsr=fs.destination&&fs.destination!==destBefore?{dsr:{kind:'package',destination:fs.destination}}:{};
+  return {turn:{...base,text:p.text,...dsr,...(fs.destination?{tripRequest:{complete:false}}:{}),deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,p.text,p.rows,{button:p.button,section:p.section})}};
 }
 
 // Travel Settings → Chat Style "Greetings only": the customer's first message gets the Flyindo
@@ -25173,6 +25425,9 @@ async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,known
 }
 
 async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType,ctx){
+  // Destination Staff Routing: a destination picked in a guided flow, matched to a teammate → the
+  // handoff turn (the flow's own step is replaced; the chat goes to that teammate's number).
+  if(turn?.dsr) turn=await engineDsrApply(env,c,clientId,state,turn);
   const routing={
     route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,preserveCrmStage:turn.preserveCrmStage===true,
     qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
@@ -25196,7 +25451,13 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   await engineResolveLeadOwner(env,c,clientId,built.body,state,isNewLead);
   await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
   built.body.LastCustomerMsgAt=new Date(startMs).toISOString();
+  if(turn.dsrPlan){
+    await ensureLeadsColumns(env,[...DSR_LEAD_COLUMNS,'Destination','TravelRoute']).catch(()=>{});
+    Object.assign(built.body,engineDsrLeadFields(turn.dsrPlan));
+    if(!state.lead?.HandoverAt) built.body.HandoverAt=new Date().toISOString();
+  }
   const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
+  if(resolvedLeadId&&turn.dsrPlan) await engineDsrAfterHandoff(env,c,clientId,resolvedLeadId,state,built.body,turn.dsrPlan);
   // A booking bot's travel details → a draft trip on Trips (trip-requests.js). Never costs the reply.
   const trip=resolvedLeadId&&turn.tripRequest
     ?await tripRequestSync(env,c,clientId,resolvedLeadId,state,built.body,routing.qualAnswers,turn.tripRequest).catch(e=>{reportOpsError(env,'Trip request sync failed',e,{clientId,leadId:resolvedLeadId}).catch(()=>{});return null;})
@@ -27783,11 +28044,14 @@ export async function engineHandoverSilenceTurn(env, c, clientId, body, state, p
   // Hospitality style "Resorts V1": once the guest books (and so is handed over) the team has the
   // chat and the bot stays silent for that customer, whatever the handover-silence setting says.
   const resortsV1=!healthcare && !configured && !greetingOnly && handedOver && rv1IsStyle(c);
-  if(!healthcare && !configured && !greetingOnly && !resortsV1) return null;
+  // Destination Staff Routing: the customer was handed to a teammate's own number — the bot on
+  // this number stays silent for them, whatever the handover-silence setting says.
+  const destRouted=!healthcare && !configured && !greetingOnly && handedOver && !!state.lead?.DsrStaff;
+  if(!healthcare && !configured && !greetingOnly && !resortsV1 && !destRouted) return null;
   await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
   // A Baby Care customer changing their order still updates it.
   if(configured) await engineSilentBabyCareOrderUpdate(env, c, clientId, parsed.phone, text, state.lead, ctx);
-  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':resortsV1?'resorts-v1-booked':'handed-over';
+  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':destRouted?'destination-routed':resortsV1?'resorts-v1-booked':'handed-over';
   await logEngineSkip(env,clientId,parsed.phone,parsed.convId,reason,`stage ${state.stage||''} — message saved to Chats, no bot reply`);
   return json({ok:true,skipped:reason,lead_collected:true});
 }
@@ -29034,6 +29298,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // "menu" and every menu tap before any AI path. Agencies without an enabled menu get null.
     // Travel Settings → Chat Style "Greetings only": one welcome, then the team takes the chat and
     // the bot stays silent (no flows, menu or AI for this agency's customers).
+    // Destination Staff Routing: a flight route typed on the main number that a teammate handles
+    // goes straight to them (their number), before any flow, menu or flight search answers it.
+    if(!introAction && convId){
+      const dsrFlight=await engineDsrFlightTurn(env,c,clientId,state,userText,mediaType).catch(e=>{reportOpsError(env,'Destination staff routing (flight) failed',e,{clientId}).catch(()=>{});return null;});
+      if(dsrFlight){
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,dsrFlight.historyUserText||userText,messageId,isNewLead,dsrFlight,startMs,mediaType,ctx);
+        return json({ok:true,route:'destination_routed',sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
     if(!introAction){
       const greetTurn=engineGreetingOnlyTurn(env,c,clientId,state,userText);
       if(greetTurn?.turn){
@@ -40163,7 +40436,13 @@ export async function engineResortsV1Turn(env, c, clientId, state, userText, isN
     }
   }
   if(!plan.action || plan.action.aiFirst) return null;
-  const turn={route:'faq', next:state.stage||'new', preserveCrmStage:true, intent:'FLOW_ENTRY', lang, text:'', historyUserText:userText,
+  // A destination picked → Destination Staff Routing may hand it to a teammate instead of the form.
+  let dsr=null;
+  if(plan.action.type==='form'){
+    const loc=h3Locations(plan.data.properties).find(l=>l.key===plan.action.locKey);
+    if(loc?.key) dsr={kind:'resort', destination:loc.label};
+  }
+  const turn={route:'faq', next:state.stage||'new', preserveCrmStage:true, intent:'FLOW_ENTRY', lang, text:'', historyUserText:userText, ...(dsr?{dsr}:{}),
     deliver:async()=>{
       const r=await hospRv1Execute(env, c, clientId, state.convId, state.leadId||null, plan);
       turn.text=r.text; patch=state.leadId?null:r.patch;
@@ -43802,6 +44081,9 @@ export default {
       else if(url.pathname==='/hot-alerts/config' && request.method==='POST'){ res=await handleHotAlertsConfigSet(request, env); }
       else if(url.pathname==='/hot-alerts/template-preset' && request.method==='POST'){ res=await handleHotAlertsTemplatePreset(request, env); }
       else if(url.pathname==='/hot-alerts/test' && request.method==='POST'){ res=await handleHotAlertsTest(request, env); }
+      else if(url.pathname==='/dest-routing/settings' && (request.method==='GET'||request.method==='POST')){ res=await handleDsrSettings(request, env); }
+      else if(url.pathname==='/dest-routing/template-preset' && request.method==='POST'){ res=await handleDsrTemplatePreset(request, env); }
+      else if(url.pathname==='/dest-routing/preview' && request.method==='POST'){ res=await handleDsrPreview(request, env); }
       else if(url.pathname==='/meta/leadgen/webhook' && request.method==='GET'){ res=await handleMetaLeadgenWebhookVerify(request, env); }
       else if(url.pathname==='/meta/leadgen/webhook' && request.method==='POST'){ res=await handleMetaLeadgenWebhook(request, env, ctx); }
       else if(url.pathname==='/meta-leadgen/config' && request.method==='GET'){ res=await handleMetaLeadgenConfigGet(request, env); }

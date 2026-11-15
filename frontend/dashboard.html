@@ -2176,6 +2176,12 @@ const ROLES = {
               <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:1;min-width:110px;padding:9px 10px">
                 <option value="">All categories</option>
               </select>
+              <!-- Destination — travel agencies: the customer's preferred destination (Destination,
+                   else the destination routing / bot answers; leadDestination). "Goa" shows only Goa
+                   enquiries; select all → Assign to… hands them to one teammate. -->
+              <select class="form-input" id="leadDestFilter" onchange="onLeadsFilterChange()" style="display:none;flex:1;min-width:130px;padding:9px 10px" title="Filter by travel destination">
+                <option value="">All destinations</option>
+              </select>
               <!-- Brand/Product Detected — chat-derived InterestedProduct (see engineClassifyIntent()
                    in worker.js), surfaced as a first-class filter alongside Score/Owner rather than
                    buried in the detail-panel signal chips only. -->
@@ -4224,6 +4230,9 @@ const ROLES = {
              by renderHotAlertsCard() from /hot-alerts/config; editable by the account owner only. -->
         <div class="card" style="margin-bottom:14px" id="hotAlertsCard"></div>
         <div class="card" style="margin-bottom:14px" id="leadRoutingCard"></div>
+        <!-- Destination Staff Routing — travel agencies: destination / route → teammate's own number.
+             Rendered by renderDestRoutingCard() from /dest-routing/settings. -->
+        <div class="card" style="margin-bottom:14px;display:none" id="destRoutingCard"></div>
       </div>
     </div>
 
@@ -5003,7 +5012,7 @@ const ROLES = {
           <!-- options filled from LEAD_CATEGORIES in applyTheme() -->
         </select>
       </div>
-      <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" placeholder="Dubai, Bali, Paris…" /></div>
+      <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" list="fDestinationList" placeholder="Goa, Dubai, Bali…" /><datalist id="fDestinationList"></datalist></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="form-group"><label class="form-label">Travel Date (From)</label><input class="form-input" id="fTravelFrom" type="date" /></div>
         <div class="form-group"><label class="form-label">Travel Date (To)</label><input class="form-input" id="fTravelTo" type="date" /></div>
@@ -8373,6 +8382,8 @@ function applyLeadsViewFilter(leads){
   if(sf) out=out.filter(l=>l.Score===sf);
   const cf=$id('leadCategoryFilter')?.value||'';
   if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
+  const df=$id('leadDestFilter')?.value||'';
+  if(df) out=out.filter(l=>df==='__none'?!leadDestKey(leadDestination(l)):leadDestKey(leadDestination(l))===df);
   const pf=$id('leadProductFilter')?.value||'';
   if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
   const srcf=$id('leadSourceFilter')?.value||'';
@@ -8587,6 +8598,7 @@ function selectLeadsView(id){
   if($id('leadCallFilter')) $id('leadCallFilter').value=saved?.call||'';
   if($id('leadMeetingFilter')) $id('leadMeetingFilter').value=saved?.meeting||'';
   if($id('leadCountryFilter')) $id('leadCountryFilter').value=saved?.country||'';
+  if($id('leadDestFilter')){ if(saved?.destination) renderLeadsDestFilterOptions(); $id('leadDestFilter').value=saved?.destination||''; }
   _leadsPage=1;
   renderLeadsCurrentView();
 }
@@ -8598,6 +8610,7 @@ async function promptSaveLeadsView(){
     owner:$id('leadOwnerFilter')?.value||'', mineOnly:_leadsOwnerScope==='mine', score:$id('leadScoreFilter')?.value||'',
     product:$id('leadProductFilter')?.value||'', source:$id('leadSourceFilter')?.value||'',
     call:$id('leadCallFilter')?.value||'', meeting:$id('leadMeetingFilter')?.value||'', country:$id('leadCountryFilter')?.value||'',
+    destination:$id('leadDestFilter')?.value||'',
   };
   const list=[...getLeadSavedViews(), view];
   try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
@@ -8824,12 +8837,72 @@ function renderLeadsFilterOptions(){
   if(ctyf && ctyf!=='__none' && !ctyCounts[ctyf]) ctys.push(ctyf);
   $id('leadCountryFilter').innerHTML='<option value="">All countries</option>'+ctys.map(c=>`<option value="${esc(c)}"${ctyf===c?' selected':''}>${esc(c)} (${ctyCounts[c]||0})</option>`).join('')
     +(ctyNone?`<option value="__none"${ctyf==='__none'?' selected':''}>Unknown (${ctyNone})</option>`:'');
+  renderLeadsDestFilterOptions();
   renderLeadsActiveFilters();
+}
+/* ── Destination (travel agencies): the customer's preferred travel destination on each lead ──
+   Read from the lead's Destination field, else what Destination Staff Routing recorded, else the
+   bot's qualifying answers. Grouped case-insensitively on the place before any comma, so "Goa",
+   "goa" and "Goa, India" are one destination. */
+function travelLeadFieldsOn(){ return clientRecord?.industry==='travel'||clientRecord?.ta_enabled==='Yes'; }
+function leadDestination(l){
+  let d=String(l?.Destination||'').trim();
+  if(!d){
+    const routed=String(l?.DsrDestination||'').trim();
+    // A routed flight is "Kochi → Dubai": the destination is where they fly to.
+    if(routed) d=routed.includes('→')?routed.split('→').pop().trim():routed;
+  }
+  if(!d){ try{ const q=JSON.parse(l?.QualAnswers||'{}')||{}; const k=Object.keys(q).find(k=>/^destination$/i.test(k.trim())); d=String(k?q[k]:'').trim(); }catch(e){} }
+  return d;
+}
+function leadDestKey(d){ return String(d||'').split(/[,;|]/)[0].replace(/\s+/g,' ').trim().toLowerCase(); }
+function leadDestLabel(d){
+  const s=String(d||'').split(/[,;|]/)[0].replace(/\s+/g,' ').trim();
+  return s===s.toLowerCase()?s.replace(/\b\p{L}/gu,c=>c.toUpperCase()):s;
+}
+// key → {label, n}, most enquiries first. Counts only leads this user can see.
+function leadDestinationIndex(list){
+  const idx={}, spell={};
+  for(const l of list){
+    const d=leadDestination(l), k=leadDestKey(d); if(!k) continue;
+    const lab=leadDestLabel(d);
+    idx[k]=idx[k]||{key:k, n:0}; idx[k].n++;
+    spell[k]=spell[k]||{}; spell[k][lab]=(spell[k][lab]||0)+1;
+  }
+  return Object.values(idx).map(x=>({...x, label:Object.entries(spell[x.key]).sort((a,b)=>b[1]-a[1])[0][0]}))
+    .sort((a,b)=>b.n-a.n||a.label.localeCompare(b.label));
+}
+function renderLeadsDestFilterOptions(){
+  const sel=$id('leadDestFilter'); if(!sel) return;
+  const on=travelLeadFieldsOn();
+  sel.style.display=on?'':'none';
+  if(!on){ sel.value=''; return; }
+  const cur=sel.value||'';
+  const visible=leadsInScope(allLeads);
+  const dests=leadDestinationIndex(visible);
+  const none=visible.filter(l=>!leadDestKey(leadDestination(l))).length;
+  if(cur && cur!=='__none' && !dests.some(d=>d.key===cur)) dests.push({key:cur, label:leadDestLabel(cur), n:0});
+  sel.innerHTML='<option value="">All destinations</option>'+dests.map(d=>`<option value="${esc(d.key)}"${cur===d.key?' selected':''}>${esc(d.label)} (${d.n})</option>`).join('')
+    +(none?`<option value="__none"${cur==='__none'?' selected':''}>No destination (${none})</option>`:'');
+  const dl=$id('fDestinationList');
+  if(dl) dl.innerHTML=leadDestinationIndex(allLeads).map(d=>`<option value="${esc(d.label)}"></option>`).join('');
+}
+function leadDestChipHTML(l){
+  if(!travelLeadFieldsOn()) return '';
+  const d=leadDestination(l); if(!d) return '';
+  const k=leadDestKey(d);
+  return `<span class="tag" style="cursor:pointer;background:#E0F2FE;color:#075985;border-color:#BAE6FD" title="Show only ${esc(leadDestLabel(d))} enquiries" onclick="event.stopPropagation();setLeadsDestination(${esc(JSON.stringify(k))})">🌍 ${esc(d)}</span>`;
+}
+function setLeadsDestination(key){
+  renderLeadsDestFilterOptions();
+  const sel=$id('leadDestFilter'); if(!sel) return;
+  sel.value=key||'';
+  onLeadsFilterChange();
 }
 // Active-filter pills (HubSpot/Pipedrive style): each set dropdown shows as a removable pill, so on
 // a phone — where the dropdowns are folded away — it's still obvious why the list is narrowed.
 const LEADS_PILL_FILTERS=[['leadOwnerFilter','👤'],['leadScoreFilter',''],['leadSourceFilter','Source: '],['leadCallFilter',''],['leadMeetingFilter',''],
-  ['leadCountryFilter','🌍 '],['leadCategoryFilter',''],['leadProductFilter','']];
+  ['leadCountryFilter','🌍 '],['leadCategoryFilter',''],['leadDestFilter','📍 '],['leadProductFilter','']];
 function renderLeadsActiveFilters(){
   const box=$id('leadsActiveFilters'); if(!box) return;
   const pills=[];
@@ -8885,6 +8958,7 @@ function renderLeadsList(){
         <div class="li-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||mtgBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${mtgBadge}${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
+        ${leadDestChipHTML(l)?`<div class="tags-row" style="margin-top:4px">${leadDestChipHTML(l)}</div>`:''}
         ${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
         ${typeof tsInlineCategoryHTML==='function'&&clientRecord?.industry==='travel'?`<div class="ts-inline" onclick="event.stopPropagation()">${tsInlineCategoryHTML(l)}</div>`:''}
@@ -9255,7 +9329,7 @@ function renderLeadsTable(){
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th><th>Category</th>':''}<th>Score</th><th>Brand/Product</th><th>Owner</th>
+    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th><th>Category</th>':''}<th>Score</th>${travelLeadFieldsOn()?'<th>Destination</th>':''}<th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -9274,6 +9348,7 @@ function renderLeadsTable(){
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}${leadMeetingBadge(l)?`<br>${leadMeetingBadge(l)}`:''}</td>
       ${tsCol?`<td class="td-wide" onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td class="td-wide" onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
       <td>${scoreBadge(l.Score)}</td>
+      ${travelLeadFieldsOn()?`<td>${leadDestination(l)?leadDestChipHTML(l):'<span style="color:var(--muted)">—</span>'}</td>`:''}
       <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
       <td>${esc(qGet('age'))}</td>
@@ -10311,7 +10386,7 @@ function openAddLead(){
   $id('fLeadId').value='';
   $id('fName').value=''; $id('fPhone').value=''; $id('fEmail').value=''; $id('fNotes').value=''; $id('fTags').value=''; $id('fReminder').value='';
   $id('fSource').value=''; $id('fBrand').value='';
-  if(clientRecord?.industry==='travel'){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
+  if(travelLeadFieldsOn()){$id('fDestination').value='';$id('fTravelFrom').value='';$id('fTravelTo').value='';$id('fBudget').value='';$id('fTripType').value='';$id('fSpecialReq').value='';$id('fPaxAdults').value='';$id('fPaxChildren').value='';$id('fServiceCategory').value='';}
   populateFormSelects('');
   renderLeadSharedField(null);
   populateSourceBrandDatalists();
@@ -10327,7 +10402,7 @@ function openEditLead(lead){
   $id('fSource').value=lead.Source||''; $id('fBrand').value=lead.InterestedProduct||'';
   populateSourceBrandDatalists();
   // Travel fields
-  if(clientRecord?.industry==='travel'){
+  if(travelLeadFieldsOn()){
     const dates=(lead.TravelDates||'').split('→');
     const sc=$id('fServiceCategory'), cat=String(lead.ServiceCategory||'').trim();
     // A category saved before the list changed stays selectable, so saving doesn't wipe it.
@@ -10482,10 +10557,12 @@ async function saveLeadNow(){
     if(co){ body.CompanyDomain=co.domain; body.CompanyName=co.name; }
   }
   // Travel fields
-  if(clientRecord?.industry==='travel'){
+  if(travelLeadFieldsOn()){
     const from=$id('fTravelFrom').value;const to=$id('fTravelTo').value;
     if(from||to)body.TravelDates=from+(to?' → '+to:'');
-    if($id('fDestination').value)body.Destination=$id('fDestination').value.trim();
+    // Editing may also clear it; a new lead only sends one when typed.
+    const dest=$id('fDestination').value.trim();
+    if(dest||String(original?.Destination||'').trim())body.Destination=dest;
     const adults=parseInt($id('fPaxAdults').value)||0;const children=parseInt($id('fPaxChildren').value)||0;
     if(adults||children)body.PaxCount=(adults+children)+' ('+adults+'A'+(children?' '+children+'C':'')+')';
     if($id('fBudget').value)body.Budget=parseInt($id('fBudget').value)||0;
@@ -12807,6 +12884,129 @@ async function createHotAlertTemplate(){
     msg.textContent=data.status==='EXISTS'?'✓ Template already exists — selected':`✓ Template submitted (${data.status}). Meta usually approves it within minutes.`;
     msg.className='save-msg ok';
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+/* ── DESTINATION STAFF ROUTING (User Management → 📍 card; worker /dest-routing/*) ──────────────
+   Travel agencies: each teammate lists the hotel/resort locations, package destinations and flight
+   routes they handle. A customer who picks one of those on the main WhatsApp number is assigned to
+   that teammate, told their number, and the bot on the main number goes silent for them; the
+   teammate gets a WhatsApp alert and carries on from their own number. Owner edits; others read. */
+let _dsr=null;
+function dsrIsAgencyClient(){ return String(clientRecord?.industry||'').toLowerCase().includes('travel')||clientRecord?.ta_enabled==='Yes'; }
+async function renderDestRoutingCard(){
+  const card=$id('destRoutingCard'); if(!card) return;
+  if(!dsrIsAgencyClient()){ card.style.display='none'; return; }
+  card.style.display='';
+  const head=`<div class="settings-section" style="margin-bottom:0"><div class="s-head">📍 Destination Staff Routing <span id="dsrBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Off</span></div>
+    <div class="s-note">Give each destination to a teammate. When a customer picks a <strong>hotel / resort location</strong>, a <strong>holiday package</strong> or types a <strong>flight route</strong> on your main WhatsApp number, the lead is classified and assigned to that teammate, the customer gets their name and WhatsApp number, and the bot on the main number <strong>stops replying to that customer</strong>. The teammate gets a WhatsApp alert with a link to message the customer, and the conversation carries on from their number.</div>`;
+  card.innerHTML=head+'<div class="s-note">Loading…</div></div>';
+  try{ _dsr=await hotAlertsApi('/dest-routing/settings'); }
+  catch(e){ card.innerHTML=head+`<div class="s-note" style="color:var(--red)">Couldn't load destination routing: ${esc(e.message)}</div></div>`; return; }
+  const cfg=_dsr.config, owner=isAccountOwner(), dis=owner?'':'disabled';
+  const team=_dsr.team||[];
+  const cell=(email, field, val, ph)=>`<td style="padding:6px 8px"><input class="form-input" style="font-size:12px;padding:4px 8px;min-width:130px" data-dsr-email="${esc(email)}" data-dsr-field="${field}" value="${esc(val)}" placeholder="${esc(ph)}" ${dis}></td>`;
+  const rows=team.map(m=>{
+    const r=cfg.rules[m.email]||{};
+    const auto=m.inbox_phone?`${fmtWaNumber(m.inbox_phone)} (own channel)`:m.whatsapp?`${fmtWaNumber(m.whatsapp)} (profile)`:'';
+    return `<tr style="border-top:1px solid var(--line)">
+      <td style="padding:6px 10px;font-size:13px;font-weight:500;white-space:nowrap">${esc(m.name||m.email)}<br><span style="font-size:11px;color:var(--muted)">${esc(m.email)}</span>
+        ${m.whatsapp?'':'<br><span style="font-size:11px;color:var(--red)">No WhatsApp on profile — no alert</span>'}</td>
+      ${cell(m.email,'resorts',(r.resorts||[]).join(', '),'Munnar, Wayanad…')}
+      ${cell(m.email,'packages',(r.packages||[]).join(', '),'Kashmir, Bali…')}
+      ${cell(m.email,'flights',(r.flights||[]).join(', '),'Kochi - Dubai, Doha…')}
+      <td style="padding:6px 8px"><input class="form-input" style="font-size:12px;padding:4px 8px;min-width:140px" data-dsr-email="${esc(m.email)}" data-dsr-field="phone" value="${esc(r.phone?fmtWaNumber(r.phone):'')}" placeholder="${esc(auto||'+91 98765 43210')}" title="The WhatsApp number customers are given. Empty = their own WhatsApp channel (Channels → inbox assignment), else their profile number." ${dis}></td>
+    </tr>`;
+  }).join('');
+  const kinds=[['resort','🏨 Hotels & Resorts'],['package','🏝️ Holiday Packages'],['flight','✈️ Flight routes']];
+  card.innerHTML=head+`
+    ${owner?'':'<div class="s-note" style="margin:6px 0">Only the account owner can change these settings.</div>'}
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-weight:700;font-size:13px"><input type="checkbox" id="dsrEnabled" ${cfg.enabled?'checked':''} ${dis}> Route destinations to staff</label>
+    <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:13px;margin-bottom:10px">
+      ${kinds.map(([k,l])=>`<label><input type="checkbox" data-dsr-kind="${k}" ${cfg.kinds[k]!==false?'checked':''} ${dis}> ${l}</label>`).join('')}
+    </div>
+    ${team.length?`<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px">
+      <thead><tr style="background:var(--hover)">
+        <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Team member</th>
+        <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">🏨 Resort locations</th>
+        <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">🏝️ Package destinations</th>
+        <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">✈️ Flight routes</th>
+        <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">📱 Customers chat on</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="s-note" style="margin-bottom:12px">Comma-separated. A package matches its destination or name. A flight route is one direction (<em>Kochi - Dubai</em>, <em>COK-DXB</em>); one city (<em>Dubai</em>) takes every route to or from it. <strong>*</strong> takes everything of that kind nobody else has. First matching row wins. Destinations nobody has keep the normal bot flow.</div>`
+      :'<div class="s-note" style="margin-bottom:12px">Add team members above first.</div>'}
+    <label class="form-label">Message to the customer on the main number (optional)</label>
+    <textarea class="form-input" id="dsrCustomerText" rows="3" maxlength="1000" placeholder="Default: Thank you Priya! 🙏 Your *Munnar* enquiry is now with *Anu*, our Munnar travel expert. They will message you on WhatsApp from *+91…* shortly… + a wa.me link" ${dis}>${esc(cfg.customer_text)}</textarea>
+    <div class="s-note" style="margin:2px 0 12px">Tokens: {{customer_name}} {{destination}} {{service}} {{staff_name}} {{staff_phone}} {{staff_link}}</div>
+    <label class="form-label">Staff alert template (sent from your main number to the teammate's own WhatsApp)</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
+      <input class="form-input" id="dsrStaffTpl" value="${esc(cfg.staff_template_name)}" placeholder="${esc(_dsr.presets.staff.name)}" style="max-width:260px" ${dis}>
+      <input class="form-input" id="dsrStaffLang" value="${esc(cfg.staff_template_lang)}" placeholder="en" style="max-width:70px" ${dis}>
+      ${owner?`<button class="save-btn sec" type="button" onclick="createDsrTemplate('staff')">✨ Create ready-made template</button>`:''}
+    </div>
+    <div class="s-note" style="margin-bottom:6px;font-style:italic">"${esc(_dsr.presets.staff.body)}"</div>
+    <div class="s-note" style="margin-bottom:12px">Without a template the alert goes as plain text, which only reaches a teammate who messaged your main number in the last 24 hours.</div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="dsrOwnerToo" ${cfg.notify_owner_too?'checked':''} ${dis}> Also copy me (account owner) on every alert</label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="dsrStartFromStaff" ${cfg.start_from_staff_number?'checked':''} ${dis}> Send the first message to the customer from the teammate's own WhatsApp channel (when they have one in Channels → inbox assignment)</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
+      <input class="form-input" id="dsrCustTpl" value="${esc(cfg.customer_template_name)}" placeholder="${esc(_dsr.presets.customer.name)}" style="max-width:260px" ${dis}>
+      <input class="form-input" id="dsrCustLang" value="${esc(cfg.customer_template_lang)}" placeholder="en" style="max-width:70px" ${dis}>
+      ${owner?`<button class="save-btn sec" type="button" onclick="createDsrTemplate('customer')">✨ Create ready-made template</button>`:''}
+    </div>
+    <div class="s-note" style="margin-bottom:12px;font-style:italic">"${esc(_dsr.presets.customer.body)}"</div>
+    <div style="border-top:1px solid var(--line);padding-top:10px;margin-bottom:12px">
+      <label class="form-label">Try a destination</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <select class="form-input" id="dsrTryKind" style="max-width:180px">${kinds.map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select>
+        <input class="form-input" id="dsrTryDest" placeholder="Munnar · Kashmir · Kochi to Dubai" style="max-width:240px">
+        <button class="save-btn sec" type="button" onclick="previewDestRouting()">Check</button>
+      </div>
+      <div id="dsrTryOut" class="s-note" style="margin-top:6px;white-space:pre-wrap"></div>
+    </div>
+    ${owner?`<div style="display:flex;gap:8px;align-items:center"><button class="save-btn" onclick="saveDestRouting()">Save destination routing</button><span class="save-msg" id="dsrMsg"></span></div>`:''}
+  </div>`;
+  const badge=$id('dsrBadge');
+  if(badge){ badge.textContent=cfg.enabled?'On':'Off'; badge.style.background=cfg.enabled?'#DCFCE7':'var(--bg)'; badge.style.color=cfg.enabled?'#166534':'var(--muted)'; }
+}
+function collectDestRouting(){
+  const rules={};
+  $id('destRoutingCard').querySelectorAll('[data-dsr-email]').forEach(inp=>{
+    const e=inp.dataset.dsrEmail, f=inp.dataset.dsrField;
+    rules[e]=rules[e]||{};
+    rules[e][f]=f==='phone'?inp.value.trim():inp.value.split(',').map(s=>s.trim()).filter(Boolean);
+  });
+  const kinds={}; $id('destRoutingCard').querySelectorAll('[data-dsr-kind]').forEach(cb=>{ kinds[cb.dataset.dsrKind]=cb.checked; });
+  return {enabled:$id('dsrEnabled').checked, kinds, rules, customer_text:$id('dsrCustomerText').value.trim(),
+    staff_template_name:$id('dsrStaffTpl').value.trim(), staff_template_lang:$id('dsrStaffLang').value.trim()||'en',
+    customer_template_name:$id('dsrCustTpl').value.trim(), customer_template_lang:$id('dsrCustLang').value.trim()||'en',
+    notify_owner_too:$id('dsrOwnerToo').checked, start_from_staff_number:$id('dsrStartFromStaff').checked};
+}
+async function saveDestRouting(){
+  const msg=$id('dsrMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const data=await hotAlertsApi('/dest-routing/settings', collectDestRouting());
+    clientRecord.dest_staff_routing=JSON.stringify(data.config);
+    await renderDestRoutingCard();
+    const m=$id('dsrMsg'); if(m){ m.textContent='✓ Saved'; m.className='save-msg ok'; }
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function createDsrTemplate(which){
+  const msg=$id('dsrMsg'); msg.textContent='Creating template…'; msg.className='save-msg';
+  try{
+    const data=await hotAlertsApi('/dest-routing/template-preset', {which});
+    $id(which==='customer'?'dsrCustTpl':'dsrStaffTpl').value=data.name;
+    $id(which==='customer'?'dsrCustLang':'dsrStaffLang').value=data.language;
+    msg.textContent=data.status==='EXISTS'?'✓ Template already exists — selected':`✓ Template submitted (${data.status}). Meta usually approves it within minutes.`;
+    msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function previewDestRouting(){
+  const out=$id('dsrTryOut'); out.textContent='Checking…';
+  try{
+    const d=await hotAlertsApi('/dest-routing/preview', {kind:$id('dsrTryKind').value, destination:$id('dsrTryDest').value});
+    out.textContent=d.matched
+      ?`→ ${d.staff_name} (rule "${d.entry}")${d.staff_phone?` · customers chat on ${fmtWaNumber(d.staff_phone)}`:' · ⚠️ no number to give the customer'}${d.alert_to?` · alert to ${fmtWaNumber(d.alert_to)}`:' · ⚠️ no WhatsApp on their profile for the alert'}\n\nCustomer sees:\n${d.customer_text}`
+      :`No teammate has "${d.destination}" — the normal bot flow carries on.`;
+  }catch(e){ out.textContent='Error: '+e.message; }
 }
 
 /* ── FACEBOOK & INSTAGRAM LEAD FORMS (Integrations → 📋 card) ── */
@@ -20090,7 +20290,7 @@ function applyTheme(industryKey){
   });
   ['dnProductsTab','mbProductsTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
   // Show/hide travel fields in lead form
-  const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
+  const tf=$id('travelFields');if(tf)tf.style.display=(industryKey==='travel'||clientRecord?.ta_enabled==='Yes')?'block':'none';
   // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list
   const cf=$id('leadCategoryFilter');
   if(cf) cf.style.display=industryKey==='travel'?'':'none';
@@ -22733,6 +22933,7 @@ function populateUserManagementPage(){
   renderDepartedLeadsCard();
   renderHotAlertsCard();
   renderLeadRoutingSettings();
+  renderDestRoutingCard();
 }
 
 /* ── NOTIFICATIONS ── */
