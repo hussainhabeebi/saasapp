@@ -587,7 +587,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     </div>
   </div>
 
-  <!-- TA: CSV IMPORT MODAL (shared by Packages and Service Cases) -->
+  <!-- TA: CSV IMPORT MODAL (shared by Packages, Visas, Service Cases and Resorts & Hotels) -->
   <div class="modal" id="modalTaImport" style="width:720px">
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="taImportTitle">Upload CSV</div><button class="icon-btn" onclick="closeModal('modalTaImport')">✕</button></div>
@@ -1332,6 +1332,58 @@ const TA_IMPORT_SCHEMAS={
     list:()=>_taVisas, renderRow:r=>({c1:[r.visa_country,VISA_TYPE_LABELS[r.visa_type]||r.visa_type,VISA_DURATION_LABELS[r.duration]||r.duration].filter(Boolean).join(' · ')||'—',c2:(r.currency||'AED')+' '+(r.adult_price||0)}),
     afterImport:()=>renderAgencySubPage('visas'),
   },
+  // Resorts & Hotels live in the worker's D1 table, not NocoDB — so rows are saved through
+  // /ta/properties (save) and its validation (e.g. a Drive folder pasted as a photo) comes back
+  // per row. Matched by name; an update only sends the cells that were filled in, so a sheet with
+  // just name + rates doesn't wipe an existing property's photos.
+  properties:{
+    label:'Resorts & Hotels', taKey:'properties', matchKey:'name', col1:'Property', col2:'Price',
+    hint:' <strong>property_type</strong>: resort, hotel, villa, homestay, houseboat, apartment, camp or other. <strong>category</strong>: family, couple, both, or blank for general. <strong>season_months</strong>: e.g. "Oct-Jan" or "10,11,12,1" — the other months are off-season. Room types and amenities use ";" between items. Media columns take Google Drive share links (photos_folder_url a Drive folder).',
+    fields:[
+      {key:'name',label:'Name',required:true,aliases:['property','property name','resort','hotel','resort name','hotel name']},
+      {key:'property_type',label:'Property Type',aliases:['type']},{key:'category',label:'Category',aliases:['resort category','for']},
+      {key:'status',label:'Status'},{key:'location',label:'Location',aliases:['destination','place','city']},
+      {key:'star_rating',label:'Star Rating',aliases:['stars','star','rating']},
+      {key:'price_from',label:'Price From',type:'num',aliases:['price','rate','starting price']},{key:'currency',label:'Currency'},
+      {key:'price_unit',label:'Price Unit',aliases:['unit','per']},
+      {key:'season_price',label:'Season Rate',type:'num',aliases:['season price','peak rate','peak price']},
+      {key:'off_season_price',label:'Off-season Rate',type:'num',aliases:['off season price','off-season price','off season rate','offseason rate','offseason price']},
+      {key:'season_months',label:'Season Months',aliases:['season']},
+      {key:'price_range_min',label:'Price Range From',type:'num',aliases:['range from','min price']},
+      {key:'price_range_max',label:'Price Range To',type:'num',aliases:['range to','max price']},
+      {key:'room_types',label:'Room Types',type:'lines',aliases:['rooms','room type']},{key:'amenities',label:'Amenities',type:'lines'},
+      {key:'description',label:'Description',aliases:['about','details']},
+      {key:'image_url',label:'Photo 1',aliases:['image','photo','image 1','image_url_1']},{key:'image_url_2',label:'Photo 2',aliases:['image 2']},{key:'image_url_3',label:'Photo 3',aliases:['image 3']},
+      {key:'photos_folder_url',label:'Photos Folder',aliases:['folder','photos folder link','drive folder']},
+      {key:'video_url',label:'Video',aliases:['video link']},{key:'pdf_url',label:'PDF Brochure',aliases:['pdf','brochure']},
+    ],
+    sample:['Spice Village Resort','resort','family','active','Thekkady, Kerala','4','8500','INR','per night','12000','8000','Oct-Jan','8000','15000','Deluxe Room;Pool Villa','Swimming pool;Breakfast included','Eco resort near Periyar','https://drive.google.com/file/d/FILE_ID/view','','','https://drive.google.com/drive/folders/FOLDER_ID','',''],
+    toRecord:d=>{
+      const key=v=>String(v||'').trim().toLowerCase();
+      const t=key(d.property_type).replace(/s$/,'');
+      d.property_type=t?(PROP_TYPE_LABELS[t]?t:/house\s*boat/.test(t)?'houseboat':/home\s*stay/.test(t)?'homestay':'other'):'';
+      const c=key(d.category);
+      d.category=!c||/^(general|other|none|-)$/.test(c)?'':/both|&|\band\b/.test(c)||(/famil/.test(c)&&/couple|honeymoon/.test(c))?'both':/famil|kid/.test(c)?'family':/couple|honeymoon/.test(c)?'couple':'';
+      if(d.status) d.status=/^(inactive|no|off|disabled|hidden)$/i.test(d.status)?'inactive':'active';
+      const stars=parseInt(String(d.star_rating).replace(/[^\d]/g,''),10) || (String(d.star_rating).match(/[⭐★]/g)||[]).length;
+      d.star_rating=stars>=1&&stars<=7?String(stars):'';
+      d.season_months=propSeasonMonthsFromText(d.season_months);
+      if(d.currency) d.currency=d.currency.toUpperCase();
+      return d;
+    },
+    save:async r=>{
+      const body={client_id:clientId};
+      for(const [k,v] of Object.entries(r.data)) if(!r.existingId||String(v??'').trim()!=='') body[k]=v;
+      const res=await fetch(`${WORKER_BASE}/ta/properties`,{method:r.existingId?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r.existingId?{...body,Id:r.existingId}:body)});
+      const d=await res.json().catch(()=>({}));
+      if(!res.ok||d.error) throw new Error(d.error||'Save failed');
+    },
+    list:()=>_taProperties, renderRow:r=>{
+      const price=[r.price_from,r.season_price,r.off_season_price].map(Number).filter(n=>n>0);
+      return {c1:[r.name,PROP_TYPE_LABELS[r.property_type],r.location].filter(Boolean).join(' · ')||'—',c2:price.length?`${r.currency||'INR'} ${fmtMoney(Math.min(...price))}`:'—'};
+    },
+    afterImport:()=>renderAgencySubPage('properties'),
+  },
   cases:{
     label:'Service Cases', taKey:'cases', matchKey:'ref_no', col1:'Client', col2:'Type',
     fields:[
@@ -1406,13 +1458,14 @@ function taParseImportRows(text,schema){
       if(f.type==='int') data[f.key]=parseInt(raw,10)||0;
       else if(f.type==='float') data[f.key]=parseFloat(raw)||0;
       else if(f.type==='list') data[f.key]=JSON.stringify(raw?raw.split(';').map(s=>s.trim()).filter(Boolean):[]);
+      else if(f.type==='num') data[f.key]=raw.replace(/[^\d.]/g,''); // "₹7,000" → "7000"; blank stays blank
       else if(f.type==='lines') data[f.key]=raw.split(';').map(s=>s.trim()).filter(Boolean).join('\n');
       else data[f.key]=raw;
     });
     const record=schema.toRecord?schema.toRecord({...data}):data;
     const matchVal=get(schema.matchKey);
     const existing=matchVal?existingByKey.get(keyOf(record)):null;
-    return { rowNum:i+2, valid:!!get(requiredField.key), action:existing?'update':'create', existingId:existing?existing.Id:null, data:record };
+    return { rowNum:i+2, valid:!!get(requiredField.key), action:existing?'update':'create', existingId:existing?(existing.Id??existing.id):null, data:record };
   });
 }
 
@@ -1442,16 +1495,18 @@ async function taConfirmImport(){
   btn.disabled=true;
   try{ await taEnsureColumns(schema.taKey); }catch(e){ msg.textContent=e.message; btn.disabled=false; return; }
   let done=0, failed=0;
+  const errors=[];
   for(const r of valid){
     msg.textContent=`Importing… ${done+failed}/${valid.length}`;
     try{
-      if(r.existingId) await taUpdate(schema.taKey,r.existingId,r.data);
+      if(schema.save) await schema.save(r);
+      else if(r.existingId) await taUpdate(schema.taKey,r.existingId,r.data);
       else await taCreate(schema.taKey,r.data);
       done++;
-    }catch(e){ failed++; }
+    }catch(e){ failed++; if(errors.length<3) errors.push(`Row ${r.rowNum}: ${e.message}`); }
   }
   btn.disabled=false;
-  msg.textContent=failed?`Done — ${done} imported, ${failed} failed`:`✓ Imported ${done} record(s)`;
+  msg.textContent=failed?`Done — ${done} imported, ${failed} failed${errors.length?' · '+errors.join(' · '):''}`:`✓ Imported ${done} record(s)`;
   _taLoaded=false;
   await taLoad([schema.taKey]);
   schema.afterImport();
@@ -5341,7 +5396,7 @@ function renderTaProperties(){
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🏨 Resorts &amp; Hotels</div>
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${_taProperties.length>1?sortBtns:''}<button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button></div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">${_taProperties.length>1?sortBtns:''}<button class="btn btn-secondary btn-sm" onclick="taDownloadTemplate('properties')">📄 CSV Template</button><button class="btn btn-secondary btn-sm" onclick="taOpenImport('properties')">⬆ Upload CSV</button><button class="btn btn-primary btn-sm" onclick="openPropertyModal()">+ Add Property</button></div>
   </div>
   ${manual?'<div style="font-size:12px;color:var(--muted);margin:-4px 2px 10px">✋ Manual order — use ◀ ▶ on a card or drag it onto another. New properties go to the end. The bot lists them in this order too.</div>':''}
   ${_taProperties.length?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${chips}</div>${sections}`
@@ -5388,6 +5443,22 @@ function propSeasonLines(p){
 function renderPropSeasonMonths(){
   $id('propSeasonMonths').innerHTML=PROP_MONTHS.map((m,i)=>`<button type="button" class="btn btn-sm ${_propSeasonMonths.has(i+1)?'btn-primary':'btn-secondary'}" data-month="${i+1}" onclick="togglePropSeasonMonth(${i+1})" style="min-width:48px">${m}</button>`).join('');
   $id('propSeasonHint').textContent=_propSeasonMonths.size?`Season: ${propMonthsLabel(_propSeasonMonths)}${_propSeasonMonths.size<12?` · Off-season: ${propMonthsLabel(propOffSet(_propSeasonMonths))}`:''}`:'No season months picked — both rates are shown to the lead without months.';
+}
+// CSV season cell → "10,11,12,1": month names or numbers, with ranges that wrap the year
+// ("Oct-Jan", "Oct to Jan", "10-1"), separated by commas / semicolons / spaces.
+function propSeasonMonthsFromText(v){
+  const s=String(v||'').trim().toLowerCase();
+  if(!s) return '';
+  if(/all\s*year/.test(s)) return '1,2,3,4,5,6,7,8,9,10,11,12';
+  const month=t=>{ t=t.trim(); if(/^\d{1,2}$/.test(t)){ const n=+t; return n>=1&&n<=12?n:0; } return PROP_MONTHS.findIndex(m=>t.slice(0,3)===m.toLowerCase())+1; };
+  const set=new Set();
+  for(const part of s.replace(/\s+to\s+/g,'-').replace(/[–—]/g,'-').split(/[,;/\s]+/).filter(Boolean)){
+    const [a,b]=part.split('-').map(month);
+    if(!a) continue;
+    if(!b){ set.add(a); continue; }
+    for(let m=a,i=0;i<12;i++,m=m%12+1){ set.add(m); if(m===b) break; }
+  }
+  return [...set].join(',');
 }
 function togglePropSeasonMonth(m){ _propSeasonMonths.has(m)?_propSeasonMonths.delete(m):_propSeasonMonths.add(m); renderPropSeasonMonths(); }
 

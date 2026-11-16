@@ -208,3 +208,56 @@ test('price range (Resorts V1): shown on the card and saved with the property', 
   await expect(page.locator('#savePropMsg')).toHaveText('✓ Saved');
   expect(posts.at(-1)).toMatchObject({ Id: '1', price_range_min: '8000', price_range_max: '18000' });
 });
+
+test('Upload CSV imports resorts/hotels: creates new, updates by name without wiping blanks, shows row errors', async ({ page }) => {
+  const ids = { packages: 'tp', bookings: 'tb', cases: 'tc', itineraries: 'ti', umrah_groups: 'tu' };
+  const posts = [], patches = [];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (!url.startsWith(WORKER)) return route.abort();
+    const u = new URL(url);
+    if (u.pathname.endsWith('/records/7')) return route.fulfill({ json: { Id: 7, ta_enabled: 'Yes', ta_table_ids: JSON.stringify(ids) } });
+    if (u.pathname === '/ta/properties' && req.method() === 'GET') return route.fulfill({ json: { list: [
+      { id: 5, name: 'Ooty 2 bedroom villas', property_type: 'villa', location: 'Ooty', image_url: 'https://drive.google.com/file/d/keep/view', status: 'active' },
+    ] } });
+    if (u.pathname === '/ta/properties' && req.method() === 'POST') {
+      const body = req.postDataJSON(); posts.push(body);
+      if (String(body.image_url || '').includes('/folders/')) return route.fulfill({ status: 400, json: { error: 'Photo 1: paste the Google Drive link of the file itself, not a folder.' } });
+      return route.fulfill({ json: { ok: true, id: 10 + posts.length } });
+    }
+    if (u.pathname === '/ta/properties' && req.method() === 'PATCH') { patches.push(req.postDataJSON()); return route.fulfill({ json: { ok: true } }); }
+    return route.fulfill({ json: { list: [] } });
+  });
+  await page.goto('file://' + path.resolve(__dirname, '../travel-agency.html') + '?client=7&token=t&embed=1&shell=travel&tab=properties', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#agencyContent')).toContainText('Ooty 2 bedroom villas');
+
+  // Template download has every field as a header.
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('text=📄 CSV Template')]);
+  expect(dl.suggestedFilename()).toBe('properties_template.csv');
+
+  await page.click('text=⬆ Upload CSV');
+  await expect(page.locator('#taImportTitle')).toHaveText('Upload Resorts & Hotels CSV');
+  // The agency's own sheet headers (Property Name, Type, Season Rate …) are recognised.
+  const csv = [
+    'Property Name,Type,Category,Location,Stars,Season Rate,Off-season Rate,Season Months,Rooms,Photo 1',
+    'ooty 2 bedroom villas,,,,,"INR 10,000","7,000",Oct-Jan,,',
+    'Lake Breeze,Houseboats,Family & Couple,Alleppey,⭐⭐⭐⭐,12000,8000,"Apr to May, Dec",Deluxe;Suite,https://drive.google.com/file/d/p1/view',
+    'Bad Link Hotel,hotel,,Kochi,,,,,,https://drive.google.com/drive/folders/xyz',
+    ',hotel,,,,,,,,',
+  ].join('\n');
+  await page.setInputFiles('#taImportFile', { name: 'props.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
+  await expect(page.locator('#taImportSummary')).toContainText('2 new');
+  await expect(page.locator('#taImportSummary')).toContainText('1 updating existing');
+  await expect(page.locator('#taImportSummary')).toContainText('1 skipped');
+  await page.click('#taImportConfirmBtn');
+  await expect(page.locator('#taImportMsg')).toContainText('2 imported, 1 failed');
+  await expect(page.locator('#taImportMsg')).toContainText('Row 4: Photo 1: paste the Google Drive link of the file itself');
+
+  // Update: only filled cells are sent, so the existing photo/location/type are kept.
+  expect(patches).toHaveLength(1);
+  expect(patches[0]).toEqual({ client_id: '7', Id: 5, name: 'ooty 2 bedroom villas', season_price: '10000', off_season_price: '7000', season_months: '10,11,12,1' });
+  const lake = posts.find(p => p.name === 'Lake Breeze');
+  expect(lake).toMatchObject({ client_id: '7', property_type: 'houseboat', category: 'both', location: 'Alleppey', star_rating: '4',
+    season_price: '12000', off_season_price: '8000', season_months: '4,5,12', room_types: 'Deluxe\nSuite', image_url: 'https://drive.google.com/file/d/p1/view' });
+});
