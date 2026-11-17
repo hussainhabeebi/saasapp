@@ -2548,12 +2548,13 @@ drops them, `/billing/checkout-subscription` refuses them, and the tier catalog 
 | Basic | ₹1,060 | https://rzp.io/rzp/iDQDwal | AED 99 |
 | Standard | ₹2,358 | https://rzp.io/rzp/kFf6wBWd | AED 199 |
 | Business Intelligence | ₹4,718 | https://rzp.io/rzp/vEp4KXX9 | AED 299 |
+| Enterprise | ₹6,999 | — (no link yet; "Talk to us" until a Razorpay plan exists) | AED 399 |
 
 Create Razorpay **subscription plans** at these amounts (Admin → Plans → create, monthly,
-amounts 1060 / 2358 / 4718 INR, tier set) so customers are debited automatically by UPI AutoPay /
+amounts 1060 / 2358 / 4718 / 6999 INR, tier set) so customers are debited automatically by UPI AutoPay /
 e-mandate. Until a tier has a visible Razorpay plan, INR customers see the payment-page link
 for that tier instead (a one-off payment, not a recurring deduction). AED needs Stripe AED prices
-at 99 / 199 / 299 listed in `STRIPE_PLAN_PRICE_IDS`; without one the tier shows the AED price with
+at 99 / 199 / 299 / 399 listed in `STRIPE_PLAN_PRICE_IDS`; without one the tier shows the AED price with
 "Talk to us".
 
 ### Customer flow
