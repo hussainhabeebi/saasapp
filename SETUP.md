@@ -2537,8 +2537,24 @@ access. Change it from Admin → Billing → Manage instead.
    (plan id + tier) or create one from the form.
 7. Admin → **API & Webhooks** → every Razorpay secret should show ✓ and "reachable".
 
-Once there is at least one visible Razorpay plan, customers who pick **INR** on the Billing page
-see the Razorpay plans. A "Pay with Stripe" link is still there for international cards.
+**Gateway per currency:** INR is always charged through Razorpay and AED through Stripe
+(`CONFIG.BILLING_GATEWAY` in `dashboard.html`). Stripe INR prices are never offered: `/billing/plans`
+drops them, `/billing/checkout-subscription` refuses them, and the tier catalog ignores them.
+
+**Current list prices** (`CONFIG.BILLING_PRICE_LIST`; INR includes 18% GST):
+
+| Tier | INR (Razorpay) | Razorpay payment page | AED (Stripe) |
+|---|---|---|---|
+| Basic | ₹1,060 | https://rzp.io/rzp/iDQDwal | AED 99 |
+| Standard | ₹2,358 | https://rzp.io/rzp/kFf6wBWd | AED 199 |
+| Business Intelligence | ₹4,718 | https://rzp.io/rzp/vEp4KXX9 | AED 299 |
+
+Create Razorpay **subscription plans** at these amounts (Admin → Plans → create, monthly,
+amounts 1060 / 2358 / 4718 INR, tier set) so customers are debited automatically by UPI AutoPay /
+e-mandate. Until a tier has a visible Razorpay plan, INR customers see the payment-page link
+for that tier instead (a one-off payment, not a recurring deduction). AED needs Stripe AED prices
+at 99 / 199 / 299 listed in `STRIPE_PLAN_PRICE_IDS`; without one the tier shows the AED price with
+"Talk to us".
 
 ### Customer flow
 - **Subscribe** → `POST /billing/razorpay/subscribe {plan_id}` creates a Razorpay subscription

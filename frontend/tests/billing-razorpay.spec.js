@@ -72,15 +72,30 @@ test('Indian customer sees the same plans via Razorpay and subscribes', async ({
   await expect(wrap).toContainText('Business Intelligence');
   await expect(wrap).toContainText('₹4,999.00/month');
 
-  // Switching to Stripe for INR shows the Stripe price list, and back.
-  await wrap.getByText('Pay with Stripe').click();
-  await expect(wrap).not.toContainText('UPI AutoPay');
-  await wrap.getByText('Razorpay').click();
-  await expect(wrap).toContainText('UPI AutoPay');
+  // INR is Razorpay-only — no Stripe option for INR.
+  await expect(wrap).not.toContainText('Pay with Stripe');
 
   await wrap.locator('.card', { hasText: 'Business Intelligence' }).getByRole('button', { name: 'Subscribe' }).click();
   await page.waitForURL('https://rzp.io/i/abc');
   expect(calls.find((c) => c.path === '/billing/razorpay/subscribe').body).toEqual({ plan_id: 'plan_bi' });
+});
+
+test('INR without Razorpay plans falls back to the Razorpay payment links, never Stripe', async ({ page }) => {
+  await stub(page, (p) => {
+    if (p === '/billing/plans') return { json: { ok: true, plans: STRIPE_PLANS } };
+    if (p === '/billing/razorpay/plans') return { json: { ok: true, enabled: false, plans: [] } };
+    if (p === '/billing/plan-status') return { json: { ok: true, plan_label: 'Legacy', is_legacy: true, limits: null, usage: { users: 1, channels: 1 }, modules: {} } };
+    return null;
+  });
+  await openBilling(page, { Id: 7, authentik_email: 'owner@acme.in', billing_email: 'billing@acme.in' });
+  const wrap = page.locator('#billingPricingTableWrap');
+  await expect(wrap).toContainText('₹1,060');
+  await expect(wrap).toContainText('₹2,358');
+  await expect(wrap).toContainText('₹4,718');
+  await expect(wrap.locator('a[href="https://rzp.io/rzp/iDQDwal"]')).toHaveCount(1);
+  await expect(wrap.locator('a[href="https://rzp.io/rzp/kFf6wBWd"]')).toHaveCount(1);
+  await expect(wrap.locator('a[href="https://rzp.io/rzp/vEp4KXX9"]')).toHaveCount(1);
+  await expect(wrap).not.toContainText('Stripe');
 });
 
 const OVERVIEW = {

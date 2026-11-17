@@ -85,14 +85,15 @@ describe('helpers', ()=>{
     assert.equal(cardExpiringSoon(11, 2026, now), true);
     assert.equal(cardExpiringSoon(3, 2027, now), false);
   });
-  test('tier catalog: Razorpay plans price INR when Razorpay is on, Stripe otherwise', ()=>{
+  test('tier catalog: INR only via Razorpay, never a Stripe INR price', ()=>{
     const rzp=[{plan_id:'plan_b', plan_tier:'basic', amount:89900, currency:'INR', period:'monthly', interval_count:1, active:true}];
     const on=buildTierCatalog(PLAN_TIERS, GATED, rzp, STRIPE_PRICES, true);
     assert.deepEqual(on[0].prices.INR, {amount:89900, currency:'INR', period:'monthly', interval_count:1, gateway:'razorpay', id:'plan_b'});
     assert.equal(on[0].prices.AED.id, 'price_basic_aed');
     assert.deepEqual(on[1].modules, ['Appointment Booking']);
     const off=buildTierCatalog(PLAN_TIERS, GATED, rzp, STRIPE_PRICES, false);
-    assert.equal(off[0].prices.INR.gateway, 'stripe');
+    assert.equal(off[0].prices.INR, undefined);
+    assert.equal(off[0].prices.AED.gateway, 'stripe');
   });
   test('history hides internal rows and admin notes', ()=>{
     assert.equal(historyEntry({provider:'admin', event_type:'client.deleted'}), null);
