@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { engineCustomerLinesFromPrompt, engineReplyEchoesCustomer, engineMainPromptDefinesFirstReply,
   ecomIsExplicitBrowseRequest, ecomIsPriceQuestion, ecomOrderIsConversion, ECOM_INTENT_ORDER_NOTE,
-  engineLeadAdSource, engineLeadAdClick, engineLeadSourceGuess } from './worker.js';
+  engineLeadAdSource, engineLeadAdClick, engineLeadSourceGuess, engineCombineBufferedChatwootBodies } from './worker.js';
 import { fv3CoverageRows } from './followup-v3.js';
 
 test('1. a reply that is the customer\'s own message is caught', () => {
@@ -89,4 +89,20 @@ test('7. Follow-up V3 coverage: gaps first with a fix, healthy rows last', () =>
   assert.equal(rows[2].ok, true);
   // already switched on → no "Turn on" button
   assert.equal(fv3CoverageRows([{ reason: 'existing_lead', n: 3 }], { include_existing_leads: true })[0].setting, '');
+});
+
+test('8. buffered messages keep the ad referral from the first message (CTWA Click ID / Ad ID)', () => {
+  const ref = { source_type: 'ad', source_id: '120208877665544', ctwa_clid: 'ARAk-first' };
+  const first = { id: 1, message_type: 'incoming', content: 'Hello! Can I get more info on this?', content_attributes: { referral: ref }, conversation: { id: 9 }, sender: { phone_number: '+919999999999' } };
+  const second = { id: 2, message_type: 'incoming', content: 'Price?', content_attributes: {}, conversation: { id: 9 }, sender: { phone_number: '+919999999999' } };
+  const combined = engineCombineBufferedChatwootBodies([{ body: first, receivedAt: 1 }, { body: second, receivedAt: 2 }]);
+  assert.deepEqual(engineLeadAdClick(combined), { AdId: '120208877665544', CtwaClid: 'ARAk-first' });
+  // A later click's referral (on the latest message) wins over an older one.
+  const later = { ...second, content_attributes: { referral: { ...ref, ctwa_clid: 'ARAk-later' } } };
+  assert.equal(engineLeadAdClick(engineCombineBufferedChatwootBodies([{ body: first, receivedAt: 1 }, { body: later, receivedAt: 2 }])).CtwaClid, 'ARAk-later');
+});
+
+test('8. ad referral is read even when content_attributes arrives as a JSON string', () => {
+  const body = { content_attributes: JSON.stringify({ referral: { source_type: 'ad', source_id: '120208877665544', ctwa_clid: 'ARAk-str' } }) };
+  assert.deepEqual(engineLeadAdClick(body), { AdId: '120208877665544', CtwaClid: 'ARAk-str' });
 });
