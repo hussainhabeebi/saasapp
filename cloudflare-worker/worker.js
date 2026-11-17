@@ -3434,10 +3434,9 @@ async function handleEmailStatus(request, env){
 // stored on the client row like resend_api_key — meta_capi_token never reaches the browser
 // (stripped by safeClient) and is only ever written via /meta/capi/config below, never through
 // the generic /nocodb/ passthrough the dashboard uses for its own row.
-// Matching relies on the lead's phone/email (hashed, never sent in the clear) — there's no
-// ctwa_clid (Click-to-WhatsApp ad click id) capture yet since WhatsApp inbound messages are
-// handled by the n8n engine, outside this repo; if that's ever wired through, add it to
-// user_data.ctwa_clid below (unhashed) for much stronger attribution. See SETUP.md.
+// Matching uses the lead's ctwa_clid (Click-to-WhatsApp ad click id, captured from Chatwoot's
+// message referral by engineLeadAdClick — needs Chatwoot v4.15+, which stores Meta's referral),
+// else the lead's phone/email (hashed, never sent in the clear).
 const META_CAPI_WRITE_FIELDS=['meta_pixel_id','meta_capi_token','meta_ad_account_id'];
 const META_CAPI_EVENTS={
   lead:         {name:'Lead'},         // fired once, when a lead is first captured
@@ -28063,7 +28062,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     Channel:state.channel||'whatsapp'
   };
   if(state.inboxId) body.InboxId=String(state.inboxId);
-  if(state.adSource) body._adSource=state.adSource;
+  if(state.adSource && !state.adSourceSaved) body._adSource=state.adSource;
   // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
   // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
@@ -28175,8 +28174,13 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
    channel. Written as a separate best-effort PATCH after the lead is saved, so a Source column of
    a stricter type can never cost the lead itself. */
 export const ENGINE_CTWA_PREFILL_RE=/^(?:hi+|hello|hey)?[!,. ]*(?:can|could) i get more (?:info|information)(?: (?:on|about))? (?:this|this product|this offer)[?!. ]*$/i;
-function engineReferral(body){
-  const ref=body?.content_attributes?.referral||body?.additional_attributes?.referral||body?.message?.content_attributes?.referral||null;
+function engineAttrsObj(v){
+  if(v && typeof v==='string'){ try{ v=JSON.parse(v); }catch(e){ return null; } }
+  return v && typeof v==='object' ? v : null;
+}
+export function engineReferral(body){
+  const ref=engineAttrsObj(body?.content_attributes)?.referral||engineAttrsObj(body?.additional_attributes)?.referral
+    ||engineAttrsObj(body?.message?.content_attributes)?.referral||null;
   return ref && typeof ref==='object' ? ref : null;
 }
 // The ad behind a click-to-WhatsApp chat: Meta's ad id (joins the lead to Reports → 💸 Ads ROI's
@@ -28228,6 +28232,13 @@ async function engineApplyLeadSource(env, leadId, src){
     let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...fields}});
     // e.g. Source is a Single Select without this option — keep the ad details at least.
     if(!r.ok && fields.Source){ const {Source, ...rest}=fields; if(Object.keys(rest).length) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...rest}}); }
+    // Still refused (some other ad-detail column is the problem): the click ids matter most — Meta
+    // Conversions API purchases and the Google Sheet's CTWA Click ID / Ad ID columns need them.
+    if(!r.ok){
+      const ids=Object.fromEntries(['CtwaClid','AdId'].filter(k=>fields[k]).map(k=>[k,fields[k]]));
+      if(Object.keys(ids).length) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...ids}});
+      if(!r.ok) await reportOpsError(env, 'CTWA click id not saved on lead', new Error('HTTP '+r.status), {leadId}).catch(()=>{});
+    }
   }catch(e){}
 }
 async function engineUpsertLead(env, method, leadId, body){
@@ -28871,7 +28882,7 @@ export function engineV2WelcomeVideo(c, sourceText=''){
 }
 // Everything that says where a fresh lead came from, as one searchable string.
 export function engineV2SourceText(body, lead, firstText, inboxId){
-  const ref=body?.content_attributes?.referral||body?.additional_attributes?.referral||body?.message?.content_attributes?.referral||{};
+  const ref=engineReferral(body)||{};
   const conv=body?.conversation?.additional_attributes||{};
   return [firstText, ref.source_url, ref.source_id, ref.source_type, ref.headline, ref.body, ref.ctwa_clid?'ctwa':'',
     conv.referer, conv.initiated_at?.referer, lead?.LeadSource, lead?.AdCampaign, lead?.AdName, lead?.LeadFormName,
@@ -29464,8 +29475,20 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
     // Where this chat lead came from — saved once, on a lead that has no Source yet.
     if(!String(state.lead?.Source||'').trim()) state.adSource=engineLeadAdSource(body, text, state.channel||'whatsapp');
-    // A lead we already had (no ad then) that now clicks an ad: keep its Source, record the ad.
-    else if(!String(state.lead?.AdId||'').trim()) state.adSource=engineLeadAdClick(body);
+    // A lead we already had that now clicks an ad (again): keep its Source, record the latest ad
+    // click — Meta attributes a purchase to the most recent ctwa_clid.
+    else{
+      const click=engineLeadAdClick(body);
+      if(click && ((click.CtwaClid && click.CtwaClid!==String(state.lead?.CtwaClid||'').trim())
+        || (click.AdId && click.AdId!==String(state.lead?.AdId||'').trim()))) state.adSource=click;
+    }
+    // Save the ad click right away, before any reply route runs: many routes (flows, menus, shop,
+    // admissions…) return early and some never write the lead, and the referral only arrives on
+    // this one message — losing it here means the Sheet's CTWA Click ID / Ad ID stay empty forever.
+    if(state.leadId && state.adSource && (state.adSource.CtwaClid||state.adSource.AdId)){
+      await engineApplyLeadSource(env, state.leadId, state.adSource);
+      state.adSourceSaved=true;
+    }
     // Leadvyne v2: a fresh lead gets the business's 360° video first (picked by ad/source); the chat
     // starts after it.
     if(engineV2On(c) && engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId}))
@@ -44114,6 +44137,16 @@ export function engineCombineBufferedChatwootBodies(entries){
   if(combined){
     body.content=combined;
     if(body.message&&typeof body.message==='object') body.message.content=combined;
+  }
+  // Meta puts the Click-to-WhatsApp ad referral (ad id + ctwa_clid) on the FIRST message after the
+  // click only. A lead who sends the ad's prefilled text and then a question within the aggregation
+  // window used to lose it here (the latest body won), leaving CtwaClid/AdId empty on the lead.
+  if(!engineReferral(body)){
+    const withRef=unique.find(entry=>engineReferral(entry.body));
+    if(withRef){
+      const ca=engineAttrsObj(body.content_attributes)||{};
+      body.content_attributes={...ca, referral:engineReferral(withRef.body)};
+    }
   }
   return body;
 }

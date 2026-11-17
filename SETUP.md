@@ -4489,16 +4489,16 @@ WhatsApp message volume. Built as plain Worker code, same pattern as the Email M
   `lead` event on create), `kbDrop()` (kanban drag-to-stage), and `patchDetailField()` (the
   Score dropdown in the lead detail pane).
 
-### Known limitation
-No `ctwa_clid` (Click-to-WhatsApp ad click id) capture — WhatsApp inbound messages are handled by
-the n8n engine, outside this repo, so matching relies on the lead's phone/email only. Match
-quality/attribution would improve if the n8n workflow captured `ctwa_clid` from the first-message
-webhook's referral payload and stored it on the Lead row for `sendMetaCapiEvent()` to forward
-(unhashed, per Meta's spec) alongside `user_data`.
-Note this limitation is specific to the n8n engine path — a client migrated onto the Cloudflare
-Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload directly and could
-capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
-migration itself.
+### Click-to-WhatsApp click id (`ctwa_clid`) capture
+The Cloudflare engine reads Meta's ad referral from the Chatwoot webhook
+(`content_attributes.referral`) and saves `AdId` + `CtwaClid` on the lead (`engineLeadAdClick`,
+saved right after the lead row is claimed, before any reply route). `sendMetaCapiEvent()` forwards
+`ctwa_clid` unhashed, and the Google Sheet sync can export both columns.
+- **Requires Chatwoot v4.15.0 or newer** — older Chatwoot drops Meta's `referral` object, so both
+  fields stay empty no matter what the worker does.
+- Meta sends the referral on the first message after the ad click only; the 5s message buffer
+  (`engineCombineBufferedChatwootBodies`) carries it onto the combined turn.
+- Clients still on the n8n engine path don't get this capture.
 
 ## Hot Lead Alerts (Settings → 👥 User Management → 🔥 Hot Lead Alerts)
 
