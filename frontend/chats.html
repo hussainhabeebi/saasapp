@@ -87,6 +87,8 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .rec-row{flex:1;min-width:0;height:46px;display:flex;align-items:center;gap:8px;background:#fff;border-radius:23px;padding:0 6px 0 4px}.rec-row .icon-btn{width:38px;height:38px}.rec-trash{color:#8696a0}.rec-dot{width:10px;height:10px;border-radius:50%;background:var(--danger);flex:none;animation:blink 1s infinite}.rec-row.paused .rec-dot{animation:none;opacity:.35}@keyframes blink{50%{opacity:.25}}
 .rec-time{font-variant-numeric:tabular-nums;font-size:15px;color:#3b4a54;min-width:42px}.rec-wave{flex:1;min-width:0;height:30px}.rec-hint{flex:1;text-align:center;color:#8696a0;font-size:13px;white-space:nowrap;overflow:hidden}
 .popover{position:absolute;bottom:calc(100% + 6px);z-index:30;background:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.attach-locs{grid-column:1/-1;border-top:1px solid var(--line);margin-top:4px;padding:8px 4px 2px}.attach-locs .lbl{font-size:11.5px;color:var(--muted);margin:0 0 6px 2px}.attach-locs .chips,.h-loc-tabs{display:flex;flex-wrap:wrap;gap:6px}.attach-menu .attach-locs button{border:1px solid #c6f0d2;background:#e7fce9;color:#008069;border-radius:16px;padding:6px 12px;font-size:13px;font-weight:600;display:inline-flex;gap:4px}.attach-menu .attach-locs button:hover{background:#d4f7da}
+.h-loc-tabs{padding:8px 12px;border-bottom:1px solid var(--line);overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}.h-loc-tabs::-webkit-scrollbar{display:none}.h-loc-tabs .pill{flex:none}.h-loc-note{padding:6px 12px 0;font-size:12px;color:var(--muted)}
 .attach-menu{left:12px;padding:10px;display:grid;grid-template-columns:repeat(2,1fr);gap:4px;min-width:250px}.attach-menu button{border:0;background:transparent;border-radius:10px;padding:10px;display:flex;align-items:center;gap:10px;font-size:14px;color:var(--ink);text-align:left}.attach-menu button:hover{background:#f5f6f6}.attach-menu .dot{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;color:#fff;flex:none}
 .emoji-panel{left:12px;width:min(360px,calc(100vw - 24px));height:260px;overflow:auto;padding:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(38px,1fr));align-content:start}.emoji-panel button{border:0;background:transparent;font-size:24px;height:40px;border-radius:8px;padding:0}.emoji-panel button:hover{background:#f0f2f5}
 .to-bottom{position:absolute;right:18px;bottom:88px;z-index:15;width:42px;height:42px;border-radius:50%;border:0;background:#fff;color:#54656f;box-shadow:0 2px 8px rgba(0,0,0,.2);display:grid;place-items:center;padding:0}.to-bottom .n{position:absolute;top:-6px;right:-4px;min-width:20px;height:20px;border-radius:10px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}
@@ -594,26 +596,36 @@ function rumMark(name,since='lv-start'){if(rum[name]!==undefined)return;try{rum[
 function sendRum(){if(rumSent||!V2)return;rumSent=true;try{fetch(WORKER+'/chats/v2/rum',{method:'POST',keepalive:true,headers:headers({'Content-Type':'application/json'}),body:JSON.stringify({mode:'v2',marks:rum})}).catch(()=>{})}catch{}}
 async function boot(){
  if(!clientId||!sessionToken){$('loadingText').textContent='Open Chats from the Leadvyne dashboard.';return}
- let me;
- try{me=await apiJson(WORKER+'/session/me')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.';return}
- clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();
- loadMtgChatCfg();
  const show=()=>{$('loading').classList.add('hidden');$('app').classList.remove('hidden')};
+ const expired=()=>{$('app').classList.add('hidden');$('loading').classList.remove('hidden');$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'};
+ const applyMe=me=>{clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase()};
+ // Fast open: the last /session/me answer for this same sign-in (same token) is kept on this device,
+ // so the saved list paints at once instead of waiting a round trip; the live answer is checked in
+ // parallel with the list and replaces it. A different token (another teammate) never reuses it.
+ const meKey=`lv_chats_me_${clientId}`,tokTag=sessionToken.slice(-24);
+ let cachedMe=null;try{const m=JSON.parse(localStorage.getItem(meKey)||'null');if(m&&m.t===tokTag&&m.me)cachedMe=m.me}catch{}
+ const meP=apiJson(WORKER+'/session/me').then(me=>{applyMe(me);try{localStorage.setItem(meKey,JSON.stringify({t:tokTag,me:{email:me.email||me.user?.email||'',client:me.client||{}}}))}catch{}return me});
+ if(cachedMe)applyMe(cachedMe);
+ else{try{await meP}catch(e){expired();return}}
+ loadMtgChatCfg();
  // v2: paint the last-seen list from this browser at once, then bootstrap + list + counts in
  // parallel. Any failure in that first round drops back to v1, as if v2 didn't exist.
  loadThreadSnaps();
  const warm=loadSnapshot();
  if(warm){V2=true;show();renderContacts()}
+ // A cached session is confirmed alongside the list; a refused one hides everything again.
+ const meOk=async()=>!cachedMe||await meP.then(()=>true,()=>false);
+ const refused=()=>{try{localStorage.removeItem(meKey)}catch{};expired()};
  try{
-  await Promise.all([loadBootstrap(),(async()=>{V2=true;await loadView(false)})(),loadCounts()]);
+  await Promise.all([cachedMe?meP:null,loadBootstrap(),(async()=>{V2=true;await loadView(false)})(),loadCounts()]);
   if(!boot2)throw new Error('no bootstrap');
   V2=true;show();$('app').classList.add('v2');paintNotifyBtn();renderInboxRow();renderAgentRow();renderContacts();connectWs();wnLoad();
   // Safety net while the socket is down or a delta was missed.
   setInterval(()=>queueSync(),60000);
   setInterval(()=>{if(!document.hidden){paintList();renderHeaderCtl()}},30000);
-  toParent('ready');return;
- }catch(e){V2=false;boot2=null;counts2=null;views2={};leads=[]}
- try{await loadLeads(false,true);show();wnLoad();let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+  toParent('ready');hLocPrefetch();return;
+ }catch(e){if(!(await meOk()))return refused();V2=false;boot2=null;counts2=null;views2={};leads=[]}
+ try{await meP;await loadLeads(false,true);show();wnLoad();let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready');hLocPrefetch()}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
 // The 12s poll asks only for leads whose LastMsgAt moved since the newest one we hold (delta) and
 // merges them in, instead of re-downloading 200 full lead rows (each with its ConvHistory) every
@@ -996,6 +1008,7 @@ function buildShell(){
    <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
    ${isTravelAcct()?`<button onclick="openAiItin()" id="aiItinBtn"><span class="dot" style="background:#0d9c93">✨</span>AI Itinerary</button>`:''}
    ${hItinOn()?`<button onclick="openHospItin()" id="hospItinBtn"><span class="dot" style="background:#0d9c93">🏨</span>${isTravelAcct()?'AI Stay Itinerary':'AI Itinerary'}</button>`:''}
+   ${hLocOn()?`<div class="attach-locs" id="attachLocs">${hLocChips()}</div>`:''}
    ${isGeneralAcct()?`<button onclick="openAiProp()" id="aiPropBtn"><span class="dot" style="background:#0d9c93">📑</span>AI Proposal</button><button onclick="openMtgShare()" id="mtgChatBtn" style="${window.mtgChat?.cfg?.chat_enabled?'':'display:none'}"><span class="dot" style="background:#1a73e8">📅</span>Meeting</button>`:''}
   </div>
   <div class="input-wrap" id="inputWrap">
@@ -1119,7 +1132,7 @@ function syncBackdrop(){
  if(open!==sheetWasOpen){sheetWasOpen=open;toParent('sheet',{open})}
 }
 function toggleThreadSearch(){toggleMenu(false);const s=$('threadSearch');s.classList.toggle('hidden');if(s.classList.contains('hidden')){$('threadSearchInput').value='';searchThread('')}else $('threadSearchInput').focus()}
-function togglePanel(id){const el=$(id);const open=el.classList.contains('hidden');closePopovers();if(open)el.classList.remove('hidden')}
+function togglePanel(id){const el=$(id);const open=el.classList.contains('hidden');closePopovers();if(open){el.classList.remove('hidden');if(id==='attachMenu')paintAttachLocs()}}
 function closePopovers(){['emojiPanel','attachMenu','cannedPanel'].forEach(id=>$(id)?.classList.add('hidden'))}
 // ── Canned responses: type / to search, ↑↓ to pick, Enter/Tab to insert ──────────────────────
 // {{name}} {{phone}} {{agent}} {{business}} fill in from this chat; any other {{x}} stays
@@ -1425,19 +1438,62 @@ function isHospAcct(){
 function hItinOn(){return isHospAcct()||isTravelAcct()||/^(yes|true|1|on)$/i.test(String(clientRecord?.ta_enabled??'').trim())}
 let hItin={props:null,sel:null,days:null,busy:false,seq:0,stay:null};
 const H_ITIN_INTERESTS=['Relaxation','Nature','Sightseeing','Adventure','Wellness & spa','Food','Culture & history','Shopping','Photography',"Kids' activities"];
+// ── 📍 Locations (Travel Agency accounts only) ──
+// Attach shows the agency's property locations (Wayanad, Vythiri, Munnar…) as one-tap chips; a chip
+// opens the stay itinerary picker on that location's properties, with location tabs on top. A
+// teammate whose Destination Staff Routing lists Hotels & Resorts locations only gets those — the
+// worker filters /hospitality/chat-properties for them (restricted) and refuses other properties.
+function isAgencyAcct(){const c=clientRecord||{};return String(c.industry||'').toLowerCase().includes('travel')||/^yes$/i.test(String(c.ta_enabled??'').trim())}
+function hLocOn(){return isAgencyAcct()&&hItinOn()}
+let hLoc={mine:[],restricted:false,p:null};
+const hLocNorm=v=>String(v??'').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g,'').replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').trim();
+// Same rule as the worker's dsrPlaceMatch: whole words, at least 3 letters ("Munnar" ↔ "Munnar, Kerala").
+function hLocMatch(a,b){a=hLocNorm(a);b=hLocNorm(b);if(a.length<3||b.length<3)return false;return a===b||` ${b} `.includes(` ${a} `)||` ${a} `.includes(` ${b} `)}
+const hLocHas=(loc,p)=>!loc||hLocMatch(loc,p.location)||hLocMatch(loc,p.name);
+// One request, shared with the itinerary picker; started in the background after Chats has painted.
+function hLocLoad(force){
+ if(hItin.props&&!force)return Promise.resolve(hItin.props);
+ if(hLoc.p)return hLoc.p;
+ hLoc.p=apiJson(WORKER+'/hospitality/chat-properties').then(d=>{hItin.props=d.properties||[];hLoc.mine=d.my_locations||[];hLoc.restricted=!!d.restricted;paintAttachLocs();return hItin.props}).finally(()=>{hLoc.p=null});
+ return hLoc.p;
+}
+// Restricted teammate: their own locations. Everyone else: each distinct property location.
+function hLocList(){
+ if(hLoc.restricted)return hLoc.mine.slice();
+ // The place itself — "Munnar, Kerala" and "Munnar" are one tab, "Vythiri, Wayanad" is Vythiri.
+ const out=[];for(const p of hItin.props||[]){const l=String(p.location||'').split(/[,|/]|\s[-–]\s/)[0].trim();if(hLocNorm(l).length>=3&&!out.some(o=>hLocNorm(o)===hLocNorm(l)))out.push(l)}
+ return out.sort((a,b)=>a.localeCompare(b,'en',{sensitivity:'base'}));
+}
+const hLocArg=l=>esc(JSON.stringify(String(l)));
+function hLocChips(){
+ if(!hItin.props)return '<div class="lbl">📍 Locations — loading…</div>';
+ const locs=hLocList();if(!locs.length)return '';
+ return `<div class="lbl">📍 ${hLoc.restricted?'Your locations':'Send by location'}</div><div class="chips">${locs.map(l=>`<button onclick="openHospItin(${hLocArg(l)})">📍 ${esc(l)}</button>`).join('')}</div>`;
+}
+// After Chats is on screen and idle, so it never delays the list; the Attach chips are then instant.
+function hLocPrefetch(){if(!hLocOn())return;const go=()=>hLocLoad().catch(()=>{});'requestIdleCallback'in window?requestIdleCallback(go,{timeout:4000}):setTimeout(go,1500)}
+function paintAttachLocs(){const el=$('attachLocs');if(!el)return;if(!hItin.props&&!hLoc.p)hLocLoad().catch(()=>{});el.innerHTML=hLocChips();el.style.display=el.innerHTML?'':'none'}
+function setHItinLoc(l){hItin.loc=String(l||'');drawHItinProps()}
+function drawHItinLocs(){
+ const el=$('hItinLocs');if(!el)return;const locs=hLocList();
+ if(!locs.length&&!hLoc.restricted){el.innerHTML='';return}
+ const tab=(l,label)=>`<button class="pill ${hLocNorm(hItin.loc)===hLocNorm(l)?'active':''}" onclick="setHItinLoc(${hLocArg(l)})">${esc(label)}</button>`;
+ el.innerHTML=`<div class="h-loc-tabs">${tab('',hLoc.restricted?'All my locations':'All')}${locs.map(l=>tab(l,'📍 '+l)).join('')}</div>${hLoc.restricted?`<div class="h-loc-note">Showing only your locations: ${esc(hLoc.mine.join(', '))}</div>`:''}`;
+}
 const hImg=(u,cls,alt)=>`<img class="${cls||''}" src="${esc(u)}" alt="${esc(alt||'')}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
-async function openHospItin(){
+async function openHospItin(loc){
  closePopovers();if(!current||isIg(current)||!hItinOn())return;
  let ov=$('hospItinOv');if(!ov){ov=document.createElement('div');ov.id='hospItinOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
- ov.classList.remove('hidden');hItin={...hItin,sel:null,days:null,busy:false,stay:null,lead:current};
- ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="hItinBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✨ AI Itinerary for <b>${esc(who(current)||'contact')}</b></div></div><div class="tpl-main" id="hItinMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="hItinSearch" placeholder="Search properties" oninput="drawHItinProps()"></div></div><div class="tpl-items" id="hItinItems"><div class="tpl-empty"><div class="spinner"></div>Loading properties…</div></div></div><div class="tpl-detail" id="hItinDetail"><div class="tpl-empty">Choose a property — the AI drafts a day-by-day stay itinerary with photos for you to check before it is sent.</div></div></div>`;
- try{if(!hItin.props){const d=await apiJson(WORKER+'/hospitality/chat-properties');hItin.props=d.properties||[]}drawHItinProps()}
+ ov.classList.remove('hidden');hItin={...hItin,sel:null,days:null,busy:false,stay:null,lead:current,loc:hLocOn()?String(loc||''):''};
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="hItinBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">✨ AI Itinerary for <b>${esc(who(current)||'contact')}</b></div></div><div class="tpl-main" id="hItinMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="hItinSearch" placeholder="Search properties" oninput="drawHItinProps()"></div></div>${hLocOn()?'<div id="hItinLocs"></div>':''}<div class="tpl-items" id="hItinItems"><div class="tpl-empty"><div class="spinner"></div>Loading properties…</div></div></div><div class="tpl-detail" id="hItinDetail"><div class="tpl-empty">Choose a property — the AI drafts a day-by-day stay itinerary with photos for you to check before it is sent.</div></div></div>`;
+ try{if(!hItin.props)await hLocLoad(true);drawHItinProps()}
  catch(e){const el=$('hItinItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load properties.<br><small>${esc(e.message)}</small></div>`}
 }
 function drawHItinProps(){
  const el=$('hItinItems');if(!el||!hItin.props)return;const q=($('hItinSearch')?.value||'').trim().toLowerCase();
- const list=hItin.props.filter(p=>!q||`${p.name} ${p.location} ${(p.rooms||[]).map(r=>r.name).join(' ')}`.toLowerCase().includes(q));
- el.innerHTML=list.length?list.map(p=>`<button class="tpl-item h-prop ${hItin.sel===p?'active':''}" onclick="pickHItinProp('${esc(p.id)}')">${p.photos?.[0]?hImg(p.photos[0],'h-thumb'):'<div class="h-thumb">🏨</div>'}<span><b>${esc(p.name)}</b><small>${esc([p.source==='agency'?'Resorts & Hotels':'',p.location,(p.rooms||[]).length?`${p.rooms.length} room${p.rooms.length>1?'s':''}`:''].filter(Boolean).join(' · '))}</small></span></button>`).join(''):`<div class="tpl-empty">${hItin.props.length?'No properties match.':'No properties yet. Add them in Hospitality → Properties or Travel Agency → Resorts & Hotels.'}</div>`;
+ drawHItinLocs();
+ const list=hItin.props.filter(p=>hLocHas(hItin.loc,p)&&(!q||`${p.name} ${p.location} ${(p.rooms||[]).map(r=>r.name).join(' ')}`.toLowerCase().includes(q)));
+ el.innerHTML=list.length?list.map(p=>`<button class="tpl-item h-prop ${hItin.sel===p?'active':''}" onclick="pickHItinProp('${esc(p.id)}')">${p.photos?.[0]?hImg(p.photos[0],'h-thumb'):'<div class="h-thumb">🏨</div>'}<span><b>${esc(p.name)}</b><small>${esc([p.source==='agency'?'Resorts & Hotels':'',p.location,(p.rooms||[]).length?`${p.rooms.length} room${p.rooms.length>1?'s':''}`:''].filter(Boolean).join(' · '))}</small></span></button>`).join(''):`<div class="tpl-empty">${hItin.props.length?(hItin.loc?`No ${esc(hItin.loc)} properties match.`:'No properties match.'):hLoc.restricted?`No properties in your locations (${esc(hLoc.mine.join(', '))}) yet.`:'No properties yet. Add them in Hospitality → Properties or Travel Agency → Resorts & Hotels.'}</div>`;
 }
 function pickHItinProp(id){
  const p=(hItin.props||[]).find(x=>String(x.id)===String(id));if(!p||hItin.busy)return;

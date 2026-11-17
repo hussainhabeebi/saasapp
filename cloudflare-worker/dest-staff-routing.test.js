@@ -94,3 +94,26 @@ test('staff alert: template params never empty or multi-line; text fallback', ()
   assert.match(dsrStaffAlertText(p), /New Flight enquiry for you: Priya Nair \(\+919800000001\) chose Kochi → Dubai/);
   assert.match(dsrNoteText({kind:'resort', destination:'Munnar', staffName:'Anu', staffPhone:'9198', alert:'sent to +9198'}), /Munnar → Anu \(\+9198\).*silent.*Staff alert: sent/);
 });
+
+// ── Location-based view for staff (Chats → properties) ──
+import { dsrStaffLocations, dsrLocationAllowed } from './dest-staff-routing.js';
+test('staff locations: the teammate\'s Hotels & Resorts list, null when no limit', () => {
+  assert.deepEqual(dsrStaffLocations(cfg, 'RAVI@x.com'), ['Wayanad']);
+  assert.deepEqual(dsrStaffLocations(cfg, 'anu@x.com'), ['Munnar', 'Thekkady']);
+  assert.equal(dsrStaffLocations(cfg, 'sam@x.com'), null);      // no resorts rule
+  assert.equal(dsrStaffLocations(cfg, 'nobody@x.com'), null);
+  assert.equal(dsrStaffLocations(cfg, ''), null);
+  const star=dsrNormalizeSettings({rules:{'a@x.com':{resorts:['Wayanad', '*']}}});
+  assert.equal(dsrStaffLocations(star, 'a@x.com'), null);        // "*" = every location
+  // Routing switched off: the list still defines the teammate's locations.
+  assert.deepEqual(dsrStaffLocations(dsrNormalizeSettings({enabled:false, rules:{'a@x.com':{resorts:['Vythiri']}}}), 'a@x.com'), ['Vythiri']);
+});
+test('location allowed: location or name, whole words', () => {
+  const w=['Wayanad'];
+  assert.equal(dsrLocationAllowed(null, 'Munnar'), true);
+  assert.equal(dsrLocationAllowed(w, 'Wayanad, Kerala'), true);
+  assert.equal(dsrLocationAllowed(w, 'Munnar'), false);
+  assert.equal(dsrLocationAllowed(w, '', 'Wayanad Hill Resort'), true);
+  assert.equal(dsrLocationAllowed(w, '', ''), false);
+  assert.equal(dsrLocationAllowed(['Vythiri', 'Munnar'], 'Vythiri'), true);
+});

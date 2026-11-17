@@ -79,3 +79,16 @@ function renderSeenBy(){ /* presence is rendered by the standalone Chats workspa
 function renderChatContacts(){ updateChatBadge(); }
 function renderChatEmpty(){ /* legacy embedded view is no longer opened */ }
 function chatBackToList(){ /* legacy embedded view is no longer opened */ }
+
+// Fast open: start loading Chats as soon as the pointer, a finger or keyboard focus reaches a Chats
+// entry (sidebar tab, bottom bar, home shortcuts), so most of the load happens before the click lands.
+// Only once signed in — a src set without a session would stay on "Open Chats from the dashboard".
+(function(){
+  const SEL='[data-page="chats"],[data-act="chats"],[data-qact="chats"]';
+  const warm=e=>{
+    if(!e.target?.closest?.(SEL)) return;
+    let ok=false; try{ ok=!!(clientId&&sessionToken); }catch(err){}
+    if(ok&&!_chatsFrame()?.getAttribute('src')) openChatsTab();
+  };
+  for(const ev of ['pointerover','touchstart','focusin']) document.addEventListener(ev, warm, {passive:true, capture:true});
+})();

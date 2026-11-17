@@ -15,7 +15,7 @@ import {FV3_PROPOSAL_STAGE,FV3_MEETING_STAGE,fv3HandleRoute,fv3RunForAllClients,
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
-import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText} from './dest-staff-routing.js';
+import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -22914,7 +22914,16 @@ async function hospChatLoad(env,clientId,propertyId,roomId){
   }
   return {property,room};
 }
-// GET /hospitality/chat-properties → {properties:[{id,name,location,description,amenities,photos,rooms:[…]}]}
+// Travel agencies: a teammate (not the owner / an admin) with Hotels & Resorts locations in
+// Destination Staff Routing sees and sends only the properties in those locations. null = all.
+export function hospChatStaffLocs(c,email){
+  if(!dsrIsAgency(c)||seesAllChannelLeads(c,email))return null;
+  return dsrStaffLocations(dsrSettings(c),email);
+}
+const HOSP_CHAT_LOC_DENIED='This property is outside your locations.';
+const hospChatLocOk=(c,email,p)=>dsrLocationAllowed(hospChatStaffLocs(c,email),p?.location,p?.name);
+// GET /hospitality/chat-properties → {properties:[{id,name,location,description,amenities,photos,rooms:[…]}],
+//   my_locations:[…], restricted} — restricted: this teammate only sees their locations' properties.
 // photos are display links (Drive links → thumbnails) for the chat preview.
 async function handleHospitalityChatProperties(request,env){
   const payload=await requireSession(request,env);
@@ -22954,7 +22963,8 @@ async function handleHospitalityChatProperties(request,env){
       price:hospAiAgencyPriceHint(row)});
   }
   list.sort((a,b)=>a.name.localeCompare(b.name,'en',{numeric:true,sensitivity:'base'}));
-  return json({properties:list});
+  const locs=hospChatStaffLocs(c,payload.email);
+  return json({properties:locs?list.filter(p=>dsrLocationAllowed(locs,p.location,p.name)):list,my_locations:locs||[],restricted:!!locs});
 }
 // GET /hospitality/chat-property-photos?property_id=a-7 → {photos:[display links]} — a Resorts &
 // Hotels property's Photo 1-3 and every image in its Drive photos folder, for the chat preview.
@@ -22971,6 +22981,7 @@ async function handleHospitalityChatPropertyPhotos(request,env){
   if(!hospChatAllowed(c))return json({error:HOSP_CHAT_DENIED},403);
   const {property}=await hospChatLoad(env,payload.cid,new URL(request.url).searchParams.get('property_id'),null);
   if(!property)return json({error:'Property not found'},404);
+  if(!hospChatLocOk(c,payload.email,property))return json({error:HOSP_CHAT_LOC_DENIED},403);
   const list=await hospChatBrochurePhotos(env,property);
   return json({photos:list.map(x=>x.drive_id?`https://drive.google.com/thumbnail?id=${x.drive_id}&sz=w400`:engineResolveDirectImageUrl(x.url)).filter(Boolean)});
 }
@@ -23006,6 +23017,7 @@ async function handleHospitalityAiItinerary(request,env){
   if(!hospChatAllowed(c))return json({error:HOSP_CHAT_DENIED},403);
   const {property,room}=await hospChatLoad(env,payload.cid,body?.property_id,body?.room_id);
   if(!property)return json({error:'Property not found'},404);
+  if(!hospChatLocOk(c,payload.email,property))return json({error:HOSP_CHAT_LOC_DENIED},403);
   const out=await hospAiItinerary(property,room,taAiItineraryGenerator(env,c,'hosp-ai-itinerary'),
     {nights:body?.nights,checkIn:body?.check_in,guest:body?.guest,inclusions:body?.inclusions,exclusions:body?.exclusions});
   if(out.error){
@@ -23043,6 +23055,7 @@ async function handleHospitalityChatItinerarySend(request,env){
   if(!access.ok)return json({error:access.error},403);
   const {property,room}=await hospChatLoad(env,payload.cid,body?.property_id,body?.room_id);
   if(!property)return json({error:'Property not found'},404);
+  if(!hospChatLocOk(c,payload.email,property))return json({error:HOSP_CHAT_LOC_DENIED},403);
   const price=hospAiPrice(body?.price);
   // Resorts & Hotels → the PDF only (location, price range, all folder photos); nothing else is sent.
   if(property.source==='agency'){
