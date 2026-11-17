@@ -218,5 +218,6 @@ test('stay form: optional inclusions and exclusions go to the draft and the send
   await expect(page.locator('#hItinExc')).toHaveValue('Lunch');
   await page.getByRole('button', { name: '✨ Draft itinerary' }).click();
   await page.getByRole('button', { name: '✅ Approve & send' }).click();
+  await expect.poll(() => calls.send.length).toBe(1);
   expect(calls.send[0]).toMatchObject({ inclusions: ['Breakfast', 'Welcome drink'], exclusions: ['Lunch'] });
 });

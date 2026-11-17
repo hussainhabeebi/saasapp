@@ -102,6 +102,24 @@ export function dsrPlaceMatch(rule, place){
   if(a===b) return true;
   return ` ${b} `.includes(` ${a} `) || ` ${a} `.includes(` ${b} `);
 }
+// ── Location-based view for travel-agency staff ──────────────────────────────────────────────────
+// A teammate's Hotels & Resorts destinations ("Wayanad", "Vythiri", "Munnar") also limit which
+// properties they see and send from Chats (Attach → location tabs, AI Stay Itinerary), so Wayanad
+// staff work only with Wayanad's details. null = no limit: no rule for them, or a "*" entry.
+// Applies whether or not routing itself is switched on — the list is the teammate's locations.
+export function dsrStaffLocations(cfg, email){
+  const e=str(email).toLowerCase();
+  if(!e) return null;
+  const key=Object.keys(cfg?.rules||{}).find(k=>k.toLowerCase()===e);
+  const list=key?cleanList(cfg.rules[key]?.resorts):[];
+  if(!list.length || list.some(x=>x==='*')) return null;
+  return list;
+}
+// Is a property (its location, or its name) inside one of those locations?
+export function dsrLocationAllowed(locs, ...places){
+  if(!locs) return true;
+  return places.map(str).filter(Boolean).some(p=>locs.some(l=>dsrPlaceMatch(l, p)));
+}
 // A flight rule: "Kochi - Dubai" / "COK→DXB" / "Kochi to Dubai" (that route, either direction off)
 // or one place ("Dubai": every route from or to it).
 export function dsrParseRoute(rule){
