@@ -58,8 +58,9 @@ function rzpMethod(sub){
   return {type:t==='emandate'?'netbanking':t, gateway:'razorpay'};
 }
 
-// Every tier with its limits, included modules and the price it sells for per currency — Razorpay
-// plans for INR when Razorpay is set up (that's what an Indian customer is offered), else Stripe.
+// Every tier with its limits, included modules and the price it sells for per currency. INR is
+// only ever sold through Razorpay plans and AED/other currencies through Stripe — a Stripe INR
+// price is never offered, so Indian customers are always debited via Razorpay.
 export function buildTierCatalog(planTiers, planGatedModules, rzpPlans, stripePrices, useRazorpay){
   const out=Object.entries(planTiers).map(([key, t])=>({key, label:t.label, max_users:t.max_users, max_channels:t.max_channels,
     modules:t.modules.map(m=>planGatedModules[m]||m), prices:{}}));
@@ -68,7 +69,7 @@ export function buildTierCatalog(planTiers, planGatedModules, rzpPlans, stripePr
     const tier=guessPlanTier(planTiers, p.name, p.metadata);
     const cur=String(p.currency||'').toUpperCase();
     if(!byKey[tier]||!STRIPE_INTERVAL[p.interval]) continue;
-    if(cur==='INR' && useRazorpay) continue;
+    if(cur==='INR') continue;
     if(!byKey[tier].prices[cur]) byKey[tier].prices[cur]={amount:p.unit_amount, currency:cur, period:STRIPE_INTERVAL[p.interval], interval_count:p.interval_count||1, gateway:'stripe', id:p.price_id};
   }
   if(useRazorpay) for(const p of rzpPlans||[]){

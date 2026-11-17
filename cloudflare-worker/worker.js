@@ -9424,6 +9424,8 @@ async function handleBillingPlans(request, env){
   for(const price_id of ids){
     const {ok, data}=await stripeFetch(env, 'GET', `prices/${price_id}`, {expand:['product']});
     if(!ok||!data?.id||data.active===false) continue;
+    // INR is billed through Razorpay only (razorpay-billing.js) — never offer a Stripe INR price.
+    if(String(data.currency||'').toLowerCase()==='inr') continue;
     plans.push({
       price_id:data.id,
       name:data.nickname||data.product?.name||data.id,
@@ -9443,6 +9445,9 @@ async function handleBillingCheckoutSubscription(request, env){
   const {price_id}=await request.json().catch(()=>({}));
   const allowed=(env.STRIPE_PLAN_PRICE_IDS||'').split(',').map(s=>s.trim()).filter(Boolean);
   if(!price_id||!allowed.includes(price_id)) return json({error:'Unknown plan.'}, 400);
+  const priceRes=await stripeFetch(env, 'GET', `prices/${price_id}`);
+  if(String(priceRes.data?.currency||'').toLowerCase()==='inr')
+    return json({error:'INR plans are billed through Razorpay — choose INR on the Billing page to pay with UPI / Indian cards / net-banking.'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(c.stripe_subscription_id) return json({error:'Already subscribed — manage your plan from the Billing Portal instead.'}, 400);

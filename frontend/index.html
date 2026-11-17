@@ -253,6 +253,8 @@ nav.scrolled{background:rgba(6,20,25,.82);backdrop-filter:saturate(160%) blur(14
 .pc .amt{font:600 38px/1 var(--disp);letter-spacing:-.04em}
 .pc .amt .per{font:500 14px var(--body);color:var(--muted);letter-spacing:0}
 .pc .amt .was{display:block;font:500 14px var(--body);color:var(--muted);text-decoration:line-through;letter-spacing:0;margin-bottom:4px}
+.pc .amt .alt{display:block;font:500 13px var(--body);color:var(--muted);letter-spacing:0;margin-top:6px}
+.pc.feat .amt .alt{color:var(--muted-d)}
 .pc .lim{display:flex;gap:14px;font-size:12.5px;color:var(--muted);margin:14px 0 18px;padding-bottom:18px;border-bottom:1px solid var(--line)}
 .pc.feat .lim{border-color:var(--line-d)}
 .pc ul{list-style:none;display:grid;gap:10px;font-size:14px;margin-bottom:26px}
@@ -661,7 +663,7 @@ footer{background:#040E12;color:rgba(255,255,255,.6);padding:56px 0 40px;font-si
       <div class="pc">
         <div class="nm">Basic</div>
         <div class="ds">A solo travel consultant on one WhatsApp number.</div>
-        <div class="amt">₹899<span class="per">/mo</span></div>
+        <div class="amt">₹1,060<span class="per">/mo</span><span class="alt">incl. 18% GST · or AED 99/mo</span></div>
         <div class="lim"><span>1 user</span><span>1 channel</span></div>
         <ul>
           <li><svg class="i"><use href="#i-check"/></svg>AI WhatsApp conversations (1 number)</li>
@@ -675,7 +677,7 @@ footer{background:#040E12;color:rgba(255,255,255,.6);padding:56px 0 40px;font-si
       <div class="pc">
         <div class="nm">Standard</div>
         <div class="ds">A small agency running WhatsApp and Instagram together.</div>
-        <div class="amt"><span class="was">₹2,500</span>₹1,999<span class="per">/mo</span></div>
+        <div class="amt">₹2,358<span class="per">/mo</span><span class="alt">incl. 18% GST · or AED 199/mo</span></div>
         <div class="lim"><span>Up to 3 users</span><span>2 channels</span></div>
         <ul>
           <li><svg class="i"><use href="#i-check"/></svg>Everything in Basic</li>
@@ -690,7 +692,7 @@ footer{background:#040E12;color:rgba(255,255,255,.6);padding:56px 0 40px;font-si
         <div class="badge">Most popular</div>
         <div class="nm">Business Intelligence</div>
         <div class="ds">Multi-branch agencies and tour operators who want the numbers.</div>
-        <div class="amt"><span class="was">₹4,999</span>₹3,999<span class="per">/mo</span></div>
+        <div class="amt">₹4,718<span class="per">/mo</span><span class="alt">incl. 18% GST · or AED 299/mo</span></div>
         <div class="lim"><span>Up to 8 users</span><span>5 channels</span></div>
         <ul>
           <li><svg class="i"><use href="#i-check"/></svg>Everything in Standard</li>
@@ -735,7 +737,7 @@ footer{background:#040E12;color:rgba(255,255,255,.6);padding:56px 0 40px;font-si
         </tbody>
       </table>
     </div>
-    <p class="compare-note">Prices in INR, billed monthly. Extra users and channels are available as add-ons from Settings → Billing. No credit card required to start.</p>
+    <p class="compare-note">Billed monthly. INR prices include 18% GST and are charged through Razorpay (UPI AutoPay, RuPay / Indian cards, net-banking); AED prices are charged through Stripe. Extra users and channels are available as add-ons from Settings → Billing. No credit card required to start.</p>
   </div>
 </section>
 

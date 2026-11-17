@@ -1438,6 +1438,18 @@ const CONFIG = {
   // See SETUP.md "Billing module" for the RBI e-mandate reasoning. The plan picker's currency
   // toggle chooses which plans to show (INR also shows the Razorpay plans).
   BILLING_CURRENCIES: ['INR','AED'],
+  // Gateway per currency: INR is always charged through Razorpay (UPI AutoPay / RuPay / Indian
+  // cards / net-banking), AED always through Stripe — the plan picker never offers Stripe for INR.
+  // List prices per tier in minor units (paise / fils). INR includes 18% GST. These are shown when
+  // the gateway's own catalog has no plan for a tier yet; `link` is the Razorpay payment page used
+  // as the INR fallback until a Razorpay subscription plan at the same amount is created in
+  // Admin → Billing → Razorpay plans (that's what sets up the recurring AutoPay deduction).
+  BILLING_GATEWAY: { INR: 'razorpay', AED: 'stripe' },
+  BILLING_PRICE_LIST: {
+    basic:                 { INR: { amount: 106000, link: 'https://rzp.io/rzp/iDQDwal' },  AED: { amount: 9900 } },
+    standard:              { INR: { amount: 235800, link: 'https://rzp.io/rzp/kFf6wBWd' }, AED: { amount: 19900 } },
+    business_intelligence: { INR: { amount: 471800, link: 'https://rzp.io/rzp/vEp4KXX9' }, AED: { amount: 29900 } },
+  },
 };
 
 const INDUSTRIES = {
@@ -17622,7 +17634,7 @@ let _billingPlansCache=null;
 // Razorpay (INR) catalog — the same plans as Stripe's INR prices (Admin → Billing → Razorpay
 // plans imports them), shown instead of the Stripe INR list whenever Razorpay is set up, so Indian
 // customers pay with UPI AutoPay / Indian cards / net-banking. "Pay by card with Stripe" flips back.
-let _rzpPlansCache=null, _billingInrGateway='razorpay';
+let _rzpPlansCache=null;
 async function loadBillingPlans(){
   if(_billingPlansCache){ renderBillingPlanList(); return; }
   const wrap=$id('billingPricingTableWrap');
@@ -17648,12 +17660,10 @@ function billingPeriodLabel(period, n){
   const unit={daily:'day',weekly:'week',monthly:'month',yearly:'year'}[period]||period||'';
   return unit?`/${n>1?n+' ':''}${unit}${n>1?'s':''}`:'';
 }
-function setBillingInrGateway(g){ _billingInrGateway=g; renderBillingPlanList(); }
 function renderRzpPlanList(wrap, {switching=false}={}){
   const rzp=_rzpPlansCache;
   const pending=clientRecord.razorpay_status==='created'&&clientRecord.razorpay_short_url;
   const trial=rzp.trial_days&&clientRecord.razorpay_trial_used!=='Yes'&&!clientRecord.stripe_subscription_id;
-  const hasStripeInr=!switching&&(_billingPlansCache||[]).some(p=>(p.currency||'').toUpperCase()==='INR');
   wrap.innerHTML=(pending?`<div style="background:#FFF6E5;border:1px solid #F0D89B;border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:13px;color:#8A6416">
       ⏳ You started a subscription but haven't approved the AutoPay mandate yet. <a href="${escAttr(clientRecord.razorpay_short_url)}" target="_blank" rel="noopener" style="font-weight:700;color:inherit">Finish setup ↗</a> — or pick a plan below to start over.</div>`:'')
     +(switching?'':`<div class="s-note" style="margin-bottom:8px">🇮🇳 Pay with UPI AutoPay, RuPay / Indian cards or net-banking (Razorpay).${trial?` <strong>${rzp.trial_days}-day free trial</strong> — nothing is charged until it ends.`:''}</div>`)
@@ -17663,8 +17673,19 @@ function renderRzpPlanList(wrap, {switching=false}={}){
         <div><strong>${esc(p.name)}</strong><div class="s-note">₹${amount}${esc(billingPeriodLabel(p.period,p.interval_count))} · incl. auto-renewal, cancel anytime</div></div>
         <button class="save-btn" onclick="subscribeRazorpay('${escAttr(p.plan_id)}', this)">${switching?'Switch to this plan':'Subscribe'}</button>
       </div>`;
-    }).join('')
-    +(hasStripeInr?`<div class="s-note" style="margin-top:4px"><a href="#" onclick="setBillingInrGateway('stripe');return false">Prefer an international card? Pay with Stripe →</a></div>`:'');
+    }).join('');
+}
+// INR without Razorpay subscription plans yet → the Razorpay payment pages from
+// CONFIG.BILLING_PRICE_LIST (still Razorpay, never Stripe).
+function renderRzpLinkList(wrap){
+  const tiers=Object.entries(CONFIG.BILLING_PRICE_LIST).filter(([,p])=>p.INR?.link);
+  if(!tiers.length){ wrap.innerHTML='<div class="s-note">No INR plans available right now.</div>'; return; }
+  const labels={basic:'Basic', standard:'Standard', business_intelligence:'Business Intelligence'};
+  wrap.innerHTML=`<div class="s-note" style="margin-bottom:8px">🇮🇳 Pay with UPI, RuPay / Indian cards or net-banking (Razorpay). Prices include 18% GST.</div>`
+    +tiers.map(([key,p])=>`<div class="card" style="padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div><strong>${esc(labels[key]||key)}</strong><div class="s-note">${billingMoney(p.INR.amount,'INR')}/month · incl. 18% GST</div></div>
+        <a class="save-btn" href="${escAttr(p.INR.link)}" target="_blank" rel="noopener" style="text-decoration:none">Pay with Razorpay</a>
+      </div>`).join('');
 }
 async function subscribeRazorpay(plan_id, btn){
   const wrap=billingCanSwitchToRazorpay(clientRecord)?$id('billingRzpSwitchPlans'):$id('billingPricingTableWrap');
@@ -17688,7 +17709,11 @@ async function subscribeRazorpay(plan_id, btn){
 }
 function renderBillingPlanList(){
   const wrap=$id('billingPricingTableWrap');
-  if(_billingCurrency==='INR' && _billingInrGateway==='razorpay' && _rzpPlansCache?.enabled && _rzpPlansCache.plans.length){ renderRzpPlanList(wrap); return; }
+  if(CONFIG.BILLING_GATEWAY[_billingCurrency]==='razorpay'){
+    if(_rzpPlansCache?.enabled && _rzpPlansCache.plans.length) renderRzpPlanList(wrap);
+    else renderRzpLinkList(wrap);
+    return;
+  }
   const plans=(_billingPlansCache||[]).filter(p=>(p.currency||'').toUpperCase()===_billingCurrency);
   if(!plans.length){ wrap.innerHTML=`<div class="s-note">No plans available in ${esc(_billingCurrency)} right now.</div>`; return; }
   wrap.innerHTML=plans.map(p=>{
@@ -17698,7 +17723,7 @@ function renderBillingPlanList(){
       <div><strong>${esc(p.name)}</strong><div class="s-note">${esc((p.currency||'').toUpperCase())} ${amount}${esc(period)}</div></div>
       <button class="save-btn" onclick="subscribeToPlan('${esc(p.price_id)}')">Subscribe</button>
     </div>`;
-  }).join('')+(_billingCurrency==='INR'&&_rzpPlansCache?.enabled&&_rzpPlansCache.plans.length?`<div class="s-note" style="margin-top:4px"><a href="#" onclick="setBillingInrGateway('razorpay');return false">← Pay with UPI / Indian cards / net-banking (Razorpay)</a></div>`:'');
+  }).join('');
 }
 // Blocks checkout client-side (the Worker enforces the same rule server-side — this is just to
 // avoid a round-trip and point the customer straight at the field) — a Stripe account should
@@ -18016,11 +18041,11 @@ function renderBillingCompare(){
   const currentIdx=tiers.findIndex(t=>t.key===currentKey);
   const allModules=[...new Set(tiers.flatMap(t=>t.modules))];
   box.innerHTML=tiers.map((t,i)=>{
-    const price=t.prices[cur];
+    const price=billingTierPrice(t, cur);
     const isCurrent=hasPlan&&t.key===currentKey;
     let btn='';
     if(isCurrent) btn='<button class="bp-btn secondary" disabled>Current plan</button>';
-    else if(!price) btn=`<button class="bp-btn secondary" onclick="billingScrollTo('billingHelpCard')">Talk to us</button>`;
+    else if(!price||!price.gateway) btn=`<button class="bp-btn secondary" onclick="billingScrollTo('billingHelpCard')">Talk to us</button>`;
     else{
       const label=!hasPlan?'Choose':currentIdx<0?'Switch':(i>currentIdx?'Upgrade':'Downgrade');
       btn=`<button class="bp-btn ${label==='Downgrade'?'secondary':''}" onclick="billingChoosePlan('${escAttr(t.key)}', this)">${label}</button>`;
@@ -18041,11 +18066,24 @@ function renderBillingCompare(){
     ?(provider==='manual'?'Your plan is managed by Leadvyne — talk to us to change it.':'Upgrades apply straight away; downgrades take effect from your next billing cycle. Prices in '+cur+'.')
     :`Prices in ${cur}. Change currency at the top of this page.`;
 }
+// The tier's price in a currency, only through that currency's gateway (INR → Razorpay, AED →
+// Stripe). Falls back to CONFIG.BILLING_PRICE_LIST: INR via its Razorpay payment link, AED shown
+// for reference only (no Stripe price yet → "Talk to us").
+function billingTierPrice(t, cur){
+  const want=CONFIG.BILLING_GATEWAY[cur];
+  const p=t?.prices?.[cur];
+  if(p && (!want || p.gateway===want)) return p;
+  const list=CONFIG.BILLING_PRICE_LIST[t?.key]?.[cur];
+  if(!list) return null;
+  return {amount:list.amount, currency:cur, period:'monthly', interval_count:1,
+    gateway:list.link&&want==='razorpay'?'razorpay_link':'', id:'', link:list.link||''};
+}
 async function billingChoosePlan(tierKey, btn){
   const t=(_billingOverview?.tiers||[]).find(x=>x.key===tierKey);
-  const price=t?.prices[billingCompareCurrency()];
-  if(!price) return;
+  const price=billingTierPrice(t, billingCompareCurrency());
+  if(!price||!price.gateway) return;
   const provider=billingProviderOf(clientRecord);
+  if(price.gateway==='razorpay_link'){ window.open(price.link, '_blank', 'noopener'); return; }
   if(!billingHasActivePlan(clientRecord)){
     if(price.gateway==='razorpay') return subscribeRazorpay(price.id, btn);
     return subscribeToPlan(price.id);
