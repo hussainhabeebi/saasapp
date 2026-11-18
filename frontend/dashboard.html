@@ -12345,7 +12345,7 @@ async function runCtwaCheck(){
     if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
     const refs=d.referrals||[];
     const lines=[`Conversation #${conv}: ${d.messages_scanned} messages, ${refs.length} with an ad referral.`];
-    for(const x of refs) lines.push(`• message ${x.message_id}: ad id ${x.source_id||'—'} (${x.source_type||'?'}), ctwa_clid ${x.ctwa_clid||'MISSING'}${x.headline?` — “${x.headline}”`:''}\n  fields: ${x.keys.join(', ')}`);
+    for(const x of refs) lines.push(`• ${x.message_id==='conversation'?'conversation (Ad card)':'message '+x.message_id}: ad id ${x.source_id||'—'} (${x.source_type||'?'}), ctwa_clid ${x.ctwa_clid||'MISSING'}${x.headline?` — “${x.headline}”`:''}\n  fields: ${x.keys.join(', ')}`);
     lines.push(d.would_save?`Would save: Ad ID ${d.would_save.AdId||'—'}, CTWA Click ID ${d.would_save.CtwaClid?'yes':'missing'}`:'Nothing to save from this chat.');
     if(d.columns_error) lines.push('⚠️ '+d.columns_error);
     if(msg) msg.textContent=lines.join('\n');

@@ -83,7 +83,7 @@ async function sign(secret, payload){
   const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
   return `${body}.${btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}`;
 }
-async function backfillEnv({columns=['CtwaClid','AdId','Source'], leads, chats}, fn){
+async function backfillEnv({columns=['CtwaClid','AdId','Source'], leads, chats, convRefs={}}, fn){
   const db=new DatabaseSync(':memory:');
   const env={SESSION_SIGNING_KEY:'s', NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t', DB:d1(db)};
   const client={Id:48, authentik_email:'owner@couplo.test', chatwoot_base:'https://cw.test', chatwoot_account_id:'48', chatwoot_token:'tok'};
@@ -92,6 +92,8 @@ async function backfillEnv({columns=['CtwaClid','AdId','Source'], leads, chats},
   globalThis.fetch=async (url, opts={})=>{
     const u=decodeURIComponent(String(url));
     if(u.startsWith('https://cw.test/')){
+      const conv=u.match(/conversations\/(\d+)$/);
+      if(conv) return convRefs[conv[1]]?Response.json({id:Number(conv[1]), additional_attributes:{referral:convRefs[conv[1]]}}):Response.json({id:Number(conv[1]), additional_attributes:{}});
       const m=u.match(/conversations\/(\d+)\/messages/);
       return chats[m[1]]?Response.json({payload:chats[m[1]]}):new Response('{}', {status:404});
     }
@@ -138,4 +140,30 @@ test('missing CtwaClid column is reported instead of silently dropping the ids',
   assert.equal(status, 409);
   assert.match(data.error, /CtwaClid/);
   assert.equal(patches.length, 0);
+}));
+
+// Newer Chatwoot keeps the ad on the conversation (the "Ad" card at the top of the chat), not on
+// the message — Couplo's case.
+import { engineLeadAdClick as adClick } from './worker.js';
+const convRef={source_type:'ad', source_id:'120208877665544', ctwa_clid:'ARAk-conv', headline:'Name printed baby set'};
+
+test('live webhook: an ad on conversation.additional_attributes.referral is read', ()=>{
+  const body={id:5, content:'Hi', content_attributes:{}, conversation:{id:3243, additional_attributes:{referral:convRef}}};
+  assert.deepEqual(adClick(body), {AdId:'120208877665544', CtwaClid:'ARAk-conv'});
+  // The message's own referral wins when both exist.
+  const both={...body, content_attributes:{referral:{...convRef, ctwa_clid:'ARAk-msg'}}};
+  assert.equal(adClick(both).CtwaClid, 'ARAk-msg');
+  assert.equal(adClick({conversation:{additional_attributes:{referral:{}}}}), null);
+});
+
+test('backfill and check read the conversation-level ad referral', ()=>backfillEnv({
+  leads:[{Id:1, ConversationID:'3243', Source:''}], chats:{'3243':[{id:10, message_type:0, content:'Hi', content_attributes:{}}]}, convRefs:{'3243':convRef},
+}, async ({call, patches})=>{
+  const check=await call({conversation_id:'3243'});
+  assert.equal(check.data.referrals[0].message_id, 'conversation');
+  assert.deepEqual(check.data.would_save, {AdId:'120208877665544', CtwaClid:'ARAk-conv'});
+  const {data}=await call({after_id:0});
+  assert.equal(data.saved, 1);
+  const p=patches.find(x=>x.CtwaClid);
+  assert.equal(p.Id, 1); assert.equal(p.CtwaClid, 'ARAk-conv'); assert.equal(p.AdId, '120208877665544');
 }));
