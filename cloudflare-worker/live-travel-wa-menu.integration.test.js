@@ -329,18 +329,55 @@ test('Travel Settings save to D1, keep unsent fields and reject out-of-range val
   globalThis.fetch=async()=>new Response('{"msg":"Field lt_fare_options not found"}',{status:400});
   try{
     let r=await call(env,session,'/live-travel/travel-settings');
-    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_airline_variety:true,lt_one_fare_per_flight:true});
+    assert.deepEqual(r.data,{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_direct_only:false,lt_min_markup_pax:0,lt_min_markup_currency:'',lt_airline_variety:true,lt_one_fare_per_flight:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{itin_share_pdf:true,lt_fare_options:5});
     assert.equal(r.status,200,JSON.stringify(r.data));
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:false});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_airline_variety:true,lt_one_fare_per_flight:true});
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_direct_only:false,lt_min_markup_pax:0,lt_min_markup_currency:'',lt_airline_variety:true,lt_one_fare_per_flight:true});
     r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'highlighted'});
-    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_airline_variety:true,lt_one_fare_per_flight:true},'only the style changes');
+    assert.deepEqual(r.data,{itin_share_pdf:true,itin_auto_images:true,lt_show_fares:false,lt_fare_options:5,lt_fare_style:'highlighted',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_direct_only:false,lt_min_markup_pax:0,lt_min_markup_currency:'',lt_airline_variety:true,lt_one_fare_per_flight:true},'only the style changes');
     assert.deepEqual((await call(env,session,'/live-travel/travel-settings')).data,r.data);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:6})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_options:0})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_show_fares:'no'})).status,400);
     assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_fare_style:'fancy'})).status,400);
+  }finally{globalThis.fetch=realFetch;}
+});
+
+test('Only direct flights + minimum markup per passenger: connecting flights are hidden and every fare carries the markup',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY,12);
+  const realFetch=globalThis.fetch;
+  let fares=[];
+  const fare=(id,no,price,stops)=>({id,isBookable:true,supplier:'DUFFEL',displayPrice:price,totalFare:price,currency:'AED',airline:no.slice(0,2),airlineName:no.slice(0,2)==='EK'?'Emirates':'Air India',flightNumber:no,origin:'DXB',destination:'COK',departureTime:'2026-12-01T10:00:00',arrivalTime:'2026-12-01T18:00:00',duration:stops?480:240,stops});
+  globalThis.fetch=async(url)=>{
+    const u=String(url);
+    if(u==='https://api.flypoomas.com/api/search')return new Response(JSON.stringify({fares}));
+    return new Response('{}',{status:404});
+  };
+  try{
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_min_markup_pax:-1})).status,400);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_min_markup_pax:'50'})).status,400);
+    assert.equal((await call(env,session,'/live-travel/travel-settings','PUT',{lt_min_markup_currency:'XYZ'})).status,400);
+    const r=await call(env,session,'/live-travel/travel-settings','PUT',{lt_direct_only:true,lt_min_markup_pax:50,lt_min_markup_currency:'AED'});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.equal(r.data.lt_direct_only,true);
+    assert.equal(r.data.lt_min_markup_pax,50);
+    const c={Id:12,industry:'travel',language:'en',...r.data},phone='+971500000012';
+
+    // A cheaper connecting flight is never shown; the direct one costs 600 + 50 × 2 passengers.
+    fares=[fare('F-1','EK 530',600,0),fare('F-2','AI 934',400,1)];
+    let step=await engineHandleLiveTicketingChat(env,c,12,'DXB to COK on 2026-12-01, 2 adults',[],phone);
+    assert.match(step.reply,/Emirates EK 530/);
+    assert.doesNotMatch(step.reply,/AI 934|Connecting/);
+    assert.match(step.reply,/AED\s?700\b/);
+    assert.deepEqual(step.buttons.map(b=>b.title),['Book Option 1']);
+
+    // Only connecting flights that day: say so instead of showing them.
+    fares=[fare('F-3','AI 934',400,1)];
+    step=await engineHandleLiveTicketingChat(env,c,12,'DXB to COK on 2026-12-02, 1 adult',[],phone);
+    assert.match(step.reply,/no direct flights from DXB to COK on 2026-12-02/);
+    assert.ok(!step.buttons?.length);
   }finally{globalThis.fetch=realFetch;}
 });
 
