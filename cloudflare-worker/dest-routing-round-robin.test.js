@@ -74,3 +74,20 @@ test('the private note says who the destination rotates between — or that only
   assert.match(dsrNoteText({kind:'resort', destination:'Ooty', staffName:'Rinsha', rotation:['Sruthi','Rinsha','Adil']}), /Round robin between Sruthi, Rinsha, Adil\./);
   assert.match(dsrNoteText({kind:'resort', destination:'Ooty', staffName:'Sruthi', rotation:['Sruthi']}), /Only Sruthi has this destination — add it to other teammates' rows for round robin\./);
 });
+
+test('round robin off: the first teammate in the table takes every lead', async()=>{
+  const env={DB:new D1Database(), NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t'};
+  const c={Id:7, industry:'travel', authentik_email:'boss@x.com', team_emails:'sruthi@x.com,adil@x.com',
+    team_names:JSON.stringify({'sruthi@x.com':'Sruthi','adil@x.com':'Adil'}), team_whatsapp:JSON.stringify({'sruthi@x.com':'916282917343','adil@x.com':'918590796340'}),
+    dest_staff_routing:JSON.stringify({enabled:true, round_robin:false, rules:{'sruthi@x.com':{resorts:['Ooty']}, 'adil@x.com':{resorts:['Ooty']}}})};
+  assert.equal(dsrNormalizeSettings(c.dest_staff_routing).round_robin, false);
+  assert.equal(dsrNormalizeSettings('{}').round_robin, true, 'on by default');
+  const real=globalThis.fetch; globalThis.fetch=async()=>Response.json({list:[]});
+  try{
+    for(let i=0;i<3;i++){
+      const t=await engineDsrApply(env, c, '7', {convId:String(i), stage:'new', lead:{Id:i}, phone:'+9190000'+i, qualAnswers:{}}, {route:'faq', lang:'en', text:'', dsr:{kind:'resort', destination:'Ooty'}});
+      assert.equal(t.dsrPlan.staffName, 'Sruthi');
+      assert.deepEqual(t.dsrPlan.rotation, []);
+    }
+  }finally{ globalThis.fetch=real; }
+});

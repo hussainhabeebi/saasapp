@@ -19165,8 +19165,9 @@ export async function engineDsrResolve(env, c, clientId, state, ask){
   const hits=dsrMatchAll(cfg, ask, e=>present.has(e) && !away.has(e));
   if(!hits.length) return null;
   // Several teammates on this destination → round robin: each new lead goes to the next of them.
-  const hit=hits.length>1 ? dsrPickRoundRobin(hits, await dsrRotationNext(env, clientId, dsrRotationKey(ask.kind, hits))) : hits[0];
-  const rotation=hits.map(h=>staffDisplayName(c, h.email));
+  const rr=hits.length>1 && cfg.round_robin!==false;
+  const hit=rr ? dsrPickRoundRobin(hits, await dsrRotationNext(env, clientId, dsrRotationKey(ask.kind, hits))) : hits[0];
+  const rotation=rr ? hits.map(h=>staffDisplayName(c, h.email)) : hits.length===1 ? [staffDisplayName(c, hits[0].email)] : [];
   const team=parseTeamWhatsapp(c);
   const inbox=await dsrStaffInbox(env, c, clientId, hit.email, state?.inboxId);
   return {ask, cfg, email:hit.email, entry:hit.entry, rotation, staffName:staffDisplayName(c, hit.email),
@@ -19380,8 +19381,9 @@ async function handleDsrPreview(request, env){
   const hits=dsrMatchAll({...cfg, enabled:true}, ask, e=>present.has(e) && !away.has(e));
   if(!hits.length) return json({ok:true, matched:false, destination:dsrDestinationLabel(ask)});
   // Who the next lead goes to (peek — checking here doesn't use up anyone's turn).
-  const hit=hits.length>1 ? dsrPickRoundRobin(hits, await dsrRotationPeek(env, payload.cid, dsrRotationKey(ask.kind, hits))) : hits[0];
-  const rotation=hits.length>1 ? hits.map(h=>staffDisplayName(c, h.email)) : [];
+  const rr=hits.length>1 && cfg.round_robin!==false;
+  const hit=rr ? dsrPickRoundRobin(hits, await dsrRotationPeek(env, payload.cid, dsrRotationKey(ask.kind, hits))) : hits[0];
+  const rotation=rr ? hits.map(h=>staffDisplayName(c, h.email)) : [];
   const team=parseTeamWhatsapp(c), inbox=await dsrStaffInbox(env, c, payload.cid, hit.email, '');
   const staffPhone=hit.rule.phone||inbox?.phone||team[hit.email]||'';
   const destination=dsrDestinationLabel(ask);
