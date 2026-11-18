@@ -100,6 +100,8 @@ async function backfillEnv({columns=['CtwaClid','AdId','Source'], leads, chats, 
     if(u.includes('/meta/tables/mvg6rcw0ia5qqrx')) return Response.json({columns:columns.map(title=>({title}))});
     if(u.includes('/tables/mxl33bg4wi70fqj/records/48')) return Response.json(client);
     if(opts.method==='PATCH' && u.includes('/tables/mvg6rcw0ia5qqrx/records')){ patches.push(JSON.parse(opts.body)); return Response.json({}); }
+    // Like Couplo's NocoDB: a field list / blank filter naming an unknown field → 404.
+    if(u.includes('/tables/mvg6rcw0ia5qqrx/records') && (u.includes('fields=')||u.includes('notblank'))) return new Response('{"msg":"Field not found"}', {status:404});
     if(u.includes('/tables/mvg6rcw0ia5qqrx/records')){
       const after=Number((u.match(/\(Id,gt,(\d+)\)/)||[])[1]||0);
       return Response.json({list:leads.filter(l=>l.Id>after)});

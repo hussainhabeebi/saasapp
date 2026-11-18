@@ -604,16 +604,20 @@ async function handleLeadsCtwaBackfill(request, env){
   if(columnsError) return json({error:columnsError, columns}, 409);
 
   const after=Math.max(0, Number(body.after_id)||0), limit=Math.min(100, Math.max(1, Number(body.limit)||40)), dry=!!body.dry_run;
-  const where=encodeURIComponent(`(ClientId,eq,${payload.cid})~and(ConversationID,notblank)~and(Id,gt,${after})`);
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=Id&limit=${limit}&fields=Id,Phone,Channel,ConversationID,Source,CtwaClid,AdId`);
-  if(!r.ok) return json({error:'Could not read leads (NocoDB '+r.status+')'}, 502);
-  const rows=(await r.json().catch(()=>({})))?.list||[];
+  // Plain query (no field list / blank filters): NocoDB answers 404 when a query names a field it
+  // doesn't know, which is how the first version of this failed for Couplo.
+  const where=encodeURIComponent(`(ClientId,eq,${payload.cid})~and(Id,gt,${after})`);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=Id&limit=${limit}`);
+  if(!r.ok){ const t=await r.text().catch(()=>''); return json({error:`Could not read leads (NocoDB ${r.status}: ${t.slice(0,200)})`}, 502); }
+  const all=(await r.json().catch(()=>({})))?.list||[];
+  const rows=all.filter(l=>Number(l.Id)>after);
   const started=Date.now(), out={scanned:0, already:0, found:0, saved:0, failed:0, no_referral:0, chatwoot_errors:0};
   let lastId=after;
   for(const l of rows){
     if(Date.now()-started>20000) break;
     lastId=Number(l.Id); out.scanned++;
     if(String(l.CtwaClid||'').trim()){ out.already++; continue; }
+    if(!String(l.ConversationID||'').trim()){ out.no_referral++; continue; }
     let found=null;
     for(const conv of String(l.ConversationID).split(/[,\s]+/).filter(Boolean)){
       const atConv=await ctwaChatwootConversationReferral(c, conv);
@@ -627,7 +631,7 @@ async function handleLeadsCtwaBackfill(request, env){
     const src=String(l.Source||'').trim()&&!/^(whatsapp|instagram)$/i.test(String(l.Source).trim())?found.click:engineLeadAdSource(found.body, '', String(l.Channel||'whatsapp'));
     if(await engineApplyLeadSource(env, l.Id, src)) out.saved++; else out.failed++;
   }
-  const done=rows.length<limit && lastId===Number(rows[rows.length-1]?.Id||lastId);
+  const done=all.length<limit && lastId===Number(rows[rows.length-1]?.Id||lastId);
   return json({ok:true, columns, dry_run:dry, ...out, next_after_id:lastId, done});
 }
 // Best guess for a lead created before CreatedVia existing — what the backfill writes.
