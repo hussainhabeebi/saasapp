@@ -795,6 +795,25 @@ async function patchClientFields(env, clientId, fields){
   await kvDelClient(env,clientId);
   return r.json().catch(()=>({}));
 }
+// Save one JSON settings field on the CLIENTS row and prove it stuck. The column is created as
+// LongText (settings JSON outgrows a short text column), and since NocoDB silently ignores a PATCH
+// field it doesn't have, the row is read back fresh: returns {ok:true, row} only when the stored
+// value is exactly what was written, else {ok:false, error} with a message for the dashboard.
+async function saveClientJsonField(env, clientId, field, value, what='These settings'){
+  const text=typeof value==='string'?value:JSON.stringify(value);
+  await ensureClientColumns(env, [field], {[field]:'LongText'});
+  try{ await patchClientFields(env, clientId, {[field]:text}); }
+  catch(e){
+    await reportOpsError(env, `${field} — save refused by NocoDB`, e, {clientId}).catch(()=>{});
+    return {ok:false, error:`${what} could not be saved (the database refused the update — the ${field} column may be too short). Please contact support.`};
+  }
+  const row=await getClientByIdFresh(env, clientId);
+  if(String(row?.[field]??'')!==text){
+    await reportOpsError(env, `${field} — not stored`, new Error(`${field} did not persist (column missing, not writable or too short); wrote ${text.length} chars, read back ${String(row?.[field]??'').length}`), {clientId}).catch(()=>{});
+    return {ok:false, error:`${what} could not be saved — the ${field} column is missing on the clients table and could not be created. Please contact support.`};
+  }
+  return {ok:true, row};
+}
 
 // Meta credentials are scoped to a Chatwoot WhatsApp inbox. Keep this JSON server-side: it
 // contains live access tokens and must never be returned by safeClient or /channels/status.
@@ -18955,17 +18974,9 @@ async function handleTeamWhatsappSet(request, env){
     if(!norm) return json({error:'Enter a valid WhatsApp number with country code, e.g. +91 98765 43210.'}, 400);
     map[target]=norm;
   }else delete map[target];
-  // LongText: the JSON for a whole team easily passes a short text column's limit.
-  await ensureClientColumns(env, ['team_whatsapp'], {team_whatsapp:'LongText'});
-  await patchClientFields(env, payload.cid, {team_whatsapp:JSON.stringify(map)});
-  // NocoDB ignores a field it doesn't have, so a "successful" PATCH proves nothing — read it back.
-  const after=await getClientByIdFresh(env, payload.cid);
-  const stored=parseTeamWhatsapp(after);
-  if((map[target]||'')!==(stored[target]||'')){
-    await reportOpsError(env, 'team/whatsapp — number not stored', new Error('team_whatsapp did not persist (column missing or not writable)'), {clientId:payload.cid}).catch(()=>{});
-    return json({error:'The number could not be stored — the team_whatsapp column is missing on the clients table and could not be created. Please contact support.'}, 500);
-  }
-  return json({ok:true, team_whatsapp:stored});
+  const res=await saveClientJsonField(env, payload.cid, 'team_whatsapp', map, 'The WhatsApp number');
+  if(!res.ok) return json({error:res.error}, 500);
+  return json({ok:true, team_whatsapp:parseTeamWhatsapp(res.row)});
 }
 function hotLeadAlertDefaultCc(c){
   const cc=String(metaLeadgenSettings(c).default_country_code||'').replace(/\D/g,'');
@@ -18989,7 +19000,7 @@ async function handleHotAlertsConfigGet(request, env){
 async function handleHotAlertsConfigSet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
+  const c=await getClientByIdFresh(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can change alert settings.'}, 403);
   const body=await request.json().catch(()=>({}));
@@ -19000,9 +19011,9 @@ async function handleHotAlertsConfigSet(request, env){
   if('template_lang' in body) next.template_lang=String(body.template_lang||'en').trim().slice(0,15)||'en';
   if('cooldown_hours' in body) next.cooldown_hours=Number(body.cooldown_hours);
   const saved=hotLeadAlertSettings({hot_lead_alert_config:JSON.stringify(next)});
-  await ensureClientColumns(env, ['hot_lead_alert_config']);
-  await patchClientFields(env, payload.cid, {hot_lead_alert_config:JSON.stringify(saved)});
-  return json({ok:true, config:saved});
+  const res=await saveClientJsonField(env, payload.cid, 'hot_lead_alert_config', saved, 'Hot lead alert settings');
+  if(!res.ok) return json({error:res.error}, 500);
+  return json({ok:true, config:hotLeadAlertSettings(res.row)});
 }
 // Creates a WhatsApp template in the client's own WABA from a preset. Shared by hot alerts and
 // lead-form welcomes. Meta now requires example values for every {{n}} in a new template.
@@ -19032,8 +19043,7 @@ async function handleHotAlertsTemplatePreset(request, env){
   const res=await createPresetWaTemplate(env, c, payload.cid, HOT_LEAD_ALERT_TEMPLATE);
   if(res.status===200){
     const next={...hotLeadAlertSettings(c), template_name:HOT_LEAD_ALERT_TEMPLATE.name, template_lang:HOT_LEAD_ALERT_TEMPLATE.language};
-    await ensureClientColumns(env, ['hot_lead_alert_config']);
-    await patchClientFields(env, payload.cid, {hot_lead_alert_config:JSON.stringify(next)});
+    await saveClientJsonField(env, payload.cid, 'hot_lead_alert_config', next, 'Hot lead alert settings');
   }
   return res;
 }
@@ -19283,7 +19293,9 @@ async function dsrTeamView(env, c, clientId){
 async function handleDsrSettings(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
+  // A save starts from the stored row, not the KV cache (eventually consistent — a stale copy
+  // would undo the previous save's other fields).
+  let c=request.method==='POST'?await getClientByIdFresh(env, payload.cid):await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(request.method==='POST'){
     if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can change destination routing.'}, 403);
@@ -19291,9 +19303,9 @@ async function handleDsrSettings(request, env){
     const body=await request.json().catch(()=>({}));
     const present=presentStaffEmails(c);
     const saved=dsrSettingsPatch(body||{}, dsrSettings(c), e=>present.has(e));
-    await ensureClientColumns(env, ['dest_staff_routing']);
-    await patchClientFields(env, payload.cid, {dest_staff_routing:JSON.stringify(saved)});
-    c.dest_staff_routing=JSON.stringify(saved);
+    const res=await saveClientJsonField(env, payload.cid, 'dest_staff_routing', saved, 'Destination routing');
+    if(!res.ok) return json({error:res.error}, 500);
+    c=res.row;
   }
   return json({ok:true, agency:dsrIsAgency(c), config:dsrSettings(c), team:await dsrTeamView(env, c, payload.cid), presets:dsrPresets()});
 }
@@ -19310,9 +19322,10 @@ async function handleDsrTemplatePreset(request, env){
   const res=await createPresetWaTemplate(env, c, payload.cid, preset);
   if(res.status===200){
     const key=which==='customer'?'customer':'staff';
-    const saved=dsrNormalizeSettings({...dsrSettings(c), [`${key}_template_name`]:preset.name, [`${key}_template_lang`]:preset.language});
-    await ensureClientColumns(env, ['dest_staff_routing']);
-    await patchClientFields(env, payload.cid, {dest_staff_routing:JSON.stringify(saved)});
+    const fresh=await getClientByIdFresh(env, payload.cid)||c;
+    const saved=dsrNormalizeSettings({...dsrSettings(fresh), [`${key}_template_name`]:preset.name, [`${key}_template_lang`]:preset.language});
+    const sr=await saveClientJsonField(env, payload.cid, 'dest_staff_routing', saved, 'The template name');
+    if(!sr.ok) return json({error:`The template was created in WhatsApp, but ${sr.error.charAt(0).toLowerCase()+sr.error.slice(1)}`}, 500);
   }
   return res;
 }
