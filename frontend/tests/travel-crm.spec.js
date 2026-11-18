@@ -392,8 +392,9 @@ const wnVar = (loc) => loc.evaluate(el => getComputedStyle(el).getPropertyValue(
 test('Inbox: each chat shows the WhatsApp number it came in on, in that number\'s colour', async ({ page }) => {
   await openInbox(page);
   const chip = name => page.locator('#list .contact', { hasText: name }).locator('.wn');
-  await expect(chip('Asha')).toHaveText('Calicut office');
-  await expect(chip('Meera')).toHaveText('Dubai office');
+  await expect(chip('Asha')).toHaveText('Calicut'); // short: "office" dropped; full name in the tooltip / header
+  await expect(chip('Meera')).toHaveText('Dubai');
+  await expect(chip('Meera')).toHaveAttribute('title', /Dubai office · \+971500000022/);
   expect(await wnVar(chip('Asha'))).not.toBe(await wnVar(chip('Meera')));
   expect(await wnVar(chip('Asha'))).toBe(await wnVar(chip('Ravi')));
   await page.locator('#list .contact', { hasText: 'Meera' }).click();
