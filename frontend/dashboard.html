@@ -17357,7 +17357,8 @@ async function sendTestEmail(){
 }
 
 const HEALTH_STATUS_COLOR={ok:'green', warn:'warn', fail:'red'};
-const HEALTH_STATUS_ICON={ok:'✅', warn:'⚠️', fail:'❌'};
+const HEALTH_STATUS_ICON={ok:'✅', warn:'⚠️', fail:'❌', off:'⚪'};
+const HEALTH_STATUS_ORDER={fail:0, warn:1, ok:2, off:3};
 
 function intTimeSince(iso){
   if(!iso) return '—';
@@ -17383,10 +17384,10 @@ function renderHealthResults(){
   const latest=log.length?log[log.length-1].results:[];
   const list=$id('intHealthList');
   if(!latest.length){ list.innerHTML='<div class="s-note">No results yet.</div>'; return; }
-  list.innerHTML=latest.map(r=>`<div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0">
+  list.innerHTML=[...latest].sort((a,b)=>(HEALTH_STATUS_ORDER[a.status]??9)-(HEALTH_STATUS_ORDER[b.status]??9)).map(r=>`<div style="display:flex;align-items:flex-start;gap:8px;font-size:13px;padding:4px 0;${r.status==='off'?'opacity:.65':''}">
     <span>${HEALTH_STATUS_ICON[r.status]||'—'}</span>
     <b style="min-width:220px">${esc(r.label)}</b>
-    <span style="color:var(--muted)">${esc(r.detail||'')}</span>
+    <span style="color:var(--muted)">${esc(r.detail||'')}${r.hint&&r.status!=='ok'?`<br><span style="color:var(--text)">💡 ${esc(r.hint)}</span>`:''}</span>
   </div>`).join('');
 }
 
