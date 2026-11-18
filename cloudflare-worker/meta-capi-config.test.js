@@ -45,6 +45,9 @@ async function save(body){
       return Response.json({Id:7});
     }
     if(u.includes(`/tables/${CLIENTS}/records/7`)) return Response.json(row);
+    // Like NocoDB: a records read naming a field the table doesn't have is refused.
+    const f=new URL(u).searchParams.get('fields');
+    if(f && f.split(',').some(x=>!columns.includes(x))) return Response.json({msg:'Field not found'}, {status:404});
     return Response.json({list:[]});
   };
   try{

@@ -441,9 +441,31 @@ async function ncEnsureField(env, tableId, existingNames, name, uidt='SingleLine
     }
   }catch(e){ console.error('[ncEnsureField] failed to create column', name, 'on table', tableId, ':', e.message); }
 }
-async function ensureClientColumns(env, names){
+async function ensureClientColumns(env, names, uidts={}){
   const {names:existing}=await ncTableMeta(env, CLIENTS_TABLE);
-  for(const n of names) await ncEnsureField(env, CLIENTS_TABLE, existing, n);
+  for(const n of names){
+    if(existing.includes(n)) continue;
+    await ncEnsureColumnProbed(env, CLIENTS_TABLE, n, uidts[n]||'SingleLineText');
+  }
+}
+// "Does column X exist" proven the way NocoDB itself decides: a records read that asks for the
+// field succeeds only if it exists. The table meta has been seen not to list a column that's
+// there, and some NocoDB versions refuse the /fields create route and only take the older
+// /columns one — while a PATCH naming a missing column is silently ignored. So: probe, create via
+// /fields, probe, create via /columns, probe. Resolves true once the column is really there.
+async function ncColumnProbe(env, tableId, name){
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?limit=1&fields=Id,${encodeURIComponent(name)}`).catch(()=>null);
+  return !!r?.ok;
+}
+export async function ncEnsureColumnProbed(env, tableId, name, uidt='SingleLineText'){
+  if(await ncColumnProbe(env, tableId, name)) return true;
+  const body={column_name:name, title:name, uidt};
+  const r1=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body}).catch(()=>null);
+  if(await ncColumnProbe(env, tableId, name)) return true;
+  const r2=await ncFetch(env, `api/v2/meta/tables/${tableId}/columns`, {method:'POST', body}).catch(()=>null);
+  if(await ncColumnProbe(env, tableId, name)) return true;
+  console.error('[ncEnsureColumnProbed] column still missing', name, 'on', tableId, '/fields', r1?.status, '/columns', r2?.status);
+  return false;
 }
 async function ensureLeadsColumns(env, names){
   const {names:existing}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
@@ -18933,9 +18955,17 @@ async function handleTeamWhatsappSet(request, env){
     if(!norm) return json({error:'Enter a valid WhatsApp number with country code, e.g. +91 98765 43210.'}, 400);
     map[target]=norm;
   }else delete map[target];
-  await ensureClientColumns(env, ['team_whatsapp']);
+  // LongText: the JSON for a whole team easily passes a short text column's limit.
+  await ensureClientColumns(env, ['team_whatsapp'], {team_whatsapp:'LongText'});
   await patchClientFields(env, payload.cid, {team_whatsapp:JSON.stringify(map)});
-  return json({ok:true, team_whatsapp:map});
+  // NocoDB ignores a field it doesn't have, so a "successful" PATCH proves nothing — read it back.
+  const after=await getClientByIdFresh(env, payload.cid);
+  const stored=parseTeamWhatsapp(after);
+  if((map[target]||'')!==(stored[target]||'')){
+    await reportOpsError(env, 'team/whatsapp — number not stored', new Error('team_whatsapp did not persist (column missing or not writable)'), {clientId:payload.cid}).catch(()=>{});
+    return json({error:'The number could not be stored — the team_whatsapp column is missing on the clients table and could not be created. Please contact support.'}, 500);
+  }
+  return json({ok:true, team_whatsapp:stored});
 }
 function hotLeadAlertDefaultCc(c){
   const cc=String(metaLeadgenSettings(c).default_country_code||'').replace(/\D/g,'');
