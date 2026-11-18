@@ -556,6 +556,15 @@ async function ctwaChatwootMessages(c, convId, maxPages=15){
   }
   return out;
 }
+async function ctwaChatwootConversationReferral(c, convId){
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${encodeURIComponent(convId)}`,
+    {headers:{api_access_token:c.chatwoot_token}}).catch(()=>null);
+  if(!r?.ok) return null;
+  const conv=await r.json().catch(()=>null);
+  const body={conversation:{additional_attributes:conv?.additional_attributes||conv?.payload?.additional_attributes}};
+  const ref=engineReferral(body);
+  return ref?{ref, body, click:engineLeadAdClick(body)}:null;
+}
 // The most recent ad referral among a chat's incoming messages → {click, ref, body} | null.
 export function ctwaLatestReferral(msgs){
   const withRef=(Array.isArray(msgs)?msgs:[])
@@ -586,8 +595,11 @@ async function handleLeadsCtwaBackfill(request, env){
       return {message_id:m.id, created_at:m.created_at, message_type:m.message_type, keys:Object.keys(ref).sort(), source_type:ref.source_type||'', source_id:ref.source_id||'',
         ctwa_clid:ref.ctwa_clid?String(ref.ctwa_clid).slice(0,12)+'…':'', headline:String(ref.headline||'').slice(0,80)};
     });
+    const atConv=await ctwaChatwootConversationReferral(c, String(body.conversation_id));
+    if(atConv){ const ref=atConv.ref; referrals.unshift({message_id:'conversation', created_at:null, message_type:null, keys:Object.keys(ref).sort(), source_type:ref.source_type||'', source_id:ref.source_id||'',
+      ctwa_clid:ref.ctwa_clid?String(ref.ctwa_clid).slice(0,12)+'…':'', headline:String(ref.headline||'').slice(0,80)}); }
     return json({ok:true, columns, columns_error:columnsError, conversation_id:String(body.conversation_id), messages_scanned:msgs.length, referrals,
-      would_save:ctwaLatestReferral(msgs)?.click||null});
+      would_save:atConv?.click||ctwaLatestReferral(msgs)?.click||null});
   }
   if(columnsError) return json({error:columnsError, columns}, 409);
 
@@ -604,6 +616,8 @@ async function handleLeadsCtwaBackfill(request, env){
     if(String(l.CtwaClid||'').trim()){ out.already++; continue; }
     let found=null;
     for(const conv of String(l.ConversationID).split(/[,\s]+/).filter(Boolean)){
+      const atConv=await ctwaChatwootConversationReferral(c, conv);
+      if(atConv?.click){ found=atConv; break; }
       try{ found=ctwaLatestReferral(await ctwaChatwootMessages(c, conv)); }catch(e){ out.chatwoot_errors++; }
       if(found) break;
     }
@@ -28366,10 +28380,15 @@ function engineAttrsObj(v){
   if(v && typeof v==='string'){ try{ v=JSON.parse(v); }catch(e){ return null; } }
   return v && typeof v==='object' ? v : null;
 }
+// The message's own referral first; then the conversation's — newer Chatwoot keeps a
+// Click-to-WhatsApp ad on conversation.additional_attributes.referral (the "Ad" card at the top of
+// the chat) and not on the message, which is why Couplo's ids stayed empty.
 export function engineReferral(body){
-  const ref=engineAttrsObj(body?.content_attributes)?.referral||engineAttrsObj(body?.additional_attributes)?.referral
-    ||engineAttrsObj(body?.message?.content_attributes)?.referral||null;
-  return ref && typeof ref==='object' ? ref : null;
+  const ok=r=>r && typeof r==='object' && Object.keys(r).length ? r : null;
+  return ok(engineAttrsObj(body?.content_attributes)?.referral)||ok(engineAttrsObj(body?.additional_attributes)?.referral)
+    ||ok(engineAttrsObj(body?.message?.content_attributes)?.referral)
+    ||ok(engineAttrsObj(body?.conversation?.additional_attributes)?.referral)
+    ||ok(engineAttrsObj(body?.message?.conversation?.additional_attributes)?.referral)||null;
 }
 // The ad behind a click-to-WhatsApp chat: Meta's ad id (joins the lead to Reports → 💸 Ads ROI's
 // synced spend) and the click id (ctwa_clid — the Conversions API's strongest match key for a
