@@ -534,6 +534,88 @@ async function handleLeadsSourceBackfill(request, env){
   }
   return json({ok:true, updated:total, unknown, failed, counts});
 }
+/* POST /leads/ctwa/backfill — owner / admin. Click-to-WhatsApp ad click ids (ctwa_clid + ad id)
+   from Chatwoot's own message history (content_attributes.referral on the first message after an
+   ad click) onto leads that don't have them — for leads from before the live capture worked.
+   Body: {conversation_id} → check only: what referral data Chatwoot holds for that chat;
+         {after_id, limit, dry_run} → fill a batch of leads (by Id); call again with next_after_id
+         until done. Also reports whether the LEADS table has the CtwaClid / AdId columns — NocoDB
+         drops unknown fields from a PATCH without an error, so a missing column loses them. */
+async function ctwaChatwootMessages(c, convId, maxPages=15){
+  const out=[]; let before='';
+  for(let page=0;page<maxPages;page++){
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${encodeURIComponent(convId)}/messages${before?`?before=${before}`:''}`,
+      {headers:{api_access_token:c.chatwoot_token}}).catch(()=>null);
+    if(!r?.ok){ if(!page) throw new Error('Chatwoot '+(r?.status||'unreachable')+' for conversation '+convId); break; }
+    const msgs=(await r.json().catch(()=>({})))?.payload||[];
+    out.push(...msgs);
+    if(msgs.length<20) break;
+    const min=Math.min(...msgs.map(m=>Number(m.id)||Infinity));
+    if(!isFinite(min)) break;
+    before=min;
+  }
+  return out;
+}
+// The most recent ad referral among a chat's incoming messages → {click, ref, body} | null.
+export function ctwaLatestReferral(msgs){
+  const withRef=(Array.isArray(msgs)?msgs:[])
+    .filter(m=>m && (m.message_type===0||m.message_type==='incoming'))
+    .map(m=>({m, body:{content_attributes:m.content_attributes}}))
+    .filter(x=>engineReferral(x.body))
+    .sort((a,b)=>Number(b.m.created_at||b.m.id||0)-Number(a.m.created_at||a.m.id||0));
+  for(const x of withRef){ const click=engineLeadAdClick(x.body); if(click) return {click, ref:engineReferral(x.body), body:x.body}; }
+  return null;
+}
+async function handleLeadsCtwaBackfill(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!seesAllChannelLeads(c, payload.email)) return json({error:'Only the account owner or an admin can do this.'}, 403);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not connected for this account.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  await ensureLeadsColumns(env, ['CtwaClid','AdId']).catch(()=>{});
+  const {names}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
+  const columns={CtwaClid:names.includes('CtwaClid'), AdId:names.includes('AdId')};
+  const columnsError=(!columns.CtwaClid||!columns.AdId)?'The LEADS table in NocoDB has no '+['CtwaClid','AdId'].filter(k=>!columns[k]).join(' / ')+' column and it could not be added (the NocoDB token needs Creator rights) — add them as Single line text columns in NocoDB. Until then the ids are dropped.':null;
+
+  if(body.conversation_id){
+    let msgs;
+    try{ msgs=await ctwaChatwootMessages(c, String(body.conversation_id)); }catch(e){ return json({error:e.message, columns}, 502); }
+    const referrals=msgs.filter(m=>engineReferral({content_attributes:m.content_attributes})).map(m=>{
+      const ref=engineReferral({content_attributes:m.content_attributes});
+      return {message_id:m.id, created_at:m.created_at, message_type:m.message_type, keys:Object.keys(ref).sort(), source_type:ref.source_type||'', source_id:ref.source_id||'',
+        ctwa_clid:ref.ctwa_clid?String(ref.ctwa_clid).slice(0,12)+'…':'', headline:String(ref.headline||'').slice(0,80)};
+    });
+    return json({ok:true, columns, columns_error:columnsError, conversation_id:String(body.conversation_id), messages_scanned:msgs.length, referrals,
+      would_save:ctwaLatestReferral(msgs)?.click||null});
+  }
+  if(columnsError) return json({error:columnsError, columns}, 409);
+
+  const after=Math.max(0, Number(body.after_id)||0), limit=Math.min(100, Math.max(1, Number(body.limit)||40)), dry=!!body.dry_run;
+  const where=encodeURIComponent(`(ClientId,eq,${payload.cid})~and(ConversationID,notblank)~and(Id,gt,${after})`);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=Id&limit=${limit}&fields=Id,Phone,Channel,ConversationID,Source,CtwaClid,AdId`);
+  if(!r.ok) return json({error:'Could not read leads (NocoDB '+r.status+')'}, 502);
+  const rows=(await r.json().catch(()=>({})))?.list||[];
+  const started=Date.now(), out={scanned:0, already:0, found:0, saved:0, failed:0, no_referral:0, chatwoot_errors:0};
+  let lastId=after;
+  for(const l of rows){
+    if(Date.now()-started>20000) break;
+    lastId=Number(l.Id); out.scanned++;
+    if(String(l.CtwaClid||'').trim()){ out.already++; continue; }
+    let found=null;
+    for(const conv of String(l.ConversationID).split(/[,\s]+/).filter(Boolean)){
+      try{ found=ctwaLatestReferral(await ctwaChatwootMessages(c, conv)); }catch(e){ out.chatwoot_errors++; }
+      if(found) break;
+    }
+    if(!found){ out.no_referral++; continue; }
+    out.found++;
+    if(dry) continue;
+    const src=String(l.Source||'').trim()&&!/^(whatsapp|instagram)$/i.test(String(l.Source).trim())?found.click:engineLeadAdSource(found.body, '', String(l.Channel||'whatsapp'));
+    if(await engineApplyLeadSource(env, l.Id, src)) out.saved++; else out.failed++;
+  }
+  const done=rows.length<limit && lastId===Number(rows[rows.length-1]?.Id||lastId);
+  return json({ok:true, columns, dry_run:dry, ...out, next_after_id:lastId, done});
+}
 // Best guess for a lead created before CreatedVia existing — what the backfill writes.
 export function leadCreatedViaGuess(l){
   if(String(l?.Channel||'').toLowerCase()==='instagram'||String(l?.Phone||'').startsWith('ig:')) return 'chatwoot';
@@ -28344,8 +28426,10 @@ export async function engineCaptureAdClickEarly(env, clientId, body, state, text
   if(!isNew) return;
   const src=String(lead.Source||'').trim()?click:engineLeadAdSource(body, text, state.channel||'whatsapp');
   state.adSource=src;
+  const what=`ad ${click.AdId||'?'}, ctwa_clid ${click.CtwaClid?'yes':'missing'}`;
   if(state.leadId){
-    await engineApplyLeadSource(env, state.leadId, src);
+    const ok=await engineApplyLeadSource(env, state.leadId, src);
+    await logEngineSkip(env, clientId, state.phone, state.convId, ok?'ctwa-click-saved':'ctwa-click-failed', `${what} → lead ${state.leadId}`);
     state.adSourceSaved=true;
     // Later checks in this turn compare against the lead — it now has this click.
     state.lead={...lead, ...src};
@@ -28355,6 +28439,7 @@ export async function engineCaptureAdClickEarly(env, clientId, body, state, text
   await enginePendingAdClicksTable(env);
   await env.DB.prepare(`INSERT OR REPLACE INTO engine_pending_ad_clicks (client_id, phone, data, at) VALUES (?,?,?,?)`)
     .bind(Number(clientId), String(state.phone), JSON.stringify(src), Date.now()).run();
+  await logEngineSkip(env, clientId, state.phone, state.convId, 'ctwa-click-pending', `${what} — saved on the lead's first save`);
 }
 export async function engineFlushPendingAdClick(env, clientId, phone, leadId){
   if(!env.DB || !clientId || !phone || !leadId) return;
@@ -28367,7 +28452,7 @@ export async function engineFlushPendingAdClick(env, clientId, phone, leadId){
   }catch(e){ /* table not created yet = nothing pending */ }
 }
 async function engineApplyLeadSource(env, leadId, src){
-  if(!leadId || !src) return;
+  if(!leadId || !src) return false;
   try{
     const fields=Object.fromEntries(Object.entries(src).filter(([,v])=>v));
     await ensureLeadsColumns(env, Object.keys(fields)).catch(()=>{});
@@ -28381,7 +28466,8 @@ async function engineApplyLeadSource(env, leadId, src){
       if(Object.keys(ids).length) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...ids}});
       if(!r.ok) await reportOpsError(env, 'CTWA click id not saved on lead', new Error('HTTP '+r.status), {leadId}).catch(()=>{});
     }
-  }catch(e){}
+    return r.ok;
+  }catch(e){ return false; }
 }
 async function engineUpsertLead(env, method, leadId, body){
   const adSource=body._adSource; delete body._adSource;
@@ -44863,6 +44949,7 @@ export default {
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
       else if(url.pathname==='/leads/created-via/backfill' && request.method==='POST'){ res=await handleLeadsCreatedViaBackfill(request, env); }
       else if(url.pathname==='/leads/source/backfill' && request.method==='POST'){ res=await handleLeadsSourceBackfill(request, env); }
+      else if(url.pathname==='/leads/ctwa/backfill' && request.method==='POST'){ res=await handleLeadsCtwaBackfill(request, env); }
       else if(url.pathname==='/leads/opened' && request.method==='POST'){ res=await handleLeadOpened(request, env); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSendCompat(request, env); }
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
