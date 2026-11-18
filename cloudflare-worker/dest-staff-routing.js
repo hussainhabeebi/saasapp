@@ -252,9 +252,11 @@ export function dsrCustomerTemplateParams({customerName, staffName, business, de
   return [param(firstName(customerName)||'there', 40), param(staffName||'your travel expert', 60), param(business||'our team', 80), param(destination||'your trip', 80)];
 }
 // The private note on the main number's chat, so the team sees why the bot stopped.
-export function dsrNoteText({kind, destination, staffName, staffEmail, staffPhone, alert='', intro=''}){
-  const parts=[`📍 Destination routing: ${DSR_KIND_LABEL[kind]||'Enquiry'} — ${destination||'-'} → ${staffName||staffEmail}${staffPhone?` (+${digits(staffPhone)})`:''}.`,
-    'The bot on this number is now silent for this customer; further communication is from the staff member\'s number.'];
+// rotation: the names this destination rotates between ([] / one name = no round robin).
+export function dsrNoteText({kind, destination, staffName, staffEmail, staffPhone, alert='', intro='', rotation=[]}){
+  const parts=[`📍 Destination routing: ${DSR_KIND_LABEL[kind]||'Enquiry'} — ${destination||'-'} → ${staffName||staffEmail}${staffPhone?` (+${digits(staffPhone)})`:''}.`];
+  parts.push(rotation.length>1?`Round robin between ${rotation.join(', ')}.`:`Only ${staffName||staffEmail} has this destination — add it to other teammates' rows for round robin.`);
+  parts.push('The bot on this number is now silent for this customer; further communication is from the staff member\'s number.');
   if(alert) parts.push(`Staff alert: ${alert}.`);
   if(intro) parts.push(`First message from the staff number: ${intro}.`);
   return parts.join(' ');

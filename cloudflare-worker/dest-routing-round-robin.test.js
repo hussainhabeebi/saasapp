@@ -59,6 +59,7 @@ test('consecutive Ooty leads: Sruthi, Rinsha, Adil, Sruthi — each lead owned b
       assert.equal(fields.Owner, turn.dsrPlan.email);
       assert.ok(turn.text.includes('+'+JSON.parse(c.team_whatsapp)[fields.Owner]), turn.text);
       assert.ok(turn.text.includes(turn.dsrPlan.staffName));
+      assert.deepEqual(turn.dsrPlan.rotation, ['Sruthi','Rinsha','Adil']);
       got.push(turn.dsrPlan.staffName);
     }
     assert.deepEqual(got, ['Sruthi','Rinsha','Adil','Sruthi']);
@@ -66,4 +67,10 @@ test('consecutive Ooty leads: Sruthi, Rinsha, Adil, Sruthi — each lead owned b
     const m=await engineDsrApply(env, c, '7', {convId:'9', stage:'new', lead:{Id:9}, phone:'+919', qualAnswers:{}}, {route:'faq', lang:'en', text:'', dsr:{kind:'resort', destination:'Munnar'}});
     assert.equal(m.dsrPlan.staffName, 'Shakir');
   }finally{ globalThis.fetch=real; }
+});
+
+test('the private note says who the destination rotates between — or that only one person has it', async()=>{
+  const {dsrNoteText}=await import('./dest-staff-routing.js');
+  assert.match(dsrNoteText({kind:'resort', destination:'Ooty', staffName:'Rinsha', rotation:['Sruthi','Rinsha','Adil']}), /Round robin between Sruthi, Rinsha, Adil\./);
+  assert.match(dsrNoteText({kind:'resort', destination:'Ooty', staffName:'Sruthi', rotation:['Sruthi']}), /Only Sruthi has this destination — add it to other teammates' rows for round robin\./);
 });

@@ -19166,9 +19166,10 @@ export async function engineDsrResolve(env, c, clientId, state, ask){
   if(!hits.length) return null;
   // Several teammates on this destination → round robin: each new lead goes to the next of them.
   const hit=hits.length>1 ? dsrPickRoundRobin(hits, await dsrRotationNext(env, clientId, dsrRotationKey(ask.kind, hits))) : hits[0];
+  const rotation=hits.map(h=>staffDisplayName(c, h.email));
   const team=parseTeamWhatsapp(c);
   const inbox=await dsrStaffInbox(env, c, clientId, hit.email, state?.inboxId);
-  return {ask, cfg, email:hit.email, entry:hit.entry, staffName:staffDisplayName(c, hit.email),
+  return {ask, cfg, email:hit.email, entry:hit.entry, rotation, staffName:staffDisplayName(c, hit.email),
     staffPhone:hit.rule.phone||inbox?.phone||team[hit.email]||'', alertPhone:team[hit.email]||'', inbox,
     destination:dsrDestinationLabel(ask)};
 }
@@ -19281,7 +19282,7 @@ export async function engineDsrAfterHandoff(env, c, clientId, leadId, state, bod
     if(state?.convId && c?.chatwoot_base && c?.chatwoot_account_id && c?.chatwoot_token){
       await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${state.convId}/messages`, {method:'POST',
         headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
-        body:JSON.stringify({content:dsrNoteText({kind, destination:plan.destination, staffName:plan.staffName, staffEmail:plan.email, staffPhone:plan.staffPhone, alert:out.alert, intro:out.intro}),
+        body:JSON.stringify({content:dsrNoteText({kind, destination:plan.destination, staffName:plan.staffName, staffEmail:plan.email, staffPhone:plan.staffPhone, alert:out.alert, intro:out.intro, rotation:plan.rotation||[]}),
           message_type:'outgoing', private:true})}).catch(()=>{});
     }
     await engineBroadcastUpdate(env, clientId, {type:'lead_updated', lead_ids:[Number(leadId)], fields:['Owner',...DSR_LEAD_COLUMNS], by:'auto', at:new Date().toISOString()}).catch(()=>{});
