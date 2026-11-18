@@ -514,7 +514,7 @@ export const taPdf={safe:pdfSafe,esc,wrap,textWidth,hexRgb};
 // Optional (Hospitality → stay itinerary): `tag` replaces "TRAVEL ITINERARY", `facts` replaces the
 // key-fact boxes ([[LABEL,value]…]), `footNote` replaces the price/availability line, and
 // assets.gallery ([{title,text,image}]) adds a "Your Stay" section of photo cards after the intro.
-export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null,galleryMax=6,galleryPhotoH=130,galleryCols=2,incExcFirst=false}={}){
+export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accent='#0F7377',assets={},tag:tagText='TRAVEL ITINERARY',facts:factsIn=null,footNote=null,galleryTitle='Your Stay',priceBand=null,galleryMax=6,galleryPhotoH=130,galleryCols=2,incExcFirst=false,incExcSeparate=false}={}){
   const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=64;
   const AC=hexRgb(accent,[0.06,0.45,0.47]).map(v=>v.toFixed(3)).join(' ');
   const plan=taItineraryPlan(pkg,itin);
@@ -623,8 +623,31 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
     for(const l of wrap(assets.cover.extract,10.5,false,CW,6)){need(15);txt(MX,y-10.5,l,10.5,false,'0.25 0.28 0.32');y-=15;}
   }
   // ── Inclusions / exclusions (a function: incExcFirst draws it before the photos) ──
+  // incExcSeparate: two full-width sections, "Inclusions" then "Exclusions", one item per row,
+  // flowing onto new pages as needed (nothing is cut off).
+  const markAt=(mark,rgb,mx,my)=>o(mark==='check'?`${rgb} RG 1.6 w 1 J 1 j ${mx} ${my+3.5} m ${mx+3} ${my+0.5} l ${mx+8} ${my+7} l S`
+    :`${rgb} RG 1.6 w 1 J ${mx+0.5} ${my+0.5} m ${mx+7} ${my+7} l ${mx+0.5} ${my+7} m ${mx+7} ${my+0.5} l S`);
+  const drawListSection=(title,list,mark,rgb)=>{
+    if(!list.length)return;
+    const rows=list.map(x=>wrap(x,10.5,false,CW-40));
+    section(title,rows[0].length*14+16);
+    rows.forEach((ls,i)=>{
+      const h=ls.length*14+8;
+      need(h);
+      if(i%2===0)round(MX,y-h,CW,h,5,'0.975 0.98 0.985');
+      markAt(mark,rgb,MX+14,y-12.5);
+      let cy=y;ls.forEach(l=>{txt(MX+32,cy-13,l,10.5,false,'0.2 0.23 0.27');cy-=14;});
+      y-=h;
+    });
+    y-=6;
+  };
   function drawIncExc(){
   const inc=taList(pkg?.inclusions),exc=taList(pkg?.exclusions);
+  if(incExcSeparate){
+    drawListSection('Inclusions',inc,'check','0.09 0.6 0.34');
+    drawListSection('Exclusions',exc,'cross','0.82 0.2 0.2');
+    return;
+  }
   if(inc.length||exc.length){
     const cols=[[inc,'check','0.09 0.6 0.34','INCLUDED'],[exc,'cross','0.82 0.2 0.2','NOT INCLUDED']].filter(c=>c[0].length);
     const cw=cols.length>1?(CW-16)/2:CW;
@@ -639,9 +662,7 @@ export function taBuildItineraryPdf(pkg,itin,{agencyName='',agencyPhone='',accen
       txt(x+14,cy-18,label,8,true,rgb);cy-=30;
       rows[ci].forEach(ls=>{
         if(cy-ls.length*13<BOTTOM)return;
-        const mx=x+15,my=cy-9.5;
-        o(mark==='check'?`${rgb} RG 1.6 w 1 J 1 j ${mx} ${my+3.5} m ${mx+3} ${my+0.5} l ${mx+8} ${my+7} l S`
-          :`${rgb} RG 1.6 w 1 J ${mx+0.5} ${my+0.5} m ${mx+7} ${my+7} l ${mx+0.5} ${my+7} m ${mx+7} ${my+0.5} l S`);
+        markAt(mark,rgb,x+15,cy-9.5);
         ls.forEach(l=>{txt(x+30,cy-10,l,10,false,'0.2 0.23 0.27');cy-=13;});
         cy-=5;
       });

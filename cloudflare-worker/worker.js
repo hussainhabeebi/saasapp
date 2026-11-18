@@ -23199,7 +23199,7 @@ async function hospChatBuildBrochurePdf(env,c,property,price,{facts=null,inclusi
   const bytes=taBuildItineraryPdf(pkg,{days:[]},{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',
     accent:c.quote_accent_color||'',tag:'Stay Itinerary',facts:facts||(property.location?[['Location',property.location]]:[]),
     priceBand:price?{label:'Price range',value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null,
-    footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryCols:1,incExcFirst:true,
+    footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryCols:1,incExcFirst:true,incExcSeparate:true,
     assets:{logo,cover:photos[0]?{image:photos[0],wiki:false}:null,gallery:photos.slice(photos.length>1?1:0).map(image=>({image}))}});
   return {bytes,photos:photos.length};
 }
@@ -23292,7 +23292,7 @@ async function handleHospitalityChatItinerarySend(request,env){
     ];
     bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||property.name||'',agencyPhone:c.support_phone||c.phone||'',
       accent:c.quote_accent_color||'',assets,tag:'Stay Itinerary',facts:hospAiStayFacts(property,room,{nights,checkIn,guest:body?.guest}),
-      footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryCols:1,
+      footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryCols:1,incExcSeparate:true,
       priceBand:price?{label:`Price range${room?` · ${room.name}`:''}`,value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null});
   }catch(e){ await reportOpsError(env,'Chats hospitality AI itinerary — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
   // Photos first (property, then room — at most 3), so the guest sees the place before the PDF.

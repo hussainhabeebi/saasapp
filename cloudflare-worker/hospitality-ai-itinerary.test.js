@@ -179,3 +179,23 @@ test('one photo per row, at its own proportions; inclusions printed before the p
   assert.ok(pdf.indexOf('(INCLUDED)')<pdf.indexOf('(Photos)'), 'inclusions come before the photos');
   assert.match(pdf, /\(NOT INCLUDED\)/);
 });
+
+test('incExcSeparate: separate "Inclusions" and "Exclusions" sections, every item kept across pages', ()=>{
+  const dec=b=>new TextDecoder('latin1').decode(b);
+  const inc=Array.from({length:25},(_,i)=>`Included item ${i+1}`),exc=Array.from({length:25},(_,i)=>`Excluded item ${i+1}`);
+  const pdf=dec(taBuildItineraryPdf({name:'Bay View Resort',destination:'Wayanad',nights:0,inclusions:inc.join('\n'),exclusions:exc.join('\n')},{days:[]},
+    {tag:'Stay Itinerary',incExcFirst:true,incExcSeparate:true}));
+  assert.match(pdf, /\(Inclusions\)/);
+  assert.match(pdf, /\(Exclusions\)/);
+  assert.ok(pdf.indexOf('(Inclusions)')<pdf.indexOf('(Exclusions)'));
+  assert.doesNotMatch(pdf, /What's Included|NOT INCLUDED/);
+  for(const x of [...inc,...exc])assert.ok(pdf.includes(`(${x})`), x);
+  // Only exclusions → only that section.
+  const only=dec(taBuildItineraryPdf({name:'R',nights:0,exclusions:'Lunch'},{days:[]},{incExcSeparate:true}));
+  assert.match(only, /\(Exclusions\)/);
+  assert.doesNotMatch(only, /\(Inclusions\)/);
+  // Default (travel PDFs) is unchanged: one "What's Included" section with two columns.
+  const def=dec(taBuildItineraryPdf({name:'R',nights:0,inclusions:'Breakfast',exclusions:'Lunch'},{days:[]},{}));
+  assert.match(def, /What's Included/);
+  assert.match(def, /NOT INCLUDED/);
+});
