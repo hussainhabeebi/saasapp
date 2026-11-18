@@ -15,7 +15,7 @@ import {FV3_PROPOSAL_STAGE,FV3_MEETING_STAGE,fv3HandleRoute,fv3RunForAllClients,
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
-import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
+import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrChatButton,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -441,9 +441,31 @@ async function ncEnsureField(env, tableId, existingNames, name, uidt='SingleLine
     }
   }catch(e){ console.error('[ncEnsureField] failed to create column', name, 'on table', tableId, ':', e.message); }
 }
-async function ensureClientColumns(env, names){
+async function ensureClientColumns(env, names, uidts={}){
   const {names:existing}=await ncTableMeta(env, CLIENTS_TABLE);
-  for(const n of names) await ncEnsureField(env, CLIENTS_TABLE, existing, n);
+  for(const n of names){
+    if(existing.includes(n)) continue;
+    await ncEnsureColumnProbed(env, CLIENTS_TABLE, n, uidts[n]||'SingleLineText');
+  }
+}
+// "Does column X exist" proven the way NocoDB itself decides: a records read that asks for the
+// field succeeds only if it exists. The table meta has been seen not to list a column that's
+// there, and some NocoDB versions refuse the /fields create route and only take the older
+// /columns one — while a PATCH naming a missing column is silently ignored. So: probe, create via
+// /fields, probe, create via /columns, probe. Resolves true once the column is really there.
+async function ncColumnProbe(env, tableId, name){
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?limit=1&fields=Id,${encodeURIComponent(name)}`).catch(()=>null);
+  return !!r?.ok;
+}
+export async function ncEnsureColumnProbed(env, tableId, name, uidt='SingleLineText'){
+  if(await ncColumnProbe(env, tableId, name)) return true;
+  const body={column_name:name, title:name, uidt};
+  const r1=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body}).catch(()=>null);
+  if(await ncColumnProbe(env, tableId, name)) return true;
+  const r2=await ncFetch(env, `api/v2/meta/tables/${tableId}/columns`, {method:'POST', body}).catch(()=>null);
+  if(await ncColumnProbe(env, tableId, name)) return true;
+  console.error('[ncEnsureColumnProbed] column still missing', name, 'on', tableId, '/fields', r1?.status, '/columns', r2?.status);
+  return false;
 }
 async function ensureLeadsColumns(env, names){
   const {names:existing}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
@@ -772,6 +794,25 @@ async function patchClientFields(env, clientId, fields){
   if(!r.ok) throw new Error('Failed to save client record: HTTP '+r.status);
   await kvDelClient(env,clientId);
   return r.json().catch(()=>({}));
+}
+// Save one JSON settings field on the CLIENTS row and prove it stuck. The column is created as
+// LongText (settings JSON outgrows a short text column), and since NocoDB silently ignores a PATCH
+// field it doesn't have, the row is read back fresh: returns {ok:true, row} only when the stored
+// value is exactly what was written, else {ok:false, error} with a message for the dashboard.
+async function saveClientJsonField(env, clientId, field, value, what='These settings'){
+  const text=typeof value==='string'?value:JSON.stringify(value);
+  await ensureClientColumns(env, [field], {[field]:'LongText'});
+  try{ await patchClientFields(env, clientId, {[field]:text}); }
+  catch(e){
+    await reportOpsError(env, `${field} — save refused by NocoDB`, e, {clientId}).catch(()=>{});
+    return {ok:false, error:`${what} could not be saved (the database refused the update — the ${field} column may be too short). Please contact support.`};
+  }
+  const row=await getClientByIdFresh(env, clientId);
+  if(String(row?.[field]??'')!==text){
+    await reportOpsError(env, `${field} — not stored`, new Error(`${field} did not persist (column missing, not writable or too short); wrote ${text.length} chars, read back ${String(row?.[field]??'').length}`), {clientId}).catch(()=>{});
+    return {ok:false, error:`${what} could not be saved — the ${field} column is missing on the clients table and could not be created. Please contact support.`};
+  }
+  return {ok:true, row};
 }
 
 // Meta credentials are scoped to a Chatwoot WhatsApp inbox. Keep this JSON server-side: it
@@ -18933,9 +18974,9 @@ async function handleTeamWhatsappSet(request, env){
     if(!norm) return json({error:'Enter a valid WhatsApp number with country code, e.g. +91 98765 43210.'}, 400);
     map[target]=norm;
   }else delete map[target];
-  await ensureClientColumns(env, ['team_whatsapp']);
-  await patchClientFields(env, payload.cid, {team_whatsapp:JSON.stringify(map)});
-  return json({ok:true, team_whatsapp:map});
+  const res=await saveClientJsonField(env, payload.cid, 'team_whatsapp', map, 'The WhatsApp number');
+  if(!res.ok) return json({error:res.error}, 500);
+  return json({ok:true, team_whatsapp:parseTeamWhatsapp(res.row)});
 }
 function hotLeadAlertDefaultCc(c){
   const cc=String(metaLeadgenSettings(c).default_country_code||'').replace(/\D/g,'');
@@ -18959,7 +19000,7 @@ async function handleHotAlertsConfigGet(request, env){
 async function handleHotAlertsConfigSet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
+  const c=await getClientByIdFresh(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can change alert settings.'}, 403);
   const body=await request.json().catch(()=>({}));
@@ -18970,9 +19011,9 @@ async function handleHotAlertsConfigSet(request, env){
   if('template_lang' in body) next.template_lang=String(body.template_lang||'en').trim().slice(0,15)||'en';
   if('cooldown_hours' in body) next.cooldown_hours=Number(body.cooldown_hours);
   const saved=hotLeadAlertSettings({hot_lead_alert_config:JSON.stringify(next)});
-  await ensureClientColumns(env, ['hot_lead_alert_config']);
-  await patchClientFields(env, payload.cid, {hot_lead_alert_config:JSON.stringify(saved)});
-  return json({ok:true, config:saved});
+  const res=await saveClientJsonField(env, payload.cid, 'hot_lead_alert_config', saved, 'Hot lead alert settings');
+  if(!res.ok) return json({error:res.error}, 500);
+  return json({ok:true, config:hotLeadAlertSettings(res.row)});
 }
 // Creates a WhatsApp template in the client's own WABA from a preset. Shared by hot alerts and
 // lead-form welcomes. Meta now requires example values for every {{n}} in a new template.
@@ -19002,8 +19043,7 @@ async function handleHotAlertsTemplatePreset(request, env){
   const res=await createPresetWaTemplate(env, c, payload.cid, HOT_LEAD_ALERT_TEMPLATE);
   if(res.status===200){
     const next={...hotLeadAlertSettings(c), template_name:HOT_LEAD_ALERT_TEMPLATE.name, template_lang:HOT_LEAD_ALERT_TEMPLATE.language};
-    await ensureClientColumns(env, ['hot_lead_alert_config']);
-    await patchClientFields(env, payload.cid, {hot_lead_alert_config:JSON.stringify(next)});
+    await saveClientJsonField(env, payload.cid, 'hot_lead_alert_config', next, 'Hot lead alert settings');
   }
   return res;
 }
@@ -19057,6 +19097,39 @@ async function dsrStaffInbox(env, c, clientId, email, excludeInbox){
   }catch(e){}
   return null;
 }
+// A cta_url button needs the WhatsApp Cloud API for this inbox (Chatwoot can't send one).
+function dsrCanSendButton(c, inboxId, phone){
+  const cr=resolveMetaCredentials(c, {inbox_id:inboxId});
+  return !!(cr?.wa_phone_id && cr?.wa_token && String(phone||'').replace(/\D/g,''));
+}
+// Sends dsrChatButton's {text, button, url} as a WhatsApp cta_url message; if Meta refuses it, the
+// same text with the link goes out as a normal reply so the customer always gets the number.
+async function engineSendDsrChatButton(env, c, clientId, convId, phone, inboxId, btn){
+  if(!btn?.url) return false;
+  const to=String(phone||'').replace(/\D/g,'');
+  const cr=resolveMetaCredentials(c, {inbox_id:inboxId});
+  if(cr?.wa_phone_id && cr?.wa_token && to){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v24.0/${cr.wa_phone_id}/messages`, {method:'POST', headers:{Authorization:`Bearer ${cr.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify(ltCheckoutCtaPayload(to, btn.url, {text:btn.text, button:btn.button}))});
+      if(r.ok){ await botLogReply(env, c, clientId, convId, `${btn.text} [${btn.button} → ${btn.url}]`, {kind:'link_button'}).catch(()=>{}); return true; }
+      const body=await r.text().catch(()=>'');
+      await reportOpsError(env, 'Destination routing chat button rejected by Meta', new Error(`HTTP ${r.status} — ${body.slice(0,500)}`), {clientId, convId}).catch(()=>{});
+    }catch(e){ await reportOpsError(env, 'Destination routing chat button send failed', e, {clientId, convId}).catch(()=>{}); }
+  }
+  return engineSendChatwootReply(env, c, clientId, convId, `${btn.text.replace(/\s*Tap the button below 👇$/, '')}\n👉 ${btn.url}`);
+}
+// The teammate a handed-over chat is with (destination routing on): the routed teammate, else the
+// lead's owner — only someone still on the team, with a WhatsApp number (their routing-row number,
+// else their profile number). null otherwise.
+export function dsrAssignedChat(c, lead){
+  if(!dsrOn(c) || !lead) return null;
+  const email=String(lead.DsrStaff||lead.Owner||'').trim().toLowerCase();
+  if(!email || !isClientMember(c, email)) return null;
+  const phone=dsrSettings(c).rules?.[email]?.phone || parseTeamWhatsapp(c)[email] || '';
+  if(!phone) return null;
+  return {email, staffName:staffDisplayName(c, email), staffPhone:phone, destination:String(lead.DsrDestination||'').trim()};
+}
 // The routing decision for what the customer just picked (ask = {kind, destination, names?,
 // origin?, keepReply?}), or null: off, no rule matches, or this lead is already with a teammate.
 export async function engineDsrResolve(env, c, clientId, state, ask){
@@ -19081,8 +19154,12 @@ export async function engineDsrApply(env, c, clientId, state, turn){
   const plan=await engineDsrResolve(env, c, clientId, state, turn.dsr).catch(e=>{ reportOpsError(env, 'Destination staff routing failed', e, {clientId}).catch(()=>{}); return null; });
   if(!plan) return turn;
   const lang=turn.lang||c.language||'en';
+  // The teammate's WhatsApp as a tap-to-chat button after the hand-over text (Meta Cloud API
+  // only — without it the text keeps its wa.me link line, as before).
+  const chatBtn=dsrCanSendButton(c, state?.inboxId, state?.phone||state?.lead?.Phone)
+    ? dsrChatButton({staffName:plan.staffName, staffPhone:plan.staffPhone, destination:plan.destination, business:dsrBusinessName(c)}) : null;
   const text=dsrCustomerText({customText:plan.cfg.customer_text, customerName:state?.lead?.Name||state?.name||'', destination:plan.destination,
-    kind:plan.ask.kind, staffName:plan.staffName, staffPhone:plan.staffPhone, business:dsrBusinessName(c)});
+    kind:plan.ask.kind, staffName:plan.staffName, staffPhone:plan.staffPhone, business:dsrBusinessName(c), linkLine:!chatBtn});
   const keep=plan.ask.keepReply===true;
   const prev=String(turn.text||turn.reply||'');
   const qual={...(turn.qualAnswers||state?.qualAnswers||{})};
@@ -19098,6 +19175,7 @@ export async function engineDsrApply(env, c, clientId, state, turn){
         else if(prev) await engineDeliverReply(env, c, clientId, state.convId, prev, {mediaType:'text', langCode:lang, quickReplies:turn.buttons||[]});
       }
       await engineDeliverReply(env, c, clientId, state.convId, text, {mediaType:'text', langCode:lang});
+      if(chatBtn) await engineSendDsrChatButton(env, c, clientId, state.convId, state.phone||state.lead?.Phone, state.inboxId, chatBtn).catch(()=>{});
       await engineSendHandoverLabel(c, state.convId).catch(()=>{});
       return null;
     }};
@@ -19215,7 +19293,9 @@ async function dsrTeamView(env, c, clientId){
 async function handleDsrSettings(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
+  // A save starts from the stored row, not the KV cache (eventually consistent — a stale copy
+  // would undo the previous save's other fields).
+  let c=request.method==='POST'?await getClientByIdFresh(env, payload.cid):await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(request.method==='POST'){
     if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can change destination routing.'}, 403);
@@ -19223,9 +19303,9 @@ async function handleDsrSettings(request, env){
     const body=await request.json().catch(()=>({}));
     const present=presentStaffEmails(c);
     const saved=dsrSettingsPatch(body||{}, dsrSettings(c), e=>present.has(e));
-    await ensureClientColumns(env, ['dest_staff_routing']);
-    await patchClientFields(env, payload.cid, {dest_staff_routing:JSON.stringify(saved)});
-    c.dest_staff_routing=JSON.stringify(saved);
+    const res=await saveClientJsonField(env, payload.cid, 'dest_staff_routing', saved, 'Destination routing');
+    if(!res.ok) return json({error:res.error}, 500);
+    c=res.row;
   }
   return json({ok:true, agency:dsrIsAgency(c), config:dsrSettings(c), team:await dsrTeamView(env, c, payload.cid), presets:dsrPresets()});
 }
@@ -19242,9 +19322,10 @@ async function handleDsrTemplatePreset(request, env){
   const res=await createPresetWaTemplate(env, c, payload.cid, preset);
   if(res.status===200){
     const key=which==='customer'?'customer':'staff';
-    const saved=dsrNormalizeSettings({...dsrSettings(c), [`${key}_template_name`]:preset.name, [`${key}_template_lang`]:preset.language});
-    await ensureClientColumns(env, ['dest_staff_routing']);
-    await patchClientFields(env, payload.cid, {dest_staff_routing:JSON.stringify(saved)});
+    const fresh=await getClientByIdFresh(env, payload.cid)||c;
+    const saved=dsrNormalizeSettings({...dsrSettings(fresh), [`${key}_template_name`]:preset.name, [`${key}_template_lang`]:preset.language});
+    const sr=await saveClientJsonField(env, payload.cid, 'dest_staff_routing', saved, 'The template name');
+    if(!sr.ok) return json({error:`The template was created in WhatsApp, but ${sr.error.charAt(0).toLowerCase()+sr.error.slice(1)}`}, 500);
   }
   return res;
 }
@@ -32017,6 +32098,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
       await engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx);
+      // Destination routing on and the chat is with a teammate: their WhatsApp as a chat button.
+      const assigned=dsrAssignedChat(c, state.lead);
+      if(assigned) await engineSendDsrChatButton(env, c, clientId, convId, phone, state.inboxId,
+        dsrChatButton({...assigned, business:dsrBusinessName(c)})).catch(()=>{});
     } else if(contactReply){
       sentText=contactReply;
       routing.reply=sentText;
