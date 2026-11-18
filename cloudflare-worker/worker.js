@@ -28251,6 +28251,42 @@ export function engineLeadSourceGuess(lead){
   if(String(lead?.ConversationID||'').trim()||(Array.isArray(hist)&&hist.length)) return 'WhatsApp';
   return '';
 }
+// Pending ad clicks for a contact whose lead row doesn't exist yet (the referral message was
+// skipped before the lead was created — e.g. superseded by a quick second message). Applied by
+// engineUpsertLead on that contact's first lead save. migrations/0135_pending_ad_clicks.sql.
+async function enginePendingAdClicksTable(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS engine_pending_ad_clicks (client_id INTEGER NOT NULL, phone TEXT NOT NULL, data TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (client_id, phone))`).run();
+}
+export async function engineCaptureAdClickEarly(env, clientId, body, state, text){
+  const click=engineLeadAdClick(body);
+  if(!click) return;
+  const lead=state.lead||{};
+  const isNew=!!(click.CtwaClid && click.CtwaClid!==String(lead.CtwaClid||'').trim()) || !!(click.AdId && click.AdId!==String(lead.AdId||'').trim());
+  if(!isNew) return;
+  const src=String(lead.Source||'').trim()?click:engineLeadAdSource(body, text, state.channel||'whatsapp');
+  state.adSource=src;
+  if(state.leadId){
+    await engineApplyLeadSource(env, state.leadId, src);
+    state.adSourceSaved=true;
+    // Later checks in this turn compare against the lead — it now has this click.
+    state.lead={...lead, ...src};
+    return;
+  }
+  if(!env.DB || !state.phone) return;
+  await enginePendingAdClicksTable(env);
+  await env.DB.prepare(`INSERT OR REPLACE INTO engine_pending_ad_clicks (client_id, phone, data, at) VALUES (?,?,?,?)`)
+    .bind(Number(clientId), String(state.phone), JSON.stringify(src), Date.now()).run();
+}
+export async function engineFlushPendingAdClick(env, clientId, phone, leadId){
+  if(!env.DB || !clientId || !phone || !leadId) return;
+  try{
+    const row=await env.DB.prepare(`SELECT data FROM engine_pending_ad_clicks WHERE client_id=? AND phone=?`).bind(Number(clientId), String(phone)).first();
+    if(!row) return;
+    await env.DB.prepare(`DELETE FROM engine_pending_ad_clicks WHERE client_id=? AND phone=?`).bind(Number(clientId), String(phone)).run();
+    let src=null; try{ src=JSON.parse(row.data); }catch(e){}
+    if(src) await engineApplyLeadSource(env, leadId, src);
+  }catch(e){ /* table not created yet = nothing pending */ }
+}
 async function engineApplyLeadSource(env, leadId, src){
   if(!leadId || !src) return;
   try{
@@ -28276,9 +28312,16 @@ async function engineUpsertLead(env, method, leadId, body){
   const r=method==='POST'&&!leadId?await ncCreateLead(env, body):await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
   // Chats v2: the engine's own lead changes (a bot handover, Owner from Lead Routing) reach the list.
   if(leadId && r.ok) await chatsV2ApplyLeadPatch(env, leadId, body, {broadcast:engineBroadcastUpdate});
-  if(leadId){ if(adSource && r.ok) await engineApplyLeadSource(env, leadId, adSource); return leadId; }
+  // A pending ad click (engineCaptureAdClickEarly) is applied after this turn's own source, so the
+  // ad wins over a plain "WhatsApp" source computed from a later message without the referral.
+  if(leadId){
+    if(adSource && r.ok) await engineApplyLeadSource(env, leadId, adSource);
+    if(r.ok && body.Phone) await engineFlushPendingAdClick(env, body.ClientId, body.Phone, leadId);
+    return leadId;
+  }
   const created=await r.json().catch(()=>null);
   if(adSource && created?.Id) await engineApplyLeadSource(env, created.Id, adSource);
+  if(created?.Id && body.Phone) await engineFlushPendingAdClick(env, body.ClientId, body.Phone, created.Id);
   return created?.Id||null;
 }
 
@@ -29346,6 +29389,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
     state.channel=parsed.channel||'whatsapp';
     if(parsed.igId) state.igId=parsed.igId;
+    // Click-to-WhatsApp ad click (ctwa_clid + ad id) — captured before ANY early exit below
+    // (manual takeover, bot off, handover silence, won-lead support, burst "superseded", rate
+    // limit…). Meta sends it on one message only; a skipped message used to lose it for good.
+    await engineCaptureAdClickEarly(env, clientId, body, state, text).catch(e=>reportOpsError(env,'CTWA click capture failed',e,{clientId}).catch(()=>{}));
     // 🧳 Route & travel dates from what the customer wrote (travel-crm.js) — in the background, after
     // the turn has saved the lead, whichever path below answers this message.
     if(text && ctx?.waitUntil && travelCrmTripsOn(c)) ctx.waitUntil(engineTravelCrmDetectLater(env, clientId, body, text, {c}).catch(e=>console.error('[travel-crm] detect', e.message)));
@@ -29501,7 +29548,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
     // Where this chat lead came from — saved once, on a lead that has no Source yet.
-    if(!String(state.lead?.Source||'').trim()) state.adSource=engineLeadAdSource(body, text, state.channel||'whatsapp');
+    if(state.adSourceSaved){ /* ad click already saved by engineCaptureAdClickEarly */ }
+    else if(!String(state.lead?.Source||'').trim()) state.adSource=engineLeadAdSource(body, text, state.channel||'whatsapp');
     // A lead we already had that now clicks an ad (again): keep its Source, record the latest ad
     // click — Meta attributes a purchase to the most recent ctwa_clid.
     else{

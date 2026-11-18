@@ -4508,8 +4508,11 @@ WhatsApp message volume. Built as plain Worker code, same pattern as the Email M
 
 ### Click-to-WhatsApp click id (`ctwa_clid`) capture
 The Cloudflare engine reads Meta's ad referral from the Chatwoot webhook
-(`content_attributes.referral`) and saves `AdId` + `CtwaClid` on the lead (`engineLeadAdClick`,
-saved right after the lead row is claimed, before any reply route). `sendMetaCapiEvent()` forwards
+(`content_attributes.referral`) and saves `AdId` + `CtwaClid` on the lead
+(`engineCaptureAdClickEarly`, right after the lead lookup and before every early exit — manual
+takeover, bot off, handover silence, won-lead support, burst "superseded", rate limit). With no lead
+row yet, the click waits in D1 `engine_pending_ad_clicks` (migration 0135) and `engineUpsertLead`
+applies it on the lead's first save. `sendMetaCapiEvent()` forwards
 `ctwa_clid` unhashed, and the Google Sheet sync can export both columns.
 - **Requires Chatwoot v4.15.0 or newer** — older Chatwoot drops Meta's `referral` object, so both
   fields stay empty no matter what the worker does.
