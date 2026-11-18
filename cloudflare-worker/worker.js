@@ -711,6 +711,13 @@ const _ecomTableIdMemo=new Map();
 async function getClientById(env, clientId){
   const cached=await kvGetClient(env,clientId);
   if(cached) return cached;
+  return getClientByIdFresh(env, clientId);
+}
+// Straight from NocoDB, skipping the KV cache. KV is eventually consistent: a read shortly after
+// patchClientFields' kvDelClient can still return the old row for up to ~60 s, so any
+// read-modify-write of a JSON map on the row (e.g. team_whatsapp) must start from this, or two
+// saves in a row make the second one wipe the first.
+async function getClientByIdFresh(env, clientId){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
   if(!r.ok) return null;
   const data=await r.json();
@@ -18913,7 +18920,8 @@ async function handleTeamWhatsappSet(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {email, phone}=await request.json().catch(()=>({}));
   const target=String(email||'').trim().toLowerCase();
-  const c=await getClientById(env, payload.cid);
+  // Fresh read: this rewrites the whole map, so a stale cached copy would drop other users' numbers.
+  const c=await getClientByIdFresh(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   const me=String(payload.email||'').trim().toLowerCase();
   if(!me) return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
@@ -23199,7 +23207,7 @@ async function hospChatBuildBrochurePdf(env,c,property,price,{facts=null,inclusi
   const bytes=taBuildItineraryPdf(pkg,{days:[]},{agencyName:c.quote_header_title||c.client_name||'',agencyPhone:c.support_phone||c.phone||'',
     accent:c.quote_accent_color||'',tag:'Stay Itinerary',facts:facts||(property.location?[['Location',property.location]]:[]),
     priceBand:price?{label:'Price range',value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null,
-    footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryCols:1,incExcFirst:true,
+    footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryTitle:'Photos',galleryMax:HOSP_AI_BROCHURE_MAX,galleryCols:1,incExcFirst:true,incExcSeparate:true,
     assets:{logo,cover:photos[0]?{image:photos[0],wiki:false}:null,gallery:photos.slice(photos.length>1?1:0).map(image=>({image}))}});
   return {bytes,photos:photos.length};
 }
@@ -23292,7 +23300,7 @@ async function handleHospitalityChatItinerarySend(request,env){
     ];
     bytes=taBuildItineraryPdf(pkg,itin,{agencyName:c.quote_header_title||c.client_name||property.name||'',agencyPhone:c.support_phone||c.phone||'',
       accent:c.quote_accent_color||'',assets,tag:'Stay Itinerary',facts:hospAiStayFacts(property,room,{nights,checkIn,guest:body?.guest}),
-      footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryCols:1,
+      footNote:price?HOSP_AI_PRICE_FOOTNOTE:HOSP_AI_FOOTNOTE,galleryCols:1,incExcSeparate:true,
       priceBand:price?{label:`Price range${room?` · ${room.name}`:''}`,value:hospAiPriceLine(price),note:'Indicative — the exact price for your dates is confirmed at booking.'}:null});
   }catch(e){ await reportOpsError(env,'Chats hospitality AI itinerary — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
   // Photos first (property, then room — at most 3), so the guest sees the place before the PDF.
