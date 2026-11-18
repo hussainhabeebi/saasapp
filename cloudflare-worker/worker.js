@@ -711,6 +711,13 @@ const _ecomTableIdMemo=new Map();
 async function getClientById(env, clientId){
   const cached=await kvGetClient(env,clientId);
   if(cached) return cached;
+  return getClientByIdFresh(env, clientId);
+}
+// Straight from NocoDB, skipping the KV cache. KV is eventually consistent: a read shortly after
+// patchClientFields' kvDelClient can still return the old row for up to ~60 s, so any
+// read-modify-write of a JSON map on the row (e.g. team_whatsapp) must start from this, or two
+// saves in a row make the second one wipe the first.
+async function getClientByIdFresh(env, clientId){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
   if(!r.ok) return null;
   const data=await r.json();
@@ -18913,7 +18920,8 @@ async function handleTeamWhatsappSet(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {email, phone}=await request.json().catch(()=>({}));
   const target=String(email||'').trim().toLowerCase();
-  const c=await getClientById(env, payload.cid);
+  // Fresh read: this rewrites the whole map, so a stale cached copy would drop other users' numbers.
+  const c=await getClientByIdFresh(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   const me=String(payload.email||'').trim().toLowerCase();
   if(!me) return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);

@@ -12877,7 +12877,7 @@ async function sendTestHotAlert(email, msgId){
 }
 function userWhatsappCardHTML(email){
   const canEdit=isAccountOwner()||sameEmail(myEmail,email);
-  const num=getTeamWhatsapp()[email]||'';
+  const num=getTeamWhatsapp()[String(email||'').trim().toLowerCase()]||'';
   if(!canEdit) return `<div class="profile-card" style="margin-bottom:14px"><div class="pc-title">📱 WhatsApp for alerts</div><div class="s-note">${num?'On file.':'Not set.'}</div></div>`;
   return `<div class="profile-card" style="margin-bottom:14px">
     <div class="pc-title">📱 WhatsApp for alerts</div>
