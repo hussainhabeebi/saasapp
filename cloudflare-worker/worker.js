@@ -4541,83 +4541,162 @@ function sheetCsvUrl(sheetUrl){
   return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv${gidMatch?'&gid='+gidMatch[1]:''}`;
 }
 
-async function checkSheet(url){
-  if(!url) return {status:'warn', detail:'Not configured'};
+// Fetch with a timeout, so one slow API can't stall the whole run (the daily cron loops every
+// client). Returns {r, data, ms}; a timeout or network error throws with a readable message.
+async function healthFetch(url, opts={}, timeoutMs=10000){
+  const t0=Date.now();
+  let r;
+  try{ r=await fetch(url, {...opts, signal:AbortSignal.timeout(timeoutMs)}); }
+  catch(e){ throw new Error(e?.name==='TimeoutError'||e?.name==='AbortError'?`No answer within ${Math.round(timeoutMs/1000)}s`:`Could not reach the server (${e?.message||'network error'})`); }
+  const text=await r.text().catch(()=>'');
+  let data=null; try{ data=JSON.parse(text); }catch(e){}
+  return {r, data, text, ms:Date.now()-t0};
+}
+// Plain-English meaning of an HTTP failure for an integration's API key/token.
+function healthHttpDetail(status, apiMessage, what='token'){
+  const msg=apiMessage?` — ${String(apiMessage).slice(0,160)}`:'';
+  if(status===401) return `The ${what} is invalid, expired or revoked (HTTP 401)${msg}`;
+  if(status===403) return `The ${what} lacks permission for this account (HTTP 403)${msg}`;
+  if(status===404) return `Account/ID not found — check the saved ID (HTTP 404)${msg}`;
+  if(status===429) return `Rate-limited by the provider (HTTP 429) — try again later`;
+  if(status>=500) return `Provider error (HTTP ${status}) — usually temporary`;
+  return `HTTP ${status}${msg}`;
+}
+const healthAgo=iso=>{
+  const ms=Date.now()-new Date(iso).getTime();
+  if(!Number.isFinite(ms)) return '';
+  const m=Math.max(0,Math.round(ms/60000));
+  return m<60?`${m}m ago`:m<2880?`${Math.round(m/60)}h ago`:`${Math.round(m/1440)}d ago`;
+};
+
+// status: ok | warn (works, but something needs a look) | fail (broken) | off (not set up /
+// not used by this account — never counts against the overall health).
+async function checkSheet(url, {optional=true, purpose=''}={}){
+  if(!url) return optional
+    ? {status:'off', detail:'Not set up — optional', hint:purpose}
+    : {status:'warn', detail:'Not configured', hint:purpose};
   const csvUrl=sheetCsvUrl(url);
-  if(!csvUrl) return {status:'fail', detail:'Not a recognizable Google Sheets URL'};
+  if(!csvUrl) return {status:'fail', detail:'Not a recognizable Google Sheets URL', hint:'Paste the full link that starts with https://docs.google.com/spreadsheets/d/…'};
   try{
-    const r=await fetch(csvUrl, {redirect:'follow'});
-    const text=await r.text();
-    if(!r.ok) return {status:'fail', detail:'HTTP '+r.status+' — check sharing is set to "Anyone with the link can view"'};
-    if(/<html/i.test(text.slice(0,200))) return {status:'fail', detail:'Sheet is not publicly viewable — check sharing settings'};
-    if(!text.trim()) return {status:'warn', detail:'Sheet is empty'};
-    return {status:'ok', detail:Math.max(text.trim().split('\n').length-1,0)+' row(s)'};
-  }catch(e){ return {status:'fail', detail:e.message||'Fetch failed'}; }
+    const {r, text, ms}=await healthFetch(csvUrl, {redirect:'follow'});
+    if(!r.ok) return {status:'fail', detail:`Sheet could not be read (HTTP ${r.status})`, hint:'Set sharing to "Anyone with the link can view", or check the link still exists.', ms};
+    if(/<html/i.test(text.slice(0,200))) return {status:'fail', detail:'Sheet is private — it opens a Google sign-in page', hint:'Set sharing to "Anyone with the link can view".', ms};
+    const lines=text.trim()?text.trim().split('\n'):[];
+    if(!lines.length) return {status:'warn', detail:'Sheet is empty — no header row or data', hint:'Add a header row and at least one row of data.', ms};
+    const header=lines[0].split(',').map(h=>h.replace(/^"|"$/g,'').trim()).filter(Boolean);
+    const rows=Math.max(lines.length-1,0);
+    const cols=header.length?` · ${header.length} column(s): ${header.slice(0,6).join(', ')}${header.length>6?'…':''}`:'';
+    if(!rows) return {status:'warn', detail:`Header only, no data rows${cols}`, ms};
+    return {status:'ok', detail:`${rows.toLocaleString('en-US')} row(s)${cols}`, ms};
+  }catch(e){ return {status:'fail', detail:e.message||'Fetch failed', hint:'Google did not answer — usually temporary; run the check again.'}; }
 }
 
-const HEALTH_CHECKS=[
+const WA_QUALITY={GREEN:'High',YELLOW:'Medium',RED:'Low'};
+const WA_TIER={TIER_50:'50',TIER_250:'250',TIER_1K:'1,000',TIER_10K:'10,000',TIER_100K:'100,000',TIER_UNLIMITED:'Unlimited'};
+const waConnected=c=>!!(c.wa_phone_id&&c.wa_token);
+const chatwootConnected=c=>!!(c.chatwoot_base&&c.chatwoot_account_id&&c.chatwoot_token);
+
+export const HEALTH_CHECKS=[
   { key:'whatsapp', label:'WhatsApp (Meta)', category:'integration', fn: async (env,c)=>{
-    if(!c.wa_phone_id||!c.wa_token) return {status:'warn', detail:'Not connected'};
-    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}?fields=display_phone_number,quality_rating`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
-    const data=await r.json().catch(()=>({}));
-    if(!r.ok) return {status:'fail', detail:data?.error?.message||'HTTP '+r.status};
-    if(data.quality_rating==='RED') return {status:'warn', detail:'Connected, but number quality rating is RED'};
-    return {status:'ok', detail:data.display_phone_number||'Connected'};
-  }},
-  { key:'resend', label:'Resend (Email)', category:'integration', fn: async (env,c)=>{
-    if(!c.resend_api_key) return {status:'warn', detail:'Not connected'};
-    const r=await fetch('https://api.resend.com/domains', {headers:{Authorization:`Bearer ${c.resend_api_key}`}});
-    if(!r.ok) return {status:'fail', detail:r.status===401?'API key invalid or revoked':'HTTP '+r.status};
-    const data=await r.json().catch(()=>({}));
-    const verified=(data?.data||[]).some(d=>d.status==='verified');
-    return {status:verified?'ok':'warn', detail:verified?'Domain verified':'Connected, but no verified sending domain yet'};
+    if(!waConnected(c)) return {status:'warn', detail:`Not connected${c.wa_phone_id?' — access token missing':c.wa_token?' — phone number ID missing':''}`, hint:'Connect WhatsApp in Settings → Integrations; until then the bot can\'t receive or reply to messages.'};
+    const {r, data, ms}=await healthFetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(c.wa_phone_id)}?fields=display_phone_number,verified_name,quality_rating,messaging_limit_tier,name_status,code_verification_status,platform_type`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+    if(!r.ok){
+      const e=data?.error||{};
+      const expired=e.code===190;
+      return {status:'fail', detail:expired?`Access token expired or revoked — ${e.message||''}`.trim():healthHttpDetail(r.status, e.message, 'access token'), hint:expired?'Generate a new permanent (System User) token in Meta Business Settings and save it.':'Check the phone number ID and token in Settings → Integrations.', ms};
+    }
+    const parts=[data.display_phone_number, data.verified_name&&`"${data.verified_name}"`].filter(Boolean);
+    const quality=WA_QUALITY[data.quality_rating]||data.quality_rating;
+    if(quality) parts.push(`quality ${quality}`);
+    if(data.messaging_limit_tier) parts.push(`limit ${WA_TIER[data.messaging_limit_tier]||data.messaging_limit_tier}/day`);
+    const detail=parts.join(' · ')||'Connected';
+    if(data.platform_type&&data.platform_type!=='CLOUD_API') return {status:'fail', detail:`${detail} · registered on ${data.platform_type}, not the Cloud API`, hint:'Register the number on the WhatsApp Cloud API.', ms};
+    if(data.quality_rating==='RED') return {status:'warn', detail, hint:'Quality is Low — Meta may lower the messaging limit. Reduce template sends and check blocks/reports.', ms};
+    if(data.name_status&&!['APPROVED','AVAILABLE_WITHOUT_REVIEW'].includes(data.name_status)) return {status:'warn', detail:`${detail} · display name ${String(data.name_status).toLowerCase().replace(/_/g,' ')}`, hint:'The display name isn\'t approved yet — check WhatsApp Manager.', ms};
+    if(data.code_verification_status&&data.code_verification_status!=='VERIFIED') return {status:'warn', detail:`${detail} · number not verified`, hint:'Verify the phone number in WhatsApp Manager.', ms};
+    return {status:'ok', detail, ms};
   }},
   { key:'chatwoot', label:'Chatwoot', category:'integration', fn: async (env,c)=>{
-    if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {status:'warn', detail:'Not connected'};
-    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
-    if(!r.ok) return {status:'fail', detail:'HTTP '+r.status};
-    return {status:'ok', detail:'Connected'};
+    if(!chatwootConnected(c)) return {status:'warn', detail:'Not connected', hint:'Chatwoot is the inbox for conversations and is needed for follow-ups and team handover.'};
+    const base=String(c.chatwoot_base).replace(/\/$/,'');
+    const {r, data, ms}=await healthFetch(`${base}/api/v1/accounts/${encodeURIComponent(c.chatwoot_account_id)}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return {status:'fail', detail:healthHttpDetail(r.status, data?.error||data?.message, 'API access token'), hint:'Check the Chatwoot URL, account ID and API access token.', ms};
+    const inboxes=Array.isArray(data?.payload)?data.payload:[];
+    if(!inboxes.length) return {status:'warn', detail:'Connected, but the account has no inboxes', hint:'Create an inbox in Chatwoot so conversations have somewhere to land.', ms};
+    const types=[...new Set(inboxes.map(i=>String(i.channel_type||'').replace(/^Channel::/,'')).filter(Boolean))];
+    return {status:'ok', detail:`${inboxes.length} inbox(es)${types.length?': '+types.join(', '):''}`, ms};
+  }},
+  { key:'resend', label:'Resend (Email)', category:'integration', fn: async (env,c)=>{
+    if(!c.resend_api_key) return {status:'off', detail:'Not set up — optional', hint:'Only needed for email campaigns and email notifications.'};
+    const {r, data, ms}=await healthFetch('https://api.resend.com/domains', {headers:{Authorization:`Bearer ${c.resend_api_key}`}});
+    if(!r.ok) return {status:'fail', detail:healthHttpDetail(r.status, data?.message, 'API key'), hint:'Create a new API key in Resend and save it in Settings → Integrations.', ms};
+    const domains=Array.isArray(data?.data)?data.data:[];
+    const verified=domains.filter(d=>d.status==='verified').map(d=>d.name);
+    if(verified.length) return {status:'ok', detail:`Sending domain verified: ${verified.join(', ')}`, ms};
+    if(!domains.length) return {status:'warn', detail:'API key works, but no sending domain is added', hint:'Add and verify your domain in Resend, or emails can only go to your own address.', ms};
+    return {status:'warn', detail:`No verified domain — ${domains.map(d=>`${d.name} (${String(d.status||'unknown').replace(/_/g,' ')})`).join(', ')}`, hint:'Add the DNS records Resend shows for the domain, then verify it.', ms};
   }},
   { key:'sheet_leads', label:'Google Sheet — Leads Export', category:'sheets', fn: async (env,c)=>{
     // Written by the Worker's own service-account sync, so the sheet doesn't need to be public —
     // report that sync's last result instead of checkSheet's public-CSV probe.
-    if(!c.gsheet_url) return checkSheet(c.gsheet_url);
-    const st=String(c.gsheet_last_sync_status||'');
-    if(st.startsWith('ok')) return {status:'ok', detail:`Last sync ${c.gsheet_last_sync_at||''} — ${st}`};
-    if(st.startsWith('error')) return {status:'fail', detail:st.slice(7)};
-    return {status:'warn', detail:'Not synced yet — press Sync Now'};
-  } },
-  { key:'sheet_prospect', label:'Google Sheet — Prospect Import', category:'sheets', fn: async (env,c)=>checkSheet(c.prospect_gsheet_url) },
-  { key:'sheet_ecom_products', label:'Google Sheet — Ecom Products', category:'sheets', fn: async (env,c)=>checkSheet(c.ecom_products_sheet) },
-  { key:'sheet_ecom_orders', label:'Google Sheet — Ecom Orders', category:'sheets', fn: async (env,c)=>checkSheet(c.ecom_orders_sheet) },
+    if(!c.gsheet_url) return {status:'off', detail:'Not set up — optional', hint:'Copies every lead into a Google Sheet automatically.'};
+    const st=String(c.gsheet_last_sync_status||''),at=c.gsheet_last_sync_at;
+    if(st.startsWith('error')) return {status:'fail', detail:st.replace(/^error:?\s*/,'')||'Last sync failed', hint:'Share the sheet with the service account email as Editor, then press Sync Now.'};
+    if(!st.startsWith('ok')) return {status:'warn', detail:'Not synced yet', hint:'Press Sync Now in Integrations → Google Sheets Sync.'};
+    const hrs=at?(Date.now()-new Date(at).getTime())/3600000:Infinity;
+    const detail=`Last sync ${at?healthAgo(at):'time unknown'} — ${st.replace(/^ok:?\s*/,'')||'ok'}`;
+    // The sync runs every 15 minutes; a day without one means the cron stopped reaching it.
+    if(hrs>24) return {status:'warn', detail, hint:'No sync in over a day — press Sync Now to check it still works.'};
+    return {status:'ok', detail};
+  }},
+  { key:'sheet_prospect', label:'Google Sheet — Prospect Import', category:'sheets', fn: async (env,c)=>checkSheet(c.prospect_gsheet_url, {purpose:'Imports prospects from a Google Sheet.'}) },
+  { key:'sheet_ecom_products', label:'Google Sheet — Ecom Products', category:'sheets', fn: async (env,c)=>{
+    if(!isEcomEnabled(c)) return {status:'off', detail:'E-commerce module not enabled'};
+    return checkSheet(c.ecom_products_sheet, {optional:false, purpose:'The product catalogue the bot answers from.'});
+  }},
+  { key:'sheet_ecom_orders', label:'Google Sheet — Ecom Orders', category:'sheets', fn: async (env,c)=>{
+    if(!isEcomEnabled(c)) return {status:'off', detail:'E-commerce module not enabled'};
+    return checkSheet(c.ecom_orders_sheet, {purpose:'Lets the bot answer order-status questions.'});
+  }},
   { key:'recovery_engine', label:'Follow-up Recovery Engine', category:'core', fn: async (env,c)=>{
-    if(c.recovery_enabled==='No') return {status:'warn', detail:'Disabled for this account'};
-    if(!c.recovery_heartbeat_at) return {status:'warn', detail:'Never run yet for this account'};
+    if(c.recovery_enabled==='No') return {status:'off', detail:'Turned off for this account'};
+    // backend/recovery.js runs hourly and skips accounts without Chatwoot or a leads table, so a
+    // missing heartbeat there is expected, not a fault.
+    if(!chatwootConnected(c)) return {status:'off', detail:'Waiting for Chatwoot — the engine only runs once Chatwoot is connected'};
+    if(!(c.leads_table_id||c.LEADS_TABLE_ID)) return {status:'warn', detail:'No leads table linked to this account', hint:'The engine skips accounts without a leads table.'};
+    if(!c.recovery_heartbeat_at) return {status:'warn', detail:'Never run yet for this account', hint:'It runs hourly at :20 UTC — if this stays after the next run, check the recovery service.'};
     const hrs=(Date.now()-new Date(c.recovery_heartbeat_at).getTime())/3600000;
-    if(hrs>36) return {status:'fail', detail:'No heartbeat in '+Math.round(hrs)+'h — engine may be down'};
-    return {status:'ok', detail:'Last run '+Math.round(hrs)+'h ago'};
+    const detail=`Last run ${healthAgo(c.recovery_heartbeat_at)} (runs hourly)`;
+    if(hrs>24) return {status:'fail', detail, hint:'No run in over a day — the recovery service is probably down.'};
+    if(hrs>3) return {status:'warn', detail, hint:'Missed its last runs — check the recovery service.'};
+    return {status:'ok', detail};
   }},
   { key:'followup_config', label:'Follow-up Sequence Config', category:'core', fn: async (env,c)=>{
     const {results}=await env.DB.prepare(`SELECT step, type, message, template_name FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
-    if(!results||!results.length) return {status:'warn', detail:'Not configured'};
-    const incomplete=(results||[]).filter(r=>(r.type==='session'&&!r.message)||(r.type==='template'&&!r.template_name)).length;
-    if(incomplete) return {status:'fail', detail:`${incomplete} of ${results.length} step(s) missing a message/template`};
-    return {status:'ok', detail:results.length+'-step ladder configured'};
+    if(!results||!results.length) return {status:'warn', detail:'No follow-up steps set up', hint:'Add follow-up steps so silent leads get a reminder.'};
+    const incomplete=(results||[]).filter(r=>(r.type==='session'&&!r.message)||(r.type==='template'&&!r.template_name));
+    const templates=results.filter(r=>r.type==='template').length,session=results.length-templates;
+    const mix=[session&&`${session} message`,templates&&`${templates} template`].filter(Boolean).join(' + ');
+    if(incomplete.length) return {status:'fail', detail:`Step(s) ${incomplete.map(r=>r.step).sort((a,b)=>a-b).join(', ')} missing a message/template (${incomplete.length} of ${results.length})`, hint:'Open the follow-up ladder and fill in the empty steps.'};
+    return {status:'ok', detail:`${results.length}-step ladder configured (${mix})`};
   }},
 ];
 
-async function runHealthChecks(env, client){
-  const results=[];
-  for(const check of HEALTH_CHECKS){
+export async function runHealthChecks(env, client){
+  // Independent checks run together; each is timed and can never take the others down.
+  return Promise.all(HEALTH_CHECKS.map(async check=>{
     let result;
     try{ result=await check.fn(env, client); }
     catch(e){ result={status:'fail', detail:e.message||'Check threw an error'}; }
-    results.push({key:check.key, label:check.label, category:check.category, ...result});
-  }
-  return results;
+    const out={key:check.key, label:check.label, category:check.category, status:result.status, detail:result.detail||''};
+    if(result.hint) out.hint=result.hint;
+    // Response time of the provider's API, for checks that call one.
+    if(Number.isFinite(result.ms)) out.ms=result.ms;
+    return out;
+  }));
 }
 
-function overallHealthStatus(results){
+export function overallHealthStatus(results){
   if(results.some(r=>r.status==='fail')) return 'fail';
   if(results.some(r=>r.status==='warn')) return 'warn';
   return 'ok';

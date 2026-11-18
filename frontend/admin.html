@@ -188,6 +188,14 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 .check-row{display:flex;gap:.6rem;align-items:flex-start;padding:.55rem .7rem;border-radius:8px;margin-bottom:.35rem;background:var(--bg);font-size:.85rem}
 .check-row.fail{background:#fef2f2}
 .check-row.warn{background:var(--warn-soft)}
+.check-row.off{background:transparent;border:1px dashed var(--border,#e5e7eb);opacity:.8}
+.check-row .check-main{flex:1;min-width:0}
+.check-row .check-meta{margin-left:auto;white-space:nowrap;font-size:.72rem;color:var(--muted)}
+.check-hint{margin-top:.25rem;font-size:.78rem}
+.check-change{font-size:.7rem;font-weight:600;padding:.05rem .4rem;border-radius:999px;background:#e0e7ff;color:#3730a3;margin-left:.35rem}
+.health-sum{display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0 .2rem}
+.health-sum span{font-size:.75rem;font-weight:600;padding:.2rem .55rem;border-radius:999px;background:var(--bg)}
+.health-sum .ok{background:#dcfce7;color:#166534}.health-sum .warn{background:var(--warn-soft);color:var(--warn)}.health-sum .fail{background:#fee2e2;color:#991b1b}
 .hist{display:flex;gap:.3rem;flex-wrap:wrap}
 .hist-dot{width:14px;height:14px;border-radius:4px;display:inline-block}
 .hist-dot.ok{background:#22c55e}.hist-dot.warn{background:#f59e0b}.hist-dot.fail{background:#ef4444}
@@ -1123,7 +1131,10 @@ const healthOverlay = document.getElementById('health-overlay');
 let healthModalId = null;
 document.getElementById('health-modal-close').addEventListener('click', () => { healthOverlay.classList.add('hidden'); healthModalId = null; });
 healthOverlay.addEventListener('click', e => { if (e.target === healthOverlay) { healthOverlay.classList.add('hidden'); healthModalId = null; } });
-const CHECK_ICON = { ok: '✅', warn: '⚠️', fail: '❌' };
+const CHECK_ICON = { ok: '✅', warn: '⚠️', fail: '❌', off: '⚪' };
+const CHECK_WORD = { ok: 'OK', warn: 'needs attention', fail: 'failing', off: 'not set up' };
+// Older runs stored "Not configured" warnings for optional items; newer runs mark them "off".
+const STATUS_ORDER = { fail: 0, warn: 1, ok: 2, off: 3 };
 function openHealthModal(clientId) {
   const c = allClients.find(x => x.Id == clientId);
   if (!c) return;
@@ -1131,20 +1142,34 @@ function openHealthModal(clientId) {
   document.getElementById('health-modal-title').textContent = `Health — ${c.client_name || 'Client #' + c.Id}`;
   const log = healthLog(c);
   const latest = log[log.length - 1];
+  const prev = log.length > 1 ? log[log.length - 2] : null;
+  const prevBy = Object.fromEntries((prev?.results || []).map(r => [r.key, r]));
   const groups = {};
   (latest?.results || []).forEach(r => { (groups[r.category || 'other'] = groups[r.category || 'other'] || []).push(r); });
+  Object.values(groups).forEach(rows => rows.sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)));
   const catLabel = { integration: 'Integrations', sheets: 'Google Sheets', core: 'Core automation', other: 'Other' };
+  const counts = { fail: 0, warn: 0, ok: 0, off: 0 };
+  (latest?.results || []).forEach(r => { if (r.status in counts) counts[r.status]++; });
+  const sum = latest ? `<div class="health-sum">${['fail', 'warn', 'ok', 'off'].filter(k => counts[k]).map(k => `<span class="${k}">${counts[k]} ${CHECK_WORD[k]}</span>`).join('')}
+      <span title="${escHtml(new Date(latest.ts).toLocaleString('en-GB'))}">Checked ${escHtml(new Date(latest.ts).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}</span></div>` : '';
+  const row = r => {
+    const was = prevBy[r.key];
+    const changed = was && was.status !== r.status ? `<span class="check-change" title="Previous run: ${escHtml(was.detail || '')}">was ${escHtml(CHECK_WORD[was.status] || was.status)}</span>` : '';
+    const ms = Number.isFinite(r.ms) && r.status !== 'off' ? `<span class="check-meta">${r.ms < 1000 ? r.ms + ' ms' : (r.ms / 1000).toFixed(1) + ' s'}</span>` : '';
+    return `<div class="check-row ${escHtml(r.status)}"><span title="${escHtml(CHECK_WORD[r.status] || r.status)}">${CHECK_ICON[r.status] || '•'}</span><div class="check-main"><b>${escHtml(r.label || r.key)}</b>${changed}<div class="muted small">${escHtml(r.detail || '')}</div>${r.hint && r.status !== 'ok' ? `<div class="check-hint">💡 ${escHtml(r.hint)}</div>` : ''}</div>${ms}</div>`;
+  };
   document.getElementById('health-modal-body').innerHTML = `
     <div class="filter-bar" style="justify-content:space-between">
       <div>${healthChip(c)}</div>
       <button class="btn-mini primary" id="health-run-one">▶ Run checks now</button>
     </div>
+    ${sum}
     ${latest ? Object.entries(groups).map(([cat, rows]) => `
       <div class="modal-section-label">${escHtml(catLabel[cat] || cat)}</div>
-      ${rows.map(r => `<div class="check-row ${escHtml(r.status)}"><span>${CHECK_ICON[r.status] || '•'}</span><div><b>${escHtml(r.label || r.key)}</b><div class="muted small">${escHtml(r.detail || '')}</div></div></div>`).join('')}`).join('')
+      ${rows.map(row).join('')}`).join('')
       : '<div class="empty-state" style="padding:2rem 1rem"><p>No health check has run for this client yet — click <b>Run checks now</b>.</p></div>'}
     ${log.length > 1 ? `<div class="modal-section-label">History (last ${log.length} runs)</div>
-      <div class="hist">${log.map(run => { const st = run.results?.some(r => r.status === 'fail') ? 'fail' : run.results?.some(r => r.status === 'warn') ? 'warn' : 'ok'; return `<span class="hist-dot ${st}" title="${escHtml(new Date(run.ts).toLocaleString('en-GB'))} — ${HEALTH_LABELS[st]}"></span>`; }).join('')}</div>` : ''}`;
+      <div class="hist">${log.map(run => { const st = run.results?.some(r => r.status === 'fail') ? 'fail' : run.results?.some(r => r.status === 'warn') ? 'warn' : 'ok'; const bad = (run.results || []).filter(r => r.status === 'fail' || r.status === 'warn').map(r => r.label).join(', '); return `<span class="hist-dot ${st}" title="${escHtml(new Date(run.ts).toLocaleString('en-GB'))} — ${HEALTH_LABELS[st]}${bad ? ': ' + escHtml(bad) : ''}"></span>`; }).join('')}</div>` : ''}`;
   document.getElementById('health-run-one').addEventListener('click', () => runClientHealth(clientId, true));
   healthOverlay.classList.remove('hidden');
 }
