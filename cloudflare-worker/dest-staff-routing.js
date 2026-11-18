@@ -83,6 +83,9 @@ export function dsrNormalizeSettings(raw){
     staff_template_name:str(s.staff_template_name).slice(0, 512),
     staff_template_lang:str(s.staff_template_lang||'en').slice(0, 15)||'en',
     start_from_staff_number:s.start_from_staff_number!==false,
+    // Several teammates on the same destination: rotate new leads between them (on by default);
+    // off → the first of them in the table takes every lead.
+    round_robin:s.round_robin!==false,
     customer_template_name:str(s.customer_template_name).slice(0, 512),
     customer_template_lang:str(s.customer_template_lang||'en').slice(0, 15)||'en',
   };
@@ -255,7 +258,8 @@ export function dsrCustomerTemplateParams({customerName, staffName, business, de
 // rotation: the names this destination rotates between ([] / one name = no round robin).
 export function dsrNoteText({kind, destination, staffName, staffEmail, staffPhone, alert='', intro='', rotation=[]}){
   const parts=[`📍 Destination routing: ${DSR_KIND_LABEL[kind]||'Enquiry'} — ${destination||'-'} → ${staffName||staffEmail}${staffPhone?` (+${digits(staffPhone)})`:''}.`];
-  parts.push(rotation.length>1?`Round robin between ${rotation.join(', ')}.`:`Only ${staffName||staffEmail} has this destination — add it to other teammates' rows for round robin.`);
+  if(rotation.length>1) parts.push(`Round robin between ${rotation.join(', ')}.`);
+  else if(rotation.length===1) parts.push(`Only ${staffName||staffEmail} has this destination — add it to other teammates' rows for round robin.`);
   parts.push('The bot on this number is now silent for this customer; further communication is from the staff member\'s number.');
   if(alert) parts.push(`Staff alert: ${alert}.`);
   if(intro) parts.push(`First message from the staff number: ${intro}.`);
@@ -273,6 +277,6 @@ export function dsrSettingsPatch(body, current, isMember=()=>true){
     next.rules=rules;
   }
   for(const k of ['customer_text','staff_template_name','staff_template_lang','customer_template_name','customer_template_lang']) if(k in body) next[k]=body[k];
-  for(const k of ['notify_owner_too','start_from_staff_number']) if(k in body) next[k]=body[k]===true;
+  for(const k of ['notify_owner_too','start_from_staff_number','round_robin']) if(k in body) next[k]=body[k]===true;
   return dsrNormalizeSettings(next);
 }

@@ -12983,7 +12983,7 @@ async function renderDestRoutingCard(){
   catch(e){ card.innerHTML=head+`<div class="s-note" style="color:var(--red)">Couldn't load destination routing: ${esc(e.message)}</div></div>`; return; }
   const cfg=_dsr.config, owner=isAccountOwner(), dis=owner?'':'disabled';
   const team=_dsr.team||[];
-  const cell=(email, field, val, ph)=>`<td style="padding:6px 8px"><input class="form-input" style="font-size:12px;padding:4px 8px;min-width:130px" data-dsr-email="${esc(email)}" data-dsr-field="${field}" value="${esc(val)}" placeholder="${esc(ph)}" ${dis}></td>`;
+  const cell=(email, field, val, ph)=>`<td style="padding:6px 8px"><input class="form-input" style="font-size:12px;padding:4px 8px;min-width:130px" data-dsr-email="${esc(email)}" data-dsr-field="${field}" value="${esc(val)}" placeholder="${esc(ph)}" oninput="dsrPaintGroups()" ${dis}></td>`;
   const rows=team.map(m=>{
     const r=cfg.rules[m.email]||{};
     const auto=m.inbox_phone?`${fmtWaNumber(m.inbox_phone)} (own channel)`:m.whatsapp?`${fmtWaNumber(m.whatsapp)} (profile)`:'';
@@ -13003,6 +13003,7 @@ async function renderDestRoutingCard(){
     <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:13px;margin-bottom:10px">
       ${kinds.map(([k,l])=>`<label><input type="checkbox" data-dsr-kind="${k}" ${cfg.kinds[k]!==false?'checked':''} ${dis}> ${l}</label>`).join('')}
     </div>
+    <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;margin-bottom:10px"><input type="checkbox" id="dsrRoundRobin" ${cfg.round_robin!==false?'checked':''} onchange="dsrPaintGroups()" ${dis}> <span><strong>🔄 Round robin</strong> — when several teammates have the same destination, new leads go to them in turn. Off: the first of them in the table takes every lead.</span></label>
     ${team.length?`<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:760px">
       <thead><tr style="background:var(--hover)">
         <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Team member</th>
@@ -13011,6 +13012,7 @@ async function renderDestRoutingCard(){
         <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">✈️ Flight routes</th>
         <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">📱 Customers chat on</th>
       </tr></thead><tbody>${rows}</tbody></table></div>
+      <div id="dsrGroups" class="s-note" style="margin:6px 0 8px"></div>
       <div class="s-note" style="margin-bottom:12px">Comma-separated. A package matches its destination or name. A flight route is one direction (<em>Kochi - Dubai</em>, <em>COK-DXB</em>); one city (<em>Dubai</em>) takes every route to or from it. <strong>*</strong> takes everything of that kind nobody else has. When several teammates have the same destination, new leads go to them in turn (round robin) — the customer is given the number of the teammate the lead is assigned to. Destinations nobody has keep the normal bot flow.</div>`
       :'<div class="s-note" style="margin-bottom:12px">Add team members above first.</div>'}
     <label class="form-label">Message to the customer on the main number (optional)</label>
@@ -13043,6 +13045,7 @@ async function renderDestRoutingCard(){
     </div>
     ${owner?`<div style="display:flex;gap:8px;align-items:center"><button class="save-btn" onclick="saveDestRouting()">Save destination routing</button><span class="save-msg" id="dsrMsg"></span></div>`:''}
   </div>`;
+  dsrPaintGroups();
   const badge=$id('dsrBadge');
   if(badge){ badge.textContent=cfg.enabled?'On':'Off'; badge.style.background=cfg.enabled?'#DCFCE7':'var(--bg)'; badge.style.color=cfg.enabled?'#166534':'var(--muted)'; }
 }
@@ -13057,7 +13060,26 @@ function collectDestRouting(){
   return {enabled:$id('dsrEnabled').checked, kinds, rules, customer_text:$id('dsrCustomerText').value.trim(),
     staff_template_name:$id('dsrStaffTpl').value.trim(), staff_template_lang:$id('dsrStaffLang').value.trim()||'en',
     customer_template_name:$id('dsrCustTpl').value.trim(), customer_template_lang:$id('dsrCustLang').value.trim()||'en',
-    notify_owner_too:$id('dsrOwnerToo').checked, start_from_staff_number:$id('dsrStartFromStaff').checked};
+    notify_owner_too:$id('dsrOwnerToo').checked, start_from_staff_number:$id('dsrStartFromStaff').checked,
+    round_robin:$id('dsrRoundRobin')?$id('dsrRoundRobin').checked:true};
+}
+// Under the table: which destinations are shared, and who they rotate between (from what's typed,
+// before saving). Same names, ignoring case; "*" isn't a destination.
+function dsrPaintGroups(){
+  const box=$id('dsrGroups'); if(!box) return;
+  const names={}; (_dsr?.team||[]).forEach(m=>{ names[m.email]=m.name||m.email; });
+  const kinds=[['resorts','🏨'],['packages','🏝️'],['flights','✈️']], out=[];
+  for(const [f,icon] of kinds){
+    const by={};
+    $id('destRoutingCard').querySelectorAll(`[data-dsr-field="${f}"]`).forEach(inp=>{
+      inp.value.split(',').map(x=>x.trim()).filter(x=>x&&x!=='*').forEach(d=>{ const k=d.toLowerCase().replace(/\s+/g,' '); (by[k]=by[k]||{label:d,who:[]}).who.push(names[inp.dataset.dsrEmail]||inp.dataset.dsrEmail); });
+    });
+    Object.values(by).filter(g=>g.who.length>1).forEach(g=>out.push(`${icon} <strong>${esc(g.label)}</strong>: ${g.who.map(esc).join(' → ')}`));
+  }
+  const rr=$id('dsrRoundRobin')?.checked!==false;
+  box.innerHTML=out.length
+    ?(rr?'🔄 <strong>Round robin</strong> — new leads take turns:<br>':'⚠️ Round robin is off — the first name takes every lead:<br>')+out.join('<br>')
+    :'No destination is shared yet — give the same destination to two or more teammates to rotate their leads.';
 }
 async function saveDestRouting(){
   const msg=$id('dsrMsg'); msg.textContent='Saving…'; msg.className='save-msg';
