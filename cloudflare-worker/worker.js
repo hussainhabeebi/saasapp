@@ -15,7 +15,7 @@ import {FV3_PROPOSAL_STAGE,FV3_MEETING_STAGE,fv3HandleRoute,fv3RunForAllClients,
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
-import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrChatButton,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
+import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrMatchAll,dsrRotationKey,dsrPickRoundRobin,dsrDestinationLabel,dsrCustomerText,dsrChatButton,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -19130,6 +19130,31 @@ export function dsrAssignedChat(c, lead){
   if(!phone) return null;
   return {email, staffName:staffDisplayName(c, email), staffPhone:phone, destination:String(lead.DsrDestination||'').trim()};
 }
+// Round-robin counters for teammates sharing a destination (D1 dsr_rotation: one row per client +
+// group). dsrRotationNext claims the next turn (0, 1, 2…) atomically; dsrRotationPeek reads it
+// without claiming (the settings preview). No D1 → turn 0 (the first teammate, as before).
+let _dsrRotationSchema=null;
+function dsrRotationSchema(env){
+  if(!_dsrRotationSchema) _dsrRotationSchema=env.DB.prepare(`CREATE TABLE IF NOT EXISTS dsr_rotation (client_id INTEGER NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, last_email TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (client_id, key))`).run().catch(e=>{ _dsrRotationSchema=null; throw e; });
+  return _dsrRotationSchema;
+}
+async function dsrRotationNext(env, clientId, key){
+  if(!env.DB) return 0;
+  try{
+    await dsrRotationSchema(env);
+    const row=await env.DB.prepare(`INSERT INTO dsr_rotation (client_id, key, n, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(client_id, key) DO UPDATE SET n=n+1, updated_at=excluded.updated_at RETURNING n`)
+      .bind(Number(clientId), String(key), new Date().toISOString()).first();
+    return Math.max(0, Number(row?.n||1)-1);
+  }catch(e){ await reportOpsError(env, 'Destination routing round robin — counter failed', e, {clientId}).catch(()=>{}); return 0; }
+}
+async function dsrRotationPeek(env, clientId, key){
+  if(!env.DB) return 0;
+  try{
+    await dsrRotationSchema(env);
+    const row=await env.DB.prepare(`SELECT n FROM dsr_rotation WHERE client_id=? AND key=?`).bind(Number(clientId), String(key)).first();
+    return Number(row?.n||0);
+  }catch(e){ return 0; }
+}
 // The routing decision for what the customer just picked (ask = {kind, destination, names?,
 // origin?, keepReply?}), or null: off, no rule matches, or this lead is already with a teammate.
 export async function engineDsrResolve(env, c, clientId, state, ask){
@@ -19137,8 +19162,10 @@ export async function engineDsrResolve(env, c, clientId, state, ask){
   if(state?.lead?.DsrStaff && state.lead.Handover==='Yes') return null;
   const cfg=dsrSettings(c);
   const present=presentStaffEmails(c), away=staffOnLeave(c);
-  const hit=dsrMatch(cfg, ask, e=>present.has(e) && !away.has(e));
-  if(!hit) return null;
+  const hits=dsrMatchAll(cfg, ask, e=>present.has(e) && !away.has(e));
+  if(!hits.length) return null;
+  // Several teammates on this destination → round robin: each new lead goes to the next of them.
+  const hit=hits.length>1 ? dsrPickRoundRobin(hits, await dsrRotationNext(env, clientId, dsrRotationKey(ask.kind, hits))) : hits[0];
   const team=parseTeamWhatsapp(c);
   const inbox=await dsrStaffInbox(env, c, clientId, hit.email, state?.inboxId);
   return {ask, cfg, email:hit.email, entry:hit.entry, staffName:staffDisplayName(c, hit.email),
@@ -19348,12 +19375,16 @@ async function handleDsrPreview(request, env){
   }
   const cfg=dsrSettings(c);
   const present=presentStaffEmails(c);
-  const hit=dsrMatch({...cfg, enabled:true}, ask, e=>present.has(e));
-  if(!hit) return json({ok:true, matched:false, destination:dsrDestinationLabel(ask)});
+  const away=staffOnLeave(c);
+  const hits=dsrMatchAll({...cfg, enabled:true}, ask, e=>present.has(e) && !away.has(e));
+  if(!hits.length) return json({ok:true, matched:false, destination:dsrDestinationLabel(ask)});
+  // Who the next lead goes to (peek — checking here doesn't use up anyone's turn).
+  const hit=hits.length>1 ? dsrPickRoundRobin(hits, await dsrRotationPeek(env, payload.cid, dsrRotationKey(ask.kind, hits))) : hits[0];
+  const rotation=hits.length>1 ? hits.map(h=>staffDisplayName(c, h.email)) : [];
   const team=parseTeamWhatsapp(c), inbox=await dsrStaffInbox(env, c, payload.cid, hit.email, '');
   const staffPhone=hit.rule.phone||inbox?.phone||team[hit.email]||'';
   const destination=dsrDestinationLabel(ask);
-  return json({ok:true, matched:true, email:hit.email, staff_name:staffDisplayName(c, hit.email), entry:hit.entry, staff_phone:staffPhone, destination,
+  return json({ok:true, matched:true, email:hit.email, staff_name:staffDisplayName(c, hit.email), entry:hit.entry, staff_phone:staffPhone, destination, rotation,
     alert_to:team[hit.email]||'', customer_text:dsrCustomerText({customText:cfg.customer_text, customerName:'Priya', destination, kind, staffName:staffDisplayName(c, hit.email), staffPhone, business:dsrBusinessName(c)})});
 }
 
