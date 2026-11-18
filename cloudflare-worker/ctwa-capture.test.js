@@ -65,3 +65,77 @@ test('a chat without an ad referral writes nothing', ()=>withEnv(async ({env, pa
   await engineCaptureAdClickEarly(env, 48, {content_attributes:{}}, {leadId:9, phone:'9', lead:{}}, 'hi');
   assert.equal(patches.length, 0);
 }));
+
+// ── POST /leads/ctwa/backfill: ad ids from Chatwoot's message history ──
+import worker, { ctwaLatestReferral } from './worker.js';
+
+test('ctwaLatestReferral picks the newest incoming ad referral', ()=>{
+  const ref=(clid,at)=>({id:at, created_at:at, message_type:0, content_attributes:{referral:{source_type:'ad', source_id:'120208877665544', ctwa_clid:clid}}});
+  assert.equal(ctwaLatestReferral([ref('old',1), {id:2, message_type:1, content_attributes:{}}, ref('new',3)]).click.CtwaClid, 'new');
+  assert.equal(ctwaLatestReferral([{id:1, message_type:0, content_attributes:{}}]), null);
+  // A referral on an outgoing message (an echo) is not a customer's ad click.
+  assert.equal(ctwaLatestReferral([{...ref('x',1), message_type:1}]), null);
+});
+
+async function sign(secret, payload){
+  const body=btoa(JSON.stringify({...payload, exp:Math.floor(Date.now()/1000)+3600}));
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+  return `${body}.${btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}`;
+}
+async function backfillEnv({columns=['CtwaClid','AdId','Source'], leads, chats}, fn){
+  const db=new DatabaseSync(':memory:');
+  const env={SESSION_SIGNING_KEY:'s', NOCODB_BASE:'https://nc.test', NOCODB_TOKEN:'t', DB:d1(db)};
+  const client={Id:48, authentik_email:'owner@couplo.test', chatwoot_base:'https://cw.test', chatwoot_account_id:'48', chatwoot_token:'tok'};
+  const patches=[];
+  const realFetch=globalThis.fetch;
+  globalThis.fetch=async (url, opts={})=>{
+    const u=decodeURIComponent(String(url));
+    if(u.startsWith('https://cw.test/')){
+      const m=u.match(/conversations\/(\d+)\/messages/);
+      return chats[m[1]]?Response.json({payload:chats[m[1]]}):new Response('{}', {status:404});
+    }
+    if(u.includes('/meta/tables/mvg6rcw0ia5qqrx')) return Response.json({columns:columns.map(title=>({title}))});
+    if(u.includes('/tables/mxl33bg4wi70fqj/records/48')) return Response.json(client);
+    if(opts.method==='PATCH' && u.includes('/tables/mvg6rcw0ia5qqrx/records')){ patches.push(JSON.parse(opts.body)); return Response.json({}); }
+    if(u.includes('/tables/mvg6rcw0ia5qqrx/records')){
+      const after=Number((u.match(/\(Id,gt,(\d+)\)/)||[])[1]||0);
+      return Response.json({list:leads.filter(l=>l.Id>after)});
+    }
+    return Response.json({list:[]});
+  };
+  const token=await sign(env.SESSION_SIGNING_KEY, {cid:48, email:'owner@couplo.test'});
+  const call=async body=>{
+    const r=await worker.fetch(new Request('https://worker.test/leads/ctwa/backfill', {method:'POST', headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)}), env, {waitUntil(){}});
+    return {status:r.status, data:await r.json()};
+  };
+  try{ return await fn({call, patches}); }
+  finally{ globalThis.fetch=realFetch; }
+}
+const adMsg=(id,clid)=>({id, created_at:id, message_type:0, content:'Hello! Can I get more info on this?', content_attributes:{referral:{source_type:'ad', source_id:'120208877665544', ctwa_clid:clid, headline:'Name printed baby set'}}});
+
+test('backfill fills ad ids from Chatwoot history, skipping leads that have them or no ad', ()=>backfillEnv({
+  leads:[{Id:1, ConversationID:'3243', Source:''}, {Id:2, ConversationID:'3244', Source:'WhatsApp'}, {Id:3, ConversationID:'3245', CtwaClid:'have'}],
+  chats:{'3243':[adMsg(10,'ARAk-a'), {id:11, message_type:1, content_attributes:{}}], '3244':[{id:20, message_type:0, content_attributes:{}}]},
+}, async ({call, patches})=>{
+  const {status, data}=await call({after_id:0, limit:40});
+  assert.equal(status, 200);
+  assert.equal(data.saved, 1); assert.equal(data.already, 1); assert.equal(data.no_referral, 1); assert.equal(data.done, true);
+  const p=patches.find(x=>x.CtwaClid);
+  assert.equal(p.Id, 1); assert.equal(p.CtwaClid, 'ARAk-a'); assert.equal(p.AdId, '120208877665544'); assert.equal(p.Source, 'Click-to-WhatsApp ad');
+}));
+
+test('check mode shows the referral Chatwoot holds for one chat', ()=>backfillEnv({leads:[], chats:{'3243':[adMsg(10,'ARAk-abcdefghijklmnop')]}}, async ({call})=>{
+  const {data}=await call({conversation_id:'3243'});
+  assert.equal(data.referrals.length, 1);
+  assert.equal(data.referrals[0].source_id, '120208877665544');
+  assert.match(data.referrals[0].ctwa_clid, /^ARAk-abcdefg/);
+  assert.deepEqual(data.would_save, {AdId:'120208877665544', CtwaClid:'ARAk-abcdefghijklmnop'});
+}));
+
+test('missing CtwaClid column is reported instead of silently dropping the ids', ()=>backfillEnv({columns:['Source'], leads:[{Id:1, ConversationID:'3243'}], chats:{}}, async ({call, patches})=>{
+  const {status, data}=await call({});
+  assert.equal(status, 409);
+  assert.match(data.error, /CtwaClid/);
+  assert.equal(patches.length, 0);
+}));

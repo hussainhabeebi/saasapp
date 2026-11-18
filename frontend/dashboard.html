@@ -3814,6 +3814,16 @@ const ROLES = {
             </div>
             <div id="gsheetShareNote" class="s-note" style="margin-top:10px"></div>
             <div id="gsheetLastSync" style="margin-top:4px;font-size:12px;color:var(--muted)"></div>
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+              <div style="font-size:12px;font-weight:600;color:var(--muted)">🎯 Click-to-WhatsApp ad ids (CTWA Click ID / Ad ID)</div>
+              <div class="s-note" style="margin-top:4px">New ad chats record them automatically. For older leads, fill them in from your Chatwoot chat history; then press Sync Now. Check one chat to see exactly what Chatwoot holds for it.</div>
+              <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <button class="save-btn" id="ctwaFillBtn" onclick="runCtwaBackfill(this)">Fill ad ids from Chatwoot</button>
+                <input id="ctwaCheckConv" class="form-input" inputmode="numeric" placeholder="Chatwoot conversation #" style="width:190px;font-size:12px" />
+                <button class="save-btn" onclick="runCtwaCheck()" style="background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)">Check chat</button>
+              </div>
+              <div id="ctwaMsg" style="margin-top:8px;font-size:12px;white-space:pre-wrap"></div>
+            </div>
           </div>
         </div>
 
@@ -12306,6 +12316,41 @@ async function saveGsheetConfig(){
   }catch(e){ msg.textContent='Save failed: '+e.message; msg.className='save-msg err'; }
 }
 
+// POST /leads/ctwa/backfill (worker.js handleLeadsCtwaBackfill) — in batches until done.
+async function runCtwaBackfill(btn){
+  const msg=$id('ctwaMsg'); const tot={scanned:0, already:0, saved:0, failed:0, no_referral:0, chatwoot_errors:0};
+  if(btn){ btn.disabled=true; btn.textContent='Filling in…'; }
+  try{
+    let after=0;
+    for(let i=0;i<200;i++){
+      const r=await fetch(`${CONFIG.WORKER_BASE}/leads/ctwa/backfill`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({after_id:after, limit:40})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+      for(const k of Object.keys(tot)) tot[k]+=Number(d[k]||0);
+      if(msg) msg.textContent=`Checked ${tot.scanned} leads — ${tot.saved} filled, ${tot.already} already had them, ${tot.no_referral} not from an ad…`;
+      if(d.done || d.next_after_id===after) break;
+      after=d.next_after_id;
+    }
+    if(msg) msg.textContent=`✓ Done: ${tot.saved} lead${tot.saved===1?'':'s'} filled with ad ids, ${tot.already} already had them, ${tot.no_referral} not from an ad (no referral in Chatwoot)${tot.failed?`, ${tot.failed} could not be saved`:''}${tot.chatwoot_errors?`, ${tot.chatwoot_errors} chats Chatwoot didn't return`:''}. Press Sync Now to update the sheet.`;
+  }catch(e){ if(msg) msg.textContent='Could not fill ad ids: '+e.message; }
+  if(btn){ btn.disabled=false; btn.textContent='Fill ad ids from Chatwoot'; }
+}
+async function runCtwaCheck(){
+  const msg=$id('ctwaMsg'); const conv=String($id('ctwaCheckConv')?.value||'').replace(/[^0-9]/g,'');
+  if(!conv){ if(msg) msg.textContent='Enter a Chatwoot conversation number, e.g. 3243.'; return; }
+  if(msg) msg.textContent='Checking…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/leads/ctwa/backfill`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({conversation_id:conv})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const refs=d.referrals||[];
+    const lines=[`Conversation #${conv}: ${d.messages_scanned} messages, ${refs.length} with an ad referral.`];
+    for(const x of refs) lines.push(`• message ${x.message_id}: ad id ${x.source_id||'—'} (${x.source_type||'?'}), ctwa_clid ${x.ctwa_clid||'MISSING'}${x.headline?` — “${x.headline}”`:''}\n  fields: ${x.keys.join(', ')}`);
+    lines.push(d.would_save?`Would save: Ad ID ${d.would_save.AdId||'—'}, CTWA Click ID ${d.would_save.CtwaClid?'yes':'missing'}`:'Nothing to save from this chat.');
+    if(d.columns_error) lines.push('⚠️ '+d.columns_error);
+    if(msg) msg.textContent=lines.join('\n');
+  }catch(e){ if(msg) msg.textContent='Check failed: '+e.message; }
+}
 async function triggerGsheetSync(){
   const msg = $id('gsheetMsg');
   if(!clientRecord?.gsheet_url){ msg.textContent='Save a Sheet URL first.'; msg.className='save-msg err'; return; }
