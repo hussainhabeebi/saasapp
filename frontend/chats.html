@@ -339,9 +339,30 @@ function wnColor(id){
  return WN_COLORS[i%WN_COLORS.length];
 }
 const wnLabel=n=>n.name&&n.phone?`${n.name} · ${n.phone}`:(n.name||n.phone||'WhatsApp #'+n.inbox_id);
+// Short, friendly chip text for a number in the chat list: the words that tell the numbers apart.
+// "WhatsApp"/"inbox"/"number"… and the brand every number shares are dropped ("yathra booking tours
+// WhatsApp" + "Yathrabooking WhatsApp" → "Tours" + "Main"); at most 2 words, 14 characters. The full
+// name and number stay in the tooltip and the chat header.
+const WN_FILLER=new Set(['whatsapp','whats','app','wa','inbox','number','no','official','business','chat','channel','office','line','the','and','of']);
+function wnWords(name){return String(name||'').split(/[^\p{L}\p{N}]+/u).filter(w=>w&&!WN_FILLER.has(w.toLowerCase())&&!/^\d{5,}$/.test(w))}
+const wnSquash=ws=>ws.join('').toLowerCase();
+function wnBrand(){
+ const all=wnList().map(n=>wnSquash(wnWords(n.name))).filter(Boolean);if(all.length<2)return '';
+ let p=all[0];for(const s of all.slice(1)){let i=0;while(i<p.length&&i<s.length&&p[i]===s[i])i++;p=p.slice(0,i)}
+ return p.length>=4?p:'';
+}
+function wnShort(n){
+ const ws=wnWords(n.name).filter(w=>!/^\d{1,4}$/.test(w)||wnWords(n.name).length>1&&!/^inbox\b/i.test(String(n.name).trim()));const cap=w=>w.length>2&&w===w.toLowerCase()?w[0].toUpperCase()+w.slice(1):w;
+ if(!ws.length)return n.phone?'…'+String(n.phone).replace(/\D/g,'').slice(-4):'#'+n.inbox_id;
+ const brand=wnBrand();let rest=ws;
+ if(brand){let used='';rest=[];for(const w of ws){if(!rest.length&&brand.startsWith(used+w.toLowerCase())){used+=w.toLowerCase();continue}rest.push(w)}
+  if(!rest.length)return 'Main'}
+ let out=rest.slice(0,2).map(cap).join(' ');if(out.length>14)out=cap(rest[0]).slice(0,13)+'…';
+ return out;
+}
 function wnChip(l,full){
  if(!wnOn())return '';const n=wnOf(l);if(!n)return '';const [bg,fg,bd]=wnColor(n.inbox_id);
- return `<span class="wn" style="--wn-bg:${bg};--wn-fg:${fg};--wn-bd:${bd}" title="Came in on WhatsApp number: ${esc(wnLabel(n))}"><i></i>${esc(full?wnLabel(n):(n.name||n.phone||'#'+n.inbox_id))}</span>`;
+ return `<span class="wn" style="--wn-bg:${bg};--wn-fg:${fg};--wn-bd:${bd}" title="Came in on WhatsApp number: ${esc(wnLabel(n))}"><i></i>${esc(full?wnLabel(n):wnShort(n))}</span>`;
 }
 function wnPaintHeader(){const el=$('wnHdr');if(el&&current)el.innerHTML=wnChip(current,true)}
 // 🧳 The customer's route and travel dates (saved on the lead by the dashboard's travel profile and
