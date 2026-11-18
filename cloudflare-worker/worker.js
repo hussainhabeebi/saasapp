@@ -15,7 +15,7 @@ import {FV3_PROPOSAL_STAGE,FV3_MEETING_STAGE,fv3HandleRoute,fv3RunForAllClients,
 import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode,marCapiFunnelSettings,marPublicPixel} from './meta-ads-report.js';
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
-import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
+import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrDestinationLabel,dsrCustomerText,dsrChatButton,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -19087,6 +19087,39 @@ async function dsrStaffInbox(env, c, clientId, email, excludeInbox){
   }catch(e){}
   return null;
 }
+// A cta_url button needs the WhatsApp Cloud API for this inbox (Chatwoot can't send one).
+function dsrCanSendButton(c, inboxId, phone){
+  const cr=resolveMetaCredentials(c, {inbox_id:inboxId});
+  return !!(cr?.wa_phone_id && cr?.wa_token && String(phone||'').replace(/\D/g,''));
+}
+// Sends dsrChatButton's {text, button, url} as a WhatsApp cta_url message; if Meta refuses it, the
+// same text with the link goes out as a normal reply so the customer always gets the number.
+async function engineSendDsrChatButton(env, c, clientId, convId, phone, inboxId, btn){
+  if(!btn?.url) return false;
+  const to=String(phone||'').replace(/\D/g,'');
+  const cr=resolveMetaCredentials(c, {inbox_id:inboxId});
+  if(cr?.wa_phone_id && cr?.wa_token && to){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v24.0/${cr.wa_phone_id}/messages`, {method:'POST', headers:{Authorization:`Bearer ${cr.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify(ltCheckoutCtaPayload(to, btn.url, {text:btn.text, button:btn.button}))});
+      if(r.ok){ await botLogReply(env, c, clientId, convId, `${btn.text} [${btn.button} → ${btn.url}]`, {kind:'link_button'}).catch(()=>{}); return true; }
+      const body=await r.text().catch(()=>'');
+      await reportOpsError(env, 'Destination routing chat button rejected by Meta', new Error(`HTTP ${r.status} — ${body.slice(0,500)}`), {clientId, convId}).catch(()=>{});
+    }catch(e){ await reportOpsError(env, 'Destination routing chat button send failed', e, {clientId, convId}).catch(()=>{}); }
+  }
+  return engineSendChatwootReply(env, c, clientId, convId, `${btn.text.replace(/\s*Tap the button below 👇$/, '')}\n👉 ${btn.url}`);
+}
+// The teammate a handed-over chat is with (destination routing on): the routed teammate, else the
+// lead's owner — only someone still on the team, with a WhatsApp number (their routing-row number,
+// else their profile number). null otherwise.
+export function dsrAssignedChat(c, lead){
+  if(!dsrOn(c) || !lead) return null;
+  const email=String(lead.DsrStaff||lead.Owner||'').trim().toLowerCase();
+  if(!email || !isClientMember(c, email)) return null;
+  const phone=dsrSettings(c).rules?.[email]?.phone || parseTeamWhatsapp(c)[email] || '';
+  if(!phone) return null;
+  return {email, staffName:staffDisplayName(c, email), staffPhone:phone, destination:String(lead.DsrDestination||'').trim()};
+}
 // The routing decision for what the customer just picked (ask = {kind, destination, names?,
 // origin?, keepReply?}), or null: off, no rule matches, or this lead is already with a teammate.
 export async function engineDsrResolve(env, c, clientId, state, ask){
@@ -19111,8 +19144,12 @@ export async function engineDsrApply(env, c, clientId, state, turn){
   const plan=await engineDsrResolve(env, c, clientId, state, turn.dsr).catch(e=>{ reportOpsError(env, 'Destination staff routing failed', e, {clientId}).catch(()=>{}); return null; });
   if(!plan) return turn;
   const lang=turn.lang||c.language||'en';
+  // The teammate's WhatsApp as a tap-to-chat button after the hand-over text (Meta Cloud API
+  // only — without it the text keeps its wa.me link line, as before).
+  const chatBtn=dsrCanSendButton(c, state?.inboxId, state?.phone||state?.lead?.Phone)
+    ? dsrChatButton({staffName:plan.staffName, staffPhone:plan.staffPhone, destination:plan.destination, business:dsrBusinessName(c)}) : null;
   const text=dsrCustomerText({customText:plan.cfg.customer_text, customerName:state?.lead?.Name||state?.name||'', destination:plan.destination,
-    kind:plan.ask.kind, staffName:plan.staffName, staffPhone:plan.staffPhone, business:dsrBusinessName(c)});
+    kind:plan.ask.kind, staffName:plan.staffName, staffPhone:plan.staffPhone, business:dsrBusinessName(c), linkLine:!chatBtn});
   const keep=plan.ask.keepReply===true;
   const prev=String(turn.text||turn.reply||'');
   const qual={...(turn.qualAnswers||state?.qualAnswers||{})};
@@ -19128,6 +19165,7 @@ export async function engineDsrApply(env, c, clientId, state, turn){
         else if(prev) await engineDeliverReply(env, c, clientId, state.convId, prev, {mediaType:'text', langCode:lang, quickReplies:turn.buttons||[]});
       }
       await engineDeliverReply(env, c, clientId, state.convId, text, {mediaType:'text', langCode:lang});
+      if(chatBtn) await engineSendDsrChatButton(env, c, clientId, state.convId, state.phone||state.lead?.Phone, state.inboxId, chatBtn).catch(()=>{});
       await engineSendHandoverLabel(c, state.convId).catch(()=>{});
       return null;
     }};
@@ -32047,6 +32085,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
       await engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx);
+      // Destination routing on and the chat is with a teammate: their WhatsApp as a chat button.
+      const assigned=dsrAssignedChat(c, state.lead);
+      if(assigned) await engineSendDsrChatButton(env, c, clientId, convId, phone, state.inboxId,
+        dsrChatButton({...assigned, business:dsrBusinessName(c)})).catch(()=>{});
     } else if(contactReply){
       sentText=contactReply;
       routing.reply=sentText;

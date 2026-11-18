@@ -117,3 +117,42 @@ test('location allowed: location or name, whole words', () => {
   assert.equal(dsrLocationAllowed(w, '', ''), false);
   assert.equal(dsrLocationAllowed(['Vythiri', 'Munnar'], 'Vythiri'), true);
 });
+
+test('hand-over chat button: the teammate\'s WhatsApp as a tap-to-chat button', async ()=>{
+  const {dsrChatButton}=await import('./dest-staff-routing.js');
+  const b=dsrChatButton({staffName:'Sruthi K', staffPhone:'+91 62829 17343', destination:'Munnar', business:'Yathra'});
+  assert.equal(b.button, 'Chat with Sruthi');
+  assert.ok(b.button.length<=20);
+  assert.equal(b.url, 'https://wa.me/916282917343?text='+encodeURIComponent('Hi Sruthi K, I enquired about Munnar with Yathra.'));
+  assert.match(b.text, /\*Sruthi K\*.*\+916282917343/);
+  // An email instead of a name, or a long first name → generic title; no number → no button.
+  assert.equal(dsrChatButton({staffName:'a@b.com', staffPhone:'919000000000'}).button, 'Chat on WhatsApp');
+  assert.equal(dsrChatButton({staffName:'Venkatalakshminarayana', staffPhone:'919000000000'}).button, 'Chat on WhatsApp');
+  assert.equal(dsrChatButton({staffName:'Anu', staffPhone:''}), null);
+  assert.equal(dsrChatButton({staffName:'Anu', staffPhone:'12345'}), null);
+});
+
+test('hand-over text: the link line is dropped when the button carries it', ()=>{
+  const args={customerName:'Priya', destination:'Munnar', staffName:'Anu', staffPhone:'919000000000'};
+  assert.match(dsrCustomerText(args), /chat with them directly 👉 https:\/\/wa\.me\/919000000000/);
+  const noLink=dsrCustomerText({...args, linkLine:false});
+  assert.doesNotMatch(noLink, /wa\.me/);
+  assert.match(noLink, /\*Anu\*.*\+919000000000/s);
+  // A custom text keeps its own {{staff_link}}.
+  assert.match(dsrCustomerText({...args, linkLine:false, customText:'Talk to {{staff_name}}: {{staff_link}}'}), /wa\.me\/919000000000/);
+});
+
+test('generic human hand-over: the assigned teammate, only with routing on and a number', async ()=>{
+  const {dsrAssignedChat}=await import('./worker.js');
+  const c={industry:'travel', authentik_email:'boss@x.com', team_emails:'anu@x.com, sam@x.com', team_names:JSON.stringify({'anu@x.com':'Anu'}),
+    team_whatsapp:JSON.stringify({'anu@x.com':'919000000001'}),
+    dest_staff_routing:JSON.stringify({enabled:true, rules:{'sam@x.com':{packages:['Bali'], phone:'919000000002'}}})};
+  assert.deepEqual(dsrAssignedChat(c, {Owner:'anu@x.com'}), {email:'anu@x.com', staffName:'Anu', staffPhone:'919000000001', destination:''});
+  // The routed teammate wins over the owner; their routing-row number first.
+  assert.equal(dsrAssignedChat(c, {Owner:'anu@x.com', DsrStaff:'sam@x.com', DsrDestination:'Bali'}).staffPhone, '919000000002');
+  assert.equal(dsrAssignedChat(c, {Owner:'anu@x.com', DsrStaff:'sam@x.com', DsrDestination:'Bali'}).destination, 'Bali');
+  assert.equal(dsrAssignedChat(c, {Owner:'boss@x.com'}), null, 'no number on file');
+  assert.equal(dsrAssignedChat(c, {Owner:'gone@x.com'}), null, 'no longer on the team');
+  assert.equal(dsrAssignedChat(c, {}), null);
+  assert.equal(dsrAssignedChat({...c, dest_staff_routing:JSON.stringify({enabled:false})}, {Owner:'anu@x.com'}), null, 'routing off');
+});

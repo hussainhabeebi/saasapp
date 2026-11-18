@@ -179,9 +179,15 @@ export function dsrWaLink(phone, text=''){
 const firstName=n=>str(n).split(/\s+/)[0]||'';
 // The last message on the main number. A custom text may use {{customer_name}}, {{destination}},
 // {{service}}, {{staff_name}}, {{staff_phone}} and {{staff_link}}.
-export function dsrCustomerText({customText='', customerName='', destination='', kind='', staffName='', staffPhone='', business=''}={}){
+// The customer's opening line in the teammate's chat (pre-filled by the wa.me link).
+function dsrHelloText({staffName='', destination='', business=''}={}){
+  return `Hi ${staffName||''}, I enquired about ${destination||'a trip'}${business?` with ${business}`:''}.`.replace(/\s+/g, ' ');
+}
+// linkLine:false drops the default text's "chat with them directly 👉 link" line — used when the
+// link goes out as a tappable WhatsApp button right after (dsrChatButton).
+export function dsrCustomerText({customText='', customerName='', destination='', kind='', staffName='', staffPhone='', business='', linkLine=true}={}){
   const phone=digits(staffPhone);
-  const link=phone?dsrWaLink(phone, `Hi ${staffName||''}, I enquired about ${destination||'a trip'}${business?` with ${business}`:''}.`.replace(/\s+/g, ' ')):'';
+  const link=phone?dsrWaLink(phone, dsrHelloText({staffName, destination, business})):'';
   if(str(customText)){
     return str(customText)
       .replace(/\{\{\s*customer_name\s*\}\}/gi, firstName(customerName)||'there')
@@ -196,8 +202,21 @@ export function dsrCustomerText({customText='', customerName='', destination='',
   const who=staffName?`*${staffName}*`:'our travel expert';
   const lines=[`Thank you${first?` ${first}`:''}! 🙏`, '',
     `Your${destination?` *${destination}*`:''} enquiry is now with ${who}, our ${destination?`${destination} `:''}travel expert. They will message you on WhatsApp${phone?` from *+${phone}*`:''} shortly with the best options.`];
-  if(link) lines.push('', `You can also chat with them directly 👉 ${link}`);
+  if(link && linkLine) lines.push('', `You can also chat with them directly 👉 ${link}`);
   return lines.join('\n');
+}
+// The click-to-chat button sent with a hand-over when the chat is with a teammate: a WhatsApp
+// cta_url message (body ≤1024, button title ≤20) opening the teammate's own WhatsApp with a
+// pre-filled hello. null without a usable number.
+export function dsrChatButton({staffName='', staffPhone='', destination='', business=''}={}){
+  const phone=digits(staffPhone);
+  if(phone.length<8 || phone.length>15) return null;
+  const name=str(staffName);
+  const label=name && !name.includes('@') ? name : '';
+  const first=firstName(label);
+  const button=first && `Chat with ${first}`.length<=20 ? `Chat with ${first}` : 'Chat on WhatsApp';
+  const text=`💬 Chat directly with ${label?`*${label}*`:'your travel expert'} on WhatsApp (+${phone}). Tap the button below 👇`;
+  return {text:text.slice(0, 1024), button, url:dsrWaLink(phone, dsrHelloText({staffName:label, destination, business})), phone};
 }
 // WhatsApp template parameters can't carry newlines, tabs, 4+ spaces in a row, or be empty.
 function param(v, max=160){ return str(v).replace(/\s+/g, ' ').slice(0, max)||'-'; }

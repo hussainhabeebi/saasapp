@@ -74,8 +74,15 @@ test('Resorts V1 destination picked → the teammate, not the form; alert, intro
     const cw=sent.filter(m=>m.u.startsWith("https://cw.test/") && m.body?.content);
     assert.equal(cw.length, 1, JSON.stringify(cw.map(m=>m.body.content)));
     assert.match(cw[0].body.content, /Your \*Munnar\* enquiry is now with \*Anu\*/);
-    assert.match(cw[0].body.content, /wa\.me\/919800000055/);
+    assert.match(cw[0].body.content, /\+919800000055/);
+    assert.doesNotMatch(cw[0].body.content, /wa\.me/, 'the link goes in the button, not the text');
     assert.doesNotMatch(cw[0].body.content, /please reply with these details/, 'no form');
+    // Her WhatsApp as a tap-to-chat button, from the main number to the customer.
+    const btn=sent.find(m=>m.u.startsWith('https://graph.facebook.com/') && m.body?.interactive?.type==='cta_url');
+    assert.ok(btn, 'chat button sent');
+    assert.match(btn.u, /MAINPID/); assert.equal(btn.body.to, '919800000001');
+    assert.equal(btn.body.interactive.action.parameters.display_text, 'Chat with Anu');
+    assert.match(btn.body.interactive.action.parameters.url, /^https:\/\/wa\.me\/919800000055\?text=/);
 
     const fields=engineDsrLeadFields(turn.dsrPlan, '2026-11-15T00:00:00.000Z');
     assert.deepEqual(fields, {Owner:'anu@kh.test', Handover:'Yes', Stage:'human_handover', DsrStaff:'anu@kh.test', DsrKind:'resort',
