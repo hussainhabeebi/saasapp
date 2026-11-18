@@ -90,6 +90,9 @@ import {
   shopifyCdnImageUrl,
   engineResolveDirectImageUrl,
   ltNormalizeOffer,
+  ltApplyMinPaxMarkup,
+  ltMinMarkupCtx,
+  ltConvertStoredChatOffers,
   ltEncryptCredentials,
   ltDecryptCredentials,
   parseMetaChannelCredentials,
@@ -525,9 +528,36 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltStoredOfferSelectionIndex(offers,'yes'),-1);
   });
 
+  test('Minimum markup per passenger: raises a lower markup, keeps a higher one, converts currency',()=>{
+    const rates={USD:1,AED:3.6725,INR:88};
+    const min={amount:10,currency:'AED',pax:2,rates};
+    // POOMAS fares carry no agency markup: 600 + 10 × 2.
+    const poomas=ltNormalizeOffer('poomas',{id:'P1',isBookable:true,displayPrice:600,currency:'AED'},{min_markup:min});
+    assert.equal(poomas.total_amount,620);
+    assert.equal(poomas.markup_amount,20);
+    assert.equal(poomas.supplier_total,600);
+    // A supplier markup above the minimum is kept as it is.
+    const riya=ltNormalizeOffer('riya',{offer_id:'R1',fare:{totalFare:700}},{currency:'AED',markup_type:'fixed',markup_value:50,min_markup:min});
+    assert.equal(riya.total_amount,750);
+    assert.equal(riya.markup_amount,50);
+    // Applying it twice changes nothing.
+    assert.equal(ltApplyMinPaxMarkup(poomas,min).total_amount,620);
+    // Converted into the offer currency.
+    const inr=ltApplyMinPaxMarkup({currency:'INR',total_amount:10000,markup_amount:0},{amount:10,currency:'AED',pax:1,rates});
+    assert.equal(inr.markup_amount,Math.round(10*88/3.6725*100)/100);
+    // Off, or no rate to convert with: unchanged.
+    assert.equal(ltApplyMinPaxMarkup({currency:'AED',total_amount:100,markup_amount:0},{amount:0}).total_amount,100);
+    assert.equal(ltApplyMinPaxMarkup({currency:'JPY',total_amount:100,markup_amount:0},{amount:5,currency:'AED',pax:1,rates}).total_amount,100);
+    // Every passenger counts; blank currency = the agency currency.
+    assert.equal(ltMinMarkupCtx({lt_min_markup_pax:0},{},{adults:2}),null);
+    assert.deepEqual(ltMinMarkupCtx({lt_min_markup_pax:25,lt_min_markup_currency:''},{settings:{default_currency:'INR'},rates:{rates}},{adults:2,children:1,infants:1}),{amount:25,currency:'INR',pax:4,rates});
+    // A stored chat offer re-priced into another currency keeps the minimum markup.
+    const [stored]=ltConvertStoredChatOffers([{currency:'AED',total:620,supplierCurrency:'AED',supplierTotal:600,minMarkup:{amount:10,currency:'AED',pax:2}}],{target:'AED',rates,rounding:'none'});
+    assert.equal(stored.total,620);
+  });
   test('Travel settings: fare option count is 1–5 (default 3) and prices can be hidden',()=>{
-    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_airline_variety:true,lt_one_fare_per_flight:true});
-    assert.deepEqual(ltChatFarePrefs({lt_fare_options:'9',lt_show_fares:'No'}),{limit:5,showFares:false,style:'classic',onlineBooking:true,contextual:true,directList:false,datePicker:false,passport:false,variety:true,onePerFlight:true});
+    assert.deepEqual(ltTravelSettingsNormalize({}),{itin_share_pdf:false,itin_auto_images:true,lt_show_fares:true,lt_fare_options:3,lt_fare_style:'classic',lt_online_booking:true,lt_pay_qr_1_url:'',lt_pay_qr_1_label:'',lt_pay_qr_2_url:'',lt_pay_qr_2_label:'',lt_chat_style:'',lt_flyindo_destinations:FLY_DEFAULTS,lt_flyindo_agency_name:'',lt_flyindo_child_ages:true,lt_flyindo_ai:true,lt_flyindo_greeting_text:'',lt_contextual_answers:true,lt_flows_enabled:true,lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_direct_only:false,lt_min_markup_pax:0,lt_min_markup_currency:'',lt_airline_variety:true,lt_one_fare_per_flight:true});
+    assert.deepEqual(ltChatFarePrefs({lt_fare_options:'9',lt_show_fares:'No'}),{limit:5,showFares:false,style:'classic',onlineBooking:true,contextual:true,directList:false,datePicker:false,passport:false,variety:true,onePerFlight:true,directOnly:false,minMarkup:{amount:0,currency:''}});
     assert.equal(ltChatFarePrefs({lt_fare_options:'0'}).limit,1);
     const fares=[1,2,3,4,5,6].map(n=>({airline_name:'Air '+n,total_amount:100*n,currency:'AED',bookable:true,supplier_offer_id:'f'+n,itinerary:[{origin:'DXB',destination:'COK',stops:0}]}));
     assert.equal(ltBookableChatOffers(fares).length,3);

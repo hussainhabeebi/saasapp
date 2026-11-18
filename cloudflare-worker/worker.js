@@ -22066,7 +22066,8 @@ export function ltChatFarePrefs(c={}){
   const s=ltTravelSettingsNormalize(c);
   return {limit:s.lt_fare_options,showFares:s.lt_show_fares,style:s.lt_fare_style,onlineBooking:s.lt_online_booking,contextual:s.lt_contextual_answers,
     directList:s.lt_direct_list,datePicker:s.lt_date_picker,passport:s.lt_passport_details,
-    variety:s.lt_airline_variety,onePerFlight:s.lt_one_fare_per_flight};
+    variety:s.lt_airline_variety,onePerFlight:s.lt_one_fare_per_flight,directOnly:s.lt_direct_only,
+    minMarkup:{amount:s.lt_min_markup_pax,currency:s.lt_min_markup_currency}};
 }
 async function ltSaveChatOffers(env,clientId,phone,offers,sort='',limit){
   if(!phone)return;
@@ -22076,7 +22077,7 @@ async function ltSaveChatOffers(env,clientId,phone,offers,sort='',limit){
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
     return;
   }
-  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',displayCurrency:o.currency,checkoutBase:o.raw?._checkout_base??'https://flypoomas.com',connector:o.supplier==='custom'?'custom':o.manual?o.supplier:'poomas',...(o.manual?{manual:true,supplier:String(o.supplier||'').toUpperCase()}:{}),...(o.raw?._fixed_currency?{fixedCurrency:true}:{})};});
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',displayCurrency:o.currency,checkoutBase:o.raw?._checkout_base??'https://flypoomas.com',connector:o.supplier==='custom'?'custom':o.manual?o.supplier:'poomas',...(o.manual?{manual:true,supplier:String(o.supplier||'').toUpperCase()}:{}),...(o.raw?._fixed_currency?{fixedCurrency:true}:{}),...(o.min_markup?{minMarkup:o.min_markup}:{})};});
   const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
   await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
     VALUES (?,?,'select',?,NULL,NULL,?,?)
@@ -22336,14 +22337,15 @@ export function ltChatCurrencySwitch(text){
   if(!rest||rest.split(/\s+/).length>2)return '';
   return ltFxCurrencyFromText(rest);
 }
-// Re-prices stored chat offers (POOMAS, no agency markup) into another currency.
+// Re-prices stored chat offers (POOMAS, no supplier markup) into another currency; the agency's
+// minimum markup per passenger (o.minMarkup) is applied again in the new currency.
 // A Custom API fare with its own currency is never converted: it is charged exactly as shown.
 export function ltConvertStoredChatOffers(offers,fx){
   return (offers||[]).map(o=>{
     if(o?.fixedCurrency)return o;
     // Offers saved before currency support have no supplier fields: their currency/total ARE the supplier's.
     const supplierCurrency=o.supplierCurrency||o.currency,supplierTotal=Number(o.supplierTotal??o.total);
-    const c=ltFxApplyToOffer({currency:supplierCurrency,total_amount:supplierTotal,base_amount:0,tax_amount:0,markup_amount:0},{fx,markup_type:'fixed',markup_value:0});
+    const c=ltApplyMinPaxMarkup(ltFxApplyToOffer({currency:supplierCurrency,total_amount:supplierTotal,base_amount:0,tax_amount:0,markup_amount:0},{fx,markup_type:'fixed',markup_value:0}),o.minMarkup&&{...o.minMarkup,rates:fx?.rates});
     const base={...o,supplierCurrency,supplierTotal,displayCurrency:fx.target};
     return c.fx_status==='unconverted'?{...base,currency:supplierCurrency,total:supplierTotal,fxStatus:'unconverted'}:{...base,currency:c.currency,total:c.total_amount,fxStatus:c.fx_status};
   });
@@ -22662,12 +22664,19 @@ export const LT_TRAVEL_SETTINGS_DEFAULTS={itin_share_pdf:false,itin_auto_images:
   // lt_date_picker — a missing travel date is asked with a 📅 date list (the next days) plus a
   //   "✍️ Type a date" option for typing any date by hand.
   // lt_passport_details — the booking form also asks date of birth, passport number and expiry.
-  lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,
+  // lt_direct_only — customers are shown direct (non-stop) flights only; connecting flights are
+  //   never displayed, and a route with no direct flight that day says so instead.
+  lt_direct_list:false,lt_date_picker:false,lt_passport_details:false,lt_direct_only:false,
+  // Minimum markup per passenger (Travel Settings → ✈️ Live fares): every fare shown or quoted
+  // carries at least lt_min_markup_pax × passengers as markup (in lt_min_markup_currency, blank =
+  // the agency currency). A supplier markup that is already higher is kept. 0 = off.
+  lt_min_markup_pax:0,lt_min_markup_currency:'',
   // How the live fare options are picked (Travel Settings → ✈️ Live fares), on by default:
   // lt_airline_variety — prefer different airlines in the options (ltBookableChatOffers).
   // lt_one_fare_per_flight — one fare per flight, never Basic + Flex of the same flight.
   lt_airline_variety:true,lt_one_fare_per_flight:true};
-const LT_TRAVEL_OPTIONAL_KEYS=['lt_direct_list','lt_date_picker','lt_passport_details'];
+const LT_TRAVEL_OPTIONAL_KEYS=['lt_direct_list','lt_date_picker','lt_passport_details','lt_direct_only'];
+const LT_MIN_MARKUP_MAX=1e6;
 const LT_FARE_PICK_KEYS=['lt_airline_variety','lt_one_fare_per_flight'];
 const LT_PAY_QR_KEYS=['lt_pay_qr_1_url','lt_pay_qr_1_label','lt_pay_qr_2_url','lt_pay_qr_2_label'];
 const ltPayQrUrl=v=>{const u=String(v||'').trim();return /^https:\/\/\S+$/i.test(u)&&u.length<=500?u:'';};
@@ -22695,6 +22704,8 @@ export function ltTravelSettingsNormalize(raw={}){
     lt_contextual_answers:ltYesNo(raw?.lt_contextual_answers,d.lt_contextual_answers),
     lt_flows_enabled:ltYesNo(raw?.lt_flows_enabled,d.lt_flows_enabled),
     ...Object.fromEntries([...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS].map(k=>[k,ltYesNo(raw?.[k],d[k])])),
+    lt_min_markup_pax:Math.min(LT_MIN_MARKUP_MAX,ltMoney(raw?.lt_min_markup_pax)),
+    lt_min_markup_currency:ltFxCode(raw?.lt_min_markup_currency)||'',
   };
 }
 // The saved D1 settings when present, else the CLIENTS fields, else the defaults.
@@ -22713,7 +22724,7 @@ async function ltTravelSettingsSave(env,clientId,settings,email=''){
   const yn=v=>v?'Yes':'No';
   try{
     await ensureClientColumns(env,Object.keys(LT_TRAVEL_SETTINGS_DEFAULTS).filter(k=>!k.startsWith('lt_flyindo_')&&k!=='lt_flows_enabled'));
-    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),lt_contextual_answers:yn(settings.lt_contextual_answers),...Object.fromEntries([...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS].map(k=>[k,yn(settings[k])])),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]]))});
+    await patchClientFields(env,clientId,{lt_chat_style:settings.lt_chat_style,itin_share_pdf:yn(settings.itin_share_pdf),itin_auto_images:yn(settings.itin_auto_images),lt_show_fares:yn(settings.lt_show_fares),lt_fare_options:String(settings.lt_fare_options),lt_fare_style:settings.lt_fare_style,lt_online_booking:yn(settings.lt_online_booking),lt_contextual_answers:yn(settings.lt_contextual_answers),...Object.fromEntries([...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS].map(k=>[k,yn(settings[k])])),...Object.fromEntries(LT_PAY_QR_KEYS.map(k=>[k,settings[k]])),lt_min_markup_pax:String(settings.lt_min_markup_pax||0),lt_min_markup_currency:settings.lt_min_markup_currency||''});
   }catch(e){}
 }
 // GET/PUT /live-travel/travel-settings — Dashboard → Settings → Modules → Travel Agency options.
@@ -22726,6 +22737,8 @@ async function handleLtTravelSettings(request,env){
   const body=await request.json().catch(()=>({}));
   for(const k of ['itin_share_pdf','itin_auto_images','lt_show_fares','lt_online_booking','lt_contextual_answers',...LT_TRAVEL_OPTIONAL_KEYS,...LT_FARE_PICK_KEYS])if(k in body&&typeof body[k]!=='boolean')return json({error:`${k} must be true or false`},400);
   if('lt_fare_style' in body&&!LT_FARE_STYLES.includes(body.lt_fare_style))return json({error:`lt_fare_style must be one of: ${LT_FARE_STYLES.join(', ')}`},400);
+  if('lt_min_markup_pax' in body){const n=Number(body.lt_min_markup_pax);if(typeof body.lt_min_markup_pax!=='number'||!Number.isFinite(n)||n<0||n>LT_MIN_MARKUP_MAX)return json({error:`lt_min_markup_pax must be a number from 0 to ${LT_MIN_MARKUP_MAX}`},400);}
+  if('lt_min_markup_currency' in body&&String(body.lt_min_markup_currency||'')&&!ltFxCode(body.lt_min_markup_currency))return json({error:`lt_min_markup_currency must be blank or one of: ${LT_FX_CODES.join(', ')}`},400);
   if('lt_fare_options' in body){const n=Number(body.lt_fare_options);if(!Number.isInteger(n)||n<1||n>LT_FARE_OPTIONS_MAX)return json({error:`lt_fare_options must be a whole number from 1 to ${LT_FARE_OPTIONS_MAX}`},400);}
   for(const k of ['lt_pay_qr_1_url','lt_pay_qr_2_url'])if(k in body&&String(body[k]||'').trim()&&!ltPayQrUrl(body[k]))return json({error:`${k} must be an https:// link (Google Drive or a direct image link)`},400);
   for(const k of ['lt_pay_qr_1_label','lt_pay_qr_2_label'])if(k in body&&typeof body[k]!=='string')return json({error:`${k} must be text`},400);
@@ -24731,12 +24744,14 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   await ltSaveChatSearchDraft(env,clientId,phone,input);
   try{
     const fxInfo=await ltFxForClient(env,clientId,input.currency);
+    const prefs=ltChatFarePrefs(c);
+    const minMarkup=ltMinMarkupCtx({lt_min_markup_pax:prefs.minMarkup.amount,lt_min_markup_currency:prefs.minMarkup.currency},fxInfo,input);
     // Every enabled, configured supplier (POOMAS, Custom API, SerpApi, Riya, TripJack) is searched
     // together; one that fails is skipped as long as another answered.
     const searched=await Promise.all(chatSuppliers.map(async ({row,runtime})=>{
       try{
         const data=await ltSupplierSearch(runtime,input,env);
-        const base={...input,markup_type:row.markup_type,markup_value:row.markup_value,client_id:Number(clientId),fx:fxInfo.fx};
+        const base={...input,markup_type:row.markup_type,markup_value:row.markup_value,client_id:Number(clientId),fx:fxInfo.fx,min_markup:minMarkup};
         let ctx;
         if(row.supplier==='custom')ctx=ltCustomOfferCtx(runtime,base);
         else if(row.supplier!=='poomas')ctx={...base,currency:input.currency};
@@ -24750,13 +24765,20 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
     const failed=searched.filter(r=>r?.error);
     if(failed.length===searched.length)throw failed[0].error;
     for(const f of failed)await reportOpsError(env,`Live ticketing chat search (${f.error?.supplier||'a supplier'} failed)`,f.error,{clientId}).catch(()=>{});
-    const offers=ltPreferOnlineChatOffers(ltExactRouteOffers(searched.filter(Array.isArray).flat(),input.origin,input.destination));
+    const allOffers=ltPreferOnlineChatOffers(ltExactRouteOffers(searched.filter(Array.isArray).flat(),input.origin,input.destination));
+    // Travel Settings → ✈️ Only direct flights: connecting flights never reach the customer.
+    const offers=prefs.directOnly?allOffers.filter(o=>ltOfferStops(o)===0):allOffers;
+    if(prefs.directOnly&&!ltBookableChatOffers(offers).length&&ltBookableChatOffers(allOffers).length){
+      await ltSaveChatOffers(env,clientId,phone,[],'',prefs.limit);
+      await ltSaveChatLastSearch(env,clientId,phone,input);
+      await ltClearChatSearchDraft(env,clientId,phone);
+      return {handled:true,reply:`✈️ There are no direct flights from ${input.origin} to ${input.destination} on ${input.departure_date}.\n\nPlease send another travel date, or reply *talk to agent* and our team will help you.`};
+    }
     // Customer filters (airline, direct, time of day, budget). When nothing matches, say so and
     // show the other fares rather than a dead end.
     const filters=input.filters||{},matching=ltApplyChatFlightFilters(offers,filters);
     const narrowed=ltChatFlightFilterLabel({...filters,sort:''});
     const fallback=!!narrowed&&!ltBookableChatOffers(matching).length&&ltBookableChatOffers(offers).length>0;
-    const prefs=ltChatFarePrefs(c);
     const bookingOffers=ltBookableChatOffers(fallback?offers:matching,filters.sort,prefs.limit,{variety:prefs.variety,onePerFlight:prefs.onePerFlight});
     const note=bookingAsk&&!ltChatFlightIntent(userText)?'Those fares were refreshed. Tap *Book Option* on your flight below to get the secure booking link.':fallback?`No ${narrowed} flights found from ${input.origin} to ${input.destination} on ${input.departure_date}. Here are the other available options:`:'';
     await ltSaveChatOffers(env,clientId,phone,bookingOffers,filters.sort,prefs.limit);
@@ -42867,7 +42889,31 @@ export function ltNormalizeOffer(supplier,raw,ctx={}){
   // POOMAS displayPrice already carries POOMAS's own markup; we never add ours on top.
   // Custom API fares are charged at the connector's own checkout too, so the same applies.
   const fxCtx=offer.supplier==='poomas'||offer.supplier==='custom'?{...ctx,markup_type:'fixed',markup_value:0}:ctx;
-  return ltFxApplyToOffer(offer,fxCtx);
+  // Travel Settings → minimum markup per passenger applies to every supplier, POOMAS included.
+  return ltApplyMinPaxMarkup(ltFxApplyToOffer(offer,fxCtx),ctx.min_markup);
+}
+// Minimum markup per passenger: raises an offer's markup to at least amount × pax (amount in
+// min.currency, converted with min.rates into the offer currency). A higher markup is kept, an
+// offer whose currency can't be converted is left as it is. Applying it twice changes nothing.
+export function ltApplyMinPaxMarkup(offer,min){
+  const per=Number(min?.amount)||0;
+  if(!offer||!(per>0))return offer;
+  const cur=String(offer.currency||'').toUpperCase(),from=String(min.currency||cur).toUpperCase();
+  const rate=from===cur?1:ltFxRate(from,cur,min.rates);
+  if(!rate)return offer;
+  const pax=Math.max(1,Math.floor(Number(min.pax)||1)),floor=Math.round(per*rate*pax*100)/100,current=Number(offer.markup_amount)||0;
+  const rule={amount:per,currency:from,pax};
+  if(current>=floor)return {...offer,min_markup:rule};
+  const add=floor-current;
+  return {...offer,markup_amount:floor,total_amount:Math.round((Number(offer.total_amount||0)+add)*100)/100,min_markup:rule};
+}
+// The ctx.min_markup for a search: the agency's per-passenger minimum, in its own currency when
+// none is set, for every passenger (adults, children and infants). null when it is off.
+export function ltMinMarkupCtx(settings,fxInfo,pax={}){
+  const amount=Number(settings?.lt_min_markup_pax)||0;
+  if(!(amount>0))return null;
+  const count=(Number(pax.adults)||0)+(Number(pax.children)||0)+(Number(pax.infants)||0);
+  return {amount,currency:settings.lt_min_markup_currency||fxInfo?.settings?.default_currency||fxInfo?.target||'',pax:Math.max(1,count),rates:fxInfo?.rates?.rates||fxInfo?.fx?.rates};
 }
 // POOMAS-platform fare fields (POOMAS, and white-label APIs built on it such as TripCod).
 const ltPoomasShapedFare=raw=>!!raw&&typeof raw==='object'&&['displayPrice','totalFare','isBookable'].some(k=>k in raw);
@@ -43233,13 +43279,14 @@ async function handleLtSearch(request,env){
     .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
   const searchId=insert.meta.last_row_id, errors={}, offers=[];
   const poomasFx=poomasEnabled?await ltPoomasFxContext(env,auth.cid,fxInfo.fx):null;
+  const minMarkup=ltMinMarkupCtx(await ltTravelSettingsStored(env,auth.cid,await getClientById(env,auth.cid).catch(()=>null)||{}),fxInfo,input);
   const settled=await Promise.all((settings||[]).map(async setting=>{
     try{const runtime=await ltSupplierRuntime(env,setting);runtime.client_id=auth.cid;return {setting,data:await ltSupplierSearch(runtime,input,env)};}catch(e){return {setting,error:String(e?.message||e)};}
   }));
   for(const result of settled){
     const supplier=result.setting.supplier;
     if(result.error){errors[supplier]=result.error;continue;}
-    const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value,fx:fxInfo.fx};
+    const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value,fx:fxInfo.fx,min_markup:minMarkup};
     if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;ctx.fx=poomasFx;}
     const offerCtx=supplier==='custom'?ltCustomOfferCtx({endpoints:ltJson(result.setting.endpoints_json,{})},{...ctx,client_id:auth.cid}):ctx;
     for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
@@ -43282,7 +43329,9 @@ async function handleLtRevalidate(request,env){
   const fxInfo=await ltFxForClient(env,auth.cid,offer.currency);
   const agencyFx=ltFxContext(fxInfo.settings,fxInfo.rates,offer.currency);
   const fxCtx=offer.supplier==='poomas'?await ltPoomasFxContext(env,auth.cid,agencyFx):agencyFx;
-  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.supplier_currency||offer.currency,cabin:offer.cabin,markup_type:setting?.markup_type||'fixed',markup_value:setting?.markup_value||0,fx:fxCtx});
+  const search=await env.DB.prepare(`SELECT adults,children,infants FROM live_travel_searches WHERE id=? AND client_id=?`).bind(offer.search_id,auth.cid).first().catch(()=>null);
+  const minMarkup=ltMinMarkupCtx(await ltTravelSettingsStored(env,auth.cid,await getClientById(env,auth.cid).catch(()=>null)||{}),fxInfo,search||{adults:1});
+  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.supplier_currency||offer.currency,cabin:offer.cabin,markup_type:setting?.markup_type||'fixed',markup_value:setting?.markup_value||0,fx:fxCtx,min_markup:minMarkup});
   const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
   await env.DB.prepare(`UPDATE live_travel_offers SET currency=?,base_amount=?,tax_amount=?,markup_amount=?,total_amount=?,supplier_currency=?,supplier_total=?,fx_rate=?,fx_rate_at=?,fx_source=?,fx_status=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
     .bind(normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,normalized.supplier_currency,normalized.supplier_total,normalized.fx_rate,normalized.fx_rate_at,normalized.fx_source,normalized.fx_status,normalized.seats_left,JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),JSON.stringify(normalized.raw),now,expires,offer.id,auth.cid).run();
