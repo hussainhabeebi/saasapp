@@ -13011,7 +13011,7 @@ async function renderDestRoutingCard(){
         <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">✈️ Flight routes</th>
         <th style="text-align:left;padding:8px;color:var(--muted);font-weight:600">📱 Customers chat on</th>
       </tr></thead><tbody>${rows}</tbody></table></div>
-      <div class="s-note" style="margin-bottom:12px">Comma-separated. A package matches its destination or name. A flight route is one direction (<em>Kochi - Dubai</em>, <em>COK-DXB</em>); one city (<em>Dubai</em>) takes every route to or from it. <strong>*</strong> takes everything of that kind nobody else has. First matching row wins. Destinations nobody has keep the normal bot flow.</div>`
+      <div class="s-note" style="margin-bottom:12px">Comma-separated. A package matches its destination or name. A flight route is one direction (<em>Kochi - Dubai</em>, <em>COK-DXB</em>); one city (<em>Dubai</em>) takes every route to or from it. <strong>*</strong> takes everything of that kind nobody else has. When several teammates have the same destination, new leads go to them in turn (round robin) — the customer is given the number of the teammate the lead is assigned to. Destinations nobody has keep the normal bot flow.</div>`
       :'<div class="s-note" style="margin-bottom:12px">Add team members above first.</div>'}
     <label class="form-label">Message to the customer on the main number (optional)</label>
     <textarea class="form-input" id="dsrCustomerText" rows="3" maxlength="1000" placeholder="Default: Thank you Priya! 🙏 Your *Munnar* enquiry is now with *Anu*, our Munnar travel expert. They will message you on WhatsApp from *+91…* shortly… + a wa.me link" ${dis}>${esc(cfg.customer_text)}</textarea>
@@ -13083,7 +13083,7 @@ async function previewDestRouting(){
   try{
     const d=await hotAlertsApi('/dest-routing/preview', {kind:$id('dsrTryKind').value, destination:$id('dsrTryDest').value});
     out.textContent=d.matched
-      ?`→ ${d.staff_name} (rule "${d.entry}")${d.staff_phone?` · customers chat on ${fmtWaNumber(d.staff_phone)}`:' · ⚠️ no number to give the customer'}${d.alert_to?` · alert to ${fmtWaNumber(d.alert_to)}`:' · ⚠️ no WhatsApp on their profile for the alert'}\n\nCustomer sees:\n${d.customer_text}`
+      ?`${(d.rotation||[]).length>1?`🔄 Round robin between ${d.rotation.join(', ')} — the next lead goes to:\n`:''}→ ${d.staff_name} (rule "${d.entry}")${d.staff_phone?` · customers chat on ${fmtWaNumber(d.staff_phone)}`:' · ⚠️ no number to give the customer'}${d.alert_to?` · alert to ${fmtWaNumber(d.alert_to)}`:' · ⚠️ no WhatsApp on their profile for the alert'}\n\nCustomer sees:\n${d.customer_text}`
       :`No teammate has "${d.destination}" — the normal bot flow carries on.`;
   }catch(e){ out.textContent='Error: '+e.message; }
 }

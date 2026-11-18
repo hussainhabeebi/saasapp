@@ -143,21 +143,39 @@ function ruleMatches(kind, entry, ask){
   const names=[ask.destination, ...(ask.names||[])].map(str).filter(Boolean);
   return names.some(n=>dsrPlaceMatch(entry, n));
 }
-// The teammate for this enquiry: a named destination/route first, then a "*" for that kind.
-// Rules are tried in the order saved (the settings table's order), so the first teammate wins a tie.
-// isStaff filters out anyone no longer on the team. Returns {email, rule, entry, wildcard} or null.
-export function dsrMatch(cfg, ask, isStaff=()=>true){
-  if(!cfg?.enabled || !ask || !DSR_KINDS.includes(ask.kind) || cfg.kinds?.[ask.kind]===false) return null;
+// Every teammate who could take this enquiry, in the settings table's order: those with a named
+// destination/route that matches; only when nobody has one, those with a "*" for that kind. One
+// entry per teammate. isStaff filters out anyone no longer on the team (or on leave).
+// Returns [{email, rule, entry, wildcard}] — empty when nobody matches.
+export function dsrMatchAll(cfg, ask, isStaff=()=>true){
+  if(!cfg?.enabled || !ask || !DSR_KINDS.includes(ask.kind) || cfg.kinds?.[ask.kind]===false) return [];
   const field=RULE_FIELD[ask.kind];
-  let wildcard=null;
+  const named=[], wild=[];
   for(const [email, rule] of Object.entries(cfg.rules||{})){
     if(!isStaff(email)) continue;
+    let hit=null, star=null;
     for(const entry of rule?.[field]||[]){
-      if(str(entry)==='*'){ if(!wildcard) wildcard={email, rule, entry:'*', wildcard:true}; continue; }
-      if(ruleMatches(ask.kind, entry, ask)) return {email, rule, entry, wildcard:false};
+      if(str(entry)==='*'){ star=star||{email, rule, entry:'*', wildcard:true}; continue; }
+      if(ruleMatches(ask.kind, entry, ask)){ hit={email, rule, entry, wildcard:false}; break; }
     }
+    if(hit) named.push(hit); else if(star) wild.push(star);
   }
-  return wildcard;
+  return named.length?named:wild;
+}
+// The first of them (the settings order) — what the preview shows when there's no rotation.
+export function dsrMatch(cfg, ask, isStaff=()=>true){
+  return dsrMatchAll(cfg, ask, isStaff)[0]||null;
+}
+// Round robin between the teammates sharing a destination: one counter per kind + group of
+// teammates (sorted, so the table's order doesn't matter). A new teammate joining or leaving the
+// group starts a fresh rotation. turn = how many leads this group has had before this one.
+export function dsrRotationKey(kind, hits){
+  return `${kind}:${[...new Set((hits||[]).map(h=>str(h.email).toLowerCase()))].sort().join(',')}`;
+}
+export function dsrPickRoundRobin(hits, turn){
+  if(!hits?.length) return null;
+  const n=Number.isFinite(Number(turn))&&Number(turn)>=0?Math.floor(Number(turn)):0;
+  return hits[n%hits.length];
 }
 
 // What the customer picked, as one label for messages and the lead ("Munnar", "Kochi → Dubai").
