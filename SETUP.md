@@ -9680,3 +9680,36 @@ Follow-ups follows the Campaigns permission and the "Campaigns" module toggle.
 
 Opened directly (e.g. B2B's 📢 links, `broadcast.html?stage=…`) the page still works on its own, with
 a Campaigns / Follow-ups switch in its top bar. `#fuengine`/`#followups` in the URL open Follow-ups.
+
+## Client health report (Settings → Integrations → 🩺 Health Check)
+
+Every client gets a health report. It runs automatically every day (cron `0 2 * * *`) and can also be run
+manually with **Run Check Now**. Admin → Clients → **Run checks** runs the same report. The checks are
+read-only. The one write is the Data Saving probe, which keeps a single row per client in D1 `health_probe`.
+
+| Group | Checks |
+|---|---|
+| Integration Health | WhatsApp (Meta), Chatwoot, Resend email, Google Sheets, API authentication, webhook connections (Chatwoot → engine/n8n, WhatsApp app subscription) |
+| CRM Functionality | Lead creation (flags messages arriving with no new leads), lead assignment, contacts without phone/email, message sending/receiving, tasks, campaigns, reports data |
+| AI Chatbot Health | Incoming messages, bot responses and fallbacks, Knowledge Base, language handling, response time, duplicate replies, human handover and team alerts (from `bot_reply_log`) |
+| Automation Health | n8n workflow executions, follow-up delivery, scheduled message delivery, webhook and background-job errors, recovery engine, follow-up config |
+| Database Health | App (D1) and CRM (NocoDB) connectivity, data saving (write and read back), lead updates, duplicate leads by phone |
+
+Each result is **Passed**, **Warning**, **Failed** or **Not tested** (not set up or not used, and never
+counted against the account). The overall status is **Critical** if anything failed, **Needs Attention** if
+anything has a warning, and **Healthy** otherwise. Each report shows totals, errors and warnings with
+recommended actions, issues fixed since the last run, the last successful time for each check, and the
+last time the whole account was healthy. The client can download the report as a PDF.
+
+**History.** Each run is stored in D1 `health_reports` and kept for 90 days. `GET /health/reports` returns the
+history, the recurring issues and the latest full report. `GET /health/reports/{id}` returns one report. The
+client row keeps only the latest status and time, plus a 7-run `integration_health_log` for the admin list.
+
+**Critical alerts.** When the daily run finds a check that is newly failing, it emails the account. The
+address is `health_alert_email`, then `billing_email`, then `authentik_email`, and the email goes through the
+platform `RESEND_API_KEY`. A check that stays broken alerts once, not every day. Set `health_alerts_enabled`
+to `No` on the client row to turn the alerts off.
+
+**n8n monitoring (optional).** Set the Worker secrets `N8N_API_URL` and `N8N_API_KEY`, and put the client's
+workflow id in a `n8n_workflow_id` column on the clients table. Without these, the n8n check shows
+"Not tested".

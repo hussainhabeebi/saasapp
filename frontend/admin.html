@@ -1147,7 +1147,7 @@ function openHealthModal(clientId) {
   const groups = {};
   (latest?.results || []).forEach(r => { (groups[r.category || 'other'] = groups[r.category || 'other'] || []).push(r); });
   Object.values(groups).forEach(rows => rows.sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)));
-  const catLabel = { integration: 'Integrations', sheets: 'Google Sheets', core: 'Core automation', other: 'Other' };
+  const catLabel = { integration: 'Integration Health', crm: 'CRM Functionality', chatbot: 'AI Chatbot Health', automation: 'Automation Health', database: 'Database Health', sheets: 'Google Sheets', core: 'Core automation', other: 'Other' };
   const counts = { fail: 0, warn: 0, ok: 0, off: 0 };
   (latest?.results || []).forEach(r => { if (r.status in counts) counts[r.status]++; });
   const sum = latest ? `<div class="health-sum">${['fail', 'warn', 'ok', 'off'].filter(k => counts[k]).map(k => `<span class="${k}">${counts[k]} ${CHECK_WORD[k]}</span>`).join('')}
