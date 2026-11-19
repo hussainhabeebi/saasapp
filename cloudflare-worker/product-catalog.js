@@ -66,6 +66,9 @@ export function pcCleanItem(body,{partial=false}={}){
   if(has('short_description')) out.short_description=line(b.short_description,300);
   if(has('details')) out.details=str(b.details,5000);
   if(has('features')) out.features=str(b.features,2000);
+  // What the price covers and what it doesn't (one per line) — the proposal's scope page.
+  if(has('inclusions')) out.inclusions=pcList(b.inclusions).map(x=>line(x,200)).slice(0,30).join('\n');
+  if(has('exclusions')) out.exclusions=pcList(b.exclusions).map(x=>line(x,200)).slice(0,30).join('\n');
   if(has('keywords')) out.keywords=line(b.keywords,500);
   if(has('price')){
     if(String(b.price??'').trim()!==''&&pcPrice(b.price)===null) return {error:'Price must be a number'};
@@ -131,6 +134,9 @@ export function pcItemCard(item){
   if(item?.details) out.push('',str(item.details,1500));
   const feats=pcList(item?.features).slice(0,12);
   if(feats.length) out.push('','✅ *Highlights*',...feats.map(f=>`• ${f}`));
+  const inc=pcList(item?.inclusions).slice(0,12),exc=pcList(item?.exclusions).slice(0,12);
+  if(inc.length) out.push('','📦 *What\'s included*',...inc.map(f=>`• ${f}`));
+  if(exc.length) out.push('','🚫 *Not included*',...exc.map(f=>`• ${f}`));
   return out.join('\n').replace(/\n{3,}/g,'\n\n').trim();
 }
 
@@ -171,6 +177,9 @@ export function pcContextBlock(items,{max=60}={}){
       if(i.short_description) l+=` | ${line(i.short_description,200)}`;
       const feats=pcList(i.features).slice(0,6);
       if(feats.length) l+=` | Highlights: ${feats.join('; ')}`;
+      const inc=pcList(i.inclusions).slice(0,8),exc=pcList(i.exclusions).slice(0,8);
+      if(inc.length) l+=` | Included: ${inc.join('; ')}`;
+      if(exc.length) l+=` | NOT included: ${exc.join('; ')}`;
       if(i.details) l+=` | Details: ${line(i.details,500)}`;
       lines.push(l);
     }
@@ -224,7 +233,8 @@ Rules:
   const items=selection.map(({item:i,qty})=>[
     `- id: ${i.id}`,`  name: ${line(i.name,120)}`,`  type: ${i.kind==='service'?'service':'product'}`,`  quantity: ${qty}`,
     i.category?`  category: ${line(i.category,80)}`:'',i.short_description?`  summary: ${line(i.short_description,300)}`:'',
-    pcList(i.features).length?`  highlights: ${pcList(i.features).slice(0,10).join('; ')}`:'',i.details?`  details: ${line(i.details,1200)}`:'',
+    pcList(i.features).length?`  highlights: ${pcList(i.features).slice(0,10).join('; ')}`:'',
+    pcList(i.inclusions).length?`  included: ${pcList(i.inclusions).slice(0,15).join('; ')}`:'',pcList(i.exclusions).length?`  not included: ${pcList(i.exclusions).slice(0,15).join('; ')}`:'',i.details?`  details: ${line(i.details,1200)}`:'',
   ].filter(Boolean).join('\n')).join('\n');
   const user=[`Business: ${biz}`,customer?`Customer: ${line(customer,80)}`:'',`Selected items:\n${items}`,
     notes?`Agent's notes (follow these): ${str(notes,1500)}`:'',
@@ -248,13 +258,16 @@ export function pcParseProposal(text,selection){
   const said=new Map((Array.isArray(j.items)?j.items:[]).map(x=>[String(x?.id??''),line(x?.description,400)]));
   const items=selection.map(({item:i,qty})=>({id:String(i.id),name:line(i.name,120),qty,
     unit_price:pcPrice(i.price),currency:pcCurrency(i.currency),price_unit:line(i.price_unit,40),
-    description:said.get(String(i.id))||line(i.short_description,400)}));
+    description:said.get(String(i.id))||line(i.short_description,400),
+    inclusions:pcScopeList(i.inclusions),exclusions:pcScopeList(i.exclusions)}));
   const summary=line(j.summary,1500);
   if(!summary) return {error:'The AI draft had no summary.'};
   return {title:line(j.title,120)||'Business Proposal',summary,items,
     benefits:pcStrList(j.benefits,6,200),next_steps:pcStrList(j.next_steps,5,200),terms:pcStrList(j.terms,6,240),
-    closing:line(j.closing,500)};
+    closing:line(j.closing,500),inclusions:[],exclusions:[]};
 }
+// Inclusions / exclusions: one per line in the catalogue, a list in a proposal.
+export const pcScopeList=v=>(Array.isArray(v)?v.map(x=>String(x??'')):pcList(v)).map(x=>line(x,200)).filter(Boolean).slice(0,30);
 
 // (system,user) → model text or {error}; one retry on an unusable reply.
 export async function pcProposalDraft(opts,generate){
@@ -280,12 +293,15 @@ export function pcCleanProposal(p,items){
     if(!it) return null;
     return {id:String(it.id),name:line(it.name,120),qty:Math.min(9999,Math.max(1,Math.round(Number(r?.qty)||1))),
       unit_price:r?.unit_price===undefined?pcPrice(it.price):pcPrice(r.unit_price),currency:pcCurrency(it.currency),
-      price_unit:line(it.price_unit,40),description:line(r?.description,400)};
+      price_unit:line(it.price_unit,40),description:line(r?.description,400),
+      // The agent's edited lists from the review; the catalogue's when the proposal didn't carry any.
+      inclusions:pcScopeList(r?.inclusions===undefined?it.inclusions:r.inclusions),exclusions:pcScopeList(r?.exclusions===undefined?it.exclusions:r.exclusions)};
   }).filter(Boolean).slice(0,PC_PROPOSAL_MAX_ITEMS);
   const list=v=>(Array.isArray(v)?v:pcList(v)).map(x=>line(x,240)).filter(Boolean).slice(0,8);
   const pct=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?Math.min(100,Math.round(n*100)/100):0;};
   return {title:line(p?.title,120)||'Business Proposal',summary:str(p?.summary,2000),items:rows,customer:pcCleanCustomer(p?.customer),prepared_by:line(p?.prepared_by,60),
     benefits:list(p?.benefits),next_steps:list(p?.next_steps),terms:list(p?.terms),closing:str(p?.closing,600),
+    inclusions:pcScopeList(p?.inclusions),exclusions:pcScopeList(p?.exclusions),
     discount_pct:pct(p?.discount_pct),tax_pct:pct(p?.tax_pct),tax_label:line(p?.tax_label,20)||'Tax',
     valid_days:Math.min(365,Math.max(0,Math.round(Number(p?.valid_days)||0)))};
 }
@@ -342,6 +358,8 @@ const dateText=d=>`${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYe
 //  - "Prepared for" (customer name, company, address, phone, email, GSTIN) and "Prepared by";
 //  - title, overview, one card per item (photo, name, description, quantity), then a priced
 //    commercial summary table with subtotal / discount / tax / total;
+//  - "Scope of Work — Inclusions & Exclusions" on a page of its own (when any item, or the
+//    proposal as a whole, lists them): per item, what is included beside what is not;
 //  - why-us, next steps, terms, the closing, and an acceptance block with two signature lines;
 //  - every page: a footer with the business name, address, contacts and "Page x of y".
 // opts.images: Map(item id → prepared image from taPrepareImage); opts.logo: prepared image.
@@ -503,6 +521,43 @@ export function pcBuildProposalPdf(p,{business='',address='',phone='',email='',w
       y-=4;
     }else{need(16);y-=4;txt(MX,y-9,'All items are priced on request - we will confirm the final price with you.',8.8,false,MUTED);y-=16;}
   }
+  // ── Scope: inclusions & exclusions, starting on a page of its own ──
+  const scoped=p.items.map((r,idx)=>({title:`${idx+1}. ${r.name}`,inc:r.inclusions||[],exc:r.exclusions||[]})).filter(x=>x.inc.length||x.exc.length);
+  if((p.inclusions||[]).length||(p.exclusions||[]).length) scoped.push({title:'General - applies to the whole proposal',inc:p.inclusions||[],exc:p.exclusions||[]});
+  if(scoped.length){
+    newPage();
+    txt(MX,y-18,'Scope of Work',18,true);y-=26;
+    txt(MX,y-10,'Inclusions & Exclusions - what this proposal covers, and what it does not.',9.6,false,MUTED);y-=24;
+    const GREEN='0.09 0.52 0.29',RED='0.72 0.14 0.09',gap=18,cw=(CW-gap)/2,LS=9.6,LH=12.6;
+    const tick=(x,yy)=>o(`${GREEN} RG 1.4 w 1 J 1 j ${x} ${yy+3.6} m ${x+2.8} ${yy+0.8} l ${x+7.4} ${yy+6.6} l S`);
+    const cross=(x,yy)=>o(`${RED} RG 1.3 w 1 J ${x+0.6} ${yy+0.6} m ${x+6.4} ${yy+6.4} l ${x+0.6} ${yy+6.4} m ${x+6.4} ${yy+0.6} l S`);
+    const colHeads=()=>{
+      rect(MX,y-20,cw,20,'0.9 0.96 0.92');rect(MX+cw+gap,y-20,cw,20,'0.99 0.92 0.91');
+      txt(MX+10,y-13.5,'INCLUDED',8.6,true,GREEN);txt(MX+cw+gap+10,y-13.5,'NOT INCLUDED',8.6,true,RED);y-=26;
+    };
+    scoped.forEach((it,k)=>{
+      need(30+20+LH*2+10);
+      if(k)y-=8;
+      round(MX,y-24,CW,24,5,TINT);rect(MX,y-24,3,24,AC);
+      txt(MX+12,y-16,fit(it.title,11,true,CW-24),11,true);y-=30;
+      colHeads();
+      const L=it.inc.map(t=>wrap(t,LS,false,cw-26)),R=it.exc.map(t=>wrap(t,LS,false,cw-26));
+      if(!L.length)L.push(null);if(!R.length)R.push(null);
+      for(let i=0;i<Math.max(L.length,R.length);i++){
+        const a=L[i],b=R[i],h=Math.max(a?a.length:b&&i===0?1:0,b?b.length:a&&i===0?1:0,1)*LH+4;
+        if(y-h<BOTTOM){newPage();txt(MX,y-11,fit(`${it.title} (continued)`,10,true,CW),10,true);y-=20;colHeads();}
+        if(a){tick(MX+10,y-LH+2.6);a.forEach((l,j)=>txt(MX+24,y-LH+3-j*LH,l,LS,false,BODY));}
+        else if(i===0)txt(MX+10,y-LH+3,'Nothing listed',LS,false,MUTED);
+        if(b){cross(MX+cw+gap+10,y-LH+2.6);b.forEach((l,j)=>txt(MX+cw+gap+24,y-LH+3-j*LH,l,LS,false,BODY));}
+        else if(i===0)txt(MX+cw+gap+10,y-LH+3,'Nothing listed',LS,false,MUTED);
+        y-=h;
+      }
+      hline(MX,W-MX,y-2,RULE,0.5);y-=6;
+    });
+    need(30);y-=8;
+    para('Anything not listed as included is outside the scope of this proposal unless agreed in writing.',8.8,MUTED,4);
+  }
+
   if(p.benefits.length){section(`Why ${biz||'Us'}`);bullets(p.benefits);}
   if(p.next_steps.length){section('Next Steps');bullets(p.next_steps);}
   if(p.terms.length){section('Terms & Conditions');bullets(p.terms);}

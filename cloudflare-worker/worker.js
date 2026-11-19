@@ -23883,7 +23883,7 @@ async function handleHospitalityChatItinerarySend(request,env){
    from the chat with the items the agent picks, sent as a PDF after the agent reviews it.
    Session-gated (requireSession), like the other module pages that write data.
    ════════════════════════════════════════════════════════════════════════════════════════════════ */
-const PC_ITEM_COLUMNS=['kind','name','category','sku','short_description','details','features','keywords','price','currency','price_unit',
+const PC_ITEM_COLUMNS=['kind','name','category','sku','short_description','details','features','inclusions','exclusions','keywords','price','currency','price_unit',
   ...PC_IMAGE_FIELDS,'video_url','voice_note_url','brochure_url','auto_send','status','sort_order'];
 let _pcSchemaEnsured=false;
 async function pcEnsureSchema(env){
@@ -23897,6 +23897,9 @@ async function pcEnsureSchema(env){
   ]);
   // Added after the first release — tables created before it get the column here.
   await env.DB.prepare(`ALTER TABLE pc_items ADD COLUMN video_url TEXT`).run().catch(()=>null);
+  // What an item's price covers / doesn't (one per line) — the proposal's scope page.
+  for(const col of ['inclusions TEXT','exclusions TEXT'])
+    await env.DB.prepare(`ALTER TABLE pc_items ADD COLUMN ${col}`).run().catch(()=>null);
   // Proposal tracking (Dashboard → 📑 Proposals): number, customer block, the full proposal (so
   // the PDF can be opened again), the PDF link from Chatwoot, validity and the agent-set status.
   for(const col of ['ref TEXT','customer_json TEXT','proposal_json TEXT','pdf_url TEXT','valid_until TEXT',"status TEXT NOT NULL DEFAULT 'sent'",'status_note TEXT','status_at TEXT','status_by TEXT'])
