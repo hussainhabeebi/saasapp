@@ -145,6 +145,11 @@ try{tab=localStorage.getItem('lv_proposals_tab')||'all'}catch(e){}
 const isOpen=r=>r.status==='sent'||r.status==='negotiating';
 const money=(n,c)=>n==null||n===''?'':`${c||'INR'} ${Number(n).toLocaleString((c||'INR')==='INR'?'en-IN':'en-US',{maximumFractionDigits:2})}`;
 const day=s=>s?new Date(s).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}):'';
+const when=s=>{if(!s)return '';const d=new Date(s),m=(Date.now()-d.getTime())/6e4;return m<60?`${Math.max(1,Math.round(m))} min ago`:m<1440?`${Math.round(m/60)} h ago`:d.toLocaleDateString(undefined,{day:'numeric',month:'short'})};
+async function copyLink(id){
+  const r=rows.find(x=>x.id===id);if(!r?.link)return;
+  try{await navigator.clipboard.writeText(r.link);toast('✓ Link copied — anyone with it can open this PDF')}catch(e){prompt('Copy the proposal link',r.link)}
+}
 const daysLeft=s=>s?Math.ceil((new Date(s).getTime()-Date.now())/864e5):null;
 async function api(path,opts={}){
   const r=await fetch(WORKER_BASE+path,{...opts,headers:{'Authorization':'Bearer '+sessionToken,...(opts.body?{'Content-Type':'application/json'}:{})}});
@@ -187,6 +192,8 @@ function draw(){
       r.valid_until?(left!=null&&left>=0?`<span class="${left<=3?'warn':''}">${left===0?'Expires today':`${left} day${left>1?'s':''} left`}</span>`:`Valid until ${esc(day(r.valid_until))}`):'',
       `${(r.items||[]).length} item${(r.items||[]).length===1?'':'s'}`,
       r.customer_replied_at&&isOpen(r)?`<span class="ok">💬 Customer replied ${esc(day(r.customer_replied_at))}</span>`:'',
+      r.link?(r.view_count?`<span class="ok" title="Opened from the PDF link">👁 Viewed ${r.view_count}× · last ${esc(when(r.last_viewed_at))}</span>`:'<span>👁 Link not opened yet</span>'):'',
+      r.sent_via==='template'?'<span title="Sent after the 24-hour window closed: WhatsApp template with a link to the PDF">📨 Sent as template</span>':'',
       r.sent_by?`By ${esc(r.sent_by.split('@')[0])}`:''].filter(Boolean).map(x=>x.startsWith('<span')?x:`<span>${x}</span>`).join('');
     return `<div class="prop">
       <div class="top"><span class="ref">${esc(r.ref)}</span><span class="pill st-${esc(r.status)}">${ic} ${label}</span>${r.status_at&&r.stored_status!=='sent'?`<span>updated ${esc(day(r.status_at))}</span>`:''}</div>
@@ -197,6 +204,7 @@ function draw(){
       ${r.status_note?`<div class="note">${esc(r.status_note)}</div>`:''}
       <div class="acts"><button class="btn" onclick="openSheet(${r.id})">Update status</button>
         <button class="btn sec" onclick="viewPdf(${r.id},this)" ${r.has_pdf||r.pdf_url?'':'disabled title="Sent before PDFs were kept — open it from the chat"'}>📄 PDF</button>
+        ${r.link?`<button class="btn sec" onclick="copyLink(${r.id})">🔗 Copy link</button>`:''}
         <button class="btn sec" onclick="openChat(${r.lead_id})">💬 Chat</button></div>
     </div>`}).join('');
 }

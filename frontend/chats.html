@@ -73,6 +73,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .prop-qty{display:flex;align-items:center;border:1px solid #d1d7db;border-radius:8px;overflow:hidden;height:40px;background:#fff}.prop-qty button{width:34px;height:100%;border:0;background:#f0f2f5;font-size:18px;color:#3b4a54;cursor:pointer;flex:none;touch-action:manipulation}.prop-qty input{border:0!important;height:100%!important;text-align:center;padding:0 2px!important;min-width:0;-moz-appearance:textfield}.prop-qty input::-webkit-inner-spin-button{-webkit-appearance:none}
 .prop-row .prop-qty{width:118px;flex:none}
 .prop-pickbar{display:none}
+.prop-win{border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.45;display:grid;gap:8px}.prop-win.ok{background:#e7f6f4;color:#0a5f5a}.prop-win.warn{background:#fff8e1;color:#6b5a1e}.prop-win code{font-size:12px;background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px}.prop-win-msg{background:#fff;border-radius:8px;padding:8px 10px;color:#111;white-space:pre-wrap;box-shadow:0 1px 1px rgba(0,0,0,.08)}.prop-win .ai-itin-btn{height:32px;font-size:13px}
 .prop-scope{border:1px solid #e9edef;border-radius:8px;padding:8px 10px;background:#fafbfb}.prop-scope summary{cursor:pointer;font-size:13px;font-weight:600;color:#3b4a54;list-style-position:inside}.prop-scope summary small{font-weight:500;color:var(--muted);margin-left:4px}.prop-scope[open] summary{margin-bottom:8px}
 @media(max-width:700px){.prop-scope .prop-grid{grid-template-columns:1fr}}
 #aiPropDetail .tpl-actions{position:sticky;bottom:-18px;margin:auto -18px -18px;padding:12px 18px calc(12px + env(safe-area-inset-bottom));background:var(--paper);box-shadow:0 -1px 0 #e9edef;flex-wrap:wrap;z-index:2}
@@ -1689,6 +1690,7 @@ async function openAiProp(){
  let ov=$('aiPropOv');if(!ov){ov=document.createElement('div');ov.id='aiPropOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
  ov.classList.remove('hidden');aiProp={...aiProp,sel:[],notes:'',draft:null,busy:false,lead:current};
  ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="aiPropBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📑 AI Proposal for <b>${esc(who(current)||'contact')}</b></div><span class="prop-steps" id="aiPropStep">1 · Items</span></div><div class="tpl-main" id="aiPropMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="aiPropSearch" type="search" enterkeyhint="search" placeholder="Search products & services" oninput="drawAiPropItems()"></div></div><div class="tpl-items" id="aiPropItems"><div class="tpl-empty"><div class="spinner"></div>Loading products &amp; services…</div></div><div class="prop-pickbar" id="aiPropPickBar"></div></div><div class="tpl-detail" id="aiPropDetail"><div class="tpl-empty">Pick the products and services to offer — the AI writes the proposal from this chat for you to check before it is sent.</div></div></div>`;
+ aiPropEnsureTemplate();
  try{if(!aiProp.items){const d=await apiJson(WORKER+'/catalog/items');aiProp.items=(d.items||[]).filter(i=>i.status!=='inactive')}drawAiPropItems()}
  catch(e){const el=$('aiPropItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load products &amp; services.<br><small>${esc(e.message)}</small></div>`}
 }
@@ -1721,6 +1723,25 @@ function aiPropScopeBox(pre,o,label,open=false){
  const inc=o.inclusions||[],exc=o.exclusions||[];
  return `<details class="prop-scope"${open||inc.length||exc.length?' open':''}><summary>${label} <small>✅ ${inc.length} · 🚫 ${exc.length}</small></summary><div class="prop-grid"><label>✅ Included (one per line)<textarea id="${pre}Inc" rows="3" placeholder="e.g. Installation">${esc(inc.join('\n'))}</textarea></label><label>🚫 Not included (one per line)<textarea id="${pre}Exc" rows="3" placeholder="e.g. Civil work">${esc(exc.join('\n'))}</textarea></label></div></details>`;
 }
+// The "proposal link" WhatsApp template, for sending once the 24-hour window has closed. The first
+// time anyone opens AI Proposal the worker creates it in the account's WABA; after that this only
+// re-reads its Meta status until it is approved.
+async function aiPropEnsureTemplate(refresh){
+ if(aiProp.tpl?.status==='APPROVED'&&!refresh)return aiProp.tpl;
+ try{const d=await apiJson(WORKER+'/catalog/proposal-template'+(refresh?'?refresh=1':''),{method:'POST'});aiProp.tpl=d.template||null}catch{aiProp.tpl=aiProp.tpl||null}
+ return aiProp.tpl;
+}
+const aiPropClosed=()=>!!aiProp.lead&&!windowOpen(aiProp.lead);
+const aiPropTplText=p=>String(aiProp.tpl?.body||'').replace('{{1}}',String(p.customer?.name||who(aiProp.lead)||'there').split(/\s+/)[0]).replace('{{2}}',p.title||'').replace('{{3}}','(link to the PDF)');
+// Outside the 24-hour window the proposal goes as the template with a link to the PDF.
+function aiPropWindowNote(){
+ if(!aiPropClosed())return '';
+ const t=aiProp.tpl,st=t?.status||'NONE';
+ if(st==='APPROVED')return `<div id="aiPropWin" class="prop-win ok"><b>⏱ 24-hour window closed</b> — this proposal goes as the approved WhatsApp template <code>${esc(t.name)}</code> with a private link to the PDF:<div class="prop-win-msg">${esc(aiPropTplText(aiProp.draft||{}))}</div></div>`;
+ const why=st==='NO_WABA'?esc(t?.reason||'Connect the WhatsApp Business API in Settings → Channels.'):st==='REJECTED'?`Meta rejected the template <code>${esc(t?.name)}</code>${t?.reason?` (${esc(t.reason)})`:''}.`:st==='ERROR'?`The template could not be created: ${esc(t?.reason||'')}`:`The proposal template <code>${esc(t?.name||'leadvyne_proposal_link')}</code> is waiting for Meta's approval (usually minutes, up to 24 hours).`;
+ return `<div id="aiPropWin" class="prop-win warn"><b>⏱ 24-hour window closed</b> — WhatsApp only delivers an approved template now. ${why}<div><button class="ai-itin-btn sec" type="button" onclick="aiPropRecheck()">↻ Check again</button></div></div>`;
+}
+async function aiPropRecheck(){aiPropReadReview();await aiPropEnsureTemplate(true);if(aiProp.draft&&$('aiPropTitle'))drawAiPropDetail('ready')}
 function aiPropMyName(){try{const saved=localStorage.getItem('lv_prop_by');if(saved)return saved}catch{}return (typeof agentsList==='function'?agentsList().find(a=>a.email===meEmail)?.name:'')||''}
 function aiPropReadPick(){
  aiProp.sel.forEach(s=>{const v=$('aiPropQty'+s.id)?.value;if(v!=null)s.qty=Math.max(1,parseInt(v,10)||1)});
@@ -1748,8 +1769,8 @@ function drawAiPropDetail(state,msg){
   <div class="tpl-form"><div class="prop-sec">Items &amp; pricing</div>${rows}<div class="prop-grid prop-grid3"><label>Discount %<input type="number" min="0" max="100" id="aiPropDisc" value="${esc(p.discount_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax %<input type="number" min="0" max="100" id="aiPropTax" value="${esc(p.tax_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax name<input id="aiPropTaxLabel" value="${esc(p.tax_label||'GST')}"></label></div><label>Valid for (days)<input type="number" min="0" id="aiPropValid" value="${esc(p.valid_days??15)}"></label><div class="prop-totals" id="aiPropTotals"></div></div>
   <div class="tpl-form"><div class="prop-sec">Scope — whole proposal</div><small style="color:var(--muted)">Each item's inclusions and exclusions come from Products &amp; Services. Add anything that applies to the whole job here — the PDF puts them all on a separate “Scope of Work” page.</small>${aiPropScopeBox('aiPropG',p,'General inclusions &amp; exclusions',true)}</div>
   <div class="tpl-form"><div class="prop-sec">Sections</div><label>Why choose us (one per line)<textarea id="aiPropBenefits" rows="3">${lines(p.benefits)}</textarea></label><label>Next steps (one per line)<textarea id="aiPropSteps" rows="3">${lines(p.next_steps)}</textarea></label><label>Terms (one per line)<textarea id="aiPropTerms" rows="3">${lines(p.terms)}</textarea></label><label>Closing<textarea id="aiPropClosing" rows="2">${esc(p.closing)}</textarea></label></div>
-  <div class="tpl-form"><div class="prop-sec">Send</div>${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="aiPropSendPhotos">Also send the item photos (up to 3)</label>`:''}<label>Message with the PDF<input id="aiPropCaption" value="${esc(`📄 Here is our proposal: *${p.title}*.`)}"></label><div id="aiPropErr" style="color:#d93025;font-size:13px"></div></div>
-  <div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiPropReadReview();drawAiPropDetail('pick')">✏️ Items</button><button class="ai-itin-btn sec" onclick="aiPropGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiPropSendBtn" onclick="aiPropSend()">✅ Approve &amp; send</button></div>`;
+  <div class="tpl-form"><div class="prop-sec">Send</div>${aiPropWindowNote()}${aiPropClosed()?'':`${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="aiPropSendPhotos">Also send the item photos (up to 3)</label>`:''}<label>Message with the PDF<input id="aiPropCaption" value="${esc(`📄 Here is our proposal: *${p.title}*.`)}"></label>`}<div id="aiPropErr" style="color:#d93025;font-size:13px"></div></div>
+  <div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiPropReadReview();drawAiPropDetail('pick')">✏️ Items</button><button class="ai-itin-btn sec" onclick="aiPropGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiPropSendBtn" onclick="aiPropSend()" ${aiPropClosed()&&aiProp.tpl?.status!=='APPROVED'?'disabled title="Waiting for the WhatsApp template"':''}>${aiPropClosed()?'✅ Approve &amp; send link':'✅ Approve &amp; send'}</button></div>`;
  drawAiPropTotals();
 }
 // The review's fields → aiProp.draft (what is sent).
@@ -1802,14 +1823,15 @@ async function aiPropSend(){
  try{if(p.prepared_by)localStorage.setItem('lv_prop_by',p.prepared_by)}catch{}
  if(btn){btn.disabled=true;btn.textContent='Sending…'}if(err)err.textContent='';
  try{
-  const d=await apiJson(WORKER+'/catalog/chat-proposal/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,proposal:p,caption,send_photos:sendPhotos})});
+  const d=await apiJson(WORKER+'/catalog/chat-proposal/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,proposal:p,caption,send_photos:sendPhotos,window_closed:aiPropClosed()})});
   closeAiProp();
-  const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind:'document',type:'application/pdf',name:d.name||'Proposal.pdf'}});setMsgStatus(lead,msg,null);
+  const msg=d.via==='template'?pushLocal(lead,{role:'assistant',content:d.content||'',attachment:{kind:'template',name:aiProp.tpl?.name||'leadvyne_proposal_link'}})
+   :pushLocal(lead,{role:'assistant',content:caption,attachment:{kind:'document',type:'application/pdf',name:d.name||'Proposal.pdf'}});setMsgStatus(lead,msg,null);
   // The worker moved the lead to "Proposal Sent": from now on only Follow-up V3's proposal templates go to it.
   if(d.stage){lead.Stage=d.stage;if(lead._rec)lead._rec.Stage=d.stage;if(current===lead){renderInfo();renderHeaderCtl()}}
   const moved=d.stage==='proposal_sent'?' · stage: Proposal Sent':'';
-  toast((d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the proposal sent`:'✓ Proposal sent')+(d.ref?` · ${d.ref}`:'')+moved);
- }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent='✅ Approve & send'}}
+  toast((d.via==='template'?'✓ Proposal link sent as a WhatsApp template':d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the proposal sent`:'✓ Proposal sent')+(d.ref?` · ${d.ref}`:'')+moved);
+ }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent=aiPropClosed()?'✅ Approve & send link':'✅ Approve & send'}}
 }
 function aiPropMore(){aiPropReadPick();$('aiPropMain')?.classList.remove('picked');drawAiPropPickBar();if(!matchMedia('(max-width:700px)').matches)$('aiPropSearch')?.focus()}
 function aiPropBack(){const m=$('aiPropMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){if($('aiPropTitle'))aiPropReadReview();else aiPropReadPick();m.classList.remove('picked');drawAiPropPickBar();return}closeAiProp()}

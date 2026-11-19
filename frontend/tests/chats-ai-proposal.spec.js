@@ -23,23 +23,30 @@ const DRAFT = { title: 'Hot water for the family', summary: 'You need hot water 
   inclusions: [], exclusions: [] };
 DRAFT.items[0].inclusions = ['Standard installation', 'Roof stand']; DRAFT.items[0].exclusions = ['Civil work'];
 
-async function open(page, { industry = 'general', draftFails = false } = {}) {
-  const calls = { draft: [], send: [] };
+async function open(page, { industry = 'general', draftFails = false, oldChat = false, tplStatus = 'APPROVED' } = {}) {
+  const calls = { draft: [], send: [], tpl: [] };
+  const msgs = oldChat ? [{ role: 'user', content: 'Need hot water for a family of 6', ts: minsAgo(3000) }] : MESSAGES;
+  const lead = oldChat ? { ...LEAD, LastMsgAt: minsAgo(3000), ConvHistory: JSON.stringify(msgs) } : LEAD;
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     if (url.protocol === 'file:') return route.continue();
     if (url.hostname === 'img.test') return route.fulfill({ contentType: 'image/png', body: PNG });
     if (url.pathname.endsWith('/session/me')) return route.fulfill({ json: { email: 'owner@x.test', client: { authentik_email: 'owner@x.test', industry } } });
-    if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(url.pathname)) return route.fulfill({ json: { list: [LEAD] } });
-    if (url.pathname.endsWith('/chat/messages')) return route.fulfill({ json: { messages: MESSAGES } });
+    if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(url.pathname)) return route.fulfill({ json: { list: [lead] } });
+    if (url.pathname.endsWith('/chat/messages')) return route.fulfill({ json: { messages: msgs } });
+    if (url.pathname.endsWith('/catalog/proposal-template')) { calls.tpl.push(url.search); return route.fulfill({ json: { template: { name: 'leadvyne_proposal_link', language: 'en', status: tplStatus, body: 'Hi {{1}}, please find attached our proposal "{{2}}". You can view and download the PDF here: {{3}}\n\nPlease reply to this message if you have any questions.' } } }); }
     if (url.pathname.endsWith('/catalog/items')) return route.fulfill({ json: { items: ITEMS } });
     if (url.pathname.endsWith('/catalog/ai-proposal')) {
       calls.draft.push(req.postDataJSON());
       if (draftFails) return route.fulfill({ status: 422, json: { error: 'AI timed out' } });
       return route.fulfill({ json: { proposal: DRAFT, customer: { name: 'Asha Nair', phone: '919800000000', email: '', company: '', address: 'TC 12/345, Pattom\nThiruvananthapuram 695004', gstin: '' } } });
     }
-    if (url.pathname.endsWith('/catalog/chat-proposal/send')) { calls.send.push(req.postDataJSON()); return route.fulfill({ json: { ok: true, photos_sent: 1, name: 'Proposal-Asha.pdf', ref: 'PRP-2026-0007', stage: 'proposal_sent' } }); }
+    if (url.pathname.endsWith('/catalog/chat-proposal/send')) {
+      const b = req.postDataJSON(); calls.send.push(b);
+      if (b.window_closed) return route.fulfill({ json: { ok: true, via: 'template', content: 'Hi Asha, please find attached our proposal "Hot water for the family". You can view and download the PDF here: https://w.test/p/abc', link: 'https://w.test/p/abc', ref: 'PRP-2026-0008', stage: 'proposal_sent' } });
+      return route.fulfill({ json: { ok: true, photos_sent: 1, name: 'Proposal-Asha.pdf', ref: 'PRP-2026-0007', stage: 'proposal_sent' } });
+    }
     return route.abort();
   });
   await page.goto(chatsUrl, { waitUntil: 'domcontentloaded' });
@@ -102,6 +109,45 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
   // The lead moved to Proposal Sent — only Follow-up V3's proposal templates go to it now.
   await expect(page.locator('#toast')).toContainText('stage: Proposal Sent');
   await expect(page.locator('#toast')).toContainText('PRP-2026-0007');
+});
+
+test('opening AI Proposal makes sure the proposal-link template exists', async ({ page }) => {
+  const calls = await open(page);
+  await page.evaluate(() => openAiProp());
+  await expect.poll(() => calls.tpl.length).toBe(1);
+  // Inside the window nothing changes: the PDF goes into the chat.
+  await page.locator('#aiPropOv .tpl-item', { hasText: 'Solar Water Heater' }).click();
+  await page.getByRole('button', { name: '✨ Draft proposal' }).click();
+  await expect(page.locator('#aiPropWin')).toHaveCount(0);
+  await expect(page.locator('#aiPropCaption')).toBeVisible();
+});
+
+test('after 24 hours the proposal goes as the approved template with a PDF link', async ({ page }) => {
+  const calls = await open(page, { oldChat: true });
+  await page.evaluate(() => openAiProp());
+  await page.locator('#aiPropOv .tpl-item', { hasText: 'Solar Water Heater' }).click();
+  await page.getByRole('button', { name: '✨ Draft proposal' }).click();
+  await expect(page.locator('#aiPropWin')).toContainText('24-hour window closed');
+  await expect(page.locator('#aiPropWin')).toContainText('Hi Asha, please find attached our proposal "Hot water for the family". You can view and download the PDF here: (link to the PDF)');
+  await expect(page.locator('#aiPropCaption')).toHaveCount(0);
+  await expect(page.locator('#aiPropSendPhotos')).toHaveCount(0);
+  await page.getByRole('button', { name: '✅ Approve & send link' }).click();
+  await expect(page.locator('#aiPropOv')).toBeHidden();
+  expect(calls.send[0]).toMatchObject({ lead_id: 7, window_closed: true, send_photos: false });
+  await expect(page.locator('#thread .bubble.out').last()).toContainText('https://w.test/p/abc');
+  await expect(page.locator('#toast')).toContainText('sent as a WhatsApp template');
+});
+
+test('after 24 hours, a template still waiting for Meta blocks the send and can be re-checked', async ({ page }) => {
+  const calls = await open(page, { oldChat: true, tplStatus: 'PENDING' });
+  await page.evaluate(() => openAiProp());
+  await page.locator('#aiPropOv .tpl-item', { hasText: 'Solar Water Heater' }).click();
+  await page.getByRole('button', { name: '✨ Draft proposal' }).click();
+  await expect(page.locator('#aiPropWin')).toContainText("waiting for Meta's approval");
+  await expect(page.getByRole('button', { name: '✅ Approve & send link' })).toBeDisabled();
+  await page.getByRole('button', { name: '↻ Check again' }).click();
+  await expect.poll(() => calls.tpl.filter((q) => q.includes('refresh=1')).length).toBe(1);
+  expect(calls.send).toHaveLength(0);
 });
 
 test('send is blocked without a customer name or with a bad email', async ({ page }) => {
