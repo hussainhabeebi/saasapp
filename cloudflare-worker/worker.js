@@ -25,7 +25,7 @@ import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-aut
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {hospAiList,HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
-import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
+import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf,pcCleanCustomer,pcProposalStatus,pcProposalRef,pcProposalValidUntil,PC_PROPOSAL_STATUSES} from './product-catalog.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcClientFields,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -23474,6 +23474,10 @@ async function pcEnsureSchema(env){
   ]);
   // Added after the first release — tables created before it get the column here.
   await env.DB.prepare(`ALTER TABLE pc_items ADD COLUMN video_url TEXT`).run().catch(()=>null);
+  // Proposal tracking (Dashboard → 📑 Proposals): number, customer block, the full proposal (so
+  // the PDF can be opened again), the PDF link from Chatwoot, validity and the agent-set status.
+  for(const col of ['ref TEXT','customer_json TEXT','proposal_json TEXT','pdf_url TEXT','valid_until TEXT',"status TEXT NOT NULL DEFAULT 'sent'",'status_note TEXT','status_at TEXT','status_by TEXT'])
+    await env.DB.prepare(`ALTER TABLE pc_proposals ADD COLUMN ${col}`).run().catch(()=>null);
   _pcSchemaEnsured=true;
 }
 async function pcItemsFor(env,clientId,{activeOnly=false}={}){
@@ -23555,7 +23559,35 @@ async function handleCatalogAiProposal(request,env){
     await reportOpsError(env,'catalog/ai-proposal — no usable draft',new Error((out.reasons||[out.error]).join(' | ')),{clientId:payload.cid}).catch(()=>{});
     return json({error:out.error},422);
   }
-  return json({proposal:out});
+  return json({proposal:out,customer:await pcCustomerDefaults(env,payload.cid,lead)});
+}
+// The "Prepared for" block a new proposal starts with: the one the last proposal to this lead
+// used (the agent typed the address once), else the lead's name, phone and email.
+async function pcCustomerDefaults(env,cid,lead){
+  await pcEnsureSchema(env);
+  const last=await env.DB.prepare(`SELECT customer_json FROM pc_proposals WHERE client_id=? AND lead_id=? AND customer_json IS NOT NULL ORDER BY sent_at DESC LIMIT 1`)
+    .bind(Number(cid),Number(lead.Id)).first().catch(()=>null);
+  let prev=null;try{prev=last?.customer_json?JSON.parse(last.customer_json):null;}catch(e){}
+  const base={name:String(lead.Name||'').trim(),phone:String(lead.Phone||'').trim(),email:String(lead.Email||'').trim()};
+  const c=pcCleanCustomer(prev||base);
+  if(!c.name)c.name=pcCleanCustomer(base).name; if(!c.phone&&!/^ig:/i.test(base.phone))c.phone=pcCleanCustomer(base).phone;
+  return c;
+}
+// Letterhead for the proposal PDF: Settings → Company Profile first, then the billing details.
+async function pcLetterhead(env,c){
+  const bc=await bcForClient(env,c);const id=bc?.identity||{};
+  return {business:String(id.official_name||c.quote_header_title||c.client_name||'').trim(),
+    address:String(id.address||c.company_address||'').trim(),phone:String(id.phone||c.support_phone||c.phone||'').trim(),
+    email:String(id.email||c.billing_email||'').trim(),website:String(id.website||'').trim(),gstin:String(c.gstin||'').trim(),
+    accent:c.quote_accent_color||'',logoUrl:String(bcLogoForPdf(bc,c)||'').trim()};
+}
+async function pcRenderProposalPdf(env,c,proposal,{customer='',ref='',now=new Date()}={}){
+  const lh=await pcLetterhead(env,c);
+  const items=await pcItemsFor(env,c.Id);const byId=new Map(items.map(i=>[String(i.id),i]));
+  const [logo,...imgs]=await Promise.all([lh.logoUrl?hospChatPdfImage(env,lh.logoUrl):null,
+    ...proposal.items.map(r=>{const u=pcPhotos(byId.get(r.id))[0];return u?hospChatPdfImage(env,u):null;})]);
+  const images=new Map(proposal.items.map((r,i)=>[r.id,imgs[i]]).filter(([,img])=>img));
+  return pcBuildProposalPdf(proposal,{...lh,customer,logo,images,ref,now});
 }
 // POST /catalog/chat-proposal/send {lead_id, proposal, caption?, send_photos?} → the item photos
 // (optional, the first photo of up to 3 items) and the proposal PDF go into the chat.
@@ -23576,14 +23608,13 @@ async function handleCatalogChatProposalSend(request,env){
   if(!proposal.items.length) return json({error:'The proposal has no products or services.'},400);
   const byId=new Map(items.map(i=>[String(i.id),i]));
   const customer=String(lead.Name||'').trim();
+  if(!proposal.customer.name) proposal.customer.name=customer;
+  const nowDate=new Date();
+  const seq=await env.DB.prepare(`SELECT COUNT(*) AS n FROM pc_proposals WHERE client_id=?`).bind(Number(payload.cid)).first().catch(()=>null);
+  const ref=pcProposalRef((Number(seq?.n)||0)+1,nowDate);
   let bytes;
   try{
-    const logoUrl=String(bcLogoForPdf(await bcForClient(env,c),c)||'').trim();
-    const [logo,...imgs]=await Promise.all([logoUrl?hospChatPdfImage(env,logoUrl):null,
-      ...proposal.items.map(r=>{const u=pcPhotos(byId.get(r.id))[0];return u?hospChatPdfImage(env,u):null;})]);
-    const images=new Map(proposal.items.map((r,i)=>[r.id,imgs[i]]).filter(([,img])=>img));
-    bytes=pcBuildProposalPdf(proposal,{business:c.quote_header_title||c.client_name||'',phone:c.support_phone||c.phone||'',customer,
-      accent:c.quote_accent_color||'',logo,images,ref:`P-${leadId}-${Date.now().toString(36).slice(-5).toUpperCase()}`});
+    bytes=await pcRenderProposalPdf(env,c,proposal,{customer,ref,now:nowDate});
   }catch(e){ await reportOpsError(env,'Chats AI proposal — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
   let photosSent=0;
   if(body?.send_photos){
@@ -23605,7 +23636,7 @@ async function handleCatalogChatProposalSend(request,env){
     }
   }
   const caption=String(body?.caption||'').trim().slice(0,1000)||`📄 Here is our proposal${customer?` for you, ${customer}`:''}: *${proposal.title}*.`;
-  const name=pcProposalPdfName(proposal,customer);
+  const name=pcProposalPdfName(proposal,proposal.customer.name||customer);
   const fd=new FormData();
   fd.append('content',caption); fd.append('message_type','outgoing'); fd.append('private','false');
   fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),name);
@@ -23616,13 +23647,14 @@ async function handleCatalogChatProposalSend(request,env){
   await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
     attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
   const totals=pcProposalTotals(proposal);
-  const sentAt=new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO pc_proposals (client_id,lead_id,title,total,currency,items_json,pdf_name,sent_by,sent_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+  const sentAt=nowDate.toISOString();
+  await env.DB.prepare(`INSERT INTO pc_proposals (client_id,lead_id,title,total,currency,items_json,pdf_name,sent_by,sent_at,ref,customer_json,proposal_json,pdf_url,valid_until,status,status_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(Number(payload.cid),leadId,proposal.title,totals.priced?totals.total:null,totals.currency,
-      JSON.stringify(proposal.items.map(r=>({id:r.id,name:r.name,qty:r.qty,unit_price:r.unit_price}))),name,String(payload.email||''),sentAt).run()
+      JSON.stringify(proposal.items.map(r=>({id:r.id,name:r.name,qty:r.qty,unit_price:r.unit_price}))),name,String(payload.email||''),sentAt,
+      ref,JSON.stringify(proposal.customer),JSON.stringify(proposal),String(sent.data_url||sent.file_url||''),pcProposalValidUntil(proposal,nowDate),'sent',sentAt).run()
     .catch(e=>reportOpsError(env,'Chats AI proposal — log failed',e,{clientId:payload.cid,leadId}));
   const stage=await pcMarkProposalSent(env,payload.cid,lead,{at:sentAt,total:totals.priced?totals.total:null});
-  return json({ok:true,photos_sent:photosSent,name,total:totals.total,stage,data});
+  return json({ok:true,photos_sent:photosSent,name,ref,total:totals.total,stage,data});
 }
 // After a proposal goes out: the lead moves to "Proposal Sent" (FV3_PROPOSAL_STAGE), so Follow-up
 // V3 sends only the proposal templates and every other follow-up sender skips it
@@ -23654,6 +23686,74 @@ async function pcLatestProposals(env,cid,leadId=null){
     .bind(...(leadId?[Number(cid),Number(leadId)]:[Number(cid)])).all();
   const out={}; for(const r of results||[]) out[r.lead_id]={at:r.at,title:r.title||''};
   return out;
+}
+
+// ── Dashboard → 📑 Proposals ─────────────────────────────────────────────────────────────────────
+// GET   /catalog/proposals                       → {proposals:[…]} every proposal sent from Chats,
+//        newest first, with its effective status (pcProposalStatus) and whether the customer has
+//        written since it went out.
+// PATCH /catalog/proposals {id,status,note?,mark_won?} → the agent sets sent / negotiating /
+//        accepted / rejected; accepted can also move the lead to "won" with the proposal's total.
+// GET   /catalog/proposals/pdf?id=               → the proposal PDF again (proposals sent since
+//        the full proposal is stored; older ones answer with the Chatwoot link, if any).
+const pcJsonOr=(s,d)=>{try{return s?JSON.parse(s):d;}catch(e){return d;}};
+async function handleCatalogProposals(request,env){
+  const {res,payload,c}=await pcSessionClient(request,env);
+  if(res) return res;
+  await pcEnsureSchema(env);
+  const cid=Number(payload.cid);
+  if(request.method==='PATCH'){
+    const b=await request.json().catch(()=>({}));
+    const status=String(b?.status||'');
+    if(!PC_PROPOSAL_STATUSES.includes(status)) return json({error:'Unknown status'},400);
+    const row=await env.DB.prepare(`SELECT * FROM pc_proposals WHERE id=? AND client_id=?`).bind(Number(b?.id)||0,cid).first();
+    if(!row) return json({error:'Proposal not found'},404);
+    const at=new Date().toISOString();
+    await env.DB.prepare(`UPDATE pc_proposals SET status=?, status_note=?, status_at=?, status_by=? WHERE id=?`)
+      .bind(status,String(b?.note||'').trim().slice(0,500),at,String(payload.email||''),row.id).run();
+    let stage=null;
+    if(status==='accepted'&&b?.mark_won){
+      const lead=await pcLeadForChat(env,payload,row.lead_id);
+      if(lead) stage=await leadMoveStage(env,cid,lead,'won',row.total&&!(Number(lead.DealValue)>0)?{DealValue:row.total}:{});
+    }
+    return json({ok:true,status,status_at:at,stage});
+  }
+  const url=new URL(request.url);
+  if(url.pathname.endsWith('/pdf')){
+    const row=await env.DB.prepare(`SELECT * FROM pc_proposals WHERE id=? AND client_id=?`).bind(Number(url.searchParams.get('id'))||0,cid).first();
+    if(!row) return json({error:'Proposal not found'},404);
+    const proposal=pcJsonOr(row.proposal_json,null);
+    if(!proposal){ return row.pdf_url?json({url:row.pdf_url}):json({error:'This proposal was sent before PDFs were kept — open it from the chat.'},404); }
+    try{
+      const clean=pcCleanProposal(proposal,await pcItemsFor(env,cid));
+      if(!clean.items.length&&row.pdf_url) return json({url:row.pdf_url});
+      const bytes=await pcRenderProposalPdf(env,c,clean,{ref:row.ref||'',now:new Date(row.sent_at)});
+      return new Response(bytes,{headers:{'Content-Type':'application/pdf','Content-Disposition':`inline; filename="${String(row.pdf_name||'Proposal.pdf').replace(/[^\w.-]/g,'_')}"`}});
+    }catch(e){ await reportOpsError(env,'Proposals — PDF rebuild failed',e,{clientId:cid}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
+  }
+  const {results}=await env.DB.prepare(`SELECT id,lead_id,ref,title,total,currency,items_json,customer_json,pdf_name,pdf_url,sent_by,sent_at,valid_until,status,status_note,status_at,status_by,
+      (proposal_json IS NOT NULL) AS has_pdf FROM pc_proposals WHERE client_id=? ORDER BY sent_at DESC LIMIT 500`).bind(cid).all();
+  const rows=results||[];
+  // Newest proposal per lead (a newer one revises the older open ones) and the customer's last message.
+  const newest=new Map();for(const r of rows) if(!newest.has(r.lead_id)) newest.set(r.lead_id,r.id);
+  const leadIds=[...newest.keys()].map(Number).filter(Boolean);
+  const lastIn=new Map();
+  for(let i=0;i<leadIds.length;i+=90){
+    const chunk=leadIds.slice(i,i+90);
+    const {results:m}=await env.DB.prepare(`SELECT lead_id, MAX(ts) AS at FROM lead_messages WHERE role='user' AND lead_id IN (${chunk.map(()=>'?').join(',')}) GROUP BY lead_id`)
+      .bind(...chunk).all().catch(()=>({results:[]}));
+    for(const x of m||[]) lastIn.set(Number(x.lead_id),x.at);
+  }
+  const now=new Date();
+  const proposals=rows.map(r=>{
+    const customer=pcJsonOr(r.customer_json,null)||{};
+    const replied=lastIn.get(Number(r.lead_id));
+    return {id:r.id,lead_id:r.lead_id,ref:r.ref||`#${r.id}`,title:r.title,total:r.total,currency:r.currency,items:pcJsonOr(r.items_json,[]),customer,
+      pdf_name:r.pdf_name,pdf_url:r.pdf_url||'',has_pdf:!!r.has_pdf,sent_by:r.sent_by,sent_at:r.sent_at,valid_until:r.valid_until||'',
+      stored_status:r.status||'sent',status:pcProposalStatus(r,{now,newerSent:newest.get(r.lead_id)!==r.id}),status_note:r.status_note||'',status_at:r.status_at||'',status_by:r.status_by||'',
+      customer_replied_at:replied&&replied>r.sent_at?replied:''};
+  });
+  return json({proposals});
 }
 
 // Bot: the customer named a catalogue item → its details card, then photos, voice note and
@@ -44831,6 +44931,7 @@ export default {
       else if(url.pathname==='/catalog/items' && ['GET','POST','PATCH','DELETE'].includes(request.method)){ res=await handleCatalogItems(request,env); }
       else if(url.pathname==='/catalog/ai-proposal' && request.method==='POST'){ res=await handleCatalogAiProposal(request,env); }
       else if(url.pathname==='/catalog/chat-proposal/send' && request.method==='POST'){ res=await handleCatalogChatProposalSend(request,env); }
+      else if((url.pathname==='/catalog/proposals' && ['GET','PATCH'].includes(request.method))||(url.pathname==='/catalog/proposals/pdf' && request.method==='GET')){ res=await handleCatalogProposals(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }

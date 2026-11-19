@@ -69,10 +69,22 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .h-itin-check{display:flex!important;align-items:center;gap:8px;font-size:13.5px;color:#111!important}.h-itin-check input{width:auto!important;height:auto!important;margin:0}
 .prop-row{display:flex;gap:10px;align-items:center}.prop-row>span{flex:1;min-width:0}.prop-row>span b{display:block;font-size:14px;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.prop-row>span small{color:var(--muted)}.prop-row label{width:78px;flex:none}.prop-row .h-thumb{width:44px;height:44px}
 .prop-item{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid #f0f2f5}.prop-item b{font-size:14.5px}.prop-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.prop-grid3{grid-template-columns:1fr 1fr 1fr}
+.prop-cust{display:grid;grid-template-columns:1fr 1fr;gap:10px}.prop-cust .full{grid-column:1/-1}.prop-sec{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#0d9c93;margin:0 0 -2px}
+.prop-qty{display:flex;align-items:center;border:1px solid #d1d7db;border-radius:8px;overflow:hidden;height:40px;background:#fff}.prop-qty button{width:34px;height:100%;border:0;background:#f0f2f5;font-size:18px;color:#3b4a54;cursor:pointer;flex:none;touch-action:manipulation}.prop-qty input{border:0!important;height:100%!important;text-align:center;padding:0 2px!important;min-width:0;-moz-appearance:textfield}.prop-qty input::-webkit-inner-spin-button{-webkit-appearance:none}
+.prop-row .prop-qty{width:118px;flex:none}
+.prop-pickbar{display:none}
+#aiPropDetail .tpl-actions{position:sticky;bottom:-18px;margin:auto -18px -18px;padding:12px 18px calc(12px + env(safe-area-inset-bottom));background:var(--paper);box-shadow:0 -1px 0 #e9edef;flex-wrap:wrap;z-index:2}
+.prop-steps{font-size:12px;color:var(--muted);white-space:nowrap}
 .prop-totals{display:grid;gap:4px;font-size:13.5px}.prop-totals div{display:flex;justify-content:space-between;gap:10px}.prop-totals .tot{border-top:1px solid #e9edef;padding-top:6px;font-size:15px;color:#0d9c93}.prop-totals small{color:var(--muted)}
 .mtg-tabs{display:flex;gap:6px;flex-wrap:wrap}.mtg-tabs button{border:1px solid #d1d7db;background:#fff;border-radius:18px;padding:7px 14px;font-weight:600;cursor:pointer;color:#3b4a54}.mtg-tabs button.active{background:#0d9c93;border-color:#0d9c93;color:#fff}
 .mtg-busy{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center}.mtg-busy:empty{display:none}.mtg-busy .slot{background:#f0f2f5;border-radius:12px;padding:2px 9px;color:#3b4a54}.mtg-busy .slot.clash{background:#fde8e8;color:#b42318;font-weight:600}.mtg-busy .ok{color:#0a7d55}.mtg-busy .clash-msg{flex-basis:100%;color:#b42318;font-weight:600}
-@media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
+@media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}
+ #aiPropOv{height:100dvh}#aiPropOv .tpl-detail{padding:12px;gap:10px;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}#aiPropOv .tpl-form{padding:12px}
+ #aiPropOv input,#aiPropOv textarea,#aiPropOv select{font-size:16px}
+ #aiPropDetail .tpl-actions{bottom:-12px;margin:auto -12px -12px;padding:10px 12px calc(10px + env(safe-area-inset-bottom))}#aiPropDetail .tpl-actions .ai-itin-btn{flex:1 1 auto;padding:0 12px}#aiPropDetail .tpl-actions .ai-itin-btn:last-child{flex-basis:100%}
+ .prop-grid3{grid-template-columns:1fr 1fr}.prop-grid3 label:last-child{grid-column:1/-1}.prop-cust{grid-template-columns:1fr}
+ .prop-pickbar{display:flex;align-items:center;gap:10px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:#fff;flex:none}.prop-pickbar span{flex:1;font-size:13.5px;color:var(--muted)}.prop-pickbar span b{color:#111}.prop-pickbar:not(.on){display:none}
+ #aiPropOv .tpl-item.h-prop{padding:10px 12px;min-height:64px}#aiPropOv .tpl-item.h-prop.active{background:#e7f6f4}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
 /* voice / audio player */
 .vp{display:flex;align-items:center;gap:10px;min-width:240px;max-width:320px;padding:4px 2px 2px;white-space:normal}.vp-play{width:38px;height:38px;border:0;border-radius:50%;background:transparent;color:#54656f;display:grid;place-items:center;flex:none;padding:0}.vp-body{flex:1;min-width:0}.vp-bar{position:relative;height:18px;cursor:pointer;display:flex;align-items:center}.vp-bar::before{content:"";position:absolute;left:0;right:0;height:3px;border-radius:2px;background:#c7cdd1}.vp-bar i{position:absolute;left:0;height:3px;border-radius:2px;background:#53bdeb;width:0}.vp-bar b{position:absolute;left:0;width:12px;height:12px;border-radius:50%;background:#53bdeb;transform:translateX(-6px)}.vp-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#667781;margin-top:1px}.vp-speed{border:0;background:rgba(0,0,0,.08);border-radius:10px;font-size:11px;font-weight:650;color:#54656f;padding:1px 7px}.vp-mic{width:44px;height:44px;border-radius:50%;background:#dfe5e7;color:#fff;display:grid;place-items:center;flex:none;position:relative}.vp-mic.voice{background:#00a884}.vp-mic svg{width:22px;height:22px}
@@ -1674,7 +1686,7 @@ async function openAiProp(){
  closePopovers();if(!current||isIg(current)||!isGeneralAcct())return;
  let ov=$('aiPropOv');if(!ov){ov=document.createElement('div');ov.id='aiPropOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
  ov.classList.remove('hidden');aiProp={...aiProp,sel:[],notes:'',draft:null,busy:false,lead:current};
- ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="aiPropBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📑 AI Proposal for <b>${esc(who(current)||'contact')}</b></div></div><div class="tpl-main" id="aiPropMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="aiPropSearch" placeholder="Search products & services" oninput="drawAiPropItems()"></div></div><div class="tpl-items" id="aiPropItems"><div class="tpl-empty"><div class="spinner"></div>Loading products &amp; services…</div></div></div><div class="tpl-detail" id="aiPropDetail"><div class="tpl-empty">Pick the products and services to offer — the AI writes the proposal from this chat for you to check before it is sent.</div></div></div>`;
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="aiPropBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📑 AI Proposal for <b>${esc(who(current)||'contact')}</b></div><span class="prop-steps" id="aiPropStep">1 · Items</span></div><div class="tpl-main" id="aiPropMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="aiPropSearch" type="search" enterkeyhint="search" placeholder="Search products & services" oninput="drawAiPropItems()"></div></div><div class="tpl-items" id="aiPropItems"><div class="tpl-empty"><div class="spinner"></div>Loading products &amp; services…</div></div><div class="prop-pickbar" id="aiPropPickBar"></div></div><div class="tpl-detail" id="aiPropDetail"><div class="tpl-empty">Pick the products and services to offer — the AI writes the proposal from this chat for you to check before it is sent.</div></div></div>`;
  try{if(!aiProp.items){const d=await apiJson(WORKER+'/catalog/items');aiProp.items=(d.items||[]).filter(i=>i.status!=='inactive')}drawAiPropItems()}
  catch(e){const el=$('aiPropItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load products &amp; services.<br><small>${esc(e.message)}</small></div>`}
 }
@@ -1684,33 +1696,51 @@ function drawAiPropItems(){
  el.innerHTML=list.length?list.map(i=>{const on=aiProp.sel.some(s=>String(s.id)===String(i.id));
   return `<button class="tpl-item h-prop ${on?'active':''}" onclick="toggleAiPropItem('${esc(i.id)}')">${i.photos?.[0]?hImg(i.photos[0],'h-thumb'):`<div class="h-thumb">${i.kind==='service'?'🛠️':'📦'}</div>`}<span><b>${on?'✓ ':''}${esc(i.name)}</b><small>${esc([i.kind==='service'?'Service':'Product',propMoney(i.price,i.currency)||'Price on request'].join(' · '))}</small></span></button>`}).join('')
   :`<div class="tpl-empty">${aiProp.items.length?'No items match.':'No products or services yet. Add them in Dashboard → 📦 Products & Services.'}</div>`;
+ drawAiPropPickBar();
 }
 function toggleAiPropItem(id){
  if(aiProp.busy)return;aiPropReadPick();
  const i=aiProp.sel.findIndex(s=>String(s.id)===String(id));
  if(i>=0)aiProp.sel.splice(i,1);else aiProp.sel.push({id:String(id),qty:1});
- aiProp.draft=null;if(aiProp.sel.length)$('aiPropMain')?.classList.add('picked');drawAiPropItems();drawAiPropDetail('pick');
+ aiProp.draft=null;drawAiPropItems();drawAiPropDetail('pick');
 }
+// Phones show one pane at a time: the item list keeps a bar at the bottom ("3 selected ·
+// Continue") so several items can be picked without bouncing between the two screens.
+function drawAiPropPickBar(){
+ const el=$('aiPropPickBar');if(!el)return;const n=aiProp.sel.length;el.classList.toggle('on',n>0);
+ el.innerHTML=n?`<span><b>${n}</b> item${n>1?'s':''} selected</span><button class="ai-itin-btn" onclick="aiPropNext()">Continue →</button>`:'';
+}
+function aiPropNext(){aiPropReadPick();const m=$('aiPropMain');if(!m)return;m.classList.add('picked');const d=$('aiPropDetail');if(d)d.scrollTop=0;aiPropSetStep()}
+function aiPropSetStep(){const el=$('aiPropStep');if(el)el.textContent=aiProp.draft?'2 · Review & send':'1 · Items'}
+const aiPropQtyStep=(id,d)=>{const i=$(id);if(!i)return;i.value=Math.max(1,(parseInt(i.value,10)||1)+d);i.dispatchEvent(new Event('input'))};
+const aiPropQtyBox=(id,val,oninput='')=>`<div class="prop-qty"><button type="button" aria-label="Less" onclick="aiPropQtyStep('${id}',-1)">−</button><input type="number" inputmode="numeric" min="1" id="${id}" value="${esc(val)}" ${oninput?`oninput="${oninput}"`:''}><button type="button" aria-label="More" onclick="aiPropQtyStep('${id}',1)">+</button></div>`;
+function aiPropMyName(){try{const saved=localStorage.getItem('lv_prop_by');if(saved)return saved}catch{}return (typeof agentsList==='function'?agentsList().find(a=>a.email===meEmail)?.name:'')||''}
 function aiPropReadPick(){
  aiProp.sel.forEach(s=>{const v=$('aiPropQty'+s.id)?.value;if(v!=null)s.qty=Math.max(1,parseInt(v,10)||1)});
  const n=$('aiPropNotes');if(n)aiProp.notes=n.value;
 }
 function drawAiPropDetail(state,msg){
- const el=$('aiPropDetail');if(!el)return;
+ const el=$('aiPropDetail');if(!el)return;el.scrollTop=0;aiPropSetStep();
  const more=`<button class="ai-itin-btn sec" onclick="aiPropMore()">+ Add items</button>`;
  if(!aiProp.sel.length&&state==='pick'){el.innerHTML=`<div class="tpl-empty">Pick the products and services to offer.</div>`;return}
  if(state==='pick'){
-  const rows=aiProp.sel.map(s=>{const i=propItem(s.id);if(!i)return '';return `<div class="prop-row">${i.photos?.[0]?hImg(i.photos[0],'h-thumb'):`<div class="h-thumb">${i.kind==='service'?'🛠️':'📦'}</div>`}<span><b>${esc(i.name)}</b><small>${esc(propMoney(i.price,i.currency)||'Price on request')}</small></span><label>Qty<input type="number" min="1" id="aiPropQty${esc(s.id)}" value="${esc(s.qty)}"></label><button class="icon-btn" title="Remove" onclick="toggleAiPropItem('${esc(s.id)}')">${IC.close}</button></div>`}).join('');
+  const rows=aiProp.sel.map(s=>{const i=propItem(s.id);if(!i)return '';return `<div class="prop-row">${i.photos?.[0]?hImg(i.photos[0],'h-thumb'):`<div class="h-thumb">${i.kind==='service'?'🛠️':'📦'}</div>`}<span><b>${esc(i.name)}</b><small>${esc(propMoney(i.price,i.currency)||'Price on request')}</small></span>${aiPropQtyBox('aiPropQty'+esc(s.id),s.qty)}<button class="icon-btn" title="Remove" onclick="toggleAiPropItem('${esc(s.id)}')">${IC.close}</button></div>`}).join('');
   el.innerHTML=`<div class="ai-itin-pkg"><h3>${aiProp.sel.length} item${aiProp.sel.length>1?'s':''} selected</h3><small>The AI reads this chat and writes the proposal around these items. Prices come from your catalogue — you can change them before sending.</small></div><div class="tpl-form">${rows}<label>Notes for the AI (optional)<textarea id="aiPropNotes" rows="3" placeholder="e.g. Offer free installation, mention 2-week delivery, write in Malayalam">${esc(aiProp.notes)}</textarea></label></div><div class="tpl-actions">${more}<button class="ai-itin-btn" id="aiPropDraftBtn" onclick="aiPropGenerate()">✨ Draft proposal</button></div>`;return}
  if(state==='loading'){el.innerHTML=`<div class="tpl-empty"><div class="spinner"></div>Writing the proposal from this chat… this can take up to a minute.</div>`;return}
  if(state==='error'){el.innerHTML=`<div class="tpl-empty">AI could not draft this proposal.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawAiPropDetail('pick')">✏️ Items</button><button class="ai-itin-btn sec" onclick="aiPropGenerate()">↻ Try again</button></div>`;return}
  const p=aiProp.draft;const lines=a=>esc((a||[]).join('\n'));
- const rows=p.items.map((r,k)=>`<div class="prop-item"><b>${esc(r.name)}</b><div class="prop-grid"><label>Qty<input type="number" min="1" id="aiPropRQty${k}" value="${esc(r.qty)}" oninput="drawAiPropTotals()"></label><label>Unit price (${esc(r.currency)})<input inputmode="decimal" id="aiPropRPrice${k}" value="${r.unit_price==null?'':esc(r.unit_price)}" placeholder="On request" oninput="drawAiPropTotals()"></label></div><label>Description<textarea id="aiPropRDesc${k}" rows="2">${esc(r.description)}</textarea></label></div>`).join('');
+ const rows=p.items.map((r,k)=>`<div class="prop-item"><b>${esc(r.name)}</b><div class="prop-grid"><label>Qty${aiPropQtyBox('aiPropRQty'+k,r.qty,'drawAiPropTotals()')}</label><label>Unit price (${esc(r.currency)})<input inputmode="decimal" id="aiPropRPrice${k}" value="${r.unit_price==null?'':esc(r.unit_price)}" placeholder="On request" oninput="drawAiPropTotals()"></label></div><label>Description<textarea id="aiPropRDesc${k}" rows="2">${esc(r.description)}</textarea></label></div>`).join('');
  const hasPhotos=p.items.some(r=>propItem(r.id)?.photos?.length);
- el.innerHTML=`<div class="tpl-form"><label>Title<input id="aiPropTitle" value="${esc(p.title)}"></label><label>Overview<textarea id="aiPropSummary" rows="4">${esc(p.summary)}</textarea></label></div>
-  <div class="tpl-form">${rows}<div class="prop-grid prop-grid3"><label>Discount %<input type="number" min="0" max="100" id="aiPropDisc" value="${esc(p.discount_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax %<input type="number" min="0" max="100" id="aiPropTax" value="${esc(p.tax_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax name<input id="aiPropTaxLabel" value="${esc(p.tax_label||'GST')}"></label></div><label>Valid for (days)<input type="number" min="0" id="aiPropValid" value="${esc(p.valid_days??15)}"></label><div class="prop-totals" id="aiPropTotals"></div></div>
-  <div class="tpl-form"><label>Why choose us (one per line)<textarea id="aiPropBenefits" rows="3">${lines(p.benefits)}</textarea></label><label>Next steps (one per line)<textarea id="aiPropSteps" rows="3">${lines(p.next_steps)}</textarea></label><label>Terms (one per line)<textarea id="aiPropTerms" rows="3">${lines(p.terms)}</textarea></label><label>Closing<textarea id="aiPropClosing" rows="2">${esc(p.closing)}</textarea></label></div>
-  <div class="tpl-form">${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="aiPropSendPhotos">Also send the item photos (up to 3)</label>`:''}<label>Message with the PDF<input id="aiPropCaption" value="${esc(`📄 Here is our proposal: *${p.title}*.`)}"></label><div id="aiPropErr" style="color:#d93025;font-size:13px"></div></div>
+ const cu=p.customer||{};
+ el.innerHTML=`<div class="tpl-form"><div class="prop-sec">Proposal</div><label>Title<input id="aiPropTitle" value="${esc(p.title)}"></label><label>Overview<textarea id="aiPropSummary" rows="4">${esc(p.summary)}</textarea></label></div>
+  <div class="tpl-form"><div class="prop-sec">Prepared for</div><div class="prop-cust"><label>Customer name<input id="aiPropCName" autocomplete="off" value="${esc(cu.name)}"></label><label>Company<input id="aiPropCCompany" autocomplete="off" placeholder="Optional" value="${esc(cu.company)}"></label>
+   <label class="full">Address<textarea id="aiPropCAddr" rows="3" placeholder="Building, street&#10;City, State PIN">${esc(cu.address)}</textarea></label>
+   <label>Phone<input id="aiPropCPhone" inputmode="tel" autocomplete="off" value="${esc(cu.phone)}"></label><label>Email<input id="aiPropCEmail" type="email" inputmode="email" autocomplete="off" placeholder="Optional" value="${esc(cu.email)}"></label>
+   <label>Customer GSTIN<input id="aiPropCGstin" autocomplete="off" placeholder="Optional" maxlength="15" value="${esc(cu.gstin)}" style="text-transform:uppercase"></label><label>Prepared by<input id="aiPropBy" autocomplete="off" placeholder="Your name" value="${esc(p.prepared_by??aiPropMyName())}"></label></div>
+   <small style="color:var(--muted)">Shown in the PDF's “Prepared for” box. Your business address, contacts and GSTIN come from Settings → Company Profile.</small></div>
+  <div class="tpl-form"><div class="prop-sec">Items &amp; pricing</div>${rows}<div class="prop-grid prop-grid3"><label>Discount %<input type="number" min="0" max="100" id="aiPropDisc" value="${esc(p.discount_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax %<input type="number" min="0" max="100" id="aiPropTax" value="${esc(p.tax_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax name<input id="aiPropTaxLabel" value="${esc(p.tax_label||'GST')}"></label></div><label>Valid for (days)<input type="number" min="0" id="aiPropValid" value="${esc(p.valid_days??15)}"></label><div class="prop-totals" id="aiPropTotals"></div></div>
+  <div class="tpl-form"><div class="prop-sec">Sections</div><label>Why choose us (one per line)<textarea id="aiPropBenefits" rows="3">${lines(p.benefits)}</textarea></label><label>Next steps (one per line)<textarea id="aiPropSteps" rows="3">${lines(p.next_steps)}</textarea></label><label>Terms (one per line)<textarea id="aiPropTerms" rows="3">${lines(p.terms)}</textarea></label><label>Closing<textarea id="aiPropClosing" rows="2">${esc(p.closing)}</textarea></label></div>
+  <div class="tpl-form"><div class="prop-sec">Send</div>${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="aiPropSendPhotos">Also send the item photos (up to 3)</label>`:''}<label>Message with the PDF<input id="aiPropCaption" value="${esc(`📄 Here is our proposal: *${p.title}*.`)}"></label><div id="aiPropErr" style="color:#d93025;font-size:13px"></div></div>
   <div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiPropReadReview();drawAiPropDetail('pick')">✏️ Items</button><button class="ai-itin-btn sec" onclick="aiPropGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiPropSendBtn" onclick="aiPropSend()">✅ Approve &amp; send</button></div>`;
  drawAiPropTotals();
 }
@@ -1721,6 +1751,8 @@ function aiPropReadReview(){
  p.items.forEach((r,k)=>{r.qty=Math.max(1,parseInt(v('aiPropRQty'+k),10)||1);const pr=v('aiPropRPrice'+k).replace(/[, ]/g,'');r.unit_price=pr===''||!Number.isFinite(Number(pr))?null:Number(pr);r.description=v('aiPropRDesc'+k)});
  p.discount_pct=Number(v('aiPropDisc'))||0;p.tax_pct=Number(v('aiPropTax'))||0;p.tax_label=v('aiPropTaxLabel')||'Tax';p.valid_days=parseInt(v('aiPropValid'),10)||0;
  p.benefits=list('aiPropBenefits');p.next_steps=list('aiPropSteps');p.terms=list('aiPropTerms');p.closing=v('aiPropClosing');
+ p.customer={name:v('aiPropCName'),company:v('aiPropCCompany'),address:v('aiPropCAddr'),phone:v('aiPropCPhone'),email:v('aiPropCEmail'),gstin:v('aiPropCGstin').toUpperCase()};
+ p.prepared_by=v('aiPropBy');
  // Quantities edited in the review carry back to the item picker.
  aiProp.sel.forEach(s=>{const r=p.items.find(x=>String(x.id)===String(s.id));if(r)s.qty=r.qty});
  return p;
@@ -1739,14 +1771,20 @@ async function aiPropGenerate(){
  try{const d=await apiJson(WORKER+'/catalog/ai-proposal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:aiProp.lead.Id,items:aiProp.sel.map(s=>({id:s.id,qty:s.qty})),notes:aiProp.notes})});
   if(seq!==aiProp.seq)return;if(!d.proposal?.items?.length)throw new Error('The draft had no items.');
   // A regenerate keeps the discount, tax and validity the agent already set.
-  aiProp.draft={discount_pct:keep?.discount_pct||0,tax_pct:keep?.tax_pct||0,tax_label:keep?.tax_label||'GST',valid_days:keep?.valid_days??15,...d.proposal};drawAiPropDetail('ready')}
+  // …and the customer details and "prepared by" the agent typed; a first draft starts from the
+  // worker's (the last proposal's address for this lead, else the lead's name and phone).
+  aiProp.draft={discount_pct:keep?.discount_pct||0,tax_pct:keep?.tax_pct||0,tax_label:keep?.tax_label||'GST',valid_days:keep?.valid_days??15,...d.proposal,
+   customer:keep?.customer||d.customer||{name:who(aiProp.lead)},prepared_by:keep?.prepared_by??aiPropMyName()};drawAiPropDetail('ready')}
  catch(e){if(seq===aiProp.seq)drawAiPropDetail('error',e.message)}
  finally{if(seq===aiProp.seq)aiProp.busy=false}
 }
 async function aiPropSend(){
  const lead=aiProp.lead,p=aiPropReadReview();if(!lead||!p)return;
  const btn=$('aiPropSendBtn'),err=$('aiPropErr');const caption=($('aiPropCaption')?.value||'').trim();const sendPhotos=!!$('aiPropSendPhotos')?.checked;
- if(!p.summary){if(err)err.textContent='Add an overview before sending.';return}
+ if(!p.summary){if(err)err.textContent='Add an overview before sending.';$('aiPropSummary')?.focus();return}
+ if(!p.customer?.name){if(err)err.textContent='Add the customer name for the “Prepared for” box.';$('aiPropCName')?.focus();return}
+ if(p.customer.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p.customer.email)){if(err)err.textContent='That email address doesn’t look right.';$('aiPropCEmail')?.focus();return}
+ try{if(p.prepared_by)localStorage.setItem('lv_prop_by',p.prepared_by)}catch{}
  if(btn){btn.disabled=true;btn.textContent='Sending…'}if(err)err.textContent='';
  try{
   const d=await apiJson(WORKER+'/catalog/chat-proposal/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,proposal:p,caption,send_photos:sendPhotos})});
@@ -1755,11 +1793,11 @@ async function aiPropSend(){
   // The worker moved the lead to "Proposal Sent": from now on only Follow-up V3's proposal templates go to it.
   if(d.stage){lead.Stage=d.stage;if(lead._rec)lead._rec.Stage=d.stage;if(current===lead){renderInfo();renderHeaderCtl()}}
   const moved=d.stage==='proposal_sent'?' · stage: Proposal Sent':'';
-  toast((d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the proposal sent`:'✓ Proposal sent')+moved);
+  toast((d.photos_sent?`✓ ${d.photos_sent} photo${d.photos_sent>1?'s':''} and the proposal sent`:'✓ Proposal sent')+(d.ref?` · ${d.ref}`:'')+moved);
  }catch(e){if(err)err.textContent='Not sent: '+e.message;if(btn){btn.disabled=false;btn.textContent='✅ Approve & send'}}
 }
-function aiPropMore(){aiPropReadPick();$('aiPropMain')?.classList.remove('picked');$('aiPropSearch')?.focus()}
-function aiPropBack(){const m=$('aiPropMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){aiPropReadPick();m.classList.remove('picked');return}closeAiProp()}
+function aiPropMore(){aiPropReadPick();$('aiPropMain')?.classList.remove('picked');drawAiPropPickBar();if(!matchMedia('(max-width:700px)').matches)$('aiPropSearch')?.focus()}
+function aiPropBack(){const m=$('aiPropMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){if($('aiPropTitle'))aiPropReadReview();else aiPropReadPick();m.classList.remove('picked');drawAiPropPickBar();return}closeAiProp()}
 function closeAiProp(){const ov=$('aiPropOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}aiProp.sel=[];aiProp.draft=null;aiProp.seq++}
 
 // ── 📅 Meeting (General accounts with the meetings module on) ────────────────────────────────────

@@ -284,10 +284,37 @@ export function pcCleanProposal(p,items){
   }).filter(Boolean).slice(0,PC_PROPOSAL_MAX_ITEMS);
   const list=v=>(Array.isArray(v)?v:pcList(v)).map(x=>line(x,240)).filter(Boolean).slice(0,8);
   const pct=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?Math.min(100,Math.round(n*100)/100):0;};
-  return {title:line(p?.title,120)||'Business Proposal',summary:str(p?.summary,2000),items:rows,
+  return {title:line(p?.title,120)||'Business Proposal',summary:str(p?.summary,2000),items:rows,customer:pcCleanCustomer(p?.customer),prepared_by:line(p?.prepared_by,60),
     benefits:list(p?.benefits),next_steps:list(p?.next_steps),terms:list(p?.terms),closing:str(p?.closing,600),
     discount_pct:pct(p?.discount_pct),tax_pct:pct(p?.tax_pct),tax_label:line(p?.tax_label,20)||'Tax',
     valid_days:Math.min(365,Math.max(0,Math.round(Number(p?.valid_days)||0)))};
+}
+
+// The "Prepared for" block: who the proposal is addressed to. Address keeps its line breaks.
+export function pcCleanCustomer(c){
+  const o=c&&typeof c==='object'?c:{};
+  return {name:line(o.name,100),company:line(o.company,120),phone:line(o.phone,40),email:line(o.email,120),
+    address:str(o.address,400).split('\n').map(x=>line(x,120)).filter(Boolean).slice(0,5).join('\n'),gstin:line(o.gstin,20).toUpperCase()};
+}
+
+// Proposal status (Dashboard → 📑 Proposals). The agent sets sent / negotiating / accepted /
+// rejected; "expired" (validity passed) and "revised" (a newer proposal went to the same lead)
+// are worked out while the proposal is still open.
+export const PC_PROPOSAL_STATUSES=['sent','negotiating','accepted','rejected'];
+export const PC_PROPOSAL_OPEN=new Set(['sent','negotiating']);
+export function pcProposalStatus(row,{now=new Date(),newerSent=false}={}){
+  const st=PC_PROPOSAL_STATUSES.includes(row?.status)?row.status:'sent';
+  if(!PC_PROPOSAL_OPEN.has(st)) return st;
+  if(newerSent) return 'revised';
+  if(row?.valid_until&&new Date(row.valid_until).getTime()<now.getTime()) return 'expired';
+  return st;
+}
+// Sequential per-account proposal number: PRP-2026-0007.
+export function pcProposalRef(seq,now=new Date()){
+  return `PRP-${now.getUTCFullYear()}-${String(Math.max(1,Number(seq)||1)).padStart(4,'0')}`;
+}
+export function pcProposalValidUntil(p,now=new Date()){
+  return p?.valid_days?new Date(now.getTime()+p.valid_days*864e5).toISOString():'';
 }
 
 // Subtotal / discount / tax / total over the priced rows (all in the first priced row's currency).
@@ -309,122 +336,201 @@ export function pcProposalPdfName(p,customer){
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const dateText=d=>`${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 
-// A4 proposal PDF (Uint8Array): header band with logo and business name, title and "prepared
-// for", the summary, one card per item (photo, name, description, qty × price), the totals,
-// why-us / next steps / terms, the closing, and a footer with the contact and page numbers.
+// A4 proposal PDF (Uint8Array), laid out like a business letterhead:
+//  - letterhead: logo, business name, full address, phone / email / website, GSTIN; on the right
+//    "PROPOSAL" with the proposal number, date and validity;
+//  - "Prepared for" (customer name, company, address, phone, email, GSTIN) and "Prepared by";
+//  - title, overview, one card per item (photo, name, description, quantity), then a priced
+//    commercial summary table with subtotal / discount / tax / total;
+//  - why-us, next steps, terms, the closing, and an acceptance block with two signature lines;
+//  - every page: a footer with the business name, address, contacts and "Page x of y".
 // opts.images: Map(item id → prepared image from taPrepareImage); opts.logo: prepared image.
-export function pcBuildProposalPdf(p,{business='',phone='',email='',customer='',accent='#0D9C93',logo=null,images=new Map(),now=new Date(),ref=''}={}){
+// opts.customer: the customer's name when p.customer has none (older callers).
+export function pcBuildProposalPdf(p,{business='',address='',phone='',email='',website='',gstin='',preparedBy='',customer='',accent='#0D9C93',logo=null,images=new Map(),now=new Date(),ref=''}={}){
   const {safe,esc,wrap,textWidth,hexRgb}=taPdf;
-  const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=64;
+  const W=595,H=842,MX=44,CW=W-MX*2,BOTTOM=72;
   const AC=hexRgb(accent,[0.05,0.61,0.58]).map(v=>v.toFixed(3)).join(' ');
-  const INK='0.13 0.15 0.19',MUTED='0.4 0.43 0.48';
+  const TINT=hexRgb(accent,[0.05,0.61,0.58]).map(v=>(0.93+v*0.07).toFixed(3)).join(' ');
+  const INK='0.13 0.15 0.19',MUTED='0.4 0.43 0.48',BODY='0.25 0.28 0.32',RULE='0.84 0.87 0.89';
   const biz=safe(business).trim();
+  const cust={...pcCleanCustomer(p.customer)};if(!cust.name)cust.name=line(customer,100);
+  const addrLines=String(address||'').split('\n').map(x=>x.trim()).filter(Boolean).slice(0,4);
+  const site=String(website||'').trim().replace(/^https?:\/\//i,'').replace(/\/$/,'');
+  const contactBits=[safe(phone).trim(),safe(email).trim(),safe(site)].filter(Boolean);
+  const validUntil=p.valid_days?dateText(new Date(now.getTime()+p.valid_days*864e5)):'';
   const pics=[];const imgName=img=>{if(!img)return null;let i=pics.indexOf(img);if(i<0){pics.push(img);i=pics.length-1;}return `Im${i+1}`;};
   const pages=[];let ops=[],y=0;
   const o=s=>ops.push(s);
+  const fit=(s,size,bold,w)=>{s=safe(s);if(textWidth(s,size,bold)<=w)return s;while(s&&textWidth(s+'...',size,bold)>w)s=s.slice(0,-1);return s.replace(/[\s,|]+$/,'')+'...';};
   const txt=(x,yy,s,size,bold,rgb=INK)=>o(`BT ${rgb} rg /${bold?'F2':'F1'} ${size} Tf ${x.toFixed(1)} ${yy.toFixed(1)} Td (${esc(safe(s))}) Tj ET`);
   const rect=(x,yy,w,h,rgb)=>o(`${rgb} rg ${x.toFixed(1)} ${yy.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)} re f`);
+  const hline=(x1,x2,yy,rgb=RULE,w=0.6)=>o(`${rgb} RG ${w} w ${x1.toFixed(1)} ${yy.toFixed(1)} m ${x2.toFixed(1)} ${yy.toFixed(1)} l S`);
   const round=(x,yy,w,h,r,rgb)=>{const k=0.5523*r;o(`${rgb} rg ${x+r} ${yy} m ${x+w-r} ${yy} l ${x+w-r+k} ${yy} ${x+w} ${yy+r-k} ${x+w} ${yy+r} c ${x+w} ${yy+h-r} l ${x+w} ${yy+h-r+k} ${x+w-r+k} ${yy+h} ${x+w-r} ${yy+h} c ${x+r} ${yy+h} l ${x+r-k} ${yy+h} ${x} ${yy+h-r+k} ${x} ${yy+h-r} c ${x} ${yy+r} l ${x} ${yy+r-k} ${x+r-k} ${yy} ${x+r} ${yy} c h f`);};
-  const image=(img,x,yy,w,h,fit=false)=>{
+  const image=(img,x,yy,w,h,fitIn=false)=>{
     const n=imgName(img);if(!n)return;
-    const s=fit?Math.min(w/img.w,h/img.h):Math.max(w/img.w,h/img.h),dw=img.w*s,dh=img.h*s;
+    const s=fitIn?Math.min(w/img.w,h/img.h):Math.max(w/img.w,h/img.h),dw=img.w*s,dh=img.h*s;
     o(`q ${x.toFixed(1)} ${yy.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)} re W n ${dw.toFixed(2)} 0 0 ${dh.toFixed(2)} ${(x+(w-dw)/2).toFixed(2)} ${(yy+(h-dh)/2).toFixed(2)} cm /${n} Do Q`);
   };
   const right=(xr,yy,s,size,bold,rgb)=>txt(xr-textWidth(safe(s),size,bold),yy,s,size,bold,rgb);
-  const header=first=>{
-    const hh=first?84:46;
-    rect(0,H-hh,W,hh,AC);
-    let tx=MX;
-    if(logo){
-      const box=first?60:32,by=H-hh+(hh-box)/2;
-      round(MX,by,box*1.6,box,6,'1 1 1');
-      image(logo,MX+5,by+4,box*1.6-10,box-8,true);
-      tx=MX+box*1.6+14;
-    }
-    if(first){
-      txt(tx,H-38,(biz||'Proposal').slice(0,40),19,true,'1 1 1');
-      const contact=[safe(phone).trim(),safe(email).trim()].filter(Boolean).join('  |  ');
-      if(contact)txt(tx,H-56,contact.slice(0,70),10,false,'0.9 0.97 0.96');
-      right(W-MX,H-38,'PROPOSAL',9,true,'0.9 0.97 0.96');
-    }else txt(tx,H-28,`${biz?biz.slice(0,40)+'  |  ':''}${safe(p.title).slice(0,50)}`,10,true,'1 1 1');
-    y=H-hh;
+
+  // ── Letterhead (first page) ──
+  const letterhead=()=>{
+    rect(0,H-6,W,6,AC);
+    const top=H-30;let tx=MX;
+    if(logo){const bh=54,bw=Math.min(110,Math.max(54,bh*logo.w/logo.h));image(logo,MX,top-bh,bw,bh,true);tx=MX+bw+14;}
+    const lw=W-MX-200-tx;let ly=top-16;
+    wrap(biz||'Proposal',16,true,lw,2).forEach(l=>{txt(tx,ly,l,16,true);ly-=19;});
+    ly-=1;
+    addrLines.forEach(a=>wrap(a,8.8,false,lw,3).forEach(l=>{txt(tx,ly,l,8.8,false,MUTED);ly-=11.5;}));
+    if(contactBits.length)wrap(contactBits.join('  |  '),8.8,false,lw,2).forEach(l=>{txt(tx,ly,l,8.8,false,MUTED);ly-=11.5;});
+    if(gstin){txt(tx,ly,`GSTIN: ${gstin}`,8.8,true,MUTED);ly-=11.5;}
+    // Right: PROPOSAL + number / date / validity
+    right(W-MX,top-20,'PROPOSAL',22,true,AC);
+    let ry=top-40;const lx=W-MX-180;
+    [['Proposal No.',ref],['Date',dateText(now)],['Valid until',validUntil]].filter(([,v])=>v).forEach(([k,v])=>{
+      txt(lx,ry,k,8.8,false,MUTED);right(W-MX,ry,v,9.2,true);ry-=13.5;});
+    y=Math.min(ly,ry,logo?top-54:top)-10;
+    hline(MX,W-MX,y,AC,1.2);
+    y-=18;
   };
-  const newPage=()=>{pages.push(ops);ops=[];header(false);y-=22;};
+  const contHeader=()=>{
+    rect(0,H-6,W,6,AC);
+    txt(MX,H-28,fit(`${biz?biz+'  |  ':''}${safe(p.title)}`,9.5,true,CW-150),9.5,true,INK);
+    if(ref)right(W-MX,H-28,ref,9,false,MUTED);
+    hline(MX,W-MX,H-38);
+    y=H-56;
+  };
+  const newPage=()=>{pages.push(ops);ops=[];contHeader();};
   const need=h=>{if(y-h<BOTTOM)newPage();};
-  const section=(title,follow=40)=>{need(48+follow);y-=18;rect(MX,y-18,4,18,AC);txt(MX+12,y-14,title,14,true,AC);y-=30;};
-  const para=(text,size=10.5,rgb='0.25 0.28 0.32',gap=4.5)=>{for(const l of wrap(text,size,false,CW)){need(size+gap);txt(MX,y-size,l,size,false,rgb);y-=size+gap;}};
+  const section=(title,follow=40)=>{need(44+follow);y-=14;txt(MX,y-12,title.toUpperCase(),10.5,true,AC);hline(MX,W-MX,y-19,RULE,0.6);y-=32;};
+  const para=(text,size=10.3,rgb=BODY,gap=4.6)=>{for(const l of wrap(text,size,false,CW)){need(size+gap);txt(MX,y-size,l,size,false,rgb);y-=size+gap;}};
   const bullets=list=>list.forEach(item=>{
-    const ls=wrap(item,10.2,false,CW-20);
+    const ls=wrap(item,10,false,CW-20);
     need(ls.length*13.5+4);
-    o(`${AC} rg ${MX+7} ${y-6} m ${MX+9.2} ${y-6} ${MX+11} ${y-7.8} ${MX+11} ${y-10} c ${MX+11} ${y-12.2} ${MX+9.2} ${y-14} ${MX+7} ${y-14} c ${MX+4.8} ${y-14} ${MX+3} ${y-12.2} ${MX+3} ${y-10} c ${MX+3} ${y-7.8} ${MX+4.8} ${y-6} ${MX+7} ${y-6} c f`);
-    ls.forEach(l=>{txt(MX+20,y-13,l,10.2,false,'0.2 0.23 0.27');y-=13.5;});
-    y-=4;
+    rect(MX+4,y-10.5,4.5,4.5,AC);
+    ls.forEach(l=>{txt(MX+18,y-10,l,10,false,'0.2 0.23 0.27');y-=13.5;});
+    y-=3;
   });
 
-  // ── Cover ──
-  header(true);
-  y-=30;
-  wrap(p.title||'Business Proposal',24,true,CW,3).forEach(l=>{txt(MX,y-24,l,24,true);y-=30;});
-  const meta=[customer?`Prepared for ${customer}`:'',dateText(now),p.valid_days?`Valid until ${dateText(new Date(now.getTime()+p.valid_days*864e5))}`:'',ref?`Ref ${ref}`:''].filter(Boolean).join('   |   ');
-  if(meta){txt(MX,y-11,meta.slice(0,110),11,false,MUTED);y-=22;}
+  letterhead();
+
+  // ── Prepared for / Prepared by ──
+  {
+    const gap=14,bw=(CW-gap)/2,pad=12;
+    const forLines=[];
+    if(cust.company&&cust.name)forLines.push([cust.company,false]);
+    cust.address.split('\n').filter(Boolean).forEach(a=>wrap(a,9.2,false,bw-pad*2,3).forEach(l=>forLines.push([l,false])));
+    if(cust.phone)forLines.push([`Phone: ${cust.phone}`,false]);
+    if(cust.email)forLines.push([`Email: ${cust.email}`,false]);
+    if(cust.gstin)forLines.push([`GSTIN: ${cust.gstin}`,false]);
+    const forName=cust.name||cust.company||'Valued Customer';
+    const byLines=[];
+    preparedBy=preparedBy||p.prepared_by||'';
+    if(preparedBy)byLines.push([`Contact: ${line(preparedBy,60)}`,false]);
+    if(phone)byLines.push([`Phone: ${safe(phone).trim()}`,false]);
+    if(email)byLines.push([`Email: ${safe(email).trim()}`,false]);
+    if(site)byLines.push([`Web: ${site}`,false]);
+    const h=pad+14+16+Math.max(forLines.length,byLines.length,1)*12.5+pad-4;
+    const box=(x,label,name,ls)=>{
+      round(x,y-h,bw,h,6,TINT);rect(x,y-h,3,h,AC);
+      let ty=y-pad-8;
+      txt(x+pad+4,ty,label,8,true,AC);ty-=16;
+      txt(x+pad+4,ty,fit(name,11.5,true,bw-pad*2-4),11.5,true);ty-=14.5;
+      ls.forEach(([l])=>{txt(x+pad+4,ty,fit(l,9.2,false,bw-pad*2-4),9.2,false,BODY);ty-=12.5;});
+    };
+    box(MX,'PREPARED FOR',forName,forLines);
+    box(MX+bw+gap,'PREPARED BY',biz||'Our team',byLines);
+    y-=h+20;
+  }
+
+  // ── Title ──
+  wrap(p.title||'Business Proposal',21,true,CW,3).forEach(l=>{need(28);txt(MX,y-21,l,21,true);y-=27;});
+  y-=2;
   if(p.summary){section('Overview');para(p.summary);}
 
   // ── Items ──
   const totals=pcProposalTotals(p);
   if(p.items.length){
-    section('Proposed Products & Services',110);
+    section('Proposed Products & Services',100);
     p.items.forEach((r,idx)=>{
       const img=images.get(String(r.id))||null;
-      const iw=img?104:0,tx=MX+14+(img?iw+14:0),tw=CW-28-(img?iw+14:0)-118;
-      const head=wrap(r.name,12,true,tw,2),body=r.description?wrap(r.description,9.4,false,tw,5):[];
-      const h=Math.max(img?96:0,18+head.length*15+body.length*12.4+8);
+      const iw=img?92:0,tx=MX+14+(img?iw+14:0),tw=CW-28-(img?iw+14:0)-70;
+      const head=wrap(`${idx+1}. ${r.name}`,11.5,true,tw,2),body=r.description?wrap(r.description,9.3,false,tw,5):[];
+      const h=Math.max(img?84:0,18+head.length*14.5+body.length*12.2+8);
       need(h+10);
-      round(MX,y-h,CW,h,8,idx%2?'0.975 0.98 0.985':'0.955 0.97 0.97');
-      if(img)image(img,MX+10,y-h+(h-78)/2,iw,78);
-      let ty=y-20;
-      head.forEach(l=>{txt(tx,ty,l,12,true);ty-=15;});
-      body.forEach(l=>{txt(tx,ty,l,9.4,false,'0.36 0.39 0.44');ty-=12.4;});
-      const xr=MX+CW-14;
-      if(r.unit_price!==null&&r.unit_price!==undefined){
-        right(xr,y-20,pcMoney(r.unit_price*r.qty,r.currency),12,true,AC);
-        right(xr,y-35,`${r.qty} x ${pcMoney(r.unit_price,r.currency)}${r.price_unit?` ${r.price_unit}`:''}`.slice(0,40),8.8,false,MUTED);
-      }else{
-        right(xr,y-20,'On request',11,true,AC);
-        right(xr,y-35,`Qty ${r.qty}`,8.8,false,MUTED);
-      }
-      y-=h+8;
+      round(MX,y-h,CW,h,7,idx%2?'0.975 0.978 0.982':'0.962 0.968 0.972');
+      if(img)image(img,MX+10,y-h+(h-68)/2,iw,68);
+      let ty=y-19;
+      head.forEach(l=>{txt(tx,ty,l,11.5,true);ty-=14.5;});
+      body.forEach(l=>{txt(tx,ty,l,9.3,false,'0.36 0.39 0.44');ty-=12.2;});
+      right(MX+CW-14,y-19,`Qty ${r.qty}`,9.5,true,AC);
+      y-=h+7;
     });
-    // ── Totals ──
+
+    // ── Commercial summary (price table) ──
+    section('Commercial Summary',90);
+    const cols=[{k:'#',w:26,a:'l'},{k:'Description',w:CW-26-48-104-110,a:'l'},{k:'Qty',w:48,a:'r'},{k:'Unit Price',w:104,a:'r'},{k:'Amount',w:110,a:'r'}];
+    const xs=[];cols.reduce((x,c)=>{xs.push(x);return x+c.w;},MX);
+    const cell=(i,yy,s,size,bold,rgb)=>{const c=cols[i];if(c.a==='r')right(xs[i]+c.w-8,yy,s,size,bold,rgb);else txt(xs[i]+8,yy,fit(s,size,bold,c.w-14),size,bold,rgb);};
+    const headRow=()=>{rect(MX,y-22,CW,22,AC);cols.forEach((c,i)=>cell(i,y-15,c.k,8.8,true,'1 1 1'));y-=22;};
+    need(22+24);headRow();
+    p.items.forEach((r,idx)=>{
+      const nl=wrap(r.name,9.4,false,cols[1].w-14,2);const rh=Math.max(22,nl.length*12+10);
+      if(y-rh<BOTTOM){newPage();headRow();}
+      if(idx%2)rect(MX,y-rh,CW,rh,'0.975 0.978 0.982');
+      cell(0,y-14.5,String(idx+1),9.2,false,MUTED);
+      nl.forEach((l,k)=>txt(xs[1]+8,y-14.5-k*12,l,9.4,false,INK));
+      cell(2,y-14.5,String(r.qty),9.2,false,INK);
+      const priced=r.unit_price!==null&&r.unit_price!==undefined;
+      const per=r.price_unit?` / ${String(r.price_unit).replace(/^(per\s+|\/\s*)/i,'')}`:'';
+      cell(3,y-14.5,priced?fit(pcMoney(r.unit_price,r.currency)+per,9.2,false,cols[3].w-12):'On request',9.2,false,priced?INK:MUTED);
+      cell(4,y-14.5,priced?pcMoney(r.unit_price*r.qty,r.currency):'On request',9.2,true,priced?INK:MUTED);
+      hline(MX,W-MX,y-rh,RULE,0.5);
+      y-=rh;
+    });
     if(totals.priced){
       const rows=[['Subtotal',pcMoney(totals.subtotal,totals.currency)]];
       if(totals.discount)rows.push([`Discount (${p.discount_pct}%)`,`- ${pcMoney(totals.discount,totals.currency)}`]);
       if(totals.tax)rows.push([`${p.tax_label||'Tax'} (${p.tax_pct}%)`,pcMoney(totals.tax,totals.currency)]);
-      const bw=250,bh=rows.length*18+40,bx=MX+CW-bw;
-      need(bh+12);y-=4;
-      round(bx,y-bh,bw,bh,8,'0.955 0.97 0.97');
-      let ty=y-18;
-      rows.forEach(([k,v])=>{txt(bx+14,ty,k,10,false,MUTED);right(bx+bw-14,ty,v,10,true);ty-=18;});
-      o(`0.82 0.86 0.88 RG 0.6 w ${bx+14} ${ty+8} m ${bx+bw-14} ${ty+8} l S`);
-      txt(bx+14,ty-8,'TOTAL',10.5,true,AC);right(bx+bw-14,ty-9,pcMoney(totals.total,totals.currency),15,true,AC);
-      y-=bh+6;
-      if(totals.unpriced){need(16);txt(MX,y-9,`${totals.unpriced} item${totals.unpriced>1?'s are':' is'} priced on request and not included in the total.`,8.5,false,MUTED);y-=16;}
-    }
+      const bw=250,bx=MX+CW-bw,bh=rows.length*17+12+30;
+      need(bh+8);y-=6;
+      let ty=y-13;
+      rows.forEach(([k,v])=>{txt(bx+12,ty,k,9.6,false,MUTED);right(bx+bw-10,ty,v,9.6,true);ty-=17;});
+      rect(bx,ty-20,bw,28,AC);
+      txt(bx+12,ty-10,'TOTAL',10.5,true,'1 1 1');right(bx+bw-10,ty-11,pcMoney(totals.total,totals.currency),13.5,true,'1 1 1');
+      y=ty-28;
+      if(totals.unpriced){need(16);y-=4;txt(MX,y-9,`${totals.unpriced} item${totals.unpriced>1?'s are':' is'} priced on request and not included in the total.`,8.5,false,MUTED);y-=14;}
+      y-=4;
+    }else{need(16);y-=4;txt(MX,y-9,'All items are priced on request - we will confirm the final price with you.',8.8,false,MUTED);y-=16;}
   }
   if(p.benefits.length){section(`Why ${biz||'Us'}`);bullets(p.benefits);}
   if(p.next_steps.length){section('Next Steps');bullets(p.next_steps);}
   if(p.terms.length){section('Terms & Conditions');bullets(p.terms);}
-  if(p.closing){need(40);y-=12;para(p.closing,10.5,INK);}
-  if(biz){need(36);y-=14;txt(MX,y-10,'Warm regards,',10,false,MUTED);y-=16;txt(MX,y-11,biz.slice(0,60),11.5,true);y-=16;}
+  if(p.closing){need(36);y-=10;para(p.closing,10.3,INK);}
+
+  // ── Acceptance ──
+  section('Acceptance',90);
+  para('To accept this proposal, please sign below and share a copy with us, or simply confirm by replying to us on WhatsApp.',9.4,MUTED,4);
+  {
+    need(70);y-=40;const bw=(CW-40)/2;
+    [[MX,`For ${biz||'the company'}`,'Authorised Signatory'],[MX+bw+40,`Accepted by ${cust.name||cust.company||'the customer'}`,'Signature, Name & Date']].forEach(([x,a,b])=>{
+      hline(x,x+bw,y,'0.55 0.58 0.62',0.7);
+      txt(x,y-13,fit(a,9.4,true,bw),9.4,true);txt(x,y-25,b,8.6,false,MUTED);
+    });
+    y-=34;
+  }
   pages.push(ops);
 
   const total=pages.length;
-  const contact=[biz,safe(phone).trim(),safe(email).trim()].filter(Boolean).join('   |   ');
+  const foot1=fit([biz,addrLines.join(', ')].filter(Boolean).join('  |  '),8,true,CW-80);
+  const foot2=fit(contactBits.join('  |  '),8,false,CW-80);
   pages.forEach((pg,i)=>{
     pg.push(`${AC} rg 0 0 ${W} 4 re f`);
-    pg.push(`0.86 0.88 0.9 RG 0.6 w ${MX} 44 m ${W-MX} 44 l S`);
-    if(contact)pg.push(`BT 0.42 0.45 0.5 rg /F2 8.5 Tf ${MX} 28 Td (${esc(contact.slice(0,90))}) Tj ET`);
+    pg.push(`${RULE} RG 0.6 w ${MX} 50 m ${W-MX} 50 l S`);
+    if(foot1)pg.push(`BT 0.35 0.38 0.43 rg /F2 8 Tf ${MX} 37 Td (${esc(foot1)}) Tj ET`);
+    if(foot2)pg.push(`BT 0.45 0.48 0.53 rg /F1 8 Tf ${MX} 26 Td (${esc(foot2)}) Tj ET`);
     const label=`Page ${i+1} of ${total}`;
-    pg.push(`BT 0.42 0.45 0.5 rg /F1 8.5 Tf ${(W-MX-textWidth(label,8.5)).toFixed(1)} 28 Td (${label}) Tj ET`);
+    pg.push(`BT 0.42 0.45 0.5 rg /F1 8 Tf ${(W-MX-textWidth(label,8)).toFixed(1)} 37 Td (${label}) Tj ET`);
   });
 
   const enc=new TextEncoder();

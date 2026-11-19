@@ -399,7 +399,7 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 #pageChats:not(.hidden){display:flex}
 #pageChats{padding-bottom:0!important}
 #chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#efeae2}
-#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageMeetingscalendar,#pageBroadcast{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageProposals,#pageMeetingscalendar,#pageBroadcast{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageBizai:not(.hidden){display:flex;flex-direction:column}
@@ -1618,6 +1618,7 @@ const MODULE_PERMISSIONS = [
   {key:'ecommerce', label:'🛒 Ecommerce'},
   {key:'businessservices', label:'🏢 Business Services'},
   {key:'productsservices', label:'📦 Products & Services'},
+  {key:'proposals', label:'📑 Proposals'},
   {key:'meetingscalendar', label:'📅 Meetings calendar'},
   {key:'saasops', label:'🚀 SaaS Ops'},
   {key:'b2b', label:'🤝 B2B'},
@@ -1773,6 +1774,7 @@ const ROLES = {
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" id="dnProductsTab" style="display:none" data-page="productsservices">📦 Products &amp; Services</button>
+    <button class="dnTab" id="dnProposalsTab" style="display:none" data-page="proposals">📑 Proposals</button>
     <button class="dnTab" id="dnMeetingsCalTab" style="display:none" data-page="meetingscalendar">📅 Meetings</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="followups" id="dnFollowupsTab">🔁 Follow-ups</button>
@@ -2459,6 +2461,13 @@ const ROLES = {
          an item's details and media when a customer names it; Chats → 📑 AI Proposal uses the items. -->
     <div class="page hidden" id="pageProductsservices">
       <iframe id="productsServicesFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- 📑 PROPOSALS (General accounts) — proposals.html: every proposal sent from Chats → 📑 AI
+         Proposal, with its number, customer, total and status (sent / negotiating / accepted /
+         rejected, plus expired and revised). Session token like Products & Services. -->
+    <div class="page hidden" id="pageProposals">
+      <iframe id="proposalsFrame" title="Proposals" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- 📅 MEETINGS CALENDAR (General accounts) — meetings-calendar.html: month view + day timeline of
@@ -4891,6 +4900,7 @@ const ROLES = {
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" id="mbProductsTab" style="display:none" data-page="productsservices"><span class="bnIcon">📦</span><span class="bnLabel">Products &amp; Services</span></button>
+      <button class="more-item" id="mbProposalsTab" style="display:none" data-page="proposals"><span class="bnIcon">📑</span><span class="bnLabel">Proposals</span></button>
       <button class="more-item" id="mbMeetingsCalTab" style="display:none" data-page="meetingscalendar"><span class="bnIcon">📅</span><span class="bnLabel">Meetings</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
@@ -6410,6 +6420,7 @@ function navigate(page){
   if(page==='education') renderEducation();
   if(page==='businessservices') renderBusinessServices();
   if(page==='productsservices') renderProductsServices();
+  if(page==='proposals') renderProposals();
   if(page==='meetingscalendar') renderMeetingsCalendar();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
@@ -7747,6 +7758,11 @@ function renderBusinessServices(){
 function renderProductsServices(){
   const frame=$id('productsServicesFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`products-services.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+// 📑 Proposals — same session-token embed as Products & Services.
+function renderProposals(){
+  const frame=$id('proposalsFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`proposals.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 // 📅 Meetings calendar — same session-token embed as Products & Services.
 function renderMeetingsCalendar(){
@@ -20432,7 +20448,7 @@ function applyTheme(industryKey){
     const target=el.dataset.industry;
     el.style.display=(industryKey===target)?'':'none';
   });
-  ['dnProductsTab','mbProductsTab','dnMeetingsCalTab','mbMeetingsCalTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
+  ['dnProductsTab','mbProductsTab','dnProposalsTab','mbProposalsTab','dnMeetingsCalTab','mbMeetingsCalTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=(industryKey==='travel'||clientRecord?.ta_enabled==='Yes')?'block':'none';
   // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list
@@ -23126,6 +23142,7 @@ window.addEventListener('message', e=>{
   if(e.origin!==location.origin) return;
   const d=e.data||{};
   if(d.type==='ta:openLead' && d.leadId){ openDetail(d.leadId); }
+  else if(d.type==='pc:openChat' && d.leadId){ openLeadChat(d.leadId); }
   else if(d.type==='ta:badge'){ updateAgencyBadge(d.count||0); }
   else if(d.type==='ta:openLeadCategory' && d.category){
     navigate('leads');
