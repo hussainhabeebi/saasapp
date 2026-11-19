@@ -4,6 +4,7 @@ import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
+import {buildHealthReport,healthOverall,healthRecurringIssues,healthCriticalAlerts,healthSummaryLine} from './health-report.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
@@ -1107,8 +1108,8 @@ async function handleAdminClientHealthRun(request, env){
   const c=await getClientById(env, cid);
   if(!c) return json({error:'Client not found'}, 404);
   const results=await runHealthChecks(env, c);
-  await saveHealthResults(env, c, results);
-  return json({ok:true, status:overallHealthStatus(results), results, checked_at:new Date().toISOString()});
+  const report=await saveHealthResults(env, c, results, {trigger:'admin'});
+  return json({ok:true, status:report.status, results, checked_at:report.ts, report});
 }
 
 // POST /admin/clients/delete {client_id, confirm_name} — removes the CLIENTS row, so the account
@@ -4784,7 +4785,7 @@ export const HEALTH_CHECKS=[
     if(!domains.length) return {status:'warn', detail:'API key works, but no sending domain is added', hint:'Add and verify your domain in Resend, or emails can only go to your own address.', ms};
     return {status:'warn', detail:`No verified domain — ${domains.map(d=>`${d.name} (${String(d.status||'unknown').replace(/_/g,' ')})`).join(', ')}`, hint:'Add the DNS records Resend shows for the domain, then verify it.', ms};
   }},
-  { key:'sheet_leads', label:'Google Sheet — Leads Export', category:'sheets', fn: async (env,c)=>{
+  { key:'sheet_leads', label:'Google Sheet — Leads Export', category:'integration', fn: async (env,c)=>{
     // Written by the Worker's own service-account sync, so the sheet doesn't need to be public —
     // report that sync's last result instead of checkSheet's public-CSV probe.
     if(!c.gsheet_url) return {status:'off', detail:'Not set up — optional', hint:'Copies every lead into a Google Sheet automatically.'};
@@ -4797,16 +4798,16 @@ export const HEALTH_CHECKS=[
     if(hrs>24) return {status:'warn', detail, hint:'No sync in over a day — press Sync Now to check it still works.'};
     return {status:'ok', detail};
   }},
-  { key:'sheet_prospect', label:'Google Sheet — Prospect Import', category:'sheets', fn: async (env,c)=>checkSheet(c.prospect_gsheet_url, {purpose:'Imports prospects from a Google Sheet.'}) },
-  { key:'sheet_ecom_products', label:'Google Sheet — Ecom Products', category:'sheets', fn: async (env,c)=>{
+  { key:'sheet_prospect', label:'Google Sheet — Prospect Import', category:'integration', fn: async (env,c)=>checkSheet(c.prospect_gsheet_url, {purpose:'Imports prospects from a Google Sheet.'}) },
+  { key:'sheet_ecom_products', label:'Google Sheet — Ecom Products', category:'integration', fn: async (env,c)=>{
     if(!isEcomEnabled(c)) return {status:'off', detail:'E-commerce module not enabled'};
     return checkSheet(c.ecom_products_sheet, {optional:false, purpose:'The product catalogue the bot answers from.'});
   }},
-  { key:'sheet_ecom_orders', label:'Google Sheet — Ecom Orders', category:'sheets', fn: async (env,c)=>{
+  { key:'sheet_ecom_orders', label:'Google Sheet — Ecom Orders', category:'integration', fn: async (env,c)=>{
     if(!isEcomEnabled(c)) return {status:'off', detail:'E-commerce module not enabled'};
     return checkSheet(c.ecom_orders_sheet, {purpose:'Lets the bot answer order-status questions.'});
   }},
-  { key:'recovery_engine', label:'Follow-up Recovery Engine', category:'core', fn: async (env,c)=>{
+  { key:'recovery_engine', label:'Follow-up Recovery Engine', category:'automation', fn: async (env,c)=>{
     if(c.recovery_enabled==='No') return {status:'off', detail:'Turned off for this account'};
     // backend/recovery.js runs hourly and skips accounts without Chatwoot or a leads table, so a
     // missing heartbeat there is expected, not a fault.
@@ -4819,7 +4820,7 @@ export const HEALTH_CHECKS=[
     if(hrs>3) return {status:'warn', detail, hint:'Missed its last runs — check the recovery service.'};
     return {status:'ok', detail};
   }},
-  { key:'followup_config', label:'Follow-up Sequence Config', category:'core', fn: async (env,c)=>{
+  { key:'followup_config', label:'Follow-up Sequence Config', category:'automation', fn: async (env,c)=>{
     const {results}=await env.DB.prepare(`SELECT step, type, message, template_name FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
     if(!results||!results.length) return {status:'warn', detail:'No follow-up steps set up', hint:'Add follow-up steps so silent leads get a reminder.'};
     const incomplete=(results||[]).filter(r=>(r.type==='session'&&!r.message)||(r.type==='template'&&!r.template_name));
@@ -4828,13 +4829,363 @@ export const HEALTH_CHECKS=[
     if(incomplete.length) return {status:'fail', detail:`Step(s) ${incomplete.map(r=>r.step).sort((a,b)=>a-b).join(', ')} missing a message/template (${incomplete.length} of ${results.length})`, hint:'Open the follow-up ladder and fill in the empty steps.'};
     return {status:'ok', detail:`${results.length}-step ladder configured (${mix})`};
   }},
+  /* ── Integration: API authentication and webhook connections ── */
+  { key:'api_auth', label:'API Authentication', category:'integration', fn: async (env,c)=>{
+    // The platform's own credentials every request of this account goes through. The tokens of
+    // WhatsApp, Chatwoot and Resend are each checked live by their own checks above.
+    const missing=[!env.SESSION_SIGNING_KEY&&'session signing key', !(env.NOCODB_BASE&&env.NOCODB_TOKEN)&&'CRM database token', !env.GEMINI_API_KEY&&!c.ai_api_key&&'AI provider key'].filter(Boolean);
+    if(missing.length) return {status:'fail', detail:`Missing: ${missing.join(', ')}`, hint:'Contact support — the platform is missing a credential your account needs.'};
+    if(!c.engine_webhook_secret&&!c.webhook_url&&chatwootConnected(c)) return {status:'warn', detail:'Platform keys present, but this account has no webhook secret yet', hint:'Reconnect Chatwoot in Settings → Channels so incoming messages are signed for your account.'};
+    return {status:'ok', detail:'Platform session, database and AI credentials present'};
+  }},
+  { key:'webhooks', label:'Webhook Connections', category:'integration', fn: async (env,c,run)=>{
+    if(!chatwootConnected(c)) return {status:'off', detail:'Not tested — Chatwoot not connected'};
+    const base=String(c.chatwoot_base).replace(/\/$/,'');
+    const {r, data, ms}=await healthFetch(`${base}/api/v1/accounts/${encodeURIComponent(c.chatwoot_account_id)}/webhooks`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return {status:'fail', detail:`Could not list Chatwoot webhooks — ${healthHttpDetail(r.status, data?.error||data?.message, 'API access token')}`, hint:'Check the Chatwoot API access token has administrator rights.', ms};
+    const hooks=Array.isArray(data)?data:Array.isArray(data?.payload)?data.payload:Array.isArray(data?.payload?.webhooks)?data.payload.webhooks:[];
+    const enginePrefix=env.WORKER_BASE_URL?`${String(env.WORKER_BASE_URL).replace(/\/$/,'')}/engine/webhook/`:null;
+    const engine=hooks.find(w=>enginePrefix&&String(w.url||'').startsWith(enginePrefix));
+    const n8n=c.webhook_url&&hooks.find(w=>w.url===c.webhook_url);
+    const parts=[];
+    let status='ok', hint;
+    if(engine){
+      parts.push('Chatwoot → bot engine connected');
+      if(c.engine_webhook_secret&&engine.url!==`${enginePrefix}${c.engine_webhook_secret}`){ status='fail'; parts.push('but it uses an old secret'); hint='Reconnect Chatwoot in Settings → Channels to refresh the webhook.'; }
+    }else if(n8n) parts.push('Chatwoot → n8n workflow connected');
+    else{ status='fail'; parts.push('No Chatwoot webhook delivers messages to the bot'); hint='Reconnect Chatwoot in Settings → Channels — until then incoming messages never reach the bot.'; }
+    // WhatsApp → Chatwoot: Meta only delivers messages to subscribed apps.
+    if(c.waba_id&&c.wa_token){
+      try{
+        const sub=await healthFetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(c.waba_id)}/subscribed_apps`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+        const apps=Array.isArray(sub.data?.data)?sub.data.data:[];
+        if(!sub.r.ok) parts.push('WhatsApp subscription not readable');
+        else if(!apps.length){ status='fail'; parts.push('WhatsApp account has no app subscribed for messages'); hint=hint||'Reconnect WhatsApp in Settings → Integrations so Meta sends incoming messages again.'; }
+        else parts.push('WhatsApp webhook subscribed');
+      }catch(e){ parts.push('WhatsApp subscription not readable'); }
+    }
+    return {status, detail:parts.join(' · '), hint, ms};
+  }},
+
+  /* ── CRM functionality — read from the leads table and the task/campaign logs ── */
+  { key:'crm_lead_creation', label:'Lead Creation', category:'crm', fn: async (env,c,run)=>{
+    const leads=await run.recentLeads();
+    if(!leads) return {status:'off', detail:'Not tested — CRM database not reachable from this check'};
+    const inbound7d=await run.inboundCount(7);
+    if(!leads.length) return waConnected(c)
+      ? {status:inbound7d?'fail':'warn', detail:inbound7d?`${inbound7d} message(s) received this week, but no lead was ever created`:'No leads yet', hint:inbound7d?'Incoming chats are not turning into leads — check the Chatwoot webhook and the leads table link.':'Leads appear here once customers message your WhatsApp number.'}
+      : {status:'off', detail:'No leads yet — WhatsApp not connected'};
+    const newest=leads.map(l=>l.CreatedAt).filter(Boolean).sort().pop();
+    const days=newest?(Date.now()-Date.parse(newest))/86400000:Infinity;
+    const week=leads.filter(l=>l.CreatedAt&&Date.now()-Date.parse(l.CreatedAt)<7*86400000).length;
+    const detail=`Last lead created ${newest?healthAgo(newest):'(time unknown)'} · ${week} in the last 7 days`;
+    if(days>3&&inbound7d>=5) return {status:'fail', detail:`${detail} — but ${inbound7d} message(s) arrived since`, hint:'Messages are coming in without creating leads — check the leads table link and Chatwoot webhook.'};
+    if(days>14) return {status:'warn', detail, hint:'No new lead in two weeks — confirm ads/campaigns are running and WhatsApp is receiving messages.'};
+    return {status:'ok', detail};
+  }},
+  { key:'crm_lead_assignment', label:'Lead Assignment', category:'crm', fn: async (env,c,run)=>{
+    const leads=await run.recentLeads();
+    if(!leads) return {status:'off', detail:'Not tested — CRM database not reachable'};
+    const recent=leads.filter(l=>l.CreatedAt&&Date.now()-Date.parse(l.CreatedAt)<7*86400000);
+    if(!recent.length) return {status:'off', detail:'Not tested — no new leads in the last 7 days'};
+    const unassigned=recent.filter(l=>!String(l.Owner||'').trim()).length;
+    const detail=`${recent.length-unassigned} of ${recent.length} new lead(s) assigned this week`;
+    if(!unassigned) return {status:'ok', detail};
+    const share=unassigned/recent.length;
+    return {status:share>0.5&&unassigned>=5?'fail':'warn', detail:`${detail} — ${unassigned} unassigned`, hint:'Set up channel or destination routing (Settings → User Management) so every new lead gets an owner.'};
+  }},
+  { key:'crm_contacts', label:'Contact Management', category:'crm', fn: async (env,c,run)=>{
+    const leads=await run.recentLeads();
+    if(!leads) return {status:'off', detail:'Not tested — CRM database not reachable'};
+    if(!leads.length) return {status:'off', detail:'Not tested — no contacts yet'};
+    const noContact=leads.filter(l=>!String(l.Phone||'').trim()&&!String(l.Email||'').trim()).length;
+    const detail=`${leads.length} most recent contact(s) checked`;
+    if(noContact) return {status:'warn', detail:`${detail} — ${noContact} have no phone or email`, hint:'Open Leads, filter for empty phone/email and fill them in or remove the rows — they can\'t be messaged.'};
+    return {status:'ok', detail:`${detail} — all have a phone or email`};
+  }},
+  { key:'crm_messaging', label:'Message Sending & Receiving', category:'crm', fn: async (env,c,run)=>{
+    if(!waConnected(c)&&!chatwootConnected(c)) return {status:'off', detail:'Not tested — no messaging channel connected'};
+    const rows=await run.botRows(1);
+    if(rows===null) return {status:'off', detail:'Not tested — no message log yet'};
+    const sent=rows.filter(r=>r.ok).length, failed=rows.length-sent;
+    const lastIn=await run.lastInboundAt();
+    const detail=`Last 24h: ${sent} sent, ${failed} failed · last message received ${lastIn?healthAgo(lastIn):'never'}`;
+    if(failed&&failed>=sent&&failed>=3) return {status:'fail', detail, hint:'Most replies are failing to send — check the WhatsApp token and the 24-hour messaging window (use templates outside it).'};
+    if(failed) return {status:'warn', detail, hint:'Some replies did not send — open Bot Behavior → Reply log to see the error for each.'};
+    if(!rows.length&&lastIn&&Date.now()-Date.parse(lastIn)>7*86400000) return {status:'warn', detail, hint:'No messages in a week — send yourself a test message to confirm delivery.'};
+    return {status:'ok', detail};
+  }},
+  { key:'crm_tasks', label:'Tasks', category:'crm', fn: async (env,c)=>{
+    const rows=await healthDb(env, `SELECT status, due_date FROM pm_tasks WHERE client_id=? AND status NOT IN ('done','completed','cancelled')`, Number(c.Id));
+    if(rows===null) return {status:'off', detail:'Not tested — tasks not used yet'};
+    const today=new Date().toISOString().slice(0,10);
+    const overdue=rows.filter(r=>r.due_date&&String(r.due_date).slice(0,10)<today).length;
+    const fails=await healthDb(env, `SELECT COUNT(*) AS n FROM pm_queue_failures WHERE client_id=? AND created_at>=?`, Number(c.Id), healthSince(1));
+    const failed=Number(fails?.[0]?.n||0);
+    const detail=`${rows.length} open task(s), ${overdue} overdue${failed?` · ${failed} task automation failure(s) in 24h`:''}`;
+    if(failed) return {status:'fail', detail, hint:'Task reminders/automations are failing — open Projects → Automations to see the error.'};
+    if(overdue) return {status:'warn', detail, hint:'Close or reschedule overdue tasks so reminders stay meaningful.'};
+    return {status:'ok', detail};
+  }},
+  { key:'crm_campaigns', label:'Campaigns', category:'crm', fn: async (env,c)=>{
+    const sends=await healthDb(env, `SELECT COUNT(*) AS n, MAX(created_at) AS last FROM wa_template_sends WHERE client_id=? AND created_at>=?`, Number(c.Id), healthSince(30));
+    const rejected=await healthDb(env, `SELECT name FROM followup_v3_templates WHERE client_id=? AND status='REJECTED'`, Number(c.Id));
+    const n=Number(sends?.[0]?.n||0);
+    if(!n&&!rejected?.length) return {status:'off', detail:'Not tested — no campaign sent in the last 30 days'};
+    const detail=`${n} template message(s) sent in 30 days${sends?.[0]?.last?` · last ${healthAgo(sends[0].last)}`:''}`;
+    if(rejected?.length) return {status:'warn', detail:`${detail} · ${rejected.length} template(s) rejected by Meta: ${rejected.slice(0,3).map(r=>r.name).join(', ')}`, hint:'Edit the rejected templates to follow WhatsApp policy and resubmit them.'};
+    return {status:'ok', detail};
+  }},
+  { key:'crm_reports', label:'Reports Data', category:'crm', fn: async (env,c,run)=>{
+    const leads=await run.recentLeads();
+    if(!leads) return {status:'off', detail:'Not tested — CRM database not reachable'};
+    if(!leads.length) return {status:'off', detail:'Not tested — no leads to report on yet'};
+    const staged=leads.filter(l=>String(l.Stage||'').trim());
+    const stages=new Set(staged.map(l=>l.Stage)).size;
+    const detail=`${leads.length} recent lead(s) across ${stages} pipeline stage(s)`;
+    if(!staged.length) return {status:'warn', detail:`${detail} — none has a stage`, hint:'Pipeline and conversion reports group by stage — check Settings → Pipeline Stages.'};
+    return {status:'ok', detail};
+  }},
+
+  /* ── AI chatbot — from the bot's own reply log (bot_reply_log) ── */
+  { key:'bot_incoming', label:'Incoming Messages', category:'chatbot', fn: async (env,c,run)=>{
+    if(c.bot_reply_disabled==='Yes') return {status:'off', detail:'Not tested — bot replies are turned off'};
+    if(!waConnected(c)&&!chatwootConnected(c)) return {status:'off', detail:'Not tested — no messaging channel connected'};
+    const last=await run.lastInboundAt();
+    const day=await run.inboundCount(1), week=await run.inboundCount(7);
+    if(!last) return {status:'warn', detail:'The bot has not received any message yet', hint:'Send a WhatsApp message to your number to confirm it reaches the bot.'};
+    const detail=`${day} in 24h, ${week} in 7 days · last ${healthAgo(last)}`;
+    if(!week) return {status:'warn', detail, hint:'No message reached the bot this week — check the webhook connection and send a test message.'};
+    return {status:'ok', detail};
+  }},
+  { key:'bot_responses', label:'Bot Responses', category:'chatbot', fn: async (env,c,run)=>{
+    if(c.bot_reply_disabled==='Yes') return {status:'off', detail:'Not tested — bot replies are turned off'};
+    const rows=await run.botRows(7);
+    if(rows===null||!rows.length) return {status:'off', detail:'Not tested — no bot replies in the last 7 days'};
+    const ok=rows.filter(r=>r.ok).length;
+    const fallback=rows.filter(r=>/"step":"(ai_gave_up|fallback_used)"/.test(r.steps_json||'')).length;
+    const rate=ok/rows.length;
+    const detail=`${ok} of ${rows.length} repl(ies) sent in 7 days (${Math.round(rate*100)}%)${fallback?` · ${fallback} used a fallback answer`:''}`;
+    if(rows.length>=5&&rate<0.8) return {status:'fail', detail, hint:'Many replies are failing — check the AI provider key and WhatsApp token, then the Reply log for errors.'};
+    if(ok<rows.length||fallback/rows.length>0.2) return {status:'warn', detail, hint:fallback?'The AI often fell back to a stock answer — add the missing details to the Knowledge Base.':'Some replies failed — see Bot Behavior → Reply log.'};
+    return {status:'ok', detail};
+  }},
+  { key:'bot_kb', label:'Knowledge Base', category:'chatbot', fn: async (env,c,run)=>{
+    const kb=String(c.kb_summary||'').trim();
+    if(!kb) return {status:'warn', detail:'Knowledge Base is empty', hint:'Add your services, prices, timings and FAQs in Knowledge Base so the bot answers from your facts.'};
+    const words=kb.split(/\s+/).length;
+    const rows=await run.botRows(7);
+    const blocked=(rows||[]).filter(r=>/"step":"(checks_failed|contact_stripped)"/.test(r.steps_json||'')).length;
+    const detail=`${words.toLocaleString('en-US')} word(s) loaded${blocked?` · ${blocked} repl(ies) blocked for inventing facts this week`:''}`;
+    if(words<40) return {status:'warn', detail, hint:'The Knowledge Base is very short — add more detail so the bot can answer common questions.'};
+    if(blocked>=5) return {status:'warn', detail, hint:'The bot keeps trying to state facts not in the Knowledge Base — add those details (links, prices, contacts).'};
+    return {status:'ok', detail};
+  }},
+  { key:'bot_language', label:'Language Handling', category:'chatbot', fn: async (env,c,run)=>{
+    const lang=String(c.language||'').trim();
+    const rows=await run.botRows(7);
+    // A reply in a different script (Latin vs Indic/Arabic) than the customer's own message.
+    const script=t=>/[ऀ-෿؀-ۿ]/.test(String(t||''));
+    const leaks=(rows||[]).filter(r=>r.ok&&r.reply&&!/^\[/.test(r.user_text||'')&&String(r.user_text||'').replace(/[^\p{L}]/gu,'').length>=3&&script(r.reply)!==script(r.user_text)).length;
+    if(!lang) return {status:'warn', detail:'No default reply language set', hint:'Set the default language in Bot Behavior so first replies use it.'};
+    const detail=`Default language: ${lang}${rows?.length?` · ${rows.length} repl(ies) checked`:''}${leaks?` · ${leaks} answered in a different script than the customer wrote in`:''}`;
+    if(rows?.length>=5&&leaks/rows.length>0.2) return {status:'warn', detail, hint:'The bot often replies in a different language than the customer — check the language settings in Bot Behavior.'};
+    return {status:'ok', detail};
+  }},
+  { key:'bot_response_time', label:'Response Time', category:'chatbot', fn: async (env,c,run)=>{
+    const rows=await run.botRows(7);
+    const times=(rows||[]).map(r=>{ try{ const s=JSON.parse(r.steps_json||'[]'); return s.length?Number(s[s.length-1].ms):NaN; }catch(e){ return NaN; } }).filter(Number.isFinite).sort((a,b)=>a-b);
+    if(!times.length) return {status:'off', detail:'Not tested — no timed replies in the last 7 days'};
+    const pick=q=>times[Math.min(times.length-1, Math.floor(q*times.length))];
+    const sec=ms=>`${(ms/1000).toFixed(1)}s`;
+    const p50=pick(0.5), p95=pick(0.95);
+    const detail=`Typical ${sec(p50)} · slowest 5% ${sec(p95)} (${times.length} repl(ies))`;
+    if(p50>30000) return {status:'fail', detail, hint:'Replies take over 30 seconds — the AI provider is slow or timing out; check AI settings.'};
+    if(p95>20000) return {status:'warn', detail, hint:'Some replies are slow — long Knowledge Base text or a slow AI provider can cause this.'};
+    return {status:'ok', detail};
+  }},
+  { key:'bot_duplicates', label:'Duplicate Replies', category:'chatbot', fn: async (env,c,run)=>{
+    const rows=await run.botRows(7);
+    if(rows===null||!rows.length) return {status:'off', detail:'Not tested — no bot replies in the last 7 days'};
+    const seen=new Map(); let dupes=0; const convs=new Set();
+    for(const r of [...rows].sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)))){
+      if(!r.ok||!r.reply) continue;
+      const k=`${r.conv_id||r.phone}|${String(r.reply).trim().slice(0,300)}`;
+      const t=Date.parse(r.created_at), prev=seen.get(k);
+      if(prev!=null&&t-prev<=120000){ dupes++; convs.add(r.conv_id||r.phone); }
+      seen.set(k, t);
+    }
+    if(!dupes) return {status:'ok', detail:`No duplicate replies in ${rows.length} message(s)`};
+    return {status:dupes>=5?'fail':'warn', detail:`${dupes} duplicate repl(ies) in ${convs.size} conversation(s) this week`, hint:'The same reply went out twice within 2 minutes — usually two webhooks (n8n and the engine) answering the same chat. Check Webhook Connections.'};
+  }},
+  { key:'bot_handover', label:'Human Handover', category:'chatbot', fn: async (env,c)=>{
+    if(c.handover_enabled==='No') return {status:'off', detail:'Not tested — handover turned off'};
+    if(!chatwootConnected(c)&&!waConnected(c)) return {status:'off', detail:'Not tested — no messaging channel connected'};
+    if(!chatwootConnected(c)) return {status:'fail', detail:'Handover is on, but Chatwoot is not connected — handed-over chats have nowhere to go', hint:'Connect Chatwoot in Settings → Channels.'};
+    const rows=await healthDb(env, `SELECT COUNT(*) AS n, MAX(created_at) AS last FROM bot_reply_log WHERE client_id=? AND route='human' AND created_at>=?`, Number(c.Id), healthSince(7));
+    const n=Number(rows?.[0]?.n||0);
+    const alerts=await healthDb(env, `SELECT status FROM hot_lead_alerts WHERE client_id=? AND created_at>=?`, Number(c.Id), healthSince(7));
+    const alertFails=(alerts||[]).filter(a=>/fail|error/i.test(a.status)).length;
+    const detail=`${n} chat(s) handed to the team in 7 days${rows?.[0]?.last?` · last ${healthAgo(rows[0].last)}`:''}${alerts?.length?` · ${alerts.length-alertFails} of ${alerts.length} team alert(s) delivered`:''}`;
+    if(alertFails&&alertFails>=(alerts.length-alertFails)) return {status:'fail', detail, hint:'Team alerts for handed-over leads are failing — check the alert numbers/emails in Settings → Alerts.'};
+    if(alertFails) return {status:'warn', detail, hint:'Some team alerts were not delivered — check the alert numbers/emails in Settings → Alerts.'};
+    return {status:'ok', detail};
+  }},
+
+  /* ── Automation ── */
+  { key:'n8n_workflows', label:'n8n Workflow Executions', category:'automation', fn: async (env,c)=>{
+    if(!c.webhook_url&&!c.n8n_workflow_id) return {status:'off', detail:'Not used — messages are handled by the built-in engine'};
+    if(!env.N8N_API_URL||!env.N8N_API_KEY||!c.n8n_workflow_id) return {status:'off', detail:'Not tested — n8n API access not configured for this account', hint:'Ask support to link your n8n workflow ID so its executions can be monitored.'};
+    const base=String(env.N8N_API_URL).replace(/\/$/,'');
+    const {r, data, ms}=await healthFetch(`${base}/api/v1/executions?workflowId=${encodeURIComponent(c.n8n_workflow_id)}&limit=100`, {headers:{'X-N8N-API-KEY':env.N8N_API_KEY}});
+    if(!r.ok) return {status:'fail', detail:healthHttpDetail(r.status, data?.message, 'n8n API key'), hint:'n8n did not answer — check the n8n server is running.', ms};
+    const day=(data?.data||[]).filter(e=>Date.now()-Date.parse(e.startedAt||e.createdAt||0)<86400000);
+    const failed=day.filter(e=>e.status==='error'||e.status==='crashed'||e.finished===false&&e.stoppedAt).length;
+    const lastOk=(data?.data||[]).find(e=>e.status==='success'||e.finished===true);
+    const detail=`${day.length} run(s) in 24h, ${failed} failed${lastOk?` · last success ${healthAgo(lastOk.stoppedAt||lastOk.startedAt)}`:''}`;
+    if(failed&&failed>=day.length/2) return {status:'fail', detail, hint:'Most n8n runs are failing — open the workflow\'s Executions in n8n to see the failing node.', ms};
+    if(failed) return {status:'warn', detail, hint:'Some n8n runs failed — open the workflow\'s Executions in n8n.', ms};
+    return {status:'ok', detail, ms};
+  }},
+  { key:'followup_delivery', label:'Follow-up Automation', category:'automation', fn: async (env,c)=>{
+    const sent=await healthDb(env, `SELECT COUNT(*) AS n, MAX(sent_at) AS last FROM followup_sends WHERE client_id=? AND sent_at>=?`, Number(c.Id), healthSince(7));
+    const failed=await healthDb(env, `SELECT COUNT(*) AS n, MAX(error_message) AS err FROM followup_send_failures WHERE client_id=? AND failed_at>=?`, Number(c.Id), healthSince(7));
+    if(sent===null&&failed===null) return {status:'off', detail:'Not tested — follow-ups not used yet'};
+    const s=Number(sent?.[0]?.n||0), f=Number(failed?.[0]?.n||0);
+    if(!s&&!f) return {status:'off', detail:'Not tested — no follow-up due in the last 7 days'};
+    const detail=`${s} follow-up(s) sent, ${f} failed in 7 days${sent?.[0]?.last?` · last sent ${healthAgo(sent[0].last)}`:''}${f&&failed?.[0]?.err?` · e.g. "${String(failed[0].err).slice(0,80)}"`:''}`;
+    if(f>=3&&f>s) return {status:'fail', detail, hint:'Most follow-ups fail — usually an unapproved template or an expired WhatsApp token.'};
+    if(f) return {status:'warn', detail, hint:'Some follow-ups failed — open Follow-ups → Delivery to see each error.'};
+    return {status:'ok', detail};
+  }},
+  { key:'scheduled_messages', label:'Scheduled Message Delivery', category:'automation', fn: async (env,c)=>{
+    const rows=await healthDb(env, `SELECT status, send_at, error FROM chat_scheduled WHERE client_id=? AND send_at>=?`, Number(c.Id), healthSince(7));
+    if(rows===null||!rows.length) return {status:'off', detail:'Not tested — no messages scheduled in the last 7 days'};
+    const now=Date.now();
+    const stuck=rows.filter(r=>(r.status==='scheduled'||r.status==='sending')&&Date.parse(r.send_at)<now-30*60000).length;
+    const failed=rows.filter(r=>r.status==='failed').length, sent=rows.filter(r=>r.status==='sent').length;
+    const detail=`${sent} sent, ${failed} failed, ${stuck} overdue (7 days)`;
+    if(stuck) return {status:'fail', detail, hint:'Scheduled messages are past their time and unsent — the scheduler is not running; contact support.'};
+    if(failed) return {status:'warn', detail, hint:'Some scheduled messages failed — reschedule them from the chat (usually outside the 24-hour window).'};
+    return {status:'ok', detail};
+  }},
+  { key:'webhook_errors', label:'Webhook & Background Job Errors', category:'automation', fn: async (env,c)=>{
+    const id=Number(c.Id);
+    const [capi, leadgen, pm, hc]=await Promise.all([
+      healthDb(env, `SELECT COUNT(*) AS n FROM meta_capi_errors WHERE client_id=? AND at>=?`, id, healthSince(1)),
+      healthDb(env, `SELECT COUNT(*) AS n FROM meta_leadgen_events WHERE client_id=? AND created_at>=? AND (status LIKE '%error%' OR status LIKE '%fail%')`, id, healthSince(7)),
+      healthDb(env, `SELECT COUNT(*) AS n FROM pm_queue_failures WHERE client_id=? AND created_at>=?`, id, healthSince(1)),
+      healthDb(env, `SELECT COUNT(*) AS n FROM healthcare_queue_failures WHERE client_id=? AND created_at>=?`, id, healthSince(1)),
+    ]);
+    const n=x=>Number(x?.[0]?.n||0);
+    const parts=[n(capi)&&`${n(capi)} Meta conversion event(s) rejected (24h)`, n(leadgen)&&`${n(leadgen)} lead-form webhook(s) failed (7d)`, n(pm)&&`${n(pm)} project job(s) failed (24h)`, n(hc)&&`${n(hc)} appointment job(s) failed (24h)`].filter(Boolean);
+    if(!parts.length) return {status:'ok', detail:'No webhook or background job errors'};
+    const total=n(capi)+n(leadgen)+n(pm)+n(hc);
+    return {status:total>20||n(leadgen)?'fail':'warn', detail:parts.join(' · '), hint:n(leadgen)?'Facebook lead-form leads are being lost — reconnect the Facebook page in Ads ROI.':'Open Ads ROI → Tracking health (conversion events) or the module\'s automation log for details.'};
+  }},
+
+  /* ── Database ── */
+  { key:'db_connectivity', label:'Database Connectivity', category:'database', fn: async (env,c)=>{
+    const t0=Date.now(); let d1Err=null, ncErr=null, ncMs=null;
+    try{ await env.DB.prepare('SELECT 1 AS ok').first(); }catch(e){ d1Err=e.message||'error'; }
+    const d1Ms=Date.now()-t0;
+    if(env.NOCODB_BASE){
+      const t1=Date.now();
+      try{ const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${Number(c.Id)}?fields=Id`); if(!r.ok) ncErr=`HTTP ${r.status}`; }catch(e){ ncErr=e.message||'unreachable'; }
+      ncMs=Date.now()-t1;
+    }
+    const detail=[`App database ${d1Err?'unreachable — '+d1Err:`OK (${d1Ms} ms)`}`, env.NOCODB_BASE&&`CRM database ${ncErr?'unreachable — '+ncErr:`OK (${ncMs} ms)`}`].filter(Boolean).join(' · ');
+    if(d1Err||ncErr) return {status:'fail', detail, hint:'A database is not answering — data may not be saved. Contact support immediately.', ms:Math.max(d1Ms, ncMs||0)};
+    if(Math.max(d1Ms, ncMs||0)>5000) return {status:'warn', detail, hint:'The database is answering slowly — pages and the bot may feel slow.', ms:Math.max(d1Ms, ncMs||0)};
+    return {status:'ok', detail, ms:Math.max(d1Ms, ncMs||0)};
+  }},
+  { key:'db_write', label:'Data Saving', category:'database', fn: async (env,c)=>{
+    // Write a probe row and read it back — proves saves land, without touching real data.
+    const token=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    try{
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS health_probe (client_id INTEGER PRIMARY KEY, token TEXT NOT NULL, at TEXT NOT NULL)`).run();
+      await env.DB.prepare(`INSERT INTO health_probe (client_id, token, at) VALUES (?,?,?) ON CONFLICT(client_id) DO UPDATE SET token=excluded.token, at=excluded.at`).bind(Number(c.Id), token, new Date().toISOString()).run();
+      const row=await env.DB.prepare(`SELECT token FROM health_probe WHERE client_id=?`).bind(Number(c.Id)).first();
+      if(row?.token!==token) return {status:'fail', detail:'A test record was written but did not read back the same', hint:'Saved data may be lost — contact support.'};
+      return {status:'ok', detail:'Test record saved and read back'};
+    }catch(e){ return {status:'fail', detail:`Could not save a test record — ${e.message||'error'}`, hint:'Saving is failing — contact support.'}; }
+  }},
+  { key:'db_lead_updates', label:'Lead & Contact Updates', category:'database', fn: async (env,c,run)=>{
+    const leads=await run.recentLeads();
+    if(!leads) return {status:'off', detail:'Not tested — CRM database not reachable'};
+    if(!leads.length) return {status:'off', detail:'Not tested — no leads yet'};
+    const last=leads.map(l=>l.UpdatedAt||l.CreatedAt).filter(Boolean).sort().pop();
+    const inbound=await run.inboundCount(1);
+    const detail=`Last lead update ${last?healthAgo(last):'(time unknown)'}${inbound?` · ${inbound} message(s) received in 24h`:''}`;
+    if(last&&inbound>=5&&Date.now()-Date.parse(last)>3*86400000) return {status:'fail', detail, hint:'Chats are active but leads are not being updated — stage/score changes are not saving. Contact support.'};
+    return {status:'ok', detail};
+  }},
+  { key:'db_duplicates', label:'Duplicate Records', category:'database', fn: async (env,c)=>{
+    if(!env.NOCODB_BASE) return {status:'off', detail:'Not tested — CRM database not configured'};
+    const rows=await ncListLeads(env, `(ClientId,eq,${Number(c.Id)})`, 'Id,Phone', 5);
+    if(!rows.length) return {status:'off', detail:'Not tested — no leads yet'};
+    const by=new Map();
+    for(const l of rows){ const k=String(l.Phone||'').replace(/\D/g,'').slice(-10); if(k.length>=7) by.set(k,(by.get(k)||0)+1); }
+    const dupPhones=[...by.values()].filter(n=>n>1);
+    const extra=dupPhones.reduce((a,n)=>a+n-1,0);
+    const detail=`${rows.length.toLocaleString('en-US')} lead(s) checked`;
+    if(!extra) return {status:'ok', detail:`${detail} — no duplicate phone numbers`};
+    return {status:extra>rows.length*0.1?'fail':'warn', detail:`${detail} — ${dupPhones.length} phone number(s) appear on ${extra+dupPhones.length} leads`, hint:'Merge duplicates from Leads → filter by phone. Duplicates split a customer\'s history and can trigger double follow-ups.'};
+  }},
+
 ];
+
+// D1 read for a health check. A table that doesn't exist yet means the feature was never used
+// by anyone → null ("not tested"), not an error; any other failure is a real one and throws.
+async function healthDb(env, sql, ...binds){
+  if(!env?.DB) return null;
+  try{ const {results}=await env.DB.prepare(sql).bind(...binds).all(); return results||[]; }
+  catch(e){ if(/no such table/i.test(e?.message||'')) return null; throw e; }
+}
+const healthSince=days=>new Date(Date.now()-days*86400000).toISOString();
+
+// Data several checks read, fetched once per run.
+function healthRunContext(env, c){
+  const memo=new Map();
+  const once=(k,fn)=>{ if(!memo.has(k)) memo.set(k, fn().catch(e=>{ memo.delete(k); throw e; })); return memo.get(k); };
+  const id=Number(c.Id);
+  const botRows7=()=>once('bot7', ()=>healthDb(env, `SELECT phone, conv_id, user_text, route, reply, ok, steps_json, created_at FROM bot_reply_log WHERE client_id=? AND created_at>=? ORDER BY created_at DESC LIMIT 1000`, id, healthSince(7)));
+  return {
+    // The newest 200 leads — enough to judge creation, assignment and data quality.
+    recentLeads:()=>once('leads', async()=>{
+      if(!env.NOCODB_BASE) return null;
+      const q=f=>ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${id})`)}&sort=-Id&limit=200&fields=${f}`);
+      let r=await q('Id,Phone,Email,Owner,Stage,CreatedAt,UpdatedAt');
+      if(!r.ok) r=await q('Id,Phone,Owner,Stage,CreatedAt');
+      if(!r.ok) throw new Error(`Could not read leads (CRM database HTTP ${r.status})`);
+      const d=await r.json().catch(()=>({}));
+      return d.list||[];
+    }),
+    botRows:async days=>{
+      const rows=await botRows7();
+      if(rows===null) return null;
+      const since=healthSince(days);
+      return rows.filter(r=>String(r.created_at)>=since);
+    },
+    // Customer messages that reached the bot (one per bot turn that had customer text).
+    inboundCount:async days=>{
+      const rows=await botRows7();
+      const since=healthSince(days);
+      return new Set((rows||[]).filter(r=>r.user_text&&String(r.created_at)>=since).map(r=>`${r.conv_id||r.phone}|${r.user_text}`)).size;
+    },
+    lastInboundAt:()=>once('lastIn', async()=>{
+      const rows=await healthDb(env, `SELECT MAX(created_at) AS last FROM bot_reply_log WHERE client_id=? AND user_text IS NOT NULL`, id);
+      return rows?.[0]?.last||null;
+    }),
+  };
+}
 
 export async function runHealthChecks(env, client){
   // Independent checks run together; each is timed and can never take the others down.
+  const run=healthRunContext(env, client);
   return Promise.all(HEALTH_CHECKS.map(async check=>{
     let result;
-    try{ result=await check.fn(env, client); }
+    try{ result=await check.fn(env, client, run); }
     catch(e){ result={status:'fail', detail:e.message||'Check threw an error'}; }
     const out={key:check.key, label:check.label, category:check.category, status:result.status, detail:result.detail||''};
     if(result.hint) out.hint=result.hint;
@@ -4845,20 +5196,70 @@ export async function runHealthChecks(env, client){
 }
 
 export function overallHealthStatus(results){
-  if(results.some(r=>r.status==='fail')) return 'fail';
-  if(results.some(r=>r.status==='warn')) return 'warn';
-  return 'ok';
+  return healthOverall(results);
 }
 
-async function saveHealthResults(env, client, results){
+/* ── Health report history (D1 health_reports) — one row per run, kept 90 days per client, so
+   the client can compare runs, see recurring issues and confirm fixes. The client row keeps only
+   the latest status/time plus a short log for the admin Clients list. ── */
+const HEALTH_REPORT_KEEP_DAYS=90;
+let _healthReportsReady=null;
+async function healthReportsEnsure(env){
+  if(!env?.DB) return false;
+  if(!_healthReportsReady) _healthReportsReady=(async()=>{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS health_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, created_at TEXT NOT NULL, run_trigger TEXT NOT NULL DEFAULT 'manual', status TEXT NOT NULL, totals_json TEXT NOT NULL DEFAULT '{}', report_json TEXT NOT NULL)`).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_health_reports_client ON health_reports(client_id, created_at)`).run();
+    return true;
+  })().catch(e=>{ _healthReportsReady=null; return false; });
+  return _healthReportsReady;
+}
+export async function healthReportsList(env, clientId, limit=30){
+  if(!await healthReportsEnsure(env)) return [];
+  const {results}=await env.DB.prepare(`SELECT id, created_at, run_trigger, status, totals_json, report_json FROM health_reports WHERE client_id=? ORDER BY created_at DESC, id DESC LIMIT ?`).bind(Number(clientId), Number(limit)).all();
+  return (results||[]).map(r=>{ let rep=null; try{ rep=JSON.parse(r.report_json); }catch(e){} return rep&&{...rep, id:r.id}; }).filter(Boolean).reverse();
+}
+
+async function saveHealthResults(env, client, results, {trigger='manual'}={}){
+  const previous=await healthReportsList(env, client.Id, 30).catch(()=>[]);
+  // Accounts checked before history moved to D1: seed the comparison from the client-row log.
+  if(!previous.length){ try{ previous.push(...JSON.parse(client.integration_health_log||'[]').filter(x=>x&&Array.isArray(x.results))); }catch(e){} }
+  const report=buildHealthReport(results, {previous, trigger});
+  if(await healthReportsEnsure(env)){
+    try{
+      const ins=await env.DB.prepare(`INSERT INTO health_reports (client_id, created_at, run_trigger, status, totals_json, report_json) VALUES (?,?,?,?,?,?)`)
+        .bind(Number(client.Id), report.ts, trigger, report.status, JSON.stringify(report.totals), JSON.stringify(report)).run();
+      report.id=ins?.meta?.last_row_id||undefined;
+      await env.DB.prepare(`DELETE FROM health_reports WHERE client_id=? AND created_at<?`).bind(Number(client.Id), healthSince(HEALTH_REPORT_KEEP_DAYS)).run();
+    }catch(e){ console.error('[health] could not store report', client.Id, e.message); }
+  }
   let log=[]; try{ log=JSON.parse(client.integration_health_log||'[]'); }catch(e){}
-  log.push({ts:new Date().toISOString(), results});
-  if(log.length>14) log=log.slice(-14); // ~2 weeks of daily runs
+  log.push({ts:report.ts, results});
+  if(log.length>7) log=log.slice(-7); // the full history lives in health_reports
   await patchClientFields(env, client.Id, {
     integration_health_log: JSON.stringify(log),
-    integration_health_status: overallHealthStatus(results),
-    integration_health_checked_at: new Date().toISOString(),
+    integration_health_status: report.status,
+    integration_health_checked_at: report.ts,
   });
+  // The unattended daily run alerts; a manual run is already in front of whoever started it.
+  if(trigger==='daily') await notifyHealthCritical(env, client, report).catch(e=>console.error('[health] alert failed', client.Id, e.message));
+  return report;
+}
+
+// Email the account owner when a check newly fails (once per new failure, not every day it stays
+// broken). Uses the platform Resend key, not the client's own.
+async function notifyHealthCritical(env, client, report){
+  const alerts=healthCriticalAlerts(report);
+  if(!alerts.length||client.health_alerts_enabled==='No') return false;
+  const to=String(client.health_alert_email||client.billing_email||client.authentik_email||'').trim();
+  if(!to) return false;
+  const items=alerts.map(r=>`<li><b>${esc(r.label)}</b> — ${esc(r.detail||'')}${r.hint?`<br><span style="color:#374151">Recommended: ${esc(r.hint)}</span>`:''}</li>`).join('');
+  await sendBillingEmail(env, {
+    to, subject:`Critical: ${alerts.length} health check(s) failing — ${client.client_name||'your account'}`,
+    heading:'Health check: action needed',
+    bodyHtml:`<p>Today's health check for <b>${esc(client.client_name||'your account')}</b> found ${alerts.length} new critical issue(s):</p><ul>${items}</ul><p style="color:#6b7280;font-size:13px">${esc(healthSummaryLine(report))}</p>`,
+    ctaLabel:'Open health report', ctaUrl:`${env.APP_BASE_URL||'https://app.leadvyne.com'}/dashboard.html#integrations`,
+  });
+  return true;
 }
 
 async function handleHealthRun(request, env){
@@ -4867,8 +5268,30 @@ async function handleHealthRun(request, env){
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   const results=await runHealthChecks(env, c);
-  await saveHealthResults(env, c, results);
-  return json({ok:true, status:overallHealthStatus(results), results, checked_at:new Date().toISOString()});
+  const report=await saveHealthResults(env, c, results, {trigger:'manual'});
+  return json({ok:true, status:report.status, results, checked_at:report.ts, report});
+}
+
+// GET /health/reports[?limit=30] — the client's report history (summaries, newest first), the
+// issues that keep coming back, and the full newest report. GET /health/reports/{id} — one report.
+async function handleHealthReports(request, env, url){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const m=url.pathname.match(/^\/health\/reports\/(\d+)$/);
+  if(m){
+    if(!await healthReportsEnsure(env)) return json({error:'Report history unavailable'}, 503);
+    const row=await env.DB.prepare(`SELECT id, report_json FROM health_reports WHERE id=? AND client_id=?`).bind(Number(m[1]), Number(payload.cid)).first();
+    if(!row) return json({error:'Report not found'}, 404);
+    return json({ok:true, report:{...JSON.parse(row.report_json), id:row.id}});
+  }
+  const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||30, 1), 90);
+  const reports=await healthReportsList(env, payload.cid, limit);
+  const latest=reports[reports.length-1]||null;
+  return json({ok:true,
+    reports:reports.map(r=>({id:r.id, ts:r.ts, trigger:r.trigger, status:r.status, label:r.label, totals:r.totals,
+      issues:(r.results||[]).filter(x=>x.status==='fail'||x.status==='warn').map(x=>({key:x.key, label:x.label, status:x.status})),
+      fixed:r.fixed||[]})).reverse(),
+    recurring:healthRecurringIssues(reports), latest});
 }
 
 // Daily Cron Trigger entry point — see wrangler.toml [triggers]. Loops every client (paginated)
@@ -4885,7 +5308,7 @@ async function runDailyHealthCheckForAllClients(env){
     for(const c of rows){
       try{
         const results=await runHealthChecks(env, c);
-        await saveHealthResults(env, c, results);
+        await saveHealthResults(env, c, results, {trigger:'daily'});
       }catch(e){ console.error('[health] check failed for client', c.Id, e.message); }
     }
     if(rows.length<200) break;
@@ -45002,6 +45425,7 @@ export default {
       else if(url.pathname==='/gcal/sync-task' && request.method==='POST'){ res=await handleGcalSyncTask(request, env); }
       else if(url.pathname==='/engine/logs' && request.method==='GET'){ res=await handleEngineLogsList(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
+      else if((url.pathname==='/health/reports'||/^\/health\/reports\/\d+$/.test(url.pathname)) && request.method==='GET'){ res=await handleHealthReports(request, env, url); }
       else if(url.pathname==='/gsheet/status' && request.method==='GET'){ res=await handleGsheetStatus(request, env); }
       else if(url.pathname==='/gsheet/config' && request.method==='POST'){ res=await handleGsheetConfig(request, env); }
       else if(url.pathname==='/gsheet/sync' && request.method==='POST'){ res=await handleGsheetSync(request, env); }

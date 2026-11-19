@@ -3871,11 +3871,15 @@ const ROLES = {
               🩺 Health Check
               <span id="intHealthBadge" class="badge" style="font-size:11px"></span>
             </div>
-            <div class="s-note">Every integration and core automation is checked automatically once a day. Run it manually here any time.</div>
+            <div class="s-note">Integrations, CRM, AI chatbot, automations and the database are checked automatically every day. Run it manually any time, and download the report as a PDF.</div>
             <div id="intHealthLastChecked" class="s-note" style="margin:4px 0 10px"></div>
-            <div id="intHealthList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
-            <button class="save-btn" onclick="runHealthCheck()" id="intHealthRunBtn">Run Check Now</button>
-            <span class="save-msg" id="intHealthMsg"></span>
+            <div id="intHealthList" style="margin-bottom:10px"></div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px">
+              <button class="save-btn" onclick="runHealthCheck()" id="intHealthRunBtn">Run Check Now</button>
+              <button class="save-btn" style="background:var(--muted)" onclick="downloadHealthPdf()" id="intHealthPdfBtn" disabled>⬇ Download PDF</button>
+              <span class="save-msg" id="intHealthMsg"></span>
+            </div>
+            <div id="intHealthHistory"></div>
           </div>
         </div>
       </div>
@@ -17439,58 +17443,7 @@ async function sendTestEmail(){
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
-const HEALTH_STATUS_COLOR={ok:'green', warn:'warn', fail:'red'};
-const HEALTH_STATUS_ICON={ok:'✅', warn:'⚠️', fail:'❌', off:'⚪'};
-const HEALTH_STATUS_ORDER={fail:0, warn:1, ok:2, off:3};
-
-function intTimeSince(iso){
-  if(!iso) return '—';
-  const mins=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/60000));
-  if(mins<60) return mins+'m';
-  if(mins<1440) return Math.round(mins/60)+'h';
-  return Math.round(mins/1440)+'d';
-}
-
-function renderHealthResults(){
-  const status=clientRecord?.integration_health_status;
-  const badge=$id('intHealthBadge');
-  if(status){
-    badge.textContent=status==='ok'?'All good':status==='warn'?'Needs attention':'Action needed';
-    badge.className='badge '+(HEALTH_STATUS_COLOR[status]||'gray');
-  }else{
-    badge.textContent='Not checked yet'; badge.className='badge gray';
-  }
-  const checkedAt=clientRecord?.integration_health_checked_at;
-  $id('intHealthLastChecked').textContent=checkedAt?('Last checked '+intTimeSince(checkedAt)+' ago — runs automatically once a day.'):'Not run yet — click "Run Check Now" below, or wait for tonight\'s automatic run.';
-
-  let log=[]; try{ log=JSON.parse(clientRecord?.integration_health_log||'[]'); }catch(e){}
-  const latest=log.length?log[log.length-1].results:[];
-  const list=$id('intHealthList');
-  if(!latest.length){ list.innerHTML='<div class="s-note">No results yet.</div>'; return; }
-  list.innerHTML=[...latest].sort((a,b)=>(HEALTH_STATUS_ORDER[a.status]??9)-(HEALTH_STATUS_ORDER[b.status]??9)).map(r=>`<div style="display:flex;align-items:flex-start;gap:8px;font-size:13px;padding:4px 0;${r.status==='off'?'opacity:.65':''}">
-    <span>${HEALTH_STATUS_ICON[r.status]||'—'}</span>
-    <b style="min-width:220px">${esc(r.label)}</b>
-    <span style="color:var(--muted)">${esc(r.detail||'')}${r.hint&&r.status!=='ok'?`<br><span style="color:var(--text)">💡 ${esc(r.hint)}</span>`:''}</span>
-  </div>`).join('');
-}
-
-async function runHealthCheck(){
-  const btn=$id('intHealthRunBtn'), msg=$id('intHealthMsg');
-  btn.disabled=true; msg.textContent='Running checks…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/health/run`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    Object.assign(clientRecord,{
-      integration_health_status:data.status,
-      integration_health_checked_at:data.checked_at,
-      integration_health_log:JSON.stringify([...(()=>{try{return JSON.parse(clientRecord.integration_health_log||'[]');}catch(e){return [];}})(), {ts:data.checked_at, results:data.results}].slice(-14))
-    });
-    msg.textContent='✓ Done';
-    renderHealthResults();
-  }catch(e){ msg.textContent='Error: '+e.message; }
-  finally{ btn.disabled=false; }
-}
+// renderHealthResults() / runHealthCheck() / downloadHealthPdf() live in health-report-ui.js.
 
 async function createChatwootAccount(){
   const msg=$id('chCreateAcctMsg'); msg.textContent='Creating Chatwoot account…';
@@ -25544,6 +25497,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-import.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=2"></script>
+<script src="health-report-ui.js?v=1"></script>
 <script src="followup-pro-ui.js?v=1"></script>
 <script src="travel-status.js?v=10"></script>
 <script src="travel-view.js?v=10"></script>
