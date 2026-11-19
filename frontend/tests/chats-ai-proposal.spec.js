@@ -35,9 +35,9 @@ async function open(page, { industry = 'general', draftFails = false } = {}) {
     if (url.pathname.endsWith('/catalog/ai-proposal')) {
       calls.draft.push(req.postDataJSON());
       if (draftFails) return route.fulfill({ status: 422, json: { error: 'AI timed out' } });
-      return route.fulfill({ json: { proposal: DRAFT } });
+      return route.fulfill({ json: { proposal: DRAFT, customer: { name: 'Asha Nair', phone: '919800000000', email: '', company: '', address: 'TC 12/345, Pattom\nThiruvananthapuram 695004', gstin: '' } } });
     }
-    if (url.pathname.endsWith('/catalog/chat-proposal/send')) { calls.send.push(req.postDataJSON()); return route.fulfill({ json: { ok: true, photos_sent: 1, name: 'Proposal-Asha.pdf', stage: 'proposal_sent' } }); }
+    if (url.pathname.endsWith('/catalog/chat-proposal/send')) { calls.send.push(req.postDataJSON()); return route.fulfill({ json: { ok: true, photos_sent: 1, name: 'Proposal-Asha.pdf', ref: 'PRP-2026-0007', stage: 'proposal_sent' } }); }
     return route.abort();
   });
   await page.goto(chatsUrl, { waitUntil: 'domcontentloaded' });
@@ -73,6 +73,12 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
   await expect(page.locator('#aiPropTotals')).toContainText('GST (18%)');
   await expect(page.locator('#aiPropTotals')).toContainText('INR 97,350');
   await page.locator('#aiPropSummary').fill('Edited overview.');
+  // "Prepared for": starts from the worker's customer block (the last proposal's address); editable.
+  await expect(page.locator('#aiPropCName')).toHaveValue('Asha Nair');
+  await expect(page.locator('#aiPropCAddr')).toHaveValue('TC 12/345, Pattom\nThiruvananthapuram 695004');
+  await page.locator('#aiPropCCompany').fill('Nair Residence');
+  await page.locator('#aiPropCEmail').fill('asha@example.com');
+  await page.locator('#aiPropBy').fill('Rahul');
   await page.locator('#aiPropSendPhotos').check();
   await page.getByRole('button', { name: '✅ Approve & send' }).click();
   await expect(ov).toBeHidden();
@@ -81,9 +87,59 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
   expect(sent).toMatchObject({ lead_id: 7, send_photos: true, caption: '📄 Here is our proposal: *Hot water for the family*.' });
   expect(sent.proposal).toMatchObject({ summary: 'Edited overview.', tax_pct: 18, tax_label: 'GST', valid_days: 15, benefits: ['Local team'] });
   expect(sent.proposal.items.map((r) => [r.id, r.qty, r.unit_price])).toEqual([['1', 2, 40000], ['3', 1, 2500]]);
+  expect(sent.proposal.customer).toEqual({ name: 'Asha Nair', company: 'Nair Residence', address: 'TC 12/345, Pattom\nThiruvananthapuram 695004', phone: '919800000000', email: 'asha@example.com', gstin: '' });
+  expect(sent.proposal.prepared_by).toBe('Rahul');
   await expect(page.locator('#thread .bubble.out')).toContainText('Here is our proposal');
   // The lead moved to Proposal Sent — only Follow-up V3's proposal templates go to it now.
   await expect(page.locator('#toast')).toContainText('stage: Proposal Sent');
+  await expect(page.locator('#toast')).toContainText('PRP-2026-0007');
+});
+
+test('send is blocked without a customer name or with a bad email', async ({ page }) => {
+  const calls = await open(page);
+  await page.evaluate(() => openAiProp());
+  await page.locator('#aiPropOv .tpl-item', { hasText: 'Solar Water Heater' }).click();
+  await page.getByRole('button', { name: '✨ Draft proposal' }).click();
+  await page.locator('#aiPropCName').fill('');
+  await page.getByRole('button', { name: '✅ Approve & send' }).click();
+  await expect(page.locator('#aiPropErr')).toContainText('customer name');
+  await page.locator('#aiPropCName').fill('Asha');
+  await page.locator('#aiPropCEmail').fill('not-an-email');
+  await page.getByRole('button', { name: '✅ Approve & send' }).click();
+  await expect(page.locator('#aiPropErr')).toContainText('email');
+  expect(calls.send).toHaveLength(0);
+});
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 390, height: 780 }, hasTouch: true, isMobile: true });
+  test('pick several items from the list, continue, step quantities, and go back without losing them', async ({ page }) => {
+    const calls = await open(page);
+    await page.evaluate(() => openAiProp());
+    const ov = page.locator('#aiPropOv');
+    // Picking stays on the list; the bar at the bottom counts the selection.
+    await ov.locator('.tpl-item', { hasText: 'Solar Water Heater' }).tap();
+    await expect(page.locator('#aiPropItems')).toBeVisible();
+    await ov.locator('.tpl-item', { hasText: 'Annual Maintenance' }).tap();
+    await expect(page.locator('#aiPropPickBar')).toContainText('2 items selected');
+    await expect(page.locator('#aiPropDetail')).toBeHidden();
+    await page.getByRole('button', { name: 'Continue →' }).tap();
+    await expect(page.locator('#aiPropItems')).toBeHidden();
+    await expect(ov.locator('.prop-row')).toHaveCount(2);
+    await ov.locator('.prop-row').first().getByRole('button', { name: 'More' }).tap();
+    await expect(page.locator('#aiPropQty1')).toHaveValue('2');
+    // Inputs are 16px so iOS doesn't zoom in on focus.
+    expect(await page.locator('#aiPropNotes').evaluate((el) => getComputedStyle(el).fontSize)).toBe('16px');
+    // Back shows the list again with the selection kept.
+    await page.locator('#aiPropOv .bar .icon-btn').tap();
+    await expect(page.locator('#aiPropPickBar')).toContainText('2 items selected');
+    await page.getByRole('button', { name: 'Continue →' }).tap();
+    await expect(page.locator('#aiPropQty1')).toHaveValue('2');
+    await page.getByRole('button', { name: '✨ Draft proposal' }).tap();
+    await expect(page.locator('#aiPropStep')).toHaveText('2 · Review & send');
+    // The send button stays in view at the bottom of the review.
+    await expect(page.getByRole('button', { name: '✅ Approve & send' })).toBeInViewport();
+    expect(calls.draft[0].items).toEqual([{ id: '1', qty: 2 }, { id: '3', qty: 1 }]);
+  });
 });
 
 test('a failed draft can be retried, and ✏️ Items keeps the selection', async ({ page }) => {

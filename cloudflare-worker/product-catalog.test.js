@@ -3,7 +3,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {pcIsOn,pcIsDriveLink,pcVideoLinkText,pcCleanItem,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcPriceText,pcMoney,pcTranscript,pcSelection,
-  pcProposalPrompt,pcParseProposal,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf} from './product-catalog.js';
+  pcProposalPrompt,pcParseProposal,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf,
+  pcCleanCustomer,pcProposalStatus,pcProposalRef,pcProposalValidUntil} from './product-catalog.js';
 
 const HEATER={id:1,kind:'product',name:'Solar Water Heater',category:'Solar',short_description:'Rooftop solar water heater for homes.',
   details:'Stainless steel tank, 5-year warranty.',features:'200 litre tank\nWorks on cloudy days',keywords:'geyser, solar heater',
@@ -156,9 +157,37 @@ test('the proposal PDF has the title, customer, items, totals and sections', ()=
   const s=new TextDecoder('latin1').decode(bytes);
   assert.match(s, /^%PDF-1\.4/);
   assert.match(s, /%%EOF\n$/);
-  for(const t of ['Hot Water Proposal','Prepared for Asha','14 Nov 2026','Valid until 29 Nov 2026','Overview','Solar Water Heater','INR 84,000','2 x INR 42,000','On request',
-    'GST \\(18%\\)','INR 99,120','TOTAL','Why Sunrise Solar','Next Steps','Terms & Conditions','Warm regards,','1 item is priced on request','Page 1 of'])
+  for(const t of ['Hot Water Proposal','PREPARED FOR','Asha','14 Nov 2026','Valid until','29 Nov 2026','OVERVIEW','Solar Water Heater','INR 84,000','INR 42,000','On request',
+    'COMMERCIAL SUMMARY','GST \\(18%\\)','INR 99,120','TOTAL','WHY SUNRISE SOLAR','NEXT STEPS','TERMS & CONDITIONS','ACCEPTANCE','Authorised Signatory','1 item is priced on request','Page 1 of'])
     assert.ok(s.includes(t), `PDF has ${t}`);
+});
+
+test('the proposal PDF carries the business address, GSTIN, number and the customer address', ()=>{
+  const p=pcCleanProposal({title:'Offer',summary:'S',items:[{id:'1',qty:1}],valid_days:15,
+    customer:{name:' Asha Nair ',company:'Nair Residence',phone:'+91 98470 12345',email:'asha@example.com',address:'TC 12/345, Pattom\n\nThiruvananthapuram 695004',gstin:'32abcde1234f1z5'}},[HEATER]);
+  assert.deepEqual(p.customer, {name:'Asha Nair',company:'Nair Residence',phone:'+91 98470 12345',email:'asha@example.com',address:'TC 12/345, Pattom\nThiruvananthapuram 695004',gstin:'32ABCDE1234F1Z5'});
+  const bytes=pcBuildProposalPdf(p,{business:'Sunrise Solar',address:'Galaxy Towers, MG Road\nKochi 682016',phone:'+91 98000 00000',email:'hello@sunrise.in',
+    website:'https://sunrise.in/',gstin:'32ZZZZZ1234F1Z5',preparedBy:'Rahul',ref:'PRP-2026-0007',now:new Date('2026-11-14T00:00:00Z')});
+  const s=new TextDecoder('latin1').decode(bytes);
+  for(const t of ['Galaxy Towers, MG Road','Kochi 682016','sunrise.in','GSTIN: 32ZZZZZ1234F1Z5','PRP-2026-0007','Asha Nair','Nair Residence','TC 12/345, Pattom',
+    'Thiruvananthapuram 695004','Phone: +91 98470 12345','Email: asha@example.com','GSTIN: 32ABCDE1234F1Z5','Contact: Rahul','Accepted by Asha Nair'])
+    assert.ok(s.includes(t), `PDF has ${t}`);
+  assert.ok(!s.includes('https://sunrise.in'));
+});
+
+test('proposal status: agent-set, expired after validity, revised when a newer one went out', ()=>{
+  const now=new Date('2026-11-20T00:00:00Z');
+  assert.equal(pcProposalStatus({status:'sent',valid_until:'2026-11-29T00:00:00Z'},{now}), 'sent');
+  assert.equal(pcProposalStatus({status:'negotiating',valid_until:'2026-11-10T00:00:00Z'},{now}), 'expired');
+  assert.equal(pcProposalStatus({status:'sent',valid_until:''},{now}), 'sent');
+  assert.equal(pcProposalStatus({status:'sent'},{now,newerSent:true}), 'revised');
+  assert.equal(pcProposalStatus({status:'accepted',valid_until:'2026-11-10T00:00:00Z'},{now,newerSent:true}), 'accepted');
+  assert.equal(pcProposalStatus({status:'rejected'},{now}), 'rejected');
+  assert.equal(pcProposalStatus({status:'bogus'},{now}), 'sent');
+  assert.equal(pcProposalRef(7,new Date('2026-01-02T00:00:00Z')), 'PRP-2026-0007');
+  assert.equal(pcProposalValidUntil({valid_days:15},new Date('2026-11-14T00:00:00Z')), '2026-11-29T00:00:00.000Z');
+  assert.equal(pcProposalValidUntil({valid_days:0}), '');
+  assert.deepEqual(pcCleanCustomer(null), {name:'',company:'',phone:'',email:'',address:'',gstin:''});
 });
 
 test('video link: Drive videos go as a file (worker falls back to the link), other links as a link', ()=>{
