@@ -623,3 +623,31 @@ export function pcBuildProposalPdf(p,{business='',address='',phone='',email='',w
   const out=new Uint8Array(pos);let at=0;for(const b of parts){out.set(b,at);at+=b.length;}
   return out;
 }
+
+/* ── Proposal outside the 24-hour window: approved template + PDF link ───────────────────────── */
+// WhatsApp only delivers an approved template once the customer's 24-hour window has closed, so a
+// proposal sent then goes as this template with a link to the PDF (worker /p/<token>). Created in
+// the account's own WhatsApp Business Account the first time an agent opens AI Proposal.
+// Meta rules: example values for every {{n}}, and the body can't start or end with a variable.
+export const PC_PROPOSAL_TEMPLATE={
+  name:'leadvyne_proposal_link',category:'UTILITY',language:'en',
+  body:'Hi {{1}}, please find attached our proposal "{{2}}". You can view and download the PDF here: {{3}}\n\nPlease reply to this message if you have any questions.',
+  example:['Asha','Solar Hot Water Solution','https://leadvyne-api-proxy.leadvyne.workers.dev/p/Xk29fLq8vN3mR7tY'],
+};
+// Template parameter text: no line breaks or tabs, no runs of 4+ spaces, never empty.
+const pcTplParam=(v,max,fallback)=>String(v??'').replace(/[\r\n\t]+/g,' ').replace(/ {4,}/g,'   ').trim().slice(0,max)||fallback;
+export function pcProposalTemplateParams({customer='',title='',link=''}={}){
+  return [pcTplParam(String(customer).split(/\s+/)[0],60,'there'),pcTplParam(title,120,'Business Proposal'),pcTplParam(link,500,'')];
+}
+// The template's text with its values filled in — what the chat shows for the sent message.
+export function pcProposalTemplateText(params){
+  return PC_PROPOSAL_TEMPLATE.body.replace(/\{\{(\d)\}\}/g,(m,n)=>params[Number(n)-1]??m);
+}
+// Private link token for a proposal's PDF: 22 characters, ~131 bits.
+export function pcShareToken(rand=n=>crypto.getRandomValues(new Uint8Array(n))){
+  const A='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  return Array.from(rand(22),b=>A[b%A.length]).join('');
+}
+// Link-preview crawlers (WhatsApp, Facebook, Telegram, Slack…) fetch the link when it's sent —
+// those aren't the customer opening it.
+export const pcIsPreviewBot=ua=>/WhatsApp|facebookexternalhit|facebookcatalog|Facebot|TelegramBot|Slackbot|Twitterbot|LinkedInBot|Discordbot|SkypeUriPreview|bot\b|crawler|spider/i.test(String(ua||''));

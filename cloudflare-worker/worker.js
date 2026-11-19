@@ -26,7 +26,7 @@ import {travelStaleProcessClient,travelAutoFollowupOn} from './travel-status-aut
 import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmTripStatusProcessClient,travelCrmProcessEchoes,travelCrmSettingsView,travelCrmSettingsPatch,travelCrmDetect,travelCrmMergeDetection,travelCrmDetectHistory,travelCrmParseTrips} from './travel-crm.js';
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {hospAiList,HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
-import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf,pcCleanCustomer,pcProposalStatus,pcProposalRef,pcProposalValidUntil,PC_PROPOSAL_STATUSES} from './product-catalog.js';
+import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf,pcCleanCustomer,pcProposalStatus,pcProposalRef,pcProposalValidUntil,PC_PROPOSAL_STATUSES,PC_PROPOSAL_TEMPLATE,pcProposalTemplateParams,pcProposalTemplateText,pcShareToken,pcIsPreviewBot} from './product-catalog.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcClientFields,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -23885,9 +23885,9 @@ async function handleHospitalityChatItinerarySend(request,env){
    ════════════════════════════════════════════════════════════════════════════════════════════════ */
 const PC_ITEM_COLUMNS=['kind','name','category','sku','short_description','details','features','inclusions','exclusions','keywords','price','currency','price_unit',
   ...PC_IMAGE_FIELDS,'video_url','voice_note_url','brochure_url','auto_send','status','sort_order'];
-let _pcSchemaEnsured=false;
+const _pcSchemaEnsured=new WeakSet(); // per D1 binding
 async function pcEnsureSchema(env){
-  if(_pcSchemaEnsured) return;
+  if(_pcSchemaEnsured.has(env.DB)) return;
   await env.DB.batch([
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_items (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'product', name TEXT NOT NULL, category TEXT, sku TEXT, short_description TEXT, details TEXT, features TEXT, keywords TEXT, price REAL, currency TEXT NOT NULL DEFAULT 'INR', price_unit TEXT, image_url_1 TEXT, image_url_2 TEXT, image_url_3 TEXT, image_url_4 TEXT, image_url_5 TEXT, video_url TEXT, voice_note_url TEXT, brochure_url TEXT, auto_send INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT)`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pc_items_client ON pc_items(client_id, status)`),
@@ -23902,9 +23902,14 @@ async function pcEnsureSchema(env){
     await env.DB.prepare(`ALTER TABLE pc_items ADD COLUMN ${col}`).run().catch(()=>null);
   // Proposal tracking (Dashboard → 📑 Proposals): number, customer block, the full proposal (so
   // the PDF can be opened again), the PDF link from Chatwoot, validity and the agent-set status.
-  for(const col of ['ref TEXT','customer_json TEXT','proposal_json TEXT','pdf_url TEXT','valid_until TEXT',"status TEXT NOT NULL DEFAULT 'sent'",'status_note TEXT','status_at TEXT','status_by TEXT'])
+  for(const col of ['ref TEXT','customer_json TEXT','proposal_json TEXT','pdf_url TEXT','valid_until TEXT',"status TEXT NOT NULL DEFAULT 'sent'",'status_note TEXT','status_at TEXT','status_by TEXT',
+    // Private PDF link (/p/<token>), opens by the customer, and how it went: chat (PDF attached) or template (link).
+    'share_token TEXT','view_count INTEGER NOT NULL DEFAULT 0','last_viewed_at TEXT',"sent_via TEXT NOT NULL DEFAULT 'chat'"])
     await env.DB.prepare(`ALTER TABLE pc_proposals ADD COLUMN ${col}`).run().catch(()=>null);
-  _pcSchemaEnsured=true;
+  await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pc_proposals_token ON pc_proposals(share_token)`).run().catch(()=>null);
+  // The account's "proposal link" WhatsApp template (PC_PROPOSAL_TEMPLATE) and its Meta status.
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS pc_settings (client_id INTEGER PRIMARY KEY, tpl_name TEXT, tpl_lang TEXT, tpl_status TEXT, tpl_reason TEXT, tpl_checked_at TEXT)`).run().catch(()=>null);
+  _pcSchemaEnsured.add(env.DB);
 }
 async function pcItemsFor(env,clientId,{activeOnly=false}={}){
   await pcEnsureSchema(env);
@@ -24015,20 +24020,35 @@ async function pcRenderProposalPdf(env,c,proposal,{customer='',ref='',now=new Da
   const images=new Map(proposal.items.map((r,i)=>[r.id,imgs[i]]).filter(([,img])=>img));
   return pcBuildProposalPdf(proposal,{...lh,customer,logo,images,ref,now});
 }
-// POST /catalog/chat-proposal/send {lead_id, proposal, caption?, send_photos?} → the item photos
-// (optional, the first photo of up to 3 items) and the proposal PDF go into the chat.
+// POST /catalog/chat-proposal/send {lead_id, proposal, caption?, send_photos?, window_closed?}
+// Inside the 24-hour window: the item photos (optional, the first photo of up to 3 items) and the
+// proposal PDF go into the chat. Outside it (the chat says so, or the customer's last message is
+// over 24 hours old): the approved "proposal link" template goes instead, with a private link to
+// the PDF (/p/<token>). Either way the proposal gets that link, and the Proposals tab tracks it.
+const PC_WINDOW_MS=24*3600*1000;
 async function handleCatalogChatProposalSend(request,env){
   const {res,payload,c}=await pcSessionClient(request,env);
   if(res) return res;
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'},400);
   const body=await request.json().catch(()=>({}));
   const lead=await pcLeadForChat(env,payload,body?.lead_id);
   if(!lead) return json({error:'Lead not found'},404);
   const leadId=Number(lead.Id);
   const convId=String(lead.ConversationID||'').trim();
-  if(!convId) return json({error:'This lead has no WhatsApp chat yet.'},400);
-  const access=await chatSendCheckAndClaim(env,c,payload,{leadId,convId});
-  if(!access.ok) return json({error:access.error},403);
+  const lastIn=await env.DB.prepare(`SELECT MAX(ts) AS at FROM lead_messages WHERE lead_id=? AND role='user'`).bind(leadId).first().catch(()=>null);
+  const viaTemplate=body?.window_closed===true||!!(lastIn?.at&&Date.now()-new Date(lastIn.at).getTime()>PC_WINDOW_MS);
+  if(!viaTemplate){
+    if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'},400);
+    if(!convId) return json({error:'This lead has no WhatsApp chat yet.'},400);
+  }
+  if(convId){
+    const access=await chatSendCheckAndClaim(env,c,payload,{leadId,convId});
+    if(!access.ok) return json({error:access.error},403);
+  }
+  let tpl=null;
+  if(viaTemplate){
+    tpl=await pcProposalTemplateState(env,c,{create:true});
+    if(tpl.status!=='APPROVED') return json({error:pcTemplateBlockedText(tpl),code:'TEMPLATE_NOT_READY',template:tpl},409);
+  }
   const items=await pcItemsFor(env,payload.cid);
   const proposal=pcCleanProposal(body?.proposal,items);
   if(!proposal.items.length) return json({error:'The proposal has no products or services.'},400);
@@ -24042,45 +24062,143 @@ async function handleCatalogChatProposalSend(request,env){
   try{
     bytes=await pcRenderProposalPdf(env,c,proposal,{customer,ref,now:nowDate});
   }catch(e){ await reportOpsError(env,'Chats AI proposal — PDF build failed',e,{clientId:payload.cid,leadId}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
-  let photosSent=0;
-  if(body?.send_photos){
-    const picks=proposal.items.map(r=>({r,url:pcPhotos(byId.get(r.id))[0]})).filter(x=>x.url).slice(0,3);
-    for(const [i,{r,url}] of picks.entries()){
-      const blob=await hospitalityFetchMediaBlob(env,url,false).catch(()=>null);
-      if(!blob) continue;
-      const cap=`📦 *${r.name}*`;
-      const name=`product-photo${i+1}.${(blob.type.split('/')[1]||'jpg').replace(/[^a-z0-9]/gi,'')}`;
-      const fd=new FormData();
-      fd.append('content',cap); fd.append('message_type','outgoing'); fd.append('private','false');
-      fd.append('attachments[]',blob,name);
-      const pr=await hospChatPost(c,convId,fd).catch(()=>null);
-      if(!pr?.ok) continue;
-      photosSent++;
-      const data=await pr.json().catch(()=>({}));const sent=data?.attachments?.[0]||{};
-      await chatsRecordOutgoing(env,payload.cid,leadId,{content:cap,
-        attachment:{kind:'image',type:blob.type||'image/jpeg',name,size:blob.size||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
-    }
-  }
-  const caption=String(body?.caption||'').trim().slice(0,1000)||`📄 Here is our proposal${customer?` for you, ${customer}`:''}: *${proposal.title}*.`;
   const name=pcProposalPdfName(proposal,proposal.customer.name||customer);
-  const fd=new FormData();
-  fd.append('content',caption); fd.append('message_type','outgoing'); fd.append('private','false');
-  fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),name);
-  const r=await hospChatPost(c,convId,fd);
-  if(!r.ok) return json({error:'WhatsApp send failed (HTTP '+r.status+')',photos_sent:photosSent},502);
-  const data=await r.json().catch(()=>({}));
-  const sent=data?.attachments?.[0]||{};
-  await chatsRecordOutgoing(env,payload.cid,leadId,{content:caption,
-    attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:sent.data_url||sent.file_url||'',...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+  // The private link: the PDF is kept in R2 (rebuilt from the stored proposal if R2 isn't bound).
+  const token=pcShareToken();
+  const link=`${new URL(request.url).origin}/p/${token}`;
+  if(env.ECOM_CATEGORY_MEDIA) await env.ECOM_CATEGORY_MEDIA.put(`proposals/${token}.pdf`,bytes,{httpMetadata:{contentType:'application/pdf'},customMetadata:{name}})
+    .catch(e=>reportOpsError(env,'Chats AI proposal — PDF store failed',e,{clientId:payload.cid,leadId}));
+  let photosSent=0,pdfUrl='',data={},content;
+  if(viaTemplate){
+    const phone=String(lead.Phone||'').replace(/\D/g,'');
+    if(!phone) return json({error:'This lead has no WhatsApp number.'},400);
+    const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id:lead.InboxId});
+    if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API credentials were not detected for this chat.'},400);
+    const params=pcProposalTemplateParams({customer:proposal.customer.name||customer,title:proposal.title,link});
+    const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'template',template:{name:tpl.name,language:{code:tpl.language},
+        components:[{type:'body',parameters:params.map(text=>({type:'text',text}))}]}})});
+    data=await r.json().catch(()=>({}));
+    if(!r.ok) return json({error:'WhatsApp template send failed: '+(data?.error?.error_user_msg||data?.error?.message||'HTTP '+r.status)},502);
+    content=pcProposalTemplateText(params);
+    await logWaTemplateSend(env,payload.cid,'proposal',{template:tpl.name,phone,leadId});
+    await chatsRecordOutgoing(env,payload.cid,leadId,{content,attachment:chatsTemplateAttachment(tpl.name)},payload).catch(()=>{});
+  }else{
+    if(body?.send_photos){
+      const picks=proposal.items.map(r=>({r,url:pcPhotos(byId.get(r.id))[0]})).filter(x=>x.url).slice(0,3);
+      for(const [i,{r,url}] of picks.entries()){
+        const blob=await hospitalityFetchMediaBlob(env,url,false).catch(()=>null);
+        if(!blob) continue;
+        const cap=`📦 *${r.name}*`;
+        const pname=`product-photo${i+1}.${(blob.type.split('/')[1]||'jpg').replace(/[^a-z0-9]/gi,'')}`;
+        const fd=new FormData();
+        fd.append('content',cap); fd.append('message_type','outgoing'); fd.append('private','false');
+        fd.append('attachments[]',blob,pname);
+        const pr=await hospChatPost(c,convId,fd).catch(()=>null);
+        if(!pr?.ok) continue;
+        photosSent++;
+        const pd=await pr.json().catch(()=>({}));const ps=pd?.attachments?.[0]||{};
+        await chatsRecordOutgoing(env,payload.cid,leadId,{content:cap,
+          attachment:{kind:'image',type:blob.type||'image/jpeg',name:pname,size:blob.size||0,url:ps.data_url||ps.file_url||'',...(pd?.id?{cw_id:Number(pd.id)}:{})}},payload).catch(()=>{});
+      }
+    }
+    content=String(body?.caption||'').trim().slice(0,1000)||`📄 Here is our proposal${customer?` for you, ${customer}`:''}: *${proposal.title}*.`;
+    const fd=new FormData();
+    fd.append('content',content); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]',new Blob([bytes],{type:'application/pdf'}),name);
+    const r=await hospChatPost(c,convId,fd);
+    if(!r.ok) return json({error:'WhatsApp send failed (HTTP '+r.status+')',photos_sent:photosSent},502);
+    data=await r.json().catch(()=>({}));
+    const sent=data?.attachments?.[0]||{};
+    pdfUrl=String(sent.data_url||sent.file_url||'');
+    await chatsRecordOutgoing(env,payload.cid,leadId,{content,
+      attachment:{kind:'document',type:'application/pdf',name,size:bytes.length||0,url:pdfUrl,...(data?.id?{cw_id:Number(data.id)}:{})}},payload).catch(()=>{});
+  }
   const totals=pcProposalTotals(proposal);
   const sentAt=nowDate.toISOString();
-  await env.DB.prepare(`INSERT INTO pc_proposals (client_id,lead_id,title,total,currency,items_json,pdf_name,sent_by,sent_at,ref,customer_json,proposal_json,pdf_url,valid_until,status,status_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  await env.DB.prepare(`INSERT INTO pc_proposals (client_id,lead_id,title,total,currency,items_json,pdf_name,sent_by,sent_at,ref,customer_json,proposal_json,pdf_url,valid_until,status,status_at,share_token,sent_via) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(Number(payload.cid),leadId,proposal.title,totals.priced?totals.total:null,totals.currency,
       JSON.stringify(proposal.items.map(r=>({id:r.id,name:r.name,qty:r.qty,unit_price:r.unit_price}))),name,String(payload.email||''),sentAt,
-      ref,JSON.stringify(proposal.customer),JSON.stringify(proposal),String(sent.data_url||sent.file_url||''),pcProposalValidUntil(proposal,nowDate),'sent',sentAt).run()
+      ref,JSON.stringify(proposal.customer),JSON.stringify(proposal),pdfUrl,pcProposalValidUntil(proposal,nowDate),'sent',sentAt,token,viaTemplate?'template':'chat').run()
     .catch(e=>reportOpsError(env,'Chats AI proposal — log failed',e,{clientId:payload.cid,leadId}));
   const stage=await pcMarkProposalSent(env,payload.cid,lead,{at:sentAt,total:totals.priced?totals.total:null});
-  return json({ok:true,photos_sent:photosSent,name,ref,total:totals.total,stage,data});
+  return json({ok:true,via:viaTemplate?'template':'chat',content,link,photos_sent:photosSent,name,ref,total:totals.total,stage,data});
+}
+
+// ── The "proposal link" template (PC_PROPOSAL_TEMPLATE) ──────────────────────────────────────────
+// Created in the account's own WABA the first time an agent opens AI Proposal (POST
+// /catalog/proposal-template), then its Meta review status is re-read until it is approved.
+// → {name, language, status: APPROVED|PENDING|REJECTED|PAUSED|DISABLED|NO_WABA|ERROR, reason?}
+const PC_TPL_RECHECK_MS=10*60*1000;
+async function pcProposalTemplateState(env,c,{create=false,force=false}={}){
+  await pcEnsureSchema(env);
+  const cid=Number(c.Id);
+  const T=PC_PROPOSAL_TEMPLATE;
+  const row=await env.DB.prepare(`SELECT * FROM pc_settings WHERE client_id=?`).bind(cid).first().catch(()=>null);
+  const out=r=>({name:r?.tpl_name||T.name,language:r?.tpl_lang||T.language,status:r?.tpl_status||'NONE',reason:r?.tpl_reason||'',body:T.body});
+  if(row?.tpl_status==='APPROVED'&&!force) return out(row);
+  if(row?.tpl_status&&!force&&Date.now()-new Date(row.tpl_checked_at||0).getTime()<PC_TPL_RECHECK_MS&&row.tpl_status!=='ERROR') return out(row);
+  const save=async(status,reason='')=>{
+    await env.DB.prepare(`INSERT INTO pc_settings (client_id,tpl_name,tpl_lang,tpl_status,tpl_reason,tpl_checked_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(client_id) DO UPDATE SET tpl_name=excluded.tpl_name,tpl_lang=excluded.tpl_lang,tpl_status=excluded.tpl_status,tpl_reason=excluded.tpl_reason,tpl_checked_at=excluded.tpl_checked_at`)
+      .bind(cid,T.name,T.language,status,String(reason).slice(0,300),new Date().toISOString()).run().catch(()=>{});
+    return {name:T.name,language:T.language,status,reason:String(reason).slice(0,300),body:T.body};
+  };
+  const creds=await resolveOrDetectMetaCredentials(env,c,cid,{}).catch(()=>null);
+  if(!creds?.waba_id||!creds?.wa_token) return {name:T.name,language:T.language,status:'NO_WABA',reason:'Connect the WhatsApp Business API in Settings → Channels.',body:T.body};
+  // Already in the WABA (created earlier, or by hand)?
+  const g=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates?name=${encodeURIComponent(T.name)}&fields=name,status,language,rejected_reason&limit=20`,{headers:{Authorization:`Bearer ${creds.wa_token}`}}).catch(()=>null);
+  const gd=g?await g.json().catch(()=>({})):{};
+  const found=(gd?.data||[]).find(x=>x.name===T.name&&x.language===T.language)||(gd?.data||[]).find(x=>x.name===T.name);
+  if(found) return save(String(found.status||'PENDING').toUpperCase(),found.rejected_reason&&found.rejected_reason!=='NONE'?found.rejected_reason:'');
+  if(!create) return row?out(row):{name:T.name,language:T.language,status:'NONE',reason:'',body:T.body};
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({name:T.name,category:T.category,language:T.language,allow_category_change:true,
+      components:[{type:'BODY',text:T.body,example:{body_text:[T.example]}}]})}).catch(()=>null);
+  const d=r?await r.json().catch(()=>({})):{};
+  if(!r?.ok){
+    const msg=d?.error?.error_user_msg||d?.error?.message||'HTTP '+(r?.status||'?');
+    if(/already exists|duplicate/i.test(msg)) return save('PENDING');
+    await reportOpsError(env,'Proposal link template — create failed',new Error(msg),{clientId:cid}).catch(()=>{});
+    return save('ERROR',msg);
+  }
+  return save(String(d?.status||'PENDING').toUpperCase());
+}
+function pcTemplateBlockedText(t){
+  if(t.status==='NO_WABA') return `This chat's 24-hour window has closed, so the proposal must go as a WhatsApp template — ${t.reason}`;
+  if(t.status==='PENDING'||t.status==='IN_APPEAL'||t.status==='NONE') return `This chat's 24-hour window has closed. The proposal template "${t.name}" is still waiting for Meta's approval (usually minutes, up to 24 hours) — try again once it's approved, or wait for the customer to write.`;
+  if(t.status==='REJECTED') return `Meta rejected the proposal template "${t.name}"${t.reason?` (${t.reason})`:''}. The proposal can only be sent once the customer writes again.`;
+  return `The proposal template "${t.name}" can't be used right now (${t.status}${t.reason?`: ${t.reason}`:''}).`;
+}
+// GET  /catalog/proposal-template → its state (re-read from Meta at most every 10 minutes)
+// POST /catalog/proposal-template → the same, creating it in the WABA if it isn't there yet
+async function handleCatalogProposalTemplate(request,env){
+  const {res,c}=await pcSessionClient(request,env);
+  if(res) return res;
+  const force=new URL(request.url).searchParams.get('refresh')==='1';
+  return json({template:await pcProposalTemplateState(env,c,{create:request.method==='POST',force})});
+}
+
+// GET /p/<token> — the customer's private link to a proposal PDF (public; the token is the key).
+// Opens are counted, except link-preview crawlers (WhatsApp fetches the link when it's sent).
+async function handleProposalPublicPdf(request,env,token){
+  if(!/^[A-Za-z0-9]{16,40}$/.test(token)) return new Response('Not found',{status:404});
+  await pcEnsureSchema(env);
+  const row=await env.DB.prepare(`SELECT * FROM pc_proposals WHERE share_token=?`).bind(token).first().catch(()=>null);
+  if(!row) return new Response('This proposal link is not valid.',{status:404,headers:{'Content-Type':'text/plain; charset=utf-8'}});
+  const fname=String(row.pdf_name||'Proposal.pdf').replace(/[^\w.-]/g,'_');
+  const headers={'Content-Type':'application/pdf','Content-Disposition':`inline; filename="${fname}"`,'Cache-Control':'private, max-age=300','X-Robots-Tag':'noindex','Referrer-Policy':'no-referrer'};
+  if(request.method==='GET'&&!pcIsPreviewBot(request.headers.get('user-agent')))
+    await env.DB.prepare(`UPDATE pc_proposals SET view_count=COALESCE(view_count,0)+1, last_viewed_at=? WHERE id=?`).bind(new Date().toISOString(),row.id).run().catch(()=>{});
+  const obj=env.ECOM_CATEGORY_MEDIA?await env.ECOM_CATEGORY_MEDIA.get(`proposals/${token}.pdf`).catch(()=>null):null;
+  if(obj) return new Response(request.method==='HEAD'?null:obj.body,{headers});
+  const proposal=pcJsonOr(row.proposal_json,null);
+  const c=proposal?await getClientById(env,row.client_id).catch(()=>null):null;
+  if(!c) return new Response('This proposal is no longer available.',{status:410,headers:{'Content-Type':'text/plain; charset=utf-8'}});
+  try{
+    const bytes=await pcRenderProposalPdf(env,c,pcCleanProposal(proposal,await pcItemsFor(env,row.client_id)),{ref:row.ref||'',now:new Date(row.sent_at)});
+    return new Response(request.method==='HEAD'?null:bytes,{headers});
+  }catch(e){ await reportOpsError(env,'Proposal link — PDF rebuild failed',e,{clientId:row.client_id}).catch(()=>{}); return new Response('Could not open this proposal right now.',{status:500}); }
 }
 // After a proposal goes out: the lead moves to "Proposal Sent" (FV3_PROPOSAL_STAGE), so Follow-up
 // V3 sends only the proposal templates and every other follow-up sender skips it
@@ -24158,7 +24276,7 @@ async function handleCatalogProposals(request,env){
     }catch(e){ await reportOpsError(env,'Proposals — PDF rebuild failed',e,{clientId:cid}).catch(()=>{}); return json({error:'Could not build the PDF'},500); }
   }
   const {results}=await env.DB.prepare(`SELECT id,lead_id,ref,title,total,currency,items_json,customer_json,pdf_name,pdf_url,sent_by,sent_at,valid_until,status,status_note,status_at,status_by,
-      (proposal_json IS NOT NULL) AS has_pdf FROM pc_proposals WHERE client_id=? ORDER BY sent_at DESC LIMIT 500`).bind(cid).all();
+      share_token,view_count,last_viewed_at,sent_via,(proposal_json IS NOT NULL) AS has_pdf FROM pc_proposals WHERE client_id=? ORDER BY sent_at DESC LIMIT 500`).bind(cid).all();
   const rows=results||[];
   // Newest proposal per lead (a newer one revises the older open ones) and the customer's last message.
   const newest=new Map();for(const r of rows) if(!newest.has(r.lead_id)) newest.set(r.lead_id,r.id);
@@ -24177,7 +24295,8 @@ async function handleCatalogProposals(request,env){
     return {id:r.id,lead_id:r.lead_id,ref:r.ref||`#${r.id}`,title:r.title,total:r.total,currency:r.currency,items:pcJsonOr(r.items_json,[]),customer,
       pdf_name:r.pdf_name,pdf_url:r.pdf_url||'',has_pdf:!!r.has_pdf,sent_by:r.sent_by,sent_at:r.sent_at,valid_until:r.valid_until||'',
       stored_status:r.status||'sent',status:pcProposalStatus(r,{now,newerSent:newest.get(r.lead_id)!==r.id}),status_note:r.status_note||'',status_at:r.status_at||'',status_by:r.status_by||'',
-      customer_replied_at:replied&&replied>r.sent_at?replied:''};
+      customer_replied_at:replied&&replied>r.sent_at?replied:'',
+      link:r.share_token?`${new URL(request.url).origin}/p/${r.share_token}`:'',view_count:Number(r.view_count)||0,last_viewed_at:r.last_viewed_at||'',sent_via:r.sent_via||'chat'};
   });
   return json({proposals});
 }
@@ -45357,6 +45476,8 @@ export default {
       else if(url.pathname==='/catalog/items' && ['GET','POST','PATCH','DELETE'].includes(request.method)){ res=await handleCatalogItems(request,env); }
       else if(url.pathname==='/catalog/ai-proposal' && request.method==='POST'){ res=await handleCatalogAiProposal(request,env); }
       else if(url.pathname==='/catalog/chat-proposal/send' && request.method==='POST'){ res=await handleCatalogChatProposalSend(request,env); }
+      else if(url.pathname==='/catalog/proposal-template' && ['GET','POST'].includes(request.method)){ res=await handleCatalogProposalTemplate(request,env); }
+      else if(url.pathname.startsWith('/p/') && ['GET','HEAD'].includes(request.method)){ res=await handleProposalPublicPdf(request,env,url.pathname.slice(3)); }
       else if((url.pathname==='/catalog/proposals' && ['GET','PATCH'].includes(request.method))||(url.pathname==='/catalog/proposals/pdf' && request.method==='GET')){ res=await handleCatalogProposals(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }

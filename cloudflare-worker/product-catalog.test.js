@@ -236,3 +236,23 @@ test('the PDF puts inclusions & exclusions on a Scope of Work page of its own, o
   assert.ok(!plain.includes('Scope of Work'));
   assert.ok(pages(s)>pages(plain));
 });
+
+test('proposal link template: Meta-safe body, filled parameters, private token, preview bots', async ()=>{
+  const {PC_PROPOSAL_TEMPLATE:T,pcProposalTemplateParams,pcProposalTemplateText,pcShareToken,pcIsPreviewBot}=await import('./product-catalog.js');
+  assert.equal(T.name, 'leadvyne_proposal_link');
+  assert.equal(T.category, 'UTILITY');
+  assert.ok(!/^\s*\{\{/.test(T.body) && !/\}\}\s*$/.test(T.body), 'body neither starts nor ends with a variable');
+  assert.deepEqual([...T.body.matchAll(/\{\{(\d)\}\}/g)].map(m=>m[1]), ['1','2','3']);
+  assert.equal(T.example.length, 3);
+  const params=pcProposalTemplateParams({customer:'Asha Nair',title:'Solar\nHot  Water',link:'https://x.test/p/abc'});
+  assert.deepEqual(params, ['Asha','Solar Hot  Water','https://x.test/p/abc']);
+  assert.deepEqual(pcProposalTemplateParams({}).slice(0,2), ['there','Business Proposal']);
+  assert.equal(pcProposalTemplateParams({title:'a        b'})[1], 'a   b');
+  assert.match(pcProposalTemplateText(params), /^Hi Asha, please find attached our proposal "Solar Hot  Water"\. You can view and download the PDF here: https:\/\/x\.test\/p\/abc\n\nPlease reply/);
+  const t=pcShareToken();
+  assert.match(t, /^[A-Za-z0-9]{22}$/);
+  assert.notEqual(pcShareToken(), t);
+  assert.ok(pcIsPreviewBot('WhatsApp/2.23.20.0 A'));
+  assert.ok(pcIsPreviewBot('facebookexternalhit/1.1'));
+  assert.ok(!pcIsPreviewBot('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'));
+});
