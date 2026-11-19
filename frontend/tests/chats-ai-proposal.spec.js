@@ -113,6 +113,9 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
 
 test('opening AI Proposal makes sure the proposal-link template exists', async ({ page }) => {
   const calls = await open(page);
+  await page.locator('#attachBtn').click();
+  await expect(page.locator('#attachLockNote')).toBeHidden();
+  await page.keyboard.press('Escape');
   await page.evaluate(() => openAiProp());
   await expect.poll(() => calls.tpl.length).toBe(1);
   // Inside the window nothing changes: the PDF goes into the chat.
@@ -124,7 +127,13 @@ test('opening AI Proposal makes sure the proposal-link template exists', async (
 
 test('after 24 hours the proposal goes as the approved template with a PDF link', async ({ page }) => {
   const calls = await open(page, { oldChat: true });
-  await page.evaluate(() => openAiProp());
+  // The chat is locked to templates, but Attach → AI Proposal still opens (other options don't).
+  await page.locator('#attachBtn').click();
+  await expect(page.locator('#attachLockNote')).toBeVisible();
+  await expect(page.locator('#attachMenu button', { hasText: 'Document' })).toBeDisabled();
+  await expect(page.locator('#attachMenu #aiPropBtn')).toBeEnabled();
+  await page.locator('#attachMenu #aiPropBtn').click();
+  await expect(page.locator('#aiPropOv')).toBeVisible();
   await page.locator('#aiPropOv .tpl-item', { hasText: 'Solar Water Heater' }).click();
   await page.getByRole('button', { name: '✨ Draft proposal' }).click();
   await expect(page.locator('#aiPropWin')).toContainText('24-hour window closed');
