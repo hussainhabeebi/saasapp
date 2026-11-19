@@ -44,6 +44,8 @@ test('add an item with details and Drive media, then edit and delete it', async 
   await page.locator('#fShort').fill('Rooftop solar heater');
   await page.locator('#fDetails').fill('Stainless steel tank, 5-year warranty.');
   await page.locator('#fKeywords').fill('geyser');
+  await page.locator('#fInclusions').fill('Standard installation\nRoof stand');
+  await page.locator('#fExclusions').fill('Civil work');
   await page.locator('#fImg1').fill('https://drive.google.com/file/d/abc123/view?usp=sharing');
   await expect(page.locator('#thumbs img')).toHaveAttribute('src', 'https://drive.google.com/thumbnail?id=abc123&sz=w400');
   // Video: a Drive MP4 under 16 MB plays in the chat; a larger one or a YouTube link goes as a link.
@@ -63,10 +65,11 @@ test('add an item with details and Drive media, then edit and delete it', async 
   const post = calls.find((c) => c.method === 'POST');
   expect(post.auth).toBe('Bearer t');
   expect(post.body).toMatchObject({ kind: 'product', name: 'Solar Water Heater', price: '42000', currency: 'INR', keywords: 'geyser',
-    image_url_1: 'https://drive.google.com/file/d/abc123/view?usp=sharing', video_url: 'https://drive.google.com/file/d/vid1/view', voice_note_url: 'https://drive.google.com/file/d/voice1/view', auto_send: 1, status: 'active' });
+    inclusions: 'Standard installation\nRoof stand', exclusions: 'Civil work', image_url_1: 'https://drive.google.com/file/d/abc123/view?usp=sharing', video_url: 'https://drive.google.com/file/d/vid1/view', voice_note_url: 'https://drive.google.com/file/d/voice1/view', auto_send: 1, status: 'active' });
   const card = page.locator('.item', { hasText: 'Solar Water Heater' });
   await expect(card).toContainText('INR 42,000');
   await expect(card).toContainText('🎙️ Voice note');
+  await expect(card).toContainText('✅ 2 · 🚫 1');
   await expect(card).toContainText('🎬 Video');
   await expect(card).toContainText('Bot sends on mention');
 

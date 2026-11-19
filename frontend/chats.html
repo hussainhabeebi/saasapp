@@ -73,6 +73,8 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .prop-qty{display:flex;align-items:center;border:1px solid #d1d7db;border-radius:8px;overflow:hidden;height:40px;background:#fff}.prop-qty button{width:34px;height:100%;border:0;background:#f0f2f5;font-size:18px;color:#3b4a54;cursor:pointer;flex:none;touch-action:manipulation}.prop-qty input{border:0!important;height:100%!important;text-align:center;padding:0 2px!important;min-width:0;-moz-appearance:textfield}.prop-qty input::-webkit-inner-spin-button{-webkit-appearance:none}
 .prop-row .prop-qty{width:118px;flex:none}
 .prop-pickbar{display:none}
+.prop-scope{border:1px solid #e9edef;border-radius:8px;padding:8px 10px;background:#fafbfb}.prop-scope summary{cursor:pointer;font-size:13px;font-weight:600;color:#3b4a54;list-style-position:inside}.prop-scope summary small{font-weight:500;color:var(--muted);margin-left:4px}.prop-scope[open] summary{margin-bottom:8px}
+@media(max-width:700px){.prop-scope .prop-grid{grid-template-columns:1fr}}
 #aiPropDetail .tpl-actions{position:sticky;bottom:-18px;margin:auto -18px -18px;padding:12px 18px calc(12px + env(safe-area-inset-bottom));background:var(--paper);box-shadow:0 -1px 0 #e9edef;flex-wrap:wrap;z-index:2}
 .prop-steps{font-size:12px;color:var(--muted);white-space:nowrap}
 .prop-totals{display:grid;gap:4px;font-size:13.5px}.prop-totals div{display:flex;justify-content:space-between;gap:10px}.prop-totals .tot{border-top:1px solid #e9edef;padding-top:6px;font-size:15px;color:#0d9c93}.prop-totals small{color:var(--muted)}
@@ -1714,6 +1716,11 @@ function aiPropNext(){aiPropReadPick();const m=$('aiPropMain');if(!m)return;m.cl
 function aiPropSetStep(){const el=$('aiPropStep');if(el)el.textContent=aiProp.draft?'2 · Review & send':'1 · Items'}
 const aiPropQtyStep=(id,d)=>{const i=$(id);if(!i)return;i.value=Math.max(1,(parseInt(i.value,10)||1)+d);i.dispatchEvent(new Event('input'))};
 const aiPropQtyBox=(id,val,oninput='')=>`<div class="prop-qty"><button type="button" aria-label="Less" onclick="aiPropQtyStep('${id}',-1)">−</button><input type="number" inputmode="numeric" min="1" id="${id}" value="${esc(val)}" ${oninput?`oninput="${oninput}"`:''}><button type="button" aria-label="More" onclick="aiPropQtyStep('${id}',1)">+</button></div>`;
+// Two lists, one per line: what is included and what is not (item rows, or the whole proposal).
+function aiPropScopeBox(pre,o,label,open=false){
+ const inc=o.inclusions||[],exc=o.exclusions||[];
+ return `<details class="prop-scope"${open||inc.length||exc.length?' open':''}><summary>${label} <small>✅ ${inc.length} · 🚫 ${exc.length}</small></summary><div class="prop-grid"><label>✅ Included (one per line)<textarea id="${pre}Inc" rows="3" placeholder="e.g. Installation">${esc(inc.join('\n'))}</textarea></label><label>🚫 Not included (one per line)<textarea id="${pre}Exc" rows="3" placeholder="e.g. Civil work">${esc(exc.join('\n'))}</textarea></label></div></details>`;
+}
 function aiPropMyName(){try{const saved=localStorage.getItem('lv_prop_by');if(saved)return saved}catch{}return (typeof agentsList==='function'?agentsList().find(a=>a.email===meEmail)?.name:'')||''}
 function aiPropReadPick(){
  aiProp.sel.forEach(s=>{const v=$('aiPropQty'+s.id)?.value;if(v!=null)s.qty=Math.max(1,parseInt(v,10)||1)});
@@ -1729,7 +1736,7 @@ function drawAiPropDetail(state,msg){
  if(state==='loading'){el.innerHTML=`<div class="tpl-empty"><div class="spinner"></div>Writing the proposal from this chat… this can take up to a minute.</div>`;return}
  if(state==='error'){el.innerHTML=`<div class="tpl-empty">AI could not draft this proposal.<br><small>${esc(msg||'')}</small></div><div class="tpl-actions"><button class="ai-itin-btn sec" onclick="drawAiPropDetail('pick')">✏️ Items</button><button class="ai-itin-btn sec" onclick="aiPropGenerate()">↻ Try again</button></div>`;return}
  const p=aiProp.draft;const lines=a=>esc((a||[]).join('\n'));
- const rows=p.items.map((r,k)=>`<div class="prop-item"><b>${esc(r.name)}</b><div class="prop-grid"><label>Qty${aiPropQtyBox('aiPropRQty'+k,r.qty,'drawAiPropTotals()')}</label><label>Unit price (${esc(r.currency)})<input inputmode="decimal" id="aiPropRPrice${k}" value="${r.unit_price==null?'':esc(r.unit_price)}" placeholder="On request" oninput="drawAiPropTotals()"></label></div><label>Description<textarea id="aiPropRDesc${k}" rows="2">${esc(r.description)}</textarea></label></div>`).join('');
+ const rows=p.items.map((r,k)=>`<div class="prop-item"><b>${esc(r.name)}</b><div class="prop-grid"><label>Qty${aiPropQtyBox('aiPropRQty'+k,r.qty,'drawAiPropTotals()')}</label><label>Unit price (${esc(r.currency)})<input inputmode="decimal" id="aiPropRPrice${k}" value="${r.unit_price==null?'':esc(r.unit_price)}" placeholder="On request" oninput="drawAiPropTotals()"></label></div><label>Description<textarea id="aiPropRDesc${k}" rows="2">${esc(r.description)}</textarea></label>${aiPropScopeBox('aiPropR'+k,r,`Included / not included for this item`)}</div>`).join('');
  const hasPhotos=p.items.some(r=>propItem(r.id)?.photos?.length);
  const cu=p.customer||{};
  el.innerHTML=`<div class="tpl-form"><div class="prop-sec">Proposal</div><label>Title<input id="aiPropTitle" value="${esc(p.title)}"></label><label>Overview<textarea id="aiPropSummary" rows="4">${esc(p.summary)}</textarea></label></div>
@@ -1739,6 +1746,7 @@ function drawAiPropDetail(state,msg){
    <label>Customer GSTIN<input id="aiPropCGstin" autocomplete="off" placeholder="Optional" maxlength="15" value="${esc(cu.gstin)}" style="text-transform:uppercase"></label><label>Prepared by<input id="aiPropBy" autocomplete="off" placeholder="Your name" value="${esc(p.prepared_by??aiPropMyName())}"></label></div>
    <small style="color:var(--muted)">Shown in the PDF's “Prepared for” box. Your business address, contacts and GSTIN come from Settings → Company Profile.</small></div>
   <div class="tpl-form"><div class="prop-sec">Items &amp; pricing</div>${rows}<div class="prop-grid prop-grid3"><label>Discount %<input type="number" min="0" max="100" id="aiPropDisc" value="${esc(p.discount_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax %<input type="number" min="0" max="100" id="aiPropTax" value="${esc(p.tax_pct||'')}" oninput="drawAiPropTotals()"></label><label>Tax name<input id="aiPropTaxLabel" value="${esc(p.tax_label||'GST')}"></label></div><label>Valid for (days)<input type="number" min="0" id="aiPropValid" value="${esc(p.valid_days??15)}"></label><div class="prop-totals" id="aiPropTotals"></div></div>
+  <div class="tpl-form"><div class="prop-sec">Scope — whole proposal</div><small style="color:var(--muted)">Each item's inclusions and exclusions come from Products &amp; Services. Add anything that applies to the whole job here — the PDF puts them all on a separate “Scope of Work” page.</small>${aiPropScopeBox('aiPropG',p,'General inclusions &amp; exclusions',true)}</div>
   <div class="tpl-form"><div class="prop-sec">Sections</div><label>Why choose us (one per line)<textarea id="aiPropBenefits" rows="3">${lines(p.benefits)}</textarea></label><label>Next steps (one per line)<textarea id="aiPropSteps" rows="3">${lines(p.next_steps)}</textarea></label><label>Terms (one per line)<textarea id="aiPropTerms" rows="3">${lines(p.terms)}</textarea></label><label>Closing<textarea id="aiPropClosing" rows="2">${esc(p.closing)}</textarea></label></div>
   <div class="tpl-form"><div class="prop-sec">Send</div>${hasPhotos?`<label class="h-itin-check"><input type="checkbox" id="aiPropSendPhotos">Also send the item photos (up to 3)</label>`:''}<label>Message with the PDF<input id="aiPropCaption" value="${esc(`📄 Here is our proposal: *${p.title}*.`)}"></label><div id="aiPropErr" style="color:#d93025;font-size:13px"></div></div>
   <div class="tpl-actions"><button class="ai-itin-btn sec" onclick="aiPropReadReview();drawAiPropDetail('pick')">✏️ Items</button><button class="ai-itin-btn sec" onclick="aiPropGenerate()">↻ Regenerate</button><button class="ai-itin-btn" id="aiPropSendBtn" onclick="aiPropSend()">✅ Approve &amp; send</button></div>`;
@@ -1748,6 +1756,9 @@ function drawAiPropDetail(state,msg){
 function aiPropReadReview(){
  const p=aiProp.draft;if(!p||!$('aiPropTitle'))return p;const v=id=>($(id)?.value??'').trim();const list=id=>v(id).split('\n').map(x=>x.trim()).filter(Boolean);
  p.title=v('aiPropTitle');p.summary=v('aiPropSummary');
+ const lines2=id=>$(id)?list(id):undefined;
+ p.items.forEach((r,k)=>{const inc=lines2('aiPropR'+k+'Inc'),exc=lines2('aiPropR'+k+'Exc');if(inc)r.inclusions=inc;if(exc)r.exclusions=exc});
+ if($('aiPropGInc')){p.inclusions=list('aiPropGInc');p.exclusions=list('aiPropGExc')}
  p.items.forEach((r,k)=>{r.qty=Math.max(1,parseInt(v('aiPropRQty'+k),10)||1);const pr=v('aiPropRPrice'+k).replace(/[, ]/g,'');r.unit_price=pr===''||!Number.isFinite(Number(pr))?null:Number(pr);r.description=v('aiPropRDesc'+k)});
  p.discount_pct=Number(v('aiPropDisc'))||0;p.tax_pct=Number(v('aiPropTax'))||0;p.tax_label=v('aiPropTaxLabel')||'Tax';p.valid_days=parseInt(v('aiPropValid'),10)||0;
  p.benefits=list('aiPropBenefits');p.next_steps=list('aiPropSteps');p.terms=list('aiPropTerms');p.closing=v('aiPropClosing');
@@ -1774,7 +1785,11 @@ async function aiPropGenerate(){
   // …and the customer details and "prepared by" the agent typed; a first draft starts from the
   // worker's (the last proposal's address for this lead, else the lead's name and phone).
   aiProp.draft={discount_pct:keep?.discount_pct||0,tax_pct:keep?.tax_pct||0,tax_label:keep?.tax_label||'GST',valid_days:keep?.valid_days??15,...d.proposal,
-   customer:keep?.customer||d.customer||{name:who(aiProp.lead)},prepared_by:keep?.prepared_by??aiPropMyName()};drawAiPropDetail('ready')}
+   customer:keep?.customer||d.customer||{name:who(aiProp.lead)},prepared_by:keep?.prepared_by??aiPropMyName(),
+   inclusions:keep?.inclusions||d.proposal.inclusions||[],exclusions:keep?.exclusions||d.proposal.exclusions||[]};
+  // Inclusions / exclusions the agent edited on an item survive a regenerate.
+  if(keep)aiProp.draft.items.forEach(r=>{const o=keep.items?.find(x=>String(x.id)===String(r.id));if(o){r.inclusions=o.inclusions;r.exclusions=o.exclusions}});
+  drawAiPropDetail('ready')}
  catch(e){if(seq===aiProp.seq)drawAiPropDetail('error',e.message)}
  finally{if(seq===aiProp.seq)aiProp.busy=false}
 }

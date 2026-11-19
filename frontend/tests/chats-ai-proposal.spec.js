@@ -19,7 +19,9 @@ const ITEMS = [
 ];
 const DRAFT = { title: 'Hot water for the family', summary: 'You need hot water for 6 people.', benefits: ['Local team'], next_steps: ['Book a site visit'], terms: ['Valid 15 days'], closing: 'Thank you!',
   items: [{ id: '1', name: 'Solar Water Heater', qty: 2, unit_price: 42000, currency: 'INR', description: 'Fits a family of 6.' },
-    { id: '3', name: 'Annual Maintenance', qty: 1, unit_price: 2500, currency: 'INR', price_unit: 'year', description: 'Keeps it running.' }] };
+    { id: '3', name: 'Annual Maintenance', qty: 1, unit_price: 2500, currency: 'INR', price_unit: 'year', description: 'Keeps it running.', inclusions: ['One visit a year'], exclusions: [] }],
+  inclusions: [], exclusions: [] };
+DRAFT.items[0].inclusions = ['Standard installation', 'Roof stand']; DRAFT.items[0].exclusions = ['Civil work'];
 
 async function open(page, { industry = 'general', draftFails = false } = {}) {
   const calls = { draft: [], send: [] };
@@ -79,6 +81,11 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
   await page.locator('#aiPropCCompany').fill('Nair Residence');
   await page.locator('#aiPropCEmail').fill('asha@example.com');
   await page.locator('#aiPropBy').fill('Rahul');
+  // Inclusions / exclusions: each item's come from the catalogue (editable), plus the whole job's.
+  await expect(page.locator('#aiPropR0Inc')).toHaveValue('Standard installation\nRoof stand');
+  await expect(page.locator('#aiPropR0Exc')).toHaveValue('Civil work');
+  await page.locator('#aiPropR0Exc').fill('Civil work\nPlumbing beyond 10 m');
+  await page.locator('#aiPropGExc').fill('Permits');
   await page.locator('#aiPropSendPhotos').check();
   await page.getByRole('button', { name: '✅ Approve & send' }).click();
   await expect(ov).toBeHidden();
@@ -89,6 +96,8 @@ test('pick items, draft from the chat, edit prices and tax, approve and send', a
   expect(sent.proposal.items.map((r) => [r.id, r.qty, r.unit_price])).toEqual([['1', 2, 40000], ['3', 1, 2500]]);
   expect(sent.proposal.customer).toEqual({ name: 'Asha Nair', company: 'Nair Residence', address: 'TC 12/345, Pattom\nThiruvananthapuram 695004', phone: '919800000000', email: 'asha@example.com', gstin: '' });
   expect(sent.proposal.prepared_by).toBe('Rahul');
+  expect(sent.proposal.items.map((r) => [r.inclusions, r.exclusions])).toEqual([[['Standard installation', 'Roof stand'], ['Civil work', 'Plumbing beyond 10 m']], [['One visit a year'], []]]);
+  expect([sent.proposal.inclusions, sent.proposal.exclusions]).toEqual([[], ['Permits']]);
   await expect(page.locator('#thread .bubble.out')).toContainText('Here is our proposal');
   // The lead moved to Proposal Sent — only Follow-up V3's proposal templates go to it now.
   await expect(page.locator('#toast')).toContainText('stage: Proposal Sent');

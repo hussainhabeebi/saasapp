@@ -202,3 +202,37 @@ test('video link: Drive videos go as a file (worker falls back to the link), oth
   assert.equal(pcMediaPlan({...AMC,video_url:'https://youtu.be/abc'})[0].drive, false);
   assert.equal(pcVideoLinkText(HEATER,'https://youtu.be/abc'), '🎬 Watch the Solar Water Heater video: https://youtu.be/abc');
 });
+
+test('inclusions & exclusions: cleaned per item, in the bot card and AI context, carried into proposals', ()=>{
+  const it=pcCleanItem({name:'Heater',inclusions:'- Installation\n\n• Stand; Warranty',exclusions:'Civil work'});
+  assert.equal(it.inclusions, 'Installation\nStand\nWarranty');
+  assert.equal(it.exclusions, 'Civil work');
+  assert.ok(!('inclusions' in pcCleanItem({name:'X'},{partial:true})));
+  const item={...HEATER,inclusions:'Installation\nStand',exclusions:'Civil work'};
+  assert.match(pcItemCard(item), /What's included\*\n• Installation\n• Stand/);
+  assert.match(pcItemCard(item), /Not included\*\n• Civil work/);
+  assert.match(pcContextBlock([item]), /Included: Installation; Stand \| NOT included: Civil work/);
+  const sel=pcSelection([{id:'1',qty:1}],[item]);
+  assert.match(pcProposalPrompt({selection:sel}).user, /included: Installation; Stand\n {2}not included: Civil work/);
+  const draft=pcParseProposal(JSON.stringify({summary:'ok'}),sel);
+  assert.deepEqual([draft.items[0].inclusions,draft.items[0].exclusions,draft.inclusions], [['Installation','Stand'],['Civil work'],[]]);
+  // Review edits win; a proposal without lists falls back to the catalogue.
+  const edited=pcCleanProposal({summary:'S',items:[{id:'1',inclusions:['Only installation'],exclusions:[]}],inclusions:['Transport'],exclusions:'Permits'},[item]);
+  assert.deepEqual([edited.items[0].inclusions,edited.items[0].exclusions,edited.inclusions,edited.exclusions], [['Only installation'],[],['Transport'],['Permits']]);
+  assert.deepEqual(pcCleanProposal({summary:'S',items:[{id:'1'}]},[item]).items[0].inclusions, ['Installation','Stand']);
+});
+
+test('the PDF puts inclusions & exclusions on a Scope of Work page of its own, only when there are any', ()=>{
+  const item={...HEATER,inclusions:'Roof mounting stand',exclusions:'Civil work and roof repairs'};
+  const p=pcCleanProposal({title:'Offer',summary:'S',items:[{id:'1'},{id:'3'}],exclusions:['Permits']},[item,AMC]);
+  const s=new TextDecoder('latin1').decode(pcBuildProposalPdf(p,{business:'Sunrise Solar'}));
+  for(const t of ['Scope of Work','INCLUDED','NOT INCLUDED','1. Solar Water Heater','Roof mounting stand','Civil work and roof repairs','General - applies to the whole proposal','Permits','Nothing listed'])
+    assert.ok(s.includes(t), `PDF has ${t}`);
+  const count=t=>s.split(t).length-1;
+  assert.equal(count('1. Solar Water Heater'), 2, 'item card + scope block');
+  assert.equal(count('2. Annual Maintenance'), 1, 'items without lists are left off the scope page');
+  const pages=n=>Number(/\/Count (\d+)/.exec(n)[1]);
+  const plain=new TextDecoder('latin1').decode(pcBuildProposalPdf(pcCleanProposal({title:'Offer',summary:'S',items:[{id:'3'}]},[AMC]),{business:'Sunrise Solar'}));
+  assert.ok(!plain.includes('Scope of Work'));
+  assert.ok(pages(s)>pages(plain));
+});
