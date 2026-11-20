@@ -25,6 +25,11 @@ const tsOriginBadge=l=>typeof leadOriginBadge==='function'?leadOriginBadge(l):''
 const tsOriginClass=l=>typeof leadOriginClass==='function'?leadOriginClass(l):'';
 const tsLeadName=l=>(typeof leadDisplayName==='function'?leadDisplayName(l):(l.Name||l.Phone))||'Inquiry';
 const tsPhone=l=>String(l?.Phone||'').startsWith('ig:')?'Instagram':(l?.Phone||'');
+// The inquiry's destination (dashboard.html leadDestination: the Destination field, else what
+// Destination Staff Routing or the bot recorded) and its grouping key ("Goa, India" → "goa").
+const tsDestination=l=>typeof leadDestination==='function'?leadDestination(l):String(l?.Destination||'').trim();
+const tsDestKey=l=>typeof leadDestKey==='function'?leadDestKey(tsDestination(l)):tsDestination(l).toLowerCase();
+const tsDestOn=()=>typeof travelLeadFieldsOn==='function'?travelLeadFieldsOn():true;
 
 // [key, label, icon, colour group]. Order = the inquiry's usual journey.
 const TS_STATUSES=[
@@ -66,7 +71,7 @@ const TS_NEXT={new:'first_call', first_call:'quote_sent', not_reachable:'first_c
 const TS_LOG_MAX=200;
 const TS_PAGE_SIZE=100;
 
-let _tsFilter={status:'',owner:'',cat:'',q:''};
+let _tsFilter={status:'',owner:'',cat:'',dest:'',q:''};
 let _tsShown=TS_PAGE_SIZE;
 let _tsFieldsReady=false;
 
@@ -339,8 +344,9 @@ function tsFiltered(){
     if(_tsFilter.owner==='__none'){ if(String(l.Owner||'').trim()) return false; }
     else if(_tsFilter.owner && !sameEmail(l.Owner,_tsFilter.owner)) return false;
     if(_tsFilter.cat && l.ServiceCategory!==_tsFilter.cat) return false;
+    if(_tsFilter.dest){ const k=tsDestKey(l); if(_tsFilter.dest==='__none'?k:k!==_tsFilter.dest) return false; }
     if(typeof tcMatch==='function' && !tcMatch(l)) return false; // 📲 Travel CRM filters (travel-crm.js)
-    if(q && ![l.Name,l.Phone,l.Destination,l.LeadRef].some(v=>String(v||'').toLowerCase().includes(q))) return false;
+    if(q && ![l.Name,l.Phone,tsDestination(l),l.LeadRef].some(v=>String(v||'').toLowerCase().includes(q))) return false;
     return true;
   });
 }
@@ -369,15 +375,15 @@ function tsLoadPrefs(){
   if(_tsPrefsLoaded) return; _tsPrefsLoaded=true;
   const p=tsReadPref(); if(!p) return;
   if(p.view==='board'||p.view==='list') _tsView=p.view;
-  if(p.filter&&typeof p.filter==='object') _tsFilter={status:'',owner:'',cat:'',q:'',...p.filter,q:''};
+  if(p.filter&&typeof p.filter==='object') _tsFilter={status:'',owner:'',cat:'',dest:'',q:'',...p.filter,q:''};
 }
 function tsSaveDefault(){
-  try{ localStorage.setItem(tsPrefKey(), JSON.stringify({view:_tsView, filter:{status:_tsFilter.status, owner:_tsFilter.owner, cat:_tsFilter.cat}})); }catch(e){}
+  try{ localStorage.setItem(tsPrefKey(), JSON.stringify({view:_tsView, filter:{status:_tsFilter.status, owner:_tsFilter.owner, cat:_tsFilter.cat, dest:_tsFilter.dest}})); }catch(e){}
   if(typeof showToast==='function') showToast('⭐ Saved as your default view');
   renderTravelStatus();
 }
-function tsIsDefault(){ const p=tsReadPref(); return !!p&&p.view===_tsView&&(p.filter?.status||'')===_tsFilter.status&&(p.filter?.owner||'')===_tsFilter.owner&&(p.filter?.cat||'')===_tsFilter.cat; }
-function tsMyFollowups(){ _tsFilter={status:'__overdue', owner:typeof myEmail!=='undefined'?myEmail:'', cat:'', q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
+function tsIsDefault(){ const p=tsReadPref(); return !!p&&p.view===_tsView&&(p.filter?.status||'')===_tsFilter.status&&(p.filter?.owner||'')===_tsFilter.owner&&(p.filter?.cat||'')===_tsFilter.cat&&(p.filter?.dest||'')===(_tsFilter.dest||''); }
+function tsMyFollowups(){ _tsFilter={status:'__overdue', owner:typeof myEmail!=='undefined'?myEmail:'', cat:'', dest:'', q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
 function tsSetView(v){ _tsView=v==='board'?'board':'list'; renderTravelStatus(); }
 
 /* ── Due-count badge on the Status Board tab (desktop nav, phone More sheet + More button) ── */
@@ -416,7 +422,7 @@ function renderTravelStatus(){
   const activeGroup=f.startsWith('__')&&f!=='__overdue'?f.slice(2):(TS_BY_KEY[f]?tsGroupOf(f):'');
   const groupOn=k=>k===f||(k==='__'+activeGroup&&TS_BY_KEY[f]);
   const chipStatuses=TS_STATUSES.filter(s=>!activeGroup||tsGroupOf(s[0])===activeGroup);
-  const filtered=!!(f||_tsFilter.owner||_tsFilter.cat||_tsFilter.q);
+  const filtered=!!(f||_tsFilter.owner||_tsFilter.cat||_tsFilter.dest||_tsFilter.q);
   const board=_tsView==='board';
   const staffSel=all?`<select aria-label="Staff" onchange="tsSetFilter('owner',this.value)">
         <option value="">👤 All staff</option>
@@ -442,6 +448,7 @@ function renderTravelStatus(){
     ${board?'':`<div class="tsb-chips" role="group" aria-label="Statuses">
       ${chipStatuses.map(([k,l,i,g])=>`<button class="tsb-chip ts-tile tsb-c-${g}${f===k?' on':''}${counts[k]?'':' zero'}" data-status="${k}" onclick="tsSetFilter('status',${f===k?`'${activeGroup?'__'+activeGroup:''}'`:`'${k}'`})" aria-pressed="${f===k?'true':'false'}">${i} <span class="l">${esc(l)}</span> <span class="c n">${counts[k]||0}</span></button>`).join('')}
     </div>`}
+    ${tsDestChipsHTML(leads)}
     ${typeof tcBarHTML==='function'?tcBarHTML():''}
     <div class="tsb-bar">
       ${staffSel}
@@ -466,6 +473,22 @@ function renderTravelStatus(){
   tsUpdateBadge();
   if(!board) tsBindSwipe(el);
 }
+// 📍 Destination chips (travel agencies): one per destination with its count, most inquiries first,
+// the same as the status chips — tap Goa to see only Goa inquiries, tap it again to see all.
+function tsDestChipsHTML(leads){
+  if(!tsDestOn()) return '';
+  const idx=typeof leadDestinationIndex==='function'?leadDestinationIndex(leads):[];
+  const cur=_tsFilter.dest||'';
+  if(cur && cur!=='__none' && !idx.some(d=>d.key===cur)) idx.push({key:cur, label:typeof leadDestLabel==='function'?leadDestLabel(cur):cur, n:0});
+  if(!idx.length) return '';
+  const none=leads.filter(l=>!tsDestKey(l)).length;
+  const chip=(k,label,n)=>`<button class="tsb-chip ts-tile tsb-c-blue${cur===k?' on':''}${n?'':' zero'}" data-dest="${esc(k)}" onclick="tsSetFilter('dest',${esc(JSON.stringify(cur===k?'':k))})" aria-pressed="${cur===k?'true':'false'}">📍 <span class="l">${esc(label)}</span> <span class="c n">${n}</span></button>`;
+  return `<div class="tsb-chips tsb-dests" role="group" aria-label="Destinations">
+      <button class="tsb-chip ts-tile tsb-c-blue${cur?'':' on'}" data-dest="" onclick="tsSetFilter('dest','')" aria-pressed="${cur?'false':'true'}">🌍 <span class="l">All destinations</span> <span class="c n">${leads.length}</span></button>
+      ${idx.map(d=>chip(d.key, d.label, d.n)).join('')}
+      ${none?chip('__none','No destination',none):''}
+    </div>`;
+}
 function tsRowHTML(l, all){
   const st=tsStatusOf(l), s=TS_BY_KEY[st.key], grp=s[3], fu=tsFollowUpState(l), id=Number(l.Id);
   const tel=String(l.Phone||'').startsWith('ig:')?'':String(l.Phone||'').replace(/[^0-9+]/g,'');
@@ -477,7 +500,7 @@ function tsRowHTML(l, all){
   return `<div class="tsb-row tsb-c-${grp} ${tsOriginClass(l)}${picked?' picked':''}" data-lead="${id}" data-status="${st.key}">
     <div class="who tsb-who"><input type="checkbox" class="tsb-ck" aria-label="Select ${esc(tsLeadName(l))}" ${picked?'checked':''} onclick="event.stopPropagation()" onchange="tsTogglePick(${id},this.checked)">
       <span class="tsb-av" onclick="openDetail(${id})">${esc(tsInitials(l))}</span>
-      <div onclick="openDetail(${id})" title="Open inquiry"><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div>${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}</div></div>
+      <div onclick="openDetail(${id})" title="Open inquiry"><b>${esc(tsLeadName(l))}${tsOriginBadge(l)}</b><div class="ts-meta">${[tsPhone(l),tsDestination(l),l.TravelDates].filter(Boolean).map(esc).join(' · ')||'&nbsp;'}</div>${typeof tcChipsHTML==='function'?tcChipsHTML(l):''}</div></div>
     <div class="svc">${tsInlineCategoryHTML(l)}</div>
     ${all?`<div class="staff ts-meta"><span class="tsb-lbl">Staff</span>${esc(tsOwnerName(l.Owner))}</div>`:''}
     <div class="st"><button class="tsb-pill" onclick="tsPick(${id},this)" aria-haspopup="dialog" aria-label="Status: ${esc(s[1])}${st.auto?' (auto)':''}. Change status"><span>${s[2]}</span><span class="t">${esc(s[1])}${st.auto?' <span class="ts-auto">auto</span>':''}</span><span class="car">▼</span></button>${reason}</div>
@@ -500,7 +523,7 @@ async function tsToggleAuto(){
     if(typeof showToast==='function') showToast('Could not save — '+e.message,'err');
   }
 }
-function tsClearFilters(){ _tsFilter={status:'',owner:'',cat:'',q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
+function tsClearFilters(){ _tsFilter={status:'',owner:'',cat:'',dest:'',q:''}; _tsShown=TS_PAGE_SIZE; renderTravelStatus(); }
 
 /* ── Bulk: tick inquiries, then set one status (with its date / lost reason) or one owner for all ── */
 function tsTogglePick(id,on){ id=Number(id); if(on) _tsPicked.add(id); else _tsPicked.delete(id); renderTravelStatus(); }
@@ -699,7 +722,7 @@ function tsKanbanHTML(list, opts={}){
 }
 function tsKbCard(l){
   const st=tsStatusOf(l), id=Number(l.Id), fu=tsFollowUpState(l);
-  const meta=[l.Destination].filter(Boolean).map(esc).join(' · ');
+  const meta=[tsDestination(l)].filter(Boolean).map(esc).join(' · ');
   return `<article class="tsk-card tsb-c-${TS_BY_KEY[st.key][3]} ${tsOriginClass(l)}" draggable="true" data-lead="${id}" ondragstart="tsKbStart(event,${id})" ondragend="tsKbEnd(event)">
     <div class="tsk-top" onclick="openDetail(${id})"><span class="tsb-av">${esc(tsInitials(l))}</span><div><b>${esc(tsLeadName(l))}</b>${tsOriginBadge(l)}<div class="ts-meta">${esc(tsPhone(l))}</div></div></div>
     <div class="tsk-cat">${tsCatPillHTML(l)}</div>
@@ -847,7 +870,7 @@ function tsSummaryHtml(){
     <div class="tv-chips">${chips}</div></div>`;
 }
 function tsOpen(status){
-  _tsFilter={status:status||'',owner:'',cat:'',q:''}; _tsShown=TS_PAGE_SIZE;
+  _tsFilter={status:status||'',owner:'',cat:'',dest:'',q:''}; _tsShown=TS_PAGE_SIZE;
   navigate('tvstatus');
 }
 

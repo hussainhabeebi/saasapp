@@ -17,6 +17,7 @@ import {marHandleRoute,marRunDue,marPurchaseLabels,marHasPurchaseLabel,marAdCode
 import {tmLeadLevel,tmChannelPerms,tmApplyChannelPerms,tmLeadWriteRefusal,TM_ROLE_KEYS,TM_MODULE_KEYS,TM_BULK_MAX,TM_EMAIL_RE,tmEmail,tmTeamEmails,tmJson,tmIsOwner,tmRoleOf,tmCanManage,tmIsOrphanAccount,tmEmailMessage,tmMemberView,tmMembers,tmApplyMemberUpdate,tmParseBulk,tmAuditText} from './team-admin.js';
 import {TF_STATE_TTL_MS,TF_MAX_FLOWS,TF_TEMPLATES,tfNormalizeFlow,tfValidateFlow,tfTemplateFlow,tfPackageInMessage,tfMatchTrigger,tfStart,tfAdvance,tfDirectAnswer,tfBuildAiPrompt,tfParseAiReply,tfApplyTurn,tfStepQuestion,tfStepLabel,tfQuestionRows,tfQualAnswers,tfIsContinue,tfIsCancel,tfWantsHuman} from './travel-flows.js';
 import {DSR_KINDS,DSR_STAFF_TEMPLATE,DSR_CUSTOMER_TEMPLATE,dsrIsAgency,dsrOn,dsrSettings,dsrNormalizeSettings,dsrSettingsPatch,dsrMatch,dsrMatchAll,dsrRotationKey,dsrPickRoundRobin,dsrDestinationLabel,dsrCustomerText,dsrChatButton,dsrStaffAlertParams,dsrStaffAlertText,dsrCustomerTemplateParams,dsrNoteText,dsrStaffLocations,dsrLocationAllowed} from './dest-staff-routing.js';
+import {adDestinationOwnPlaces,adDestinationCatalog,adDestinationDetect,adDestinationReferralTexts} from './ad-destination.js';
 import {FLYINDO_STYLE,GREETING_STYLE,CHAT_STYLES,GREETING_TEXT_MAX,greetingOnlyOn,greetingOnlyText,FLYINDO_STATE_TTL_MS,flyindoOn,flyindoNormalizeStyle,flyindoNormalizeDestinations,flyindoStart,flyindoAdvance,flyindoPrompt,flyindoQualAnswers,FLYINDO_MAX_DESTINATIONS,flyindoTapValue,flyindoWantsAi,flyindoBuildAiPrompt,flyindoParseAiReply,flyindoAiValueInput} from './flyindo-flow.js';
 import {TRIP_REQUEST_COLUMNS,TRIP_CLOSED,TRIP_SOURCE_BOT,tripRequestFields,tripRequestEligible,tripRequestRecord,tripRequestDiff,tripRequestPlan,tripRouteOwner,tripLeadFields,tripNoteLine,tripSummaryLine,tripChatService,tripChatIsPackage,tripChatFields,tripChatEligible,tripChatRecord,tripChatSummary,tripChatTitle,tripChatDiff} from './trip-requests.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltPassengerPassportLine,ltCheckoutUrl,ltVisaContextLine} from './live-travel-wa-menu.js';
@@ -2303,6 +2304,11 @@ export function channelVisibilityClause(assignments, email, {shared=false}={}){
 }
 
 let _leadsServiceCategoryReady=false;
+// Edit Lead's travel fields (Destination, travel dates, pax, trip type, special requests) are
+// later-added columns too: a base without one rejected the whole save, so a changed Destination
+// never stuck. Each is created on the first write that carries it (once per Worker isolate).
+const LEADS_TRAVEL_WRITE_COLUMNS=['Destination','TravelDates','PaxCount','TripType','SpecialRequests'];
+const _leadsTravelColsReady=new Set();
 // A lead write's `fields` must actually be stored: NocoDB has been seen to drop a later-added
 // column's value (ServiceCategory) on insert, and the dashboard can't tell — it would look saved
 // until the next refresh. `rows` is [{Id, field:value…}] as sent. Each row is read back, any lost
@@ -2475,6 +2481,10 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
      && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body.includes('"ServiceCategory"')){
     try{ await ensureLeadsColumns(env, ['ServiceCategory']); _leadsServiceCategoryReady=true; }catch(e){}
   }
+  if((method==='PATCH'||method==='POST') && body && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`){
+    const need=LEADS_TRAVEL_WRITE_COLUMNS.filter(k=>!_leadsTravelColsReady.has(k) && body.includes(`"${k}"`));
+    if(need.length){ try{ await ensureLeadsColumns(env, need); need.forEach(k=>_leadsTravelColsReady.add(k)); }catch(e){} }
+  }
 
   // Shared access set from the Leads tab (Edit Lead → Shared with): only the account owner, admins /
   // GMs or the lead's own Owner may change it; the list is cleaned to current teammates (minus the
@@ -2572,6 +2582,20 @@ async function handleNocodbPassthrough(request, env, upstreamPath, ctx=null){
       }
     }catch(e){ console.error('[leads] ServiceCategory check failed:', e.message); }
     if(rows.length) await engineBroadcastUpdate(env, payload.cid, {type:'lead_updated', lead_ids:rows.map(x=>Number(x.Id)), fields:['ServiceCategory'], by:String(payload.email||''), at:new Date().toISOString()});
+  }
+
+  // An edited Destination must really be stored (same read-back as ServiceCategory above): if
+  // NocoDB dropped it, it is written again, and a value that still won't stick is an error the
+  // dashboard shows, rather than a "saved" lead that shows the old destination after a refresh.
+  if(r.ok && method==='PATCH' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"Destination"')){
+    try{
+      const rows=[].concat(JSON.parse(body)).filter(x=>x && x.Id && 'Destination' in x).slice(0,20);
+      const stillLost=rows.length?await leadsVerifyFields(env, rows, ['Destination']):[];
+      if(stillLost.length){
+        console.error('[leads] Destination would not save:', JSON.stringify(stillLost));
+        return json({error:'The destination could not be saved — please try again.'}, 502);
+      }
+    }catch(e){ console.error('[leads] Destination check failed:', e.message); }
   }
 
   // Status Board / pipeline edits (travel status, follow-up date, stage, tags, deal value) reach
@@ -3269,7 +3293,7 @@ export async function chatsImportChatwootHistory(env, c, clientId, lead, {force=
 export const CW_HISTORY_WAIT_MS=4000;
 // Lead fields whose dashboard edits are pushed live to the account's other open dashboards
 // (lead_updated, see the NocoDB passthrough). ServiceCategory has its own verified broadcast.
-export const LEAD_LIVE_FIELDS=['TravelStatus','TravelStatusLog','TravelFollowUpAt','TravelStatusAt','TravelStatusBy','Stage','Tags','DealValue','DealCurrency','Owner','Priority','FollowUpDate','NextFollowUp'];
+export const LEAD_LIVE_FIELDS=['TravelStatus','TravelStatusLog','TravelFollowUpAt','TravelStatusAt','TravelStatusBy','Stage','Tags','DealValue','DealCurrency','Owner','Priority','FollowUpDate','NextFollowUp','Destination'];
 async function chatsImportHistoryBounded(env, c, clientId, lead, ctx, {wait=CW_HISTORY_WAIT_MS}={}){
   const p=chatsImportChatwootHistory(env, c, clientId, lead).catch(()=>null);
   if(ctx?.waitUntil) ctx.waitUntil(p);
@@ -19061,7 +19085,27 @@ async function engineSyncChatwootAssignee(c, convId, ownerEmail){
     body:JSON.stringify({assignee_id:Number(users[key])})
   }).catch(()=>{});
 }
+/* ── Destination from an ad / poster (ad-destination.js) — travel agencies ──
+   The places this agency sells (Destination Staff Routing, Lead Routing products, the guided-flow
+   destination list) and the built-in popular destinations. */
+export function engineAdDestinationCatalog(c){
+  const raw=c?.lt_flyindo_destinations;
+  const hasFlow=Array.isArray(raw)?raw.length>0:!!String(raw||'').trim()&&String(raw).trim()!=='[]';
+  return adDestinationCatalog(adDestinationOwnPlaces(c, {dsrRules:dsrSettings(c).rules, routingRules:engineGetLeadRouting(c)?.rules,
+    flowDestinations:hasFlow?flyindoNormalizeDestinations(raw):[]}));
+}
+// The destination an ad / poster / lead form names ('' when none, or not a travel agency).
+export function engineAdDestination(c, {adTexts=[], firstText=''}={}){
+  if(!dsrIsAgency(c)) return '';
+  try{ return adDestinationDetect({adTexts, firstText}, engineAdDestinationCatalog(c)).slice(0,200); }catch(e){ return ''; }
+}
 export async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  // The destination of the ad / poster this customer came from (engineAdDestination) — set on a
+  // lead that has none, before the owner is picked, so the teammate for that destination gets it.
+  if(state?.adDestination && !String(leadBody.Destination||state?.lead?.Destination||'').trim()){
+    await ensureLeadsColumns(env, ['Destination']).catch(()=>{});
+    leadBody.Destination=String(state.adDestination).slice(0,200);
+  }
   const before=leadBody.Owner;
   await engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead);
   if(leadBody.Owner && leadBody.Owner!==before) await engineSyncChatwootAssignee(c, state?.convId, leadBody.Owner);
@@ -19122,6 +19166,28 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
 
   const staff=new Set([...engineRoutableStaffEmails(c)].filter(e=>!away.has(e)));
   const isStaff=e=>staff.has(String(e||'').trim().toLowerCase());
+
+  // ── Destination Staff Routing: a new lead that already has its destination (the Goa ad or poster
+  // it came from) goes to the teammate who handles that destination — a named Holiday Package
+  // destination, else a Hotels & Resorts location, else whoever takes every package ("*"). Several
+  // teammates on it → round robin, the same rotation as a destination picked in the chat.
+  const leadDest=String(leadBody.Destination||state?.lead?.Destination||'').trim();
+  if(leadDest && dsrOn(c)){
+    try{
+      const cfg=dsrSettings(c), ok=e=>present.has(e) && !away.has(e);
+      let kind='', hits=[];
+      for(const k of ['package','resort']){
+        const h=dsrMatchAll(cfg, {kind:k, destination:leadDest}, ok).filter(x=>!x.wildcard);
+        if(h.length){ kind=k; hits=h; break; }
+      }
+      if(!hits.length){ kind='package'; hits=dsrMatchAll(cfg, {kind, destination:leadDest}, ok); }
+      if(hits.length){
+        const hit=hits.length>1 && cfg.round_robin!==false
+          ? dsrPickRoundRobin(hits, await dsrRotationNext(env, clientId, dsrRotationKey(kind, hits))) : hits[0];
+        if(hit?.email){ leadBody.Owner=hit.email; return; }
+      }
+    }catch(e){}
+  }
 
   if(!routing.enabled){
     // Legacy fallback: phone-hash across c.agents. That field used to be free-text names, which
@@ -19961,7 +20027,11 @@ export async function processMetaLeadgenChange(env, value){
     if(parsed.email && !state.lead?.Email) leadBody.Email=parsed.email;
     if(isNewLead){ leadBody.Stage='new'; leadBody.Date=now; leadBody.Score='Warm'; }
     await ensureLeadsColumns(env, ['LeadSource','AdCampaign','AdName','LeadFormName','MetaLeadgenId','AdId','AdsetId','CampaignId']).catch(()=>{});
-    await engineResolveLeadOwner(env, c, clientId, leadBody, {phone:parsed.phone, lead:state.lead, qualAnswers:{...state.qualAnswers, ...parsed.answers}}, isNewLead);
+    // 📍 A destination form / ad ("Goa Honeymoon Form", a "Destination" question) → the lead's Destination.
+    const formDestAnswer=Object.entries(parsed.answers||{}).find(([k])=>/destination|place|where/i.test(k))?.[1]||'';
+    const adDestination=engineAdDestination(c, {adTexts:[formDestAnswer, formName, lg.ad_name, lg.adset_name, lg.campaign_name].filter(Boolean)})
+      || (String(formDestAnswer).trim().length>=3 && dsrIsAgency(c) ? String(formDestAnswer).trim().slice(0,200) : '');
+    await engineResolveLeadOwner(env, c, clientId, leadBody, {phone:parsed.phone, lead:state.lead, qualAnswers:{...state.qualAnswers, ...parsed.answers}, adDestination}, isNewLead);
 
     // Instant WhatsApp welcome — a template, since this customer has never messaged us.
     let sendStatus='no-template', sendDetail='No welcome template set — lead saved without a WhatsApp message', welcomeText='';
@@ -30349,6 +30419,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // (manual takeover, bot off, handover silence, won-lead support, burst "superseded", rate
     // limit…). Meta sends it on one message only; a skipped message used to lose it for good.
     await engineCaptureAdClickEarly(env, clientId, body, state, text).catch(e=>reportOpsError(env,'CTWA click capture failed',e,{clientId}).catch(()=>{}));
+    // 📍 The destination of the ad / poster they tapped (its headline, text or link — else a first
+    // message that names one place, like a poster's pre-filled "I want the Bali package"): saved as
+    // the lead's Destination by engineResolveLeadOwner, which also gives it to that destination's teammate.
+    if(!String(state.lead?.Destination||'').trim()){
+      state.adDestination=engineAdDestination(c, {adTexts:adDestinationReferralTexts(engineReferral(body)), firstText:state.leadId?'':text});
+    }
     // 🧳 Route & travel dates from what the customer wrote (travel-crm.js) — in the background, after
     // the turn has saved the lead, whichever path below answers this message.
     if(text && ctx?.waitUntil && travelCrmTripsOn(c)) ctx.waitUntil(engineTravelCrmDetectLater(env, clientId, body, text, {c}).catch(e=>console.error('[travel-crm] detect', e.message)));
