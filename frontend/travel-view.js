@@ -33,6 +33,7 @@ const TV_NAV=[
   ['tvstatus','📌 Status Board'],
   ['chats','💬 Inbox'],
   ['tvtrips','🎫 Trips'],
+  ['profiles','👤 Travellers'],
   ['tvquotes','🗺️ Quotes & Itineraries'],
   ['departures','📅 Departures'],
   {group:'🧳 Products', items:[
@@ -54,6 +55,7 @@ const TV_NAV=[
 // Mobile "More" sheet: travel items shown above the regular ones.
 const TV_MORE=[
   ['tvstatus','📌','Status Board'],
+  ['profiles','👤','Travellers'],
   ['departures','📅','Departures'],['tvquotes','🗺️','Quotes'],['tvpackages','📦','Packages'],
   ['tvvisa','🛂','Visa & Docs'],['tvumrah','🕌','Umrah'],['tvlive','✈️','Live Flights'],
   ['tvfinance','💰','Finance'],['__classic','↩️','Classic view'],
