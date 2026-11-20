@@ -10656,7 +10656,9 @@ async function saveLeadNow(){
     if(from||to)body.TravelDates=from+(to?' → '+to:'');
     // Editing may also clear it; a new lead only sends one when typed.
     const dest=$id('fDestination').value.trim();
-    if(dest||String(original?.Destination||'').trim())body.Destination=dest;
+    // The column is made first (as for ServiceCategory): on a base without it the whole save was
+    // refused, which is why a changed Destination never stuck.
+    if(dest||String(original?.Destination||'').trim()){ body.Destination=dest; await ensureLeadsField('Destination'); }
     const adults=parseInt($id('fPaxAdults').value)||0;const children=parseInt($id('fPaxChildren').value)||0;
     if(adults||children)body.PaxCount=(adults+children)+' ('+adults+'A'+(children?' '+children+'C':'')+')';
     if($id('fBudget').value)body.Budget=parseInt($id('fBudget').value)||0;
@@ -25530,7 +25532,7 @@ async function deleteHospBooking(id){
 <script src="followup-status.js?v=2"></script>
 <script src="health-report-ui.js?v=1"></script>
 <script src="followup-pro-ui.js?v=1"></script>
-<script src="travel-status.js?v=10"></script>
+<script src="travel-status.js?v=11"></script>
 <script src="travel-view.js?v=11"></script>
 <script src="travel-crm.js?v=4"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
