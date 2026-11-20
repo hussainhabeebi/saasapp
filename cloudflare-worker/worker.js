@@ -27,6 +27,7 @@ import {TCRM_APP_SENDER,travelCrmOn,travelCrmTripsOn,travelCrmNumbers,travelCrmT
 import {taAiItinerary} from './travel-ai-itinerary.js';
 import {hospAiList,HOSP_AI_BROCHURE_MAX,hospAiAgencyPriceHint,hospAiBrochurePhotoList,hospAiBrochurePdfName,hospAiPrice,hospAiPriceLine,hospAiPriceHint,HOSP_AI_PRICE_FOOTNOTE,hospAiParseId,hospAiAgencyProperty,hospAiAgencyRooms,hospAiItinerary,hospAiNights,hospAiDate,hospAiCheckOut,hospAiPhotos,hospAiStayPkg,hospAiStayFacts,hospAiPdfName,HOSP_AI_FOOTNOTE} from './hospitality-ai-itinerary.js';
 import {PC_IMAGE_FIELDS,PC_MEDIA_RESEND_WINDOW_MS,pcVideoLinkText,pcIsOn,pcCleanItem,pcPhotos,pcFindItemsInText,pcItemCard,pcMediaPlan,pcContextBlock,pcTranscript,pcSelection,pcProposalDraft,pcCleanProposal,pcProposalTotals,pcProposalPdfName,pcBuildProposalPdf,pcCleanCustomer,pcProposalStatus,pcProposalRef,pcProposalValidUntil,PC_PROPOSAL_STATUSES,PC_PROPOSAL_TEMPLATE,pcProposalTemplateParams,pcProposalTemplateText,pcShareToken,pcIsPreviewBot} from './product-catalog.js';
+import {ppIsOn,PP_DOC_TYPES,PP_MAX_DOCS,ppCleanProfile,ppCleanDocument,ppDocStatus,ppRemindersDue,ppTravelCheck,ppNextOccurrence,ppAge,ppMask,ppFullName,ppPhoneKey,ppToday,ppDaysBetween,ppReminderMessage,ppDigestHtml} from './passenger-profiles.js';
 import {bcEmpty,bcNormalize,bcParse,bcPromptBlock,bcClientFields,bcAllowedSource,bcFindInventedContact,bcStripInvented,bcCorrection,bcContactCard,bcLogoForPages,bcLogoForPdf,bcIsContactRequest} from './business-contacts.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -11679,6 +11680,241 @@ async function handleBrandLogoServe(env,key){
   headers.set('Cache-Control','public, max-age=31536000, immutable');
   headers.set('X-Content-Type-Options','nosniff');
   return new Response(obj.body,{headers});
+}
+
+/* ── 👤 PROFILES (passenger-profiles.js) ─────────────────────────────────────────────────────────
+   Travel agency and hospitality accounts only (ppIsOn). One profile per traveller / guest, kept
+   across bookings, with their documents and the reminders raised from them. D1 tables are created
+   lazily (ppEnsureSchema); migrations/0136_passenger_profiles.sql is the same schema.
+   GET    /profiles                         → {profiles:[…], today} (document numbers masked)
+   POST   /profiles            {…}          → {profile}   409 {duplicate_id} unless force:true
+   PATCH  /profiles            {id, …}      → {profile}
+   DELETE /profiles            {id}         → {ok}        profile, its documents and reminders
+   POST   /profiles/documents  {profile_id, …}  PATCH {id, …}  DELETE {id}
+   GET    /profiles/reveal?doc_id=          → {number}    full number, written to the audit log
+   GET    /profiles/reminders               → {reminders:[…]} open reminders (raises today's first)
+   PATCH  /profiles/reminders  {id, status} → done / dismissed / open
+   POST   /profiles/check      {profile_ids, departure, return, destination} → {results}
+   GET    /profiles/audit?id=               → {audit:[…]}
+   Daily (2am cron): runProfileRemindersForAllClients raises the day's reminders and emails the
+   account owner a digest. Customers are never messaged automatically — the agent sends each one
+   from the Reminders tab (wa.me / the chat), so nothing doubles up with the hospitality suite's
+   own birthday offers. ── */
+const _ppSchemaEnsured=new WeakSet();
+async function ppEnsureSchema(env){
+  if(_ppSchemaEnsured.has(env.DB)) return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pp_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '', phone_key TEXT NOT NULL DEFAULT '', lead_id INTEGER, date_of_birth TEXT NOT NULL DEFAULT '', anniversary TEXT NOT NULL DEFAULT '', family_group TEXT NOT NULL DEFAULT '', data_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_profiles_client ON pp_profiles(client_id, phone_key)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pp_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, profile_id INTEGER NOT NULL, type TEXT NOT NULL, number TEXT NOT NULL DEFAULT '', expiry_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT '', data_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_documents_profile ON pp_documents(client_id, profile_id)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pp_reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, rkey TEXT NOT NULL, kind TEXT NOT NULL, profile_id INTEGER NOT NULL, doc_id INTEGER, due_date TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, done_at TEXT, done_by TEXT, UNIQUE(client_id, rkey))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_reminders_open ON pp_reminders(client_id, status)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS pp_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, profile_id INTEGER, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', by TEXT NOT NULL DEFAULT '', at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_audit_profile ON pp_audit(client_id, profile_id)`),
+  ]);
+  _ppSchemaEnsured.add(env.DB);
+}
+const ppJson=(s,d)=>{ try{ return s?JSON.parse(s):d; }catch(e){ return d; } };
+const ppRowProfile=r=>({...ppJson(r.data_json,{}), id:r.id, lead_id:r.lead_id||null, created_at:r.created_at, updated_at:r.updated_at, updated_by:r.updated_by||''});
+const ppRowDoc=r=>({...ppJson(r.data_json,{}), id:r.id, profile_id:r.profile_id, type:r.type, number:r.number||'', expiry_date:r.expiry_date||'', state:r.state||'', updated_at:r.updated_at});
+async function ppAudit(env,cid,profileId,action,detail,by){
+  await env.DB.prepare(`INSERT INTO pp_audit (client_id, profile_id, action, detail, by, at) VALUES (?,?,?,?,?,?)`)
+    .bind(cid,profileId||null,action,String(detail||'').slice(0,300),String(by||''),new Date().toISOString()).run().catch(()=>{});
+}
+// Every profile with its documents (numbers in clear — callers mask before sending to a page).
+async function ppLoadAll(env,cid,{profileId=null}={}){
+  const where=profileId?' AND id=?':'', args=profileId?[cid,Number(profileId)]:[cid];
+  const {results:ps}=await env.DB.prepare(`SELECT * FROM pp_profiles WHERE client_id=?${where} ORDER BY updated_at DESC LIMIT 5000`).bind(...args).all();
+  const {results:ds}=await env.DB.prepare(`SELECT * FROM pp_documents WHERE client_id=?${profileId?' AND profile_id=?':''} ORDER BY expiry_date`).bind(...args).all();
+  const byP=new Map();
+  for(const d of ds||[]){ const list=byP.get(d.profile_id)||[]; list.push(ppRowDoc(d)); byP.set(d.profile_id,list); }
+  return (ps||[]).map(r=>({...ppRowProfile(r), docs:byP.get(r.id)||[]}));
+}
+function ppView(p,today){
+  const docs=p.docs.map(d=>{
+    const {number,...rest}=d;
+    return {...rest, number_masked:ppMask(number), has_number:!!number, status:ppDocStatus(d,today), days_left:d.expiry_date?ppDaysBetween(today,d.expiry_date):null};
+  });
+  const bday=p.date_of_birth?ppNextOccurrence(p.date_of_birth,today):null;
+  const ann=p.anniversary?ppNextOccurrence(p.anniversary,today):null;
+  return {...p, name:ppFullName(p), docs, age:ppAge(p.date_of_birth,today), next_birthday:bday, next_anniversary:ann};
+}
+async function ppSession(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return {res:json({error:'Invalid or expired session'},401)};
+  const c=await getClientById(env,payload.cid).catch(()=>null);
+  if(!c) return {res:json({error:'Client not found'},404)};
+  if(!ppIsOn(c)) return {res:json({error:'Profiles is for travel agency and hospitality accounts.'},403)};
+  return {payload,c,cid:Number(payload.cid),by:String(payload.email||'owner')};
+}
+// Raises today's reminders for one account. Returns the ones that are new.
+async function ppRaiseReminders(env,cid,today){
+  const due=ppRemindersDue(await ppLoadAll(env,cid),today);
+  const fresh=[], now=new Date().toISOString();
+  for(const r of due){
+    const res=await env.DB.prepare(`INSERT OR IGNORE INTO pp_reminders (client_id, rkey, kind, profile_id, doc_id, due_date, title, status, created_at) VALUES (?,?,?,?,?,?,?,'open',?)`)
+      .bind(cid,r.key,r.kind,r.profile_id,r.doc_id,r.due_date,r.title.slice(0,300),now).run();
+    if(res.meta?.changes) fresh.push(r);
+  }
+  return fresh;
+}
+
+async function handleProfiles(request,env){
+  const s=await ppSession(request,env);
+  if(s.res) return s.res;
+  const {c,cid,by}=s;
+  await ppEnsureSchema(env);
+  const url=new URL(request.url), path=url.pathname, method=request.method;
+  const today=ppToday();
+  const body=['POST','PATCH','DELETE'].includes(method)?await request.json().catch(()=>({})):{};
+  const own=async id=>env.DB.prepare(`SELECT * FROM pp_profiles WHERE id=? AND client_id=?`).bind(Number(id)||0,cid).first();
+  const one=async id=>ppView((await ppLoadAll(env,cid,{profileId:id}))[0],today);
+
+  if(path==='/profiles/documents'){
+    if(method==='DELETE'){
+      const d=await env.DB.prepare(`SELECT * FROM pp_documents WHERE id=? AND client_id=?`).bind(Number(body.id)||0,cid).first();
+      if(!d) return json({error:'Document not found'},404);
+      await env.DB.batch([env.DB.prepare(`DELETE FROM pp_documents WHERE id=?`).bind(d.id), env.DB.prepare(`DELETE FROM pp_reminders WHERE client_id=? AND doc_id=? AND status='open'`).bind(cid,d.id)]);
+      await ppAudit(env,cid,d.profile_id,'document_deleted',`${d.type} ${ppMask(d.number)}`,by);
+      return json({ok:true, profile:await one(d.profile_id)});
+    }
+    const prev=method==='PATCH'?await env.DB.prepare(`SELECT * FROM pp_documents WHERE id=? AND client_id=?`).bind(Number(body.id)||0,cid).first():null;
+    if(method==='PATCH'&&!prev) return json({error:'Document not found'},404);
+    const profileId=prev?prev.profile_id:Number(body.profile_id)||0;
+    if(!await own(profileId)) return json({error:'Profile not found'},404);
+    // An edit that leaves the number blank keeps the stored one (the page only has it masked).
+    const input={...body}; if(prev&&!String(body.number||'').trim()) input.number=prev.number;
+    const {data,errors}=ppCleanDocument(input);
+    if(errors.length) return json({error:errors.join(' ')},400);
+    if(data.number){
+      const dup=await env.DB.prepare(`SELECT profile_id FROM pp_documents WHERE client_id=? AND type=? AND number=? AND id<>? LIMIT 1`).bind(cid,data.type,data.number,prev?.id||0).first();
+      if(dup&&dup.profile_id!==profileId&&!body.force) return json({error:`This ${PP_DOC_TYPES[data.type]||'document'} number is already on another profile.`, duplicate_id:dup.profile_id},409);
+    }
+    const {number,type,expiry_date,state,...rest}=data;
+    const at=new Date().toISOString();
+    if(prev){
+      await env.DB.prepare(`UPDATE pp_documents SET type=?, number=?, expiry_date=?, state=?, data_json=?, updated_by=?, updated_at=? WHERE id=?`)
+        .bind(type,number,expiry_date,state,JSON.stringify(rest),by,at,prev.id).run();
+      // Renewed (new expiry) or replaced: the old document's open reminders are finished.
+      if(prev.expiry_date!==expiry_date||state==='replaced')
+        await env.DB.prepare(`UPDATE pp_reminders SET status='done', done_at=?, done_by=? WHERE client_id=? AND doc_id=? AND status='open'`).bind(at,state==='replaced'?'auto: replaced':'auto: renewed',cid,prev.id).run();
+      await ppAudit(env,cid,profileId,'document_updated',`${type} ${ppMask(number)}`,by);
+    }else{
+      const n=await env.DB.prepare(`SELECT COUNT(*) n FROM pp_documents WHERE client_id=? AND profile_id=?`).bind(cid,profileId).first();
+      if(Number(n?.n)>=PP_MAX_DOCS) return json({error:`A profile can hold up to ${PP_MAX_DOCS} documents.`},400);
+      // A new passport replaces the older ones still marked current.
+      if(type==='passport'&&body.replace_old!==false)
+        await env.DB.prepare(`UPDATE pp_documents SET state='replaced', updated_at=? WHERE client_id=? AND profile_id=? AND type='passport' AND state<>'replaced' AND expiry_date<?`).bind(at,cid,profileId,expiry_date).run();
+      await env.DB.prepare(`INSERT INTO pp_documents (client_id, profile_id, type, number, expiry_date, state, data_json, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .bind(cid,profileId,type,number,expiry_date,state,JSON.stringify(rest),at,by,at).run();
+      await ppAudit(env,cid,profileId,'document_added',`${type} ${ppMask(number)}`,by);
+    }
+    await env.DB.prepare(`UPDATE pp_profiles SET updated_at=?, updated_by=? WHERE id=?`).bind(at,by,profileId).run();
+    return json({profile:await one(profileId)});
+  }
+
+  if(path==='/profiles/reveal'){
+    const d=await env.DB.prepare(`SELECT * FROM pp_documents WHERE id=? AND client_id=?`).bind(Number(url.searchParams.get('doc_id'))||0,cid).first();
+    if(!d) return json({error:'Document not found'},404);
+    await ppAudit(env,cid,d.profile_id,'number_viewed',`${d.type} ${ppMask(d.number)}`,by);
+    return json({number:d.number});
+  }
+
+  if(path==='/profiles/reminders'){
+    if(method==='PATCH'){
+      const status=String(body.status||'');
+      if(!['done','dismissed','open'].includes(status)) return json({error:'Unknown status'},400);
+      const r=await env.DB.prepare(`UPDATE pp_reminders SET status=?, done_at=?, done_by=? WHERE id=? AND client_id=?`)
+        .bind(status,status==='open'?null:new Date().toISOString(),status==='open'?null:by,Number(body.id)||0,cid).run();
+      if(!r.meta?.changes) return json({error:'Reminder not found'},404);
+      return json({ok:true});
+    }
+    await ppRaiseReminders(env,cid,today);
+    const {results}=await env.DB.prepare(`SELECT * FROM pp_reminders WHERE client_id=? AND (status='open' OR done_at>=?) ORDER BY due_date LIMIT 500`)
+      .bind(cid,new Date(Date.now()-7*864e5).toISOString()).all();
+    const all=new Map((await ppLoadAll(env,cid)).map(p=>[p.id,p]));
+    const business=c.business_name||c.client_name||'';
+    const reminders=(results||[]).map(r=>{
+      const p=all.get(r.profile_id);
+      if(!p) return null;
+      const doc=r.doc_id?p.docs.find(d=>d.id===r.doc_id):null;
+      const days=r.due_date?ppDaysBetween(today,r.due_date):0;
+      return {id:r.id, kind:r.kind, status:r.status, title:r.title, due_date:r.due_date, days, profile_id:p.id, name:ppFullName(p),
+        phone:p.whatsapp||p.phone||'', lead_id:p.lead_id||null, marketing_ok:p.marketing_ok!==false, done_by:r.done_by||'', done_at:r.done_at||'',
+        message:ppReminderMessage({kind:r.kind,days,due_date:r.due_date},p,doc,business)};
+    }).filter(Boolean);
+    return json({reminders});
+  }
+
+  if(path==='/profiles/check'&&method==='POST'){
+    const ids=(Array.isArray(body.profile_ids)?body.profile_ids:[]).map(Number).filter(Boolean).slice(0,50);
+    if(!ids.length) return json({error:'Pick at least one traveller.'},400);
+    const all=(await ppLoadAll(env,cid)).filter(p=>ids.includes(p.id));
+    return json({results:all.map(p=>({profile_id:p.id, name:ppFullName(p), issues:ppTravelCheck(p,p.docs,{departure:body.departure,ret:body.return,destination:body.destination},today)}))});
+  }
+
+  if(path==='/profiles/audit'){
+    const {results}=await env.DB.prepare(`SELECT action, detail, by, at FROM pp_audit WHERE client_id=? AND profile_id=? ORDER BY id DESC LIMIT 50`).bind(cid,Number(url.searchParams.get('id'))||0).all();
+    return json({audit:results||[]});
+  }
+
+  if(path!=='/profiles') return json({error:'Not found'},404);
+  if(method==='GET') return json({today, profiles:(await ppLoadAll(env,cid)).map(p=>ppView(p,today))});
+  if(method==='DELETE'){
+    const p=await own(body.id);
+    if(!p) return json({error:'Profile not found'},404);
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM pp_documents WHERE client_id=? AND profile_id=?`).bind(cid,p.id),
+      env.DB.prepare(`DELETE FROM pp_reminders WHERE client_id=? AND profile_id=?`).bind(cid,p.id),
+      env.DB.prepare(`DELETE FROM pp_profiles WHERE id=?`).bind(p.id),
+    ]);
+    await ppAudit(env,cid,p.id,'profile_deleted',p.name,by);
+    return json({ok:true});
+  }
+  const prev=method==='PATCH'?await own(body.id):null;
+  if(method==='PATCH'&&!prev) return json({error:'Profile not found'},404);
+  if(!['POST','PATCH'].includes(method)) return json({error:'Method not allowed'},405);
+  const {data,errors}=ppCleanProfile(body);
+  if(errors.length) return json({error:errors.join(' ')},400);
+  const name=ppFullName(data), phoneKey=ppPhoneKey(data.whatsapp||data.phone);
+  if(!prev&&!body.force){
+    const dup=phoneKey.length>=7?await env.DB.prepare(`SELECT id, name FROM pp_profiles WHERE client_id=? AND phone_key=? AND LOWER(name)=LOWER(?) LIMIT 1`).bind(cid,phoneKey,name).first():
+      data.date_of_birth?await env.DB.prepare(`SELECT id, name FROM pp_profiles WHERE client_id=? AND date_of_birth=? AND LOWER(name)=LOWER(?) LIMIT 1`).bind(cid,data.date_of_birth,name).first():null;
+    if(dup) return json({error:`${dup.name} already has a profile.`, duplicate_id:dup.id},409);
+  }
+  const at=new Date().toISOString();
+  const cols=[name,phoneKey,data.lead_id,data.date_of_birth,data.anniversary,data.family_group,JSON.stringify(data)];
+  let id;
+  if(prev){
+    await env.DB.prepare(`UPDATE pp_profiles SET name=?, phone_key=?, lead_id=?, date_of_birth=?, anniversary=?, family_group=?, data_json=?, updated_by=?, updated_at=? WHERE id=?`).bind(...cols,by,at,prev.id).run();
+    // Birthday / anniversary moved: drop its open reminders, the next read raises the right ones.
+    if(prev.date_of_birth!==data.date_of_birth||prev.anniversary!==data.anniversary)
+      await env.DB.prepare(`DELETE FROM pp_reminders WHERE client_id=? AND profile_id=? AND kind IN ('birthday','anniversary') AND status='open'`).bind(cid,prev.id).run();
+    id=prev.id; await ppAudit(env,cid,id,'profile_updated','',by);
+  }else{
+    const r=await env.DB.prepare(`INSERT INTO pp_profiles (client_id, name, phone_key, lead_id, date_of_birth, anniversary, family_group, data_json, created_by, created_at, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(cid,...cols,by,at,by,at).run();
+    id=Number(r.meta?.last_row_id); await ppAudit(env,cid,id,'profile_created',name,by);
+  }
+  return json({profile:await one(id)});
+}
+
+// Daily: raise every account's profile reminders and email the owner the new ones.
+async function runProfileRemindersForAllClients(env,now=new Date()){
+  if(!env.DB) return;
+  await ppEnsureSchema(env);
+  const today=ppToday(now);
+  const {results}=await env.DB.prepare(`SELECT DISTINCT client_id FROM pp_profiles`).all().catch(()=>({results:[]}));
+  for(const {client_id} of results||[]){
+    try{
+      const c=await getClientById(env,client_id).catch(()=>null);
+      if(!ppIsOn(c)) continue;
+      const fresh=await ppRaiseReminders(env,Number(client_id),today);
+      const to=String(c.authentik_email||'').trim();
+      if(fresh.length&&to) await coldReallocEmail(env,to,fresh.length===1?`🔔 ${fresh[0].title}`:`🔔 ${fresh.length} profile reminders today`,ppDigestHtml(fresh,c.business_name||c.client_name||''));
+    }catch(e){ await reportOpsError(env,'Profiles — daily reminders failed',e,{clientId:client_id}).catch(()=>{}); }
+  }
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -45406,6 +45642,7 @@ export default {
       else if(url.pathname==='/team/invite' && request.method==='POST'){ res=await handleTeamInvite(request, env); }
       else if(url.pathname==='/team/check-user' && request.method==='POST'){ res=await handleTeamCheckUser(request, env); }
       else if(url.pathname==='/team/add-existing' && request.method==='POST'){ res=await handleTeamAddExisting(request, env); }
+      else if(url.pathname==='/profiles'||url.pathname.startsWith('/profiles/')){ res=await handleProfiles(request, env); }
       else if(url.pathname==='/settings/contacts' && request.method==='GET'){ res=await handleBusinessContactsGet(request, env); }
       else if(url.pathname==='/settings/contacts' && request.method==='POST'){ res=await handleBusinessContactsSave(request, env); }
       else if(url.pathname==='/settings/contacts/logo' && request.method==='POST'){ res=await handleBusinessContactsLogo(request, env); }
@@ -46181,6 +46418,8 @@ export default {
       ctx.waitUntil(runTravelStaleFollowupsForAllClients(env).catch(e=>reportOpsError(env, 'travel stale follow-ups', e)));
       // 📲 Travel CRM tools — enquiries whose travel date has passed read Completed (travel-crm.js).
       ctx.waitUntil(runTravelCrmTripStatusForAllClients(env).catch(e=>reportOpsError(env, 'travel crm trip status', e)));
+      // 👤 Profiles — passport / visa expiry, birthday and anniversary reminders (passenger-profiles.js).
+      ctx.waitUntil(runProfileRemindersForAllClients(env).catch(e=>reportOpsError(env, 'profile reminders', e)));
     }
     else if(event.cron==='*/15 * * * *'){
       // Chats v2 "Schedule message" — sends whatever is due (15-minute granularity).
