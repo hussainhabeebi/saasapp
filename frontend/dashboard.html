@@ -399,7 +399,7 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 #pageChats:not(.hidden){display:flex}
 #pageChats{padding-bottom:0!important}
 #chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#efeae2}
-#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageProposals,#pageMeetingscalendar,#pageBroadcast{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices,#pageProductsservices,#pageProposals,#pageProfiles,#pageMeetingscalendar,#pageBroadcast{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageBizai:not(.hidden){display:flex;flex-direction:column}
@@ -1619,6 +1619,7 @@ const MODULE_PERMISSIONS = [
   {key:'businessservices', label:'🏢 Business Services'},
   {key:'productsservices', label:'📦 Products & Services'},
   {key:'proposals', label:'📑 Proposals'},
+  {key:'profiles', label:'👤 Profiles (travel / hospitality)'},
   {key:'meetingscalendar', label:'📅 Meetings calendar'},
   {key:'saasops', label:'🚀 SaaS Ops'},
   {key:'b2b', label:'🤝 B2B'},
@@ -1775,6 +1776,7 @@ const ROLES = {
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" id="dnProductsTab" style="display:none" data-page="productsservices">📦 Products &amp; Services</button>
     <button class="dnTab" id="dnProposalsTab" style="display:none" data-page="proposals">📑 Proposals</button>
+    <button class="dnTab" id="dnProfilesTab" style="display:none" data-page="profiles">👤 Profiles</button>
     <button class="dnTab" id="dnMeetingsCalTab" style="display:none" data-page="meetingscalendar">📅 Meetings</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="followups" id="dnFollowupsTab">🔁 Follow-ups</button>
@@ -2468,6 +2470,14 @@ const ROLES = {
          rejected, plus expired and revised). Session token like Products & Services. -->
     <div class="page hidden" id="pageProposals">
       <iframe id="proposalsFrame" title="Proposals" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- 👤 PROFILES (travel agency + hospitality accounts only — profilesModuleOn) — profiles.html:
+         one profile per traveller / guest with passport, visa and other documents, expiry status,
+         passport / visa / birthday / anniversary reminders and a 6-month passport trip check.
+         Session token like Proposals: the /profiles* Worker routes are session-gated. -->
+    <div class="page hidden" id="pageProfiles">
+      <iframe id="profilesFrame" title="Profiles" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- 📅 MEETINGS CALENDAR (General accounts) — meetings-calendar.html: month view + day timeline of
@@ -4905,6 +4915,7 @@ const ROLES = {
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" id="mbProductsTab" style="display:none" data-page="productsservices"><span class="bnIcon">📦</span><span class="bnLabel">Products &amp; Services</span></button>
       <button class="more-item" id="mbProposalsTab" style="display:none" data-page="proposals"><span class="bnIcon">📑</span><span class="bnLabel">Proposals</span></button>
+      <button class="more-item tv-hide" id="mbProfilesTab" style="display:none" data-page="profiles"><span class="bnIcon">👤</span><span class="bnLabel">Profiles</span></button>
       <button class="more-item" id="mbMeetingsCalTab" style="display:none" data-page="meetingscalendar"><span class="bnIcon">📅</span><span class="bnLabel">Meetings</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
     </div>
@@ -6348,7 +6359,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','us
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','followups','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','billing','peoplecontacts'];
+const MORE_GROUP=['broadcast','followups','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','billing','peoplecontacts','profiles'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.ssnav-btn').forEach(b=>{
@@ -6425,6 +6436,7 @@ function navigate(page){
   if(page==='businessservices') renderBusinessServices();
   if(page==='productsservices') renderProductsServices();
   if(page==='proposals') renderProposals();
+  if(page==='profiles') renderProfiles();
   if(page==='meetingscalendar') renderMeetingsCalendar();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
@@ -7767,6 +7779,24 @@ function renderProductsServices(){
 function renderProposals(){
   const frame=$id('proposalsFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`proposals.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+// 👤 Profiles — same session-token embed as Proposals; ?kind=guest words it for hospitality.
+function renderProfiles(){
+  const frame=$id('profilesFrame');
+  const guest=String(clientRecord?.industry||'').toLowerCase()==='hospitality'||(clientRecord?.hospitality_enabled==='Yes'&&String(clientRecord?.industry||'').toLowerCase()!=='travel'&&clientRecord?.ta_enabled!=='Yes');
+  if(frame && !frame.getAttribute('src')) frame.src=`profiles.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1${guest?'&kind=guest':''}`;
+}
+// Travel agency and hospitality accounts only — same rule as the worker's ppIsOn (passenger-profiles.js).
+function profilesModuleOn(){
+  const c=clientRecord; if(!c) return false;
+  const ind=String(c.industry||'').trim().toLowerCase();
+  return ind==='travel'||ind==='hospitality'||c.ta_enabled==='Yes'||c.hospitality_enabled==='Yes';
+}
+function profilesVisible(){
+  if(!profilesModuleOn()) return false;
+  if(!myEmail||isAccountOwner()) return true;
+  const mine=getTeamPermissions()[myEmail];
+  return !mine||!Array.isArray(mine.modules)||mine.modules.includes('profiles');
 }
 // 📅 Meetings calendar — same session-token embed as Products & Services.
 function renderMeetingsCalendar(){
@@ -20404,6 +20434,7 @@ function applyTheme(industryKey){
     el.style.display=(industryKey===target)?'':'none';
   });
   ['dnProductsTab','mbProductsTab','dnProposalsTab','mbProposalsTab','dnMeetingsCalTab','mbMeetingsCalTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=isGeneralIndustry(industryKey)?'':'none';});
+  ['dnProfilesTab','mbProfilesTab'].forEach(id=>{const el=$id(id); if(el) el.style.display=profilesVisible()?'':'none';});
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=(industryKey==='travel'||clientRecord?.ta_enabled==='Yes')?'block':'none';
   // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list
@@ -25502,7 +25533,7 @@ async function deleteHospBooking(id){
 <script src="health-report-ui.js?v=1"></script>
 <script src="followup-pro-ui.js?v=1"></script>
 <script src="travel-status.js?v=11"></script>
-<script src="travel-view.js?v=10"></script>
+<script src="travel-view.js?v=11"></script>
 <script src="travel-crm.js?v=4"></script>
 <!-- Hospitality Front Desk menu + new Home on desktop (hospitality-view.js) -->
 <script src="hospitality-view.js?v=1"></script>

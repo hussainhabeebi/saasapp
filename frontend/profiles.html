@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leadvyne · Profiles</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- 👤 Profiles (Dashboard → 👤 Profiles) — travel agency and hospitality accounts only.
+     One profile per traveller / guest, kept across bookings: personal details, preferences and
+     documents (passport, visa, residence permit…) with expiry status; reminders before documents
+     expire and before birthdays / anniversaries (sent by the agent in one tap, never automatically);
+     and a trip check for the 6-month passport rule. Document numbers are masked; 👁 Show asks the
+     worker for the full number, which is written to the audit log.
+     Worker routes: /profiles, /profiles/documents, /profiles/reveal, /profiles/reminders,
+     /profiles/check, /profiles/audit (session-gated). ?kind=guest words it for hospitality. -->
+<style>
+:root{
+  --bg:#EEF2F0;--card:#FFFFFF;--ink:#0F1A1E;--muted:#55666B;
+  --accent:#0D9C93;--accent-ink:#0A6F69;--accent-soft:#DFF6F3;
+  --line:#D7E0DC;--danger:#B42318;--danger-soft:#FEE4E2;--warn:#92400E;--warn-soft:#FEF3C7;--ok:#166534;--ok-soft:#DCFCE7;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14.5px;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;min-height:56px;display:flex;align-items:center;gap:10px}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700}.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+body.embed header{display:none}
+main{padding:20px 16px 40px}
+.inner{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.intro{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.intro h1{font-family:var(--disp);font-size:21px;flex:1;min-width:0}
+.intro p{color:var(--muted);font-size:13px;width:100%;line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0;cursor:pointer;text-align:left}
+.stat:hover{border-color:var(--accent)}
+.stat b{display:block;font-family:var(--disp);font-size:20px;color:var(--accent-ink)}
+.stat.warn b{color:var(--warn)}.stat.bad b{color:var(--danger)}
+.stat span{font-size:12px;color:var(--muted)}
+.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{flex:0 0 auto;height:34px;padding:0 14px;border-radius:17px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;font-size:13px;font-weight:500;white-space:nowrap}
+.tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.tabs button small{opacity:.75;margin-left:4px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap}
+.toolbar input,.toolbar select{height:38px;border:1.5px solid var(--line);border-radius:10px;padding:0 12px;background:var(--card);min-width:0}
+.toolbar input{flex:1 1 220px}
+.btn{height:36px;border-radius:10px;border:0;padding:0 14px;font-family:var(--disp);font-weight:600;cursor:pointer;background:var(--accent);color:#fff;white-space:nowrap;font-size:13.5px;display:inline-flex;align-items:center;justify-content:center;gap:4px;text-decoration:none}
+.btn:hover{background:var(--accent-ink)}.btn.sec{background:var(--card);color:var(--accent-ink);border:1.5px solid var(--line)}
+.btn.sec:hover{border-color:var(--accent)}.btn:disabled{opacity:.55;cursor:default}
+.btn.sm{height:30px;padding:0 10px;font-size:12.5px}
+.btn.danger{background:var(--card);color:var(--danger);border:1.5px solid var(--danger-soft)}
+.list{display:flex;flex-direction:column;gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:13px 15px;display:flex;gap:12px;align-items:flex-start}
+.card.click{cursor:pointer}.card.click:hover{border-color:var(--accent)}
+.av{width:38px;height:38px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-family:var(--disp);flex:none}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.main h3{font-family:var(--disp);font-size:15.5px;line-height:1.3}
+.sub{font-size:12.5px;color:var(--muted)}
+.tags{display:flex;gap:6px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:12px;background:var(--bg);color:var(--muted);white-space:nowrap}
+.st-valid{background:var(--ok-soft);color:var(--ok)}.st-expiring,.st-renewal{background:var(--warn-soft);color:var(--warn)}
+.st-expired{background:var(--danger-soft);color:var(--danger)}.st-replaced,.st-no_expiry{background:#F1F5F9;color:#475569}
+.acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.empty{background:var(--card);border:1.5px dashed var(--line);border-radius:14px;padding:36px 20px;text-align:center;color:var(--muted);line-height:1.5}
+.empty b{display:block;font-family:var(--disp);font-size:17px;color:var(--ink);margin-bottom:6px}
+/* Sheets */
+.ov{position:fixed;inset:0;background:rgba(10,20,20,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
+.ov.hidden{display:none}
+.sheet{background:var(--card);border-radius:16px;width:100%;max-width:760px;box-shadow:0 20px 50px rgba(0,0,0,.25);padding:18px;display:flex;flex-direction:column;gap:12px;max-height:calc(100dvh - 32px);overflow-y:auto}
+.sheet.narrow{max-width:520px}
+.sheet h2{font-family:var(--disp);font-size:18px;display:flex;align-items:center;gap:8px}
+.sheet h2 .x{margin-left:auto;background:none;border:0;font-size:22px;cursor:pointer;color:var(--muted);line-height:1}
+.sheet h4{font-family:var(--disp);font-size:14px;margin-top:4px;display:flex;align-items:center;gap:8px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.grid .w2{grid-column:span 2}.grid .w3{grid-column:1/-1}
+.f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.f label{font-size:12px;font-weight:600;color:var(--muted)}
+.f input,.f select,.f textarea{height:38px;border:1.5px solid var(--line);border-radius:10px;padding:0 10px;background:var(--bg);min-width:0;width:100%}
+.f textarea{height:auto;padding:8px 10px;resize:vertical}
+.f input:focus,.f select:focus,.f textarea:focus{outline:none;border-color:var(--accent);background:#fff}
+.check{display:flex;gap:8px;align-items:center;font-size:13px}
+.check input{width:17px;height:17px;accent-color:var(--accent)}
+.doc{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.doc .main{gap:2px}
+.doc .num{font-family:ui-monospace,Menlo,monospace;font-size:13px;letter-spacing:.04em}
+.docform{border:1.5px solid var(--accent);border-radius:12px;padding:12px;background:#F7FCFB;display:flex;flex-direction:column;gap:10px}
+.row{display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+.msg{flex:1;color:var(--danger);font-size:12.5px;min-width:140px}
+.audit{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:3px;max-height:180px;overflow:auto}
+.issue{border-radius:10px;padding:8px 10px;font-size:13px}
+.issue.error{background:var(--danger-soft);color:var(--danger)}.issue.warn{background:var(--warn-soft);color:var(--warn)}.issue.ok{background:var(--ok-soft);color:var(--ok)}
+.picker{border:1px solid var(--line);border-radius:10px;max-height:220px;overflow:auto;padding:4px}
+.picker label{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:8px;cursor:pointer;font-size:13.5px}
+.picker label:hover{background:var(--bg)}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0F1A1E;color:#fff;padding:10px 16px;border-radius:10px;font-size:13.5px;z-index:60;max-width:calc(100% - 32px)}
+.hidden{display:none!important}
+@media(max-width:700px){
+  main{padding:14px 12px 32px}
+  .grid{grid-template-columns:1fr 1fr}.grid .w2{grid-column:1/-1}
+  .card{flex-wrap:wrap}.card .acts{width:100%}
+  .ov{align-items:flex-end;padding:0}
+  .sheet{max-width:none!important;border-radius:18px 18px 0 0;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+}
+@media(max-width:420px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="brand">Lead<span>vyne</span></div><span class="chip">👤 Profiles</span></header>
+<main><div class="inner">
+  <div class="intro">
+    <h1 id="h1">👤 Profiles</h1>
+    <button class="btn sec" onclick="openCheck()">✈️ Trip check</button>
+    <button class="btn" onclick="openProfile(null)" id="newBtn">＋ New profile</button>
+    <p id="introP"></p>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="tabs" id="tabs" role="tablist"></div>
+  <div class="toolbar" id="toolbar"></div>
+  <div class="list" id="list"><div class="empty">Loading…</div></div>
+</div></main>
+
+<!-- Profile sheet -->
+<div class="ov hidden" id="pOv" onclick="if(event.target===this)closeProfile()">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="pTitle">
+    <h2 id="pTitle">New profile <button class="x" onclick="closeProfile()" aria-label="Close">×</button></h2>
+    <div id="pDocs" class="hidden">
+      <h4>🛂 Documents <button class="btn sm sec" onclick="openDoc(null)" style="margin-left:auto">＋ Add document</button></h4>
+      <div id="docForm" class="docform hidden"></div>
+      <div class="list" id="docList"></div>
+      <h4><button class="btn sm sec" onclick="toggleAudit()">🕑 Activity log</button></h4>
+      <div class="audit hidden" id="auditBox"></div>
+    </div>
+    <h4>📝 Details</h4>
+    <div class="grid">
+      <div class="f"><label for="p_title">Title</label><select id="p_title"><option></option><option>Mr</option><option>Mrs</option><option>Ms</option><option>Miss</option><option>Mstr</option><option>Dr</option></select></div>
+      <div class="f"><label for="p_first_name">First name *</label><input id="p_first_name" maxlength="60" autocomplete="off"></div>
+      <div class="f"><label for="p_last_name">Last name</label><input id="p_last_name" maxlength="60" autocomplete="off"></div>
+      <div class="f"><label for="p_gender">Gender</label><select id="p_gender"><option value=""></option><option value="male">Male</option><option value="female">Female</option><option value="other">Other</option></select></div>
+      <div class="f"><label for="p_date_of_birth">Date of birth</label><input id="p_date_of_birth" type="date"></div>
+      <div class="f"><label for="p_anniversary">Anniversary</label><input id="p_anniversary" type="date"></div>
+      <div class="f"><label for="p_nationality">Nationality</label><input id="p_nationality" maxlength="60"></div>
+      <div class="f"><label for="p_phone">Phone</label><input id="p_phone" type="tel" maxlength="40" placeholder="+91 98470 12345"></div>
+      <div class="f"><label for="p_whatsapp">WhatsApp (if different)</label><input id="p_whatsapp" type="tel" maxlength="40"></div>
+      <div class="f"><label for="p_email">Email</label><input id="p_email" type="email" maxlength="120"></div>
+      <div class="f"><label for="p_family_group">Family / group</label><input id="p_family_group" maxlength="80" list="groupList" placeholder="e.g. Mathew family"></div>
+      <div class="f"><label for="p_relation">Relation</label><select id="p_relation"><option value=""></option><option value="self">Head / self</option><option value="spouse">Spouse</option><option value="child">Child</option><option value="parent">Parent</option><option value="sibling">Sibling</option><option value="relative">Relative</option><option value="friend">Friend</option><option value="colleague">Colleague</option><option value="other">Other</option></select></div>
+      <div class="f w3"><label for="p_address">Address</label><input id="p_address" maxlength="300"></div>
+      <div class="f"><label for="p_meal" id="l_meal">Meal preference</label><input id="p_meal" maxlength="80" placeholder="Veg, Halal, Jain…"></div>
+      <div class="f"><label for="p_seat" id="l_seat">Seat preference</label><input id="p_seat" maxlength="40" placeholder="Window / Aisle"></div>
+      <div class="f"><label for="p_room">Room preference</label><input id="p_room" maxlength="120" placeholder="Twin beds, high floor…"></div>
+      <div class="f w2"><label for="p_frequent_flyer">Frequent flyer / loyalty numbers</label><input id="p_frequent_flyer" maxlength="200" placeholder="EK 123456789, AI 99887766"></div>
+      <div class="f"><label for="p_emergency_contact">Emergency contact</label><input id="p_emergency_contact" maxlength="160"></div>
+      <div class="f w3"><label for="p_notes">Notes</label><textarea id="p_notes" rows="2" maxlength="2000" placeholder="Allergies, special needs, preferences…"></textarea></div>
+      <label class="check w3"><input type="checkbox" id="p_marketing_ok" checked>Customer agrees to birthday / anniversary greetings</label>
+    </div>
+    <div class="row"><span class="msg" id="pMsg"></span>
+      <button class="btn danger hidden" id="pDel" onclick="deleteProfile()">Delete</button>
+      <button class="btn sec" onclick="closeProfile()">Close</button><button class="btn" id="pSave" onclick="saveProfile()">Save profile</button></div>
+
+  </div>
+</div>
+<datalist id="groupList"></datalist>
+
+<!-- Trip check sheet -->
+<div class="ov hidden" id="cOv" onclick="if(event.target===this)closeCheck()">
+  <div class="sheet narrow" role="dialog" aria-modal="true" aria-labelledby="cTitle">
+    <h2 id="cTitle">✈️ Trip check <button class="x" onclick="closeCheck()" aria-label="Close">×</button></h2>
+    <div class="sub">Checks each traveller's passport lasts 6 months after the return date, and whether a visa for the destination is on file.</div>
+    <div class="grid">
+      <div class="f"><label for="c_dep">Departure *</label><input id="c_dep" type="date"></div>
+      <div class="f"><label for="c_ret">Return</label><input id="c_ret" type="date"></div>
+      <div class="f"><label for="c_dest">Destination (visa)</label><input id="c_dest" maxlength="60" placeholder="UAE, Schengen…"></div>
+    </div>
+    <div class="f"><label for="c_q">Travellers</label><input id="c_q" type="search" placeholder="Search name or family group" oninput="drawPicker()"></div>
+    <div class="picker" id="c_pick"></div>
+    <div class="row"><span class="msg" id="cMsg"></span><button class="btn" id="cRun" onclick="runCheck()">Check</button></div>
+    <div class="list" id="c_res"></div>
+  </div>
+</div>
+<div class="toast hidden" id="toast"></div>
+
+<script>
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params=new URLSearchParams(location.search);
+let sessionToken=params.get('token')||'';
+try{ if(!sessionToken) sessionToken=localStorage.getItem('lv_session')||''; }catch(e){}
+const embedded=params.get('embed')==='1';
+if(embedded) document.body.classList.add('embed');
+const GUEST=params.get('kind')==='guest';
+const WHO=GUEST?'guest':'traveller', WHOS=GUEST?'guests':'travellers';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(t){const el=$('toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(toast._t);toast._t=setTimeout(()=>el.classList.add('hidden'),2800)}
+const DOC_TYPES={passport:'🛂 Passport',visa:'🎫 Visa',residence:'🪪 Residence permit / Iqama / Emirates ID',national_id:'🆔 National ID',driving_licence:'🚗 Driving licence',insurance:'🛡️ Travel insurance',vaccination:'💉 Vaccination certificate',other:'📄 Other'};
+const STATUS={valid:'Valid',expiring:'Expiring',expired:'Expired',renewal:'Renewal in progress',replaced:'Replaced',no_expiry:'No expiry'};
+const TABS=[['profiles','👥 Profiles'],['reminders','🔔 Reminders'],['expiring','⏳ Expiring documents'],['occasions','🎂 Birthdays & anniversaries']];
+const PROFILE_FIELDS=['title','first_name','last_name','gender','date_of_birth','anniversary','nationality','phone','whatsapp','email','family_group','relation','address','meal','seat','room','frequent_flyer','emergency_contact','notes'];
+let profiles=[],reminders=[],today=new Date().toISOString().slice(0,10),tab='profiles',editing=null,editingDoc=null,remView='open',expWin='180',q='',group='';
+try{tab=localStorage.getItem('lv_profiles_tab')||'profiles'}catch(e){}
+if(!TABS.some(([k])=>k===tab)) tab='profiles';
+
+$('h1').textContent=GUEST?'👤 Guest profiles':'👤 Traveller profiles';
+$('newBtn').textContent=`＋ New ${WHO}`;
+$('introP').innerHTML=`One profile per ${WHO}, kept across bookings — passports, visas and other documents with their expiry dates, plus reminders before documents expire and before birthdays. Reminders are listed here and emailed to the account owner each morning; send each one to the customer in one tap.`;
+if(GUEST){ $('l_seat').textContent='Bed / seat preference'; }
+
+async function api(path,opts={}){
+  const r=await fetch(WORKER_BASE+path,{...opts,headers:{'Authorization':'Bearer '+sessionToken,...(opts.body?{'Content-Type':'application/json'}:{})}});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok||d.error){const e=new Error(d.error||'HTTP '+r.status);e.status=r.status;e.data=d;throw e}
+  return d;
+}
+async function load(manual){
+  try{
+    const [p,r]=await Promise.all([api('/profiles'),api('/profiles/reminders')]);
+    profiles=p.profiles||[];today=p.today||today;reminders=r.reminders||[];
+    draw();if(manual)toast('Up to date');
+  }catch(e){$('list').innerHTML=`<div class="empty"><b>Could not load profiles</b>${esc(e.message)}</div>`}
+}
+const fmt=d=>d?new Date(d+'T00:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}):'';
+const fmtMd=d=>d?new Date('2000-'+(d.length>5?d.slice(5):d)+'T00:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short'}):'';
+const inDays=n=>n==null?'':n===0?'today':n===1?'tomorrow':n<0?`${-n}d ago`:`in ${n}d`;
+const initials=n=>String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase()||'?';
+const docName=d=>d.type==='visa'&&(d.visa_country||d.label)?`🎫 ${d.visa_country||d.label} visa`:(d.label?`${(DOC_TYPES[d.type]||'').split(' ')[0]} ${d.label}`:DOC_TYPES[d.type]||'📄 Document');
+const live=d=>d.status!=='replaced';
+const attention=d=>live(d)&&['expiring','expired','renewal'].includes(d.status);
+function allDocs(){return profiles.flatMap(p=>p.docs.map(d=>({...d,p})))}
+function occasions(within=30){
+  const out=[];
+  for(const p of profiles){
+    if(p.next_birthday&&p.next_birthday.days<=within) out.push({p,kind:'birthday',...p.next_birthday});
+    if(p.next_anniversary&&p.next_anniversary.days<=within) out.push({p,kind:'anniversary',...p.next_anniversary});
+  }
+  return out.sort((a,b)=>a.days-b.days);
+}
+
+function draw(){
+  const docs=allDocs().filter(live);
+  const expiring=docs.filter(d=>d.status==='expiring'||d.status==='renewal').length,expired=docs.filter(d=>d.status==='expired').length;
+  const open=reminders.filter(r=>r.status==='open').length;
+  $('stats').innerHTML=[[profiles.length,GUEST?'Guest profiles':'Traveller profiles','profiles',''],[open,'Open reminders','reminders',open?'warn':''],
+    [expiring,'Documents expiring','expiring',expiring?'warn':''],[expired,'Documents expired','expiring',expired?'bad':''],[occasions(30).length,'Birthdays & anniversaries (30 days)','occasions','']]
+    .map(([n,l,t,c])=>`<button class="stat ${c}" onclick="setTab('${t}')"><b>${n}</b><span>${esc(l)}</span></button>`).join('');
+  const count={profiles:profiles.length,reminders:open,expiring:expiring+expired,occasions:occasions(30).length};
+  $('tabs').innerHTML=TABS.map(([k,l])=>`<button role="tab" aria-selected="${k===tab}" class="${k===tab?'on':''}" onclick="setTab('${k}')">${l}<small>${count[k]}</small></button>`).join('');
+  drawToolbar();
+  ({profiles:drawProfiles,reminders:drawReminders,expiring:drawExpiring,occasions:drawOccasions})[tab]();
+  $('groupList').innerHTML=[...new Set(profiles.map(p=>p.family_group).filter(Boolean))].map(g=>`<option value="${esc(g)}">`).join('');
+}
+function setTab(k){tab=k;try{localStorage.setItem('lv_profiles_tab',k)}catch(e){}draw()}
+function drawToolbar(){
+  const groups=[...new Set(profiles.map(p=>p.family_group).filter(Boolean))].sort();
+  const tb=$('toolbar');
+  if(tab==='profiles') tb.innerHTML=`<input id="q" type="search" placeholder="Search name, phone, email, nationality or group" value="${esc(q)}" oninput="q=this.value;drawProfiles()">
+    ${groups.length?`<select onchange="group=this.value;drawProfiles()" aria-label="Family / group"><option value="">All families & groups</option>${groups.map(g=>`<option ${g===group?'selected':''}>${esc(g)}</option>`).join('')}</select>`:''}`;
+  else if(tab==='reminders') tb.innerHTML=`<select onchange="remView=this.value;drawReminders()" aria-label="Show"><option value="open" ${remView==='open'?'selected':''}>Open</option><option value="done" ${remView==='done'?'selected':''}>Done in the last 7 days</option></select>`;
+  else if(tab==='expiring') tb.innerHTML=`<select onchange="expWin=this.value;drawExpiring()" aria-label="Window"><option value="30" ${expWin==='30'?'selected':''}>Next 30 days</option><option value="90" ${expWin==='90'?'selected':''}>Next 90 days</option><option value="180" ${expWin==='180'?'selected':''}>Next 6 months</option><option value="365" ${expWin==='365'?'selected':''}>Next 12 months</option></select>`;
+  else tb.innerHTML='';
+}
+function docPill(d){return `<span class="pill st-${esc(d.status)}" title="${esc(STATUS[d.status]||'')}${d.expiry_date?' · expires '+esc(fmt(d.expiry_date)):''}">${esc(docName(d))}${d.expiry_date&&d.status!=='valid'?' · '+esc(d.status==='expired'?'expired':inDays(d.days_left)):''}</span>`}
+function drawProfiles(){
+  const s=q.trim().toLowerCase();
+  let list=profiles.filter(p=>(!group||p.family_group===group)&&(!s||`${p.name} ${p.phone} ${p.whatsapp} ${p.email} ${p.nationality} ${p.family_group}`.toLowerCase().includes(s)));
+  if(!profiles.length){$('list').innerHTML=`<div class="empty"><b>No ${WHO} profiles yet</b>Add a ${WHO} once — passport, visa and preferences are then ready for every booking.<br><br><button class="btn" onclick="openProfile(null)">＋ New ${WHO}</button></div>`;return}
+  if(!list.length){$('list').innerHTML='<div class="empty">No profiles match.</div>';return}
+  $('list').innerHTML=list.map(p=>{
+    const meta=[p.age!=null?`${p.age} yrs`:'',p.nationality,p.whatsapp||p.phone,p.email].filter(Boolean).map(esc).join(' · ');
+    const bd=p.next_birthday&&p.next_birthday.days<=30?`<span class="pill st-renewal">🎂 ${inDays(p.next_birthday.days)}</span>`:'';
+    return `<div class="card click" onclick="openProfile(${p.id})"><div class="av">${esc(initials(p.name))}</div><div class="main">
+      <h3>${esc(p.name)}</h3><div class="sub">${meta||'&nbsp;'}</div>
+      <div class="tags">${p.family_group?`<span class="pill">👪 ${esc(p.family_group)}${p.relation?' · '+esc(p.relation):''}</span>`:''}${bd}${p.docs.filter(live).map(docPill).join('')||'<span class="pill">No documents yet</span>'}</div></div></div>`}).join('');
+}
+function waLink(phone,text){const d=String(phone||'').replace(/\D/g,'').replace(/^00/,'');return d.length>=8?`https://wa.me/${d}?text=${encodeURIComponent(text)}`:''}
+function drawReminders(){
+  const list=reminders.filter(r=>remView==='open'?r.status==='open':r.status!=='open');
+  if(!list.length){$('list').innerHTML=`<div class="empty"><b>${remView==='open'?'All caught up':'Nothing done yet'}</b>${remView==='open'?'Reminders appear here before passports, visas and other documents expire, and before birthdays and anniversaries.':''}</div>`;return}
+  const icon={passport:'🛂',document:'📄',birthday:'🎂',anniversary:'💍'};
+  $('list').innerHTML=list.map(r=>{
+    const occasion=r.kind==='birthday'||r.kind==='anniversary';
+    const wa=waLink(r.phone,r.message);
+    const noConsent=occasion&&!r.marketing_ok;
+    return `<div class="card"><div class="av">${icon[r.kind]||'🔔'}</div><div class="main">
+      <h3>${esc(r.title)}</h3>
+      <div class="sub">${esc(r.phone||'No phone on profile')}${r.status!=='open'?` · ${r.status==='done'?'✓ done':'dismissed'}${r.done_by?' by '+esc(String(r.done_by).split('@')[0]):''}`:''}${noConsent?' · ⚠ no consent for greetings':''}</div>
+      <div class="sub" style="font-style:italic">“${esc(r.message)}”</div></div>
+      <div class="acts">${r.status==='open'?`
+        ${wa&&!noConsent?`<a class="btn sm" href="${esc(wa)}" target="_blank" rel="noopener" onclick="setTimeout(()=>markRem(${r.id},'done',true),400)">💬 WhatsApp</a>`:''}
+        ${r.lead_id?`<button class="btn sm sec" onclick="openChat(${r.lead_id})">Open chat</button>`:''}
+        <button class="btn sm sec" onclick="copyMsg(${r.id})">Copy</button>
+        <button class="btn sm sec" onclick="markRem(${r.id},'done')">✓ Done</button>
+        <button class="btn sm sec" onclick="markRem(${r.id},'dismissed')">Dismiss</button>`:`<button class="btn sm sec" onclick="markRem(${r.id},'open')">Reopen</button>`}
+        <button class="btn sm sec" onclick="openProfile(${r.profile_id})">Profile</button></div></div>`}).join('');
+}
+async function copyMsg(id){const r=reminders.find(x=>x.id===id);if(!r)return;try{await navigator.clipboard.writeText(r.message);toast('✓ Message copied')}catch(e){prompt('Copy the message',r.message)}}
+async function markRem(id,status,quiet){
+  try{await api('/profiles/reminders',{method:'PATCH',body:JSON.stringify({id,status})});const r=reminders.find(x=>x.id===id);if(r){r.status=status;r.done_at=status==='open'?'':new Date().toISOString()}draw();if(!quiet)toast(status==='open'?'Reopened':status==='done'?'✓ Marked done':'Dismissed')}
+  catch(e){toast(e.message)}
+}
+function drawExpiring(){
+  const win=Number(expWin);
+  const list=allDocs().filter(d=>live(d)&&d.expiry_date&&d.days_left<=win).sort((a,b)=>a.days_left-b.days_left);
+  if(!list.length){$('list').innerHTML=`<div class="empty"><b>Nothing expiring</b>No passports, visas or other documents expire in this window.</div>`;return}
+  $('list').innerHTML=list.map(d=>`<div class="card click" onclick="openProfile(${d.p.id})"><div class="av">${esc(initials(d.p.name))}</div><div class="main">
+    <h3>${esc(d.p.name)} — ${esc(docName(d))}</h3>
+    <div class="sub">${d.number_masked?`<span class="num">${esc(d.number_masked)}</span> · `:''}expires ${esc(fmt(d.expiry_date))} (${esc(d.days_left<0?`${-d.days_left} days ago`:inDays(d.days_left))})${d.p.whatsapp||d.p.phone?' · '+esc(d.p.whatsapp||d.p.phone):''}</div>
+    <div class="tags"><span class="pill st-${esc(d.status)}">${esc(STATUS[d.status])}</span></div></div></div>`).join('');
+}
+function drawOccasions(){
+  const list=occasions(60);
+  if(!list.length){$('list').innerHTML=`<div class="empty"><b>No birthdays or anniversaries in the next 60 days</b>Add dates of birth and anniversaries to profiles to see them here.</div>`;return}
+  $('list').innerHTML=list.map(o=>`<div class="card click" onclick="openProfile(${o.p.id})"><div class="av">${o.kind==='birthday'?'🎂':'💍'}</div><div class="main">
+    <h3>${esc(o.p.name)} — ${o.kind}${o.kind==='birthday'&&o.p.age!=null?` (turns ${o.days===0?o.p.age:o.p.age+1})`:''}</h3>
+    <div class="sub">${esc(fmtMd(o.date))} · ${esc(inDays(o.days))}${o.p.whatsapp||o.p.phone?' · '+esc(o.p.whatsapp||o.p.phone):''}${o.p.marketing_ok===false?' · ⚠ no consent for greetings':''}</div></div></div>`).join('');
+}
+function openChat(leadId){
+  if(embedded&&window.parent!==window){window.parent.postMessage({type:'pc:openChat',leadId},location.origin);return}
+  location.href=`chats.html?lead=${encodeURIComponent(leadId)}`;
+}
+
+/* ── profile sheet ── */
+function openProfile(id){
+  editing=id?profiles.find(p=>p.id===id):null;
+  if(id&&!editing)return;
+  const p=editing||{marketing_ok:true};
+  for(const k of PROFILE_FIELDS){const el=$('p_'+k);if(!el)continue;el.value=k==='anniversary'?(p.anniversary&&p.anniversary.length===5?'':p.anniversary||''):(p[k]||'')}
+  if(p.anniversary&&p.anniversary.length===5) $('p_anniversary').value='2000-'+p.anniversary;
+  $('p_marketing_ok').checked=p.marketing_ok!==false;
+  $('pTitle').firstChild.textContent=editing?`${editing.name} `:`New ${WHO} `;
+  $('pDel').classList.toggle('hidden',!editing);$('pDocs').classList.toggle('hidden',!editing);
+  $('pMsg').textContent='';$('auditBox').classList.add('hidden');closeDoc();
+  if(editing) drawDocs();
+  $('pOv').classList.remove('hidden');
+  setTimeout(()=>$('p_first_name').focus(),30);
+}
+function closeProfile(){$('pOv').classList.add('hidden');editing=null;editingDoc=null}
+async function saveProfile(force){
+  const body={};for(const k of PROFILE_FIELDS){const el=$('p_'+k);if(el)body[k]=el.value.trim()}
+  body.marketing_ok=$('p_marketing_ok').checked;
+  if(editing){body.id=editing.id;body.lead_id=editing.lead_id}
+  if(force)body.force=true;
+  const btn=$('pSave');btn.disabled=true;$('pMsg').textContent='';
+  try{
+    const d=await api('/profiles',{method:editing?'PATCH':'POST',body:JSON.stringify(body)});
+    const was=!!editing;upsert(d.profile);editing=d.profile;
+    $('pTitle').firstChild.textContent=`${editing.name} `;$('pDel').classList.remove('hidden');$('pDocs').classList.remove('hidden');drawDocs();
+    toast(was?'✓ Profile saved':'✓ Profile created — now add the passport');
+    if(!was) openDoc(null,'passport');
+    reloadReminders();
+  }catch(e){
+    if(e.status===409&&e.data?.duplicate_id){
+      if(confirm(`${e.message}\n\nOK = open the existing profile\nCancel = create a new one anyway`)) openProfile(e.data.duplicate_id); else saveProfile(true);
+    }else $('pMsg').textContent=e.message;
+  }finally{btn.disabled=false}
+}
+function upsert(p){const i=profiles.findIndex(x=>x.id===p.id);if(i>=0)profiles[i]=p;else profiles.unshift(p);draw()}
+async function reloadReminders(){try{reminders=(await api('/profiles/reminders')).reminders||[];draw()}catch(e){}}
+async function deleteProfile(){
+  if(!editing||!confirm(`Delete ${editing.name}'s profile and all their documents? This cannot be undone.`))return;
+  try{await api('/profiles',{method:'DELETE',body:JSON.stringify({id:editing.id})});profiles=profiles.filter(p=>p.id!==editing.id);reminders=reminders.filter(r=>r.profile_id!==editing.id);closeProfile();draw();toast('Profile deleted')}
+  catch(e){$('pMsg').textContent=e.message}
+}
+function drawDocs(){
+  const docs=[...editing.docs].sort((a,b)=>(a.status==='replaced')-(b.status==='replaced')||String(a.expiry_date||'9').localeCompare(String(b.expiry_date||'9')));
+  $('docList').innerHTML=docs.length?docs.map(d=>`<div class="doc"><div class="main">
+      <b>${esc(docName(d))}</b>
+      <div class="sub">${d.has_number?`<span class="num" id="num${d.id}">${esc(d.number_masked)}</span> <button class="btn sm sec" style="height:24px" onclick="reveal(${d.id},this)">👁 Show</button> · `:''}${d.issuing_country?esc(d.issuing_country)+' · ':''}${d.issue_date?'issued '+esc(fmt(d.issue_date))+' · ':''}${d.expiry_date?'expires '+esc(fmt(d.expiry_date)):'no expiry date'}${d.notes?' · '+esc(d.notes):''}</div></div>
+      <span class="pill st-${esc(d.status)}">${esc(STATUS[d.status])}${d.expiry_date&&d.status!=='replaced'?' · '+esc(d.days_left<0?`${-d.days_left}d ago`:inDays(d.days_left)):''}</span>
+      <div class="acts"><button class="btn sm sec" onclick="openDoc(${d.id})">Edit</button></div></div>`).join(''):'<div class="sub">No documents yet.</div>';
+}
+async function reveal(id,btn){
+  const el=$('num'+id);if(!el)return;
+  if(btn.dataset.on){const d=editing.docs.find(x=>x.id===id);el.textContent=d.number_masked;btn.textContent='👁 Show';delete btn.dataset.on;return}
+  try{const r=await api('/profiles/reveal?doc_id='+id);el.textContent=r.number;btn.textContent='Hide';btn.dataset.on='1'}catch(e){toast(e.message)}
+}
+function openDoc(id,type){
+  editingDoc=id?editing.docs.find(d=>d.id===id):null;
+  const d=editingDoc||{type:type||'passport'};
+  const f=$('docForm');f.classList.remove('hidden');
+  f.innerHTML=`<div class="grid">
+    <div class="f"><label for="d_type">Document</label><select id="d_type" onchange="syncDocType()">${Object.entries(DOC_TYPES).map(([k,l])=>`<option value="${k}" ${k===d.type?'selected':''}>${l}</option>`).join('')}</select></div>
+    <div class="f"><label for="d_number">Number${editingDoc&&editingDoc.has_number?' (blank = keep)':''}</label><input id="d_number" maxlength="40" autocomplete="off" placeholder="${editingDoc&&editingDoc.has_number?esc(editingDoc.number_masked):''}" style="text-transform:uppercase"></div>
+    <div class="f" id="d_vc"><label for="d_visa_country">Visa for country</label><input id="d_visa_country" maxlength="60" value="${esc(d.visa_country||'')}" placeholder="UAE, Schengen, UK…"></div>
+    <div class="f"><label for="d_issuing_country">Issuing country</label><input id="d_issuing_country" maxlength="60" value="${esc(d.issuing_country||'')}"></div>
+    <div class="f"><label for="d_place_of_issue">Place of issue</label><input id="d_place_of_issue" maxlength="60" value="${esc(d.place_of_issue||'')}"></div>
+    <div class="f"><label for="d_issue_date">Issue date</label><input id="d_issue_date" type="date" value="${esc(d.issue_date||'')}"></div>
+    <div class="f"><label for="d_expiry_date">Expiry date</label><input id="d_expiry_date" type="date" value="${esc(d.expiry_date||'')}"></div>
+    <div class="f"><label for="d_label">Label (optional)</label><input id="d_label" maxlength="80" value="${esc(d.label||'')}" placeholder="e.g. Multiple entry"></div>
+    <div class="f"><label for="d_state">Status</label><select id="d_state"><option value="">Current</option><option value="renewal" ${d.state==='renewal'?'selected':''}>Renewal in progress</option><option value="replaced" ${d.state==='replaced'?'selected':''}>Replaced / old</option></select></div>
+    <div class="f w3"><label for="d_notes">Notes</label><input id="d_notes" maxlength="500" value="${esc(d.notes||'')}"></div></div>
+    <div class="sub" id="d_hint"></div>
+    <div class="row"><span class="msg" id="dMsg"></span>${editingDoc?'<button class="btn danger sm" onclick="deleteDoc()">Delete</button>':''}<button class="btn sec sm" onclick="closeDoc()">Cancel</button><button class="btn sm" id="dSave" onclick="saveDoc()">${editingDoc?'Save document':'Add document'}</button></div>`;
+  syncDocType();
+  setTimeout(()=>$('d_number').focus(),30);
+}
+function syncDocType(){
+  const t=$('d_type').value;$('d_vc').classList.toggle('hidden',t!=='visa');
+  $('d_hint').textContent=t==='passport'&&!editingDoc?'Adding a new passport marks older passports on this profile as replaced, and their reminders stop.':'';
+}
+function closeDoc(){$('docForm').classList.add('hidden');$('docForm').innerHTML='';editingDoc=null}
+async function saveDoc(force){
+  const body={type:$('d_type').value};
+  for(const k of ['number','visa_country','issuing_country','place_of_issue','issue_date','expiry_date','label','state','notes']) body[k]=$('d_'+k).value.trim();
+  if(body.type!=='visa') body.visa_country='';
+  if(editingDoc) body.id=editingDoc.id; else body.profile_id=editing.id;
+  if(force) body.force=true;
+  const btn=$('dSave');btn.disabled=true;$('dMsg').textContent='';
+  try{
+    const d=await api('/profiles/documents',{method:editingDoc?'PATCH':'POST',body:JSON.stringify(body)});
+    upsert(d.profile);editing=d.profile;closeDoc();drawDocs();toast('✓ Document saved');reloadReminders();
+  }catch(e){
+    if(e.status===409&&e.data?.duplicate_id){const other=profiles.find(p=>p.id===e.data.duplicate_id);
+      if(confirm(`${e.message}${other?` (${other.name})`:''}\n\nSave it on this profile anyway?`)) return saveDoc(true);}
+    $('dMsg').textContent=e.message;
+  }finally{if(btn.isConnected)btn.disabled=false}
+}
+async function deleteDoc(){
+  if(!editingDoc||!confirm('Delete this document?'))return;
+  try{const d=await api('/profiles/documents',{method:'DELETE',body:JSON.stringify({id:editingDoc.id})});upsert(d.profile);editing=d.profile;closeDoc();drawDocs();reloadReminders();toast('Document deleted')}
+  catch(e){$('dMsg').textContent=e.message}
+}
+async function toggleAudit(){
+  const box=$('auditBox');if(!box.classList.contains('hidden')){box.classList.add('hidden');return}
+  box.classList.remove('hidden');box.textContent='Loading…';
+  const LABEL={profile_created:'Profile created',profile_updated:'Profile edited',document_added:'Document added',document_updated:'Document edited',document_deleted:'Document deleted',number_viewed:'Full number viewed'};
+  try{const a=(await api('/profiles/audit?id='+editing.id)).audit||[];
+    box.innerHTML=a.length?a.map(x=>`<div>${esc(new Date(x.at).toLocaleString())} · <b>${esc(LABEL[x.action]||x.action)}</b>${x.detail?' — '+esc(x.detail):''} · ${esc(String(x.by||'').split('@')[0])}</div>`).join(''):'No activity yet.'}
+  catch(e){box.textContent=e.message}
+}
+
+/* ── trip check ── */
+let picked=new Set();
+function openCheck(){
+  if(!profiles.length){toast(`Add a ${WHO} profile first`);return}
+  $('c_res').innerHTML='';$('cMsg').textContent='';$('c_q').value='';drawPicker();$('cOv').classList.remove('hidden');
+}
+function closeCheck(){$('cOv').classList.add('hidden')}
+function drawPicker(){
+  const s=$('c_q').value.trim().toLowerCase();
+  const list=profiles.filter(p=>!s||`${p.name} ${p.family_group}`.toLowerCase().includes(s));
+  const groups=[...new Set(list.map(p=>p.family_group).filter(Boolean))];
+  $('c_pick').innerHTML=groups.map(g=>`<label><input type="checkbox" onchange="pickGroup(this.checked,'${esc(g).replace(/'/g,'&#39;')}')"><b>👪 Whole ${esc(g)}</b></label>`).join('')
+    +list.slice(0,200).map(p=>`<label><input type="checkbox" value="${p.id}" ${picked.has(p.id)?'checked':''} onchange="this.checked?picked.add(${p.id}):picked.delete(${p.id})">${esc(p.name)}${p.family_group?` <span class="sub">· ${esc(p.family_group)}</span>`:''}</label>`).join('')||'<div class="sub" style="padding:8px">No match.</div>';
+}
+function pickGroup(on,g){profiles.filter(p=>p.family_group===g).forEach(p=>on?picked.add(p.id):picked.delete(p.id));drawPicker()}
+async function runCheck(){
+  const btn=$('cRun');btn.disabled=true;$('cMsg').textContent='';
+  try{
+    if(!picked.size) throw new Error(`Pick at least one ${WHO}.`);
+    const d=await api('/profiles/check',{method:'POST',body:JSON.stringify({profile_ids:[...picked],departure:$('c_dep').value,return:$('c_ret').value,destination:$('c_dest').value.trim()})});
+    $('c_res').innerHTML=d.results.map(r=>`<div><b>${esc(r.name)}</b>${r.issues.length?r.issues.map(i=>`<div class="issue ${i.level}" style="margin-top:4px">${i.level==='error'?'⛔':'⚠️'} ${esc(i.message)}</div>`).join(''):'<div class="issue ok" style="margin-top:4px">✓ Documents look fine for this trip.</div>'}</div>`).join('');
+  }catch(e){$('cMsg').textContent=e.message}
+  finally{btn.disabled=false}
+}
+
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(!$('cOv').classList.contains('hidden'))closeCheck();else if(!$('pOv').classList.contains('hidden'))closeProfile()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&sessionToken&&$('pOv').classList.contains('hidden'))load()});
+if(!sessionToken){$('list').innerHTML='<div class="empty"><b>Please sign in</b>Open this page from your Leadvyne dashboard.</div>'}
+else load();
+</script>
+</body>
+</html>
