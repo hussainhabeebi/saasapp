@@ -4526,6 +4526,31 @@ const ROLES = {
               <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_fact_sheet"><option value="No">Off</option><option value="Yes">On</option></select></div>
             </div>
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🙋 Hand over when the bot is stuck</label>
+              <div class="s-note">If the bot says “I didn’t understand” twice in a row, the chat goes to <b>Human Deals</b>, the lead’s owner gets a WhatsApp alert, and the customer is told an expert will reply in a few minutes. Works even when Handover is off for normal chats.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_handover_after_fallback"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">👍 Don’t reply to reactions</label>
+              <div class="s-note">A 👍 / 🙏 / reaction, or a plain “ok” / “thanks” after a statement, gets no reply instead of “I’m not sure I got that”.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_ignore_reactions"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">⚠️ Handle AI errors separately</label>
+              <div class="s-note">If the AI gives no answer, the bot tries once more. If it still fails, the customer gets “One moment, checking for you 🙏” (never “I didn’t understand”), Leadvyne support is alerted, and with “Hand over when stuck” on, the chat goes to your team.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_ai_error_path"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">📭 Log unanswered questions</label>
+              <div class="s-note">Every question the bot couldn’t answer is listed under <b>📭 Unanswered questions</b> below, grouped by topic, with a one-click <b>Add answer</b>. You also get a Monday email with the week’s top topics.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_missed_log"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🔴 Alert me when a reply isn’t delivered</label>
+              <div class="s-note">When WhatsApp fails to deliver a bot reply (red ⚠), the chat is labelled <code>delivery-failed</code> and you get an email, because the customer is still waiting.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_delivery_alert"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
               <label class="form-label">Opener text to protect (one per line)</label>
               <div class="s-note">A short, unique piece of each welcome message you use, e.g. <code>Premium baby set ₹899</code>. Used by “Opener once per 24 hours”. Your flow’s Introduction message is always included.</div>
               <textarea class="form-input" id="cfgRqOpenerSignatures" rows="3" style="margin-top:6px;max-width:620px" placeholder="Premium baby set ₹899&#10;Couplo-യിലേക്ക് സ്വാഗതം"></textarea>
@@ -4544,6 +4569,49 @@ const ROLES = {
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
               <button class="save-btn" id="saveReplyQuality">Save</button>
               <span class="save-msg" id="saveReplyQualityMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px;display:none" id="trCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">✈️ Travel bot</div>
+            <div class="s-note">For travel agencies. Each switch is off until you turn it on. Works best with <b>Hand over when the bot is stuck</b>, <b>Don’t reply to reactions</b>, <b>Language rule</b> and <b>Remember what the customer said</b> in Reply Quality above.</div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🧭 Menu instead of “share more details”</label>
+              <div class="s-note">When the bot is stuck it offers a list the customer can tap: ✈️ Flight ticket · 🛂 Visa · 🕋 Umrah · 🏝️ Holiday package · 🧾 My booking / PNR · 👤 Talk to agent.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_tr_fallback_menu"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:8px">
+              <label class="form-label">Menu options (optional, one per line)</label>
+              <div class="s-note">Leave blank for the list above. Up to 10. Write <code>label | message sent when tapped</code> to set what a tap sends, e.g. <code>🇦🇪 Dubai visa | I need a Dubai visit visa</code>. Labels are cut at 24 characters.</div>
+              <textarea class="form-input" id="cfgTrMenuItems" rows="4" style="margin-top:6px;max-width:520px" placeholder="✈️ Flight ticket&#10;🛂 Visa&#10;🕋 Umrah&#10;🏝️ Holiday package&#10;🧾 My booking / PNR&#10;👤 Talk to agent"></textarea>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">💸 Collect trip details for price questions</label>
+              <div class="s-note">For “Dubai ku ticket evlo”, “Saudi visit visa rate”, “Umrah package ethra” and similar, the bot never guesses a price. It asks for what your agent needs (flight: from, to, date, one-way/return, passengers · visa: country, type, nationality, travel date · Umrah: month, days, people, room sharing, city · package: destination, date, people), confirms it in one message, then hands over with the summary as a private note, the <code>fare-request</code> label and a WhatsApp alert. Flights are skipped when Live Ticketing fares are connected.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_tr_fare_collect"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🛂 Passport, visa and ticket photos</label>
+              <div class="s-note">A photo of a passport, visa, ticket or ID, or any PDF, gets “Got your passport copy 👍 our team will check it and reply shortly”, the <code>doc-received</code> label and a handover. The bot never repeats document numbers in the chat.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_tr_doc_detect"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
+              <button class="save-btn" id="saveTravelBot">Save</button>
+              <span class="save-msg" id="saveTravelBotMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px" id="rqMissedCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📭 Unanswered questions</div>
+            <div class="s-note">Questions your bot couldn’t answer in the last 30 days, grouped by topic. Press <b>Add answer</b> and the bot uses it from the next message. Needs <b>Log unanswered questions</b> on (Reply Quality above).</div>
+            <div id="rqMissedList" style="margin-top:12px"><div class="s-note">Loading…</div></div>
+            <div style="margin-top:14px">
+              <label class="form-label">Answers you added</label>
+              <div id="rqAnswersList" class="s-note">None yet.</div>
             </div>
           </div>
         </div>
@@ -15582,6 +15650,11 @@ function populateBotBehaviorPage(){
   $id('cfgRqOpenerSignatures').value=botConfig.rq_opener_signatures||'';
   $id('cfgRqFactSheet').value=botConfig.rq_fact_sheet_text||'';
   $id('cfgRqUnknownReply').value=botConfig.rq_unknown_reply||'';
+  // Travel bot card: travel agencies only.
+  $id('trCard').style.display=String(clientRecord?.industry||'').toLowerCase()==='travel'?'':'none';
+  TR_TOGGLE_KEYS.forEach(key=>{ $id('cfg_'+key).value=botConfig[key]===true?'Yes':'No'; });
+  $id('cfgTrMenuItems').value=botConfig.tr_menu_items||'';
+  rqLoadMissed();
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -15644,10 +15717,64 @@ $id('saveObjectionHandlingEnabled').addEventListener('click',async()=>{
 });
 // Settings → Bot Behavior → 🛠️ Reply Quality (cloudflare-worker/reply-quality.js). Each key is a
 // bot_config boolean, deleted when off so an account that never touches this keeps its old behaviour.
-const RQ_TOGGLE_KEYS=['rq_burst_wait','rq_dedupe','rq_opener_gate','rq_known_state','rq_language_rule','rq_media_aware','rq_photo_first','rq_soft_optout','rq_fact_sheet'];
+const RQ_TOGGLE_KEYS=['rq_burst_wait','rq_dedupe','rq_opener_gate','rq_known_state','rq_language_rule','rq_media_aware','rq_photo_first','rq_soft_optout','rq_fact_sheet',
+  'rq_handover_after_fallback','rq_ignore_reactions','rq_ai_error_path','rq_missed_log','rq_delivery_alert'];
+const TR_TOGGLE_KEYS=['tr_fallback_menu','tr_fare_collect','tr_doc_detect'];
 function rqApplyRecommended(){
   RQ_TOGGLE_KEYS.forEach(key=>{ if(key!=='rq_fact_sheet'||$id('cfgRqFactSheet').value.trim()) $id('cfg_'+key).value='Yes'; });
   $id('saveReplyQualityMsg').textContent=$id('cfgRqFactSheet').value.trim()?'Recommended set selected — press Save':'Recommended set selected (fill the shop facts to use the fact sheet) — press Save';
+}
+$id('saveTravelBot').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  TR_TOGGLE_KEYS.forEach(key=>{ if($id('cfg_'+key).value==='Yes') botConfig[key]=true; else delete botConfig[key]; });
+  const menu=$id('cfgTrMenuItems').value.split('\n').map(x=>x.trim()).filter(Boolean).slice(0,10).join('\n');
+  if(menu) botConfig.tr_menu_items=menu; else delete botConfig.tr_menu_items;
+  await saveField('saveTravelBot','saveTravelBotMsg',{bot_config:JSON.stringify(botConfig)});
+});
+// 📭 Unanswered questions (worker.js handleRqRoute): grouped dead ends + one-click answers.
+const RQ_REASON_LABEL={no_answer:'no answer', ai_error:'AI error', media:'couldn’t read media', delivery_failed:'not delivered'};
+let _rqMissed=[];
+async function rqApi(path, body){
+  const r=await fetch(`${CONFIG.WORKER_BASE}/rq${path}`, body?{method:'POST', headers:{Authorization:'Bearer '+sessionToken, 'Content-Type':'application/json'}, body:JSON.stringify(body)}:{headers:{Authorization:'Bearer '+sessionToken}});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+  if(d.bot_config && clientRecord) clientRecord.bot_config=JSON.stringify(d.bot_config);
+  return d;
+}
+function rqRenderAnswers(answers){
+  $id('rqAnswersList').innerHTML=(answers||[]).length?(answers||[]).map((x,i)=>`<div style="padding:6px 0;border-bottom:1px solid var(--line)"><b>Q:</b> ${esc(x.q)}<br><b>A:</b> ${esc(x.a)} <a href="#" onclick="rqDeleteAnswer(${i});return false" style="margin-left:6px">Remove</a></div>`).join(''):'None yet.';
+}
+async function rqLoadMissed(){
+  try{
+    const d=await rqApi('/missed');
+    _rqMissed=d.groups||[];
+    $id('rqMissedList').innerHTML=_rqMissed.length?`<div class="s-note" style="margin-bottom:8px"><b>${d.week_count}</b> missed this week.</div>`+_rqMissed.map((g,i)=>`
+      <div style="padding:10px 0;border-top:1px solid var(--line)">
+        <div><b>${esc(g.topic)}</b> ×${g.count} <span class="s-note">· ${Object.entries(g.reasons).map(([k,n])=>`${RQ_REASON_LABEL[k]||k} ${n}`).join(', ')}</span></div>
+        <div class="s-note" style="margin-top:2px">${g.examples.map(x=>'“'+esc(x)+'”').join(' · ')}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:flex-start">
+          <textarea class="form-input" id="rqAns${i}" rows="2" style="flex:1;min-width:220px;max-width:520px" placeholder="Your answer — the bot will use it (in the customer’s language)"></textarea>
+          <button class="save-btn" onclick="rqAddAnswer(${i},this)">Add answer</button>
+          <button class="btn btn-sec" onclick="rqDismiss(${i},this)">Dismiss</button>
+        </div>
+      </div>`).join(''):'<div class="s-note">Nothing unanswered. 🎉</div>';
+    rqRenderAnswers(d.answers);
+  }catch(e){ $id('rqMissedList').innerHTML=`<div class="s-note">Couldn’t load: ${esc(e.message)}</div>`; }
+}
+async function rqAddAnswer(i, btn){
+  const g=_rqMissed[i], answer=$id('rqAns'+i).value.trim();
+  if(!g||!answer) return;
+  btn.disabled=true;
+  try{ await rqApi('/missed/answer', {topic:g.topic, question:g.examples[0]||g.topic, answer}); await rqLoadMissed(); }
+  catch(e){ btn.disabled=false; alert(e.message); }
+}
+async function rqDismiss(i, btn){
+  const g=_rqMissed[i]; if(!g) return;
+  btn.disabled=true;
+  try{ await rqApi('/missed/dismiss', {topic:g.topic}); await rqLoadMissed(); }catch(e){ btn.disabled=false; alert(e.message); }
+}
+async function rqDeleteAnswer(i){
+  try{ const d=await rqApi('/answers/delete', {index:i}); rqRenderAnswers(d.answers); }catch(e){ alert(e.message); }
 }
 $id('saveReplyQuality').addEventListener('click',async()=>{
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}

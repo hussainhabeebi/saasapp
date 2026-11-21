@@ -21,12 +21,21 @@
 //   rq_media_aware       tell the AI it CAN send photos (the system sends them) — never "I can't"
 //   rq_photo_first       Malayalam / Manglish photo asks ("photo ayakkamo", "ഫോട്ടോ") send photos
 //   rq_soft_optout       "don't message me" in any language → opt out, short apology, no follow-ups
+//   rq_handover_after_fallback  a second "I didn't understand" in a row hands the chat to a person
+//                        (Human Deals + owner alert) — even when Handover is off for normal turns
+//   rq_ignore_reactions  👍 / 🙏 / a reaction, or a bare "ok" after a non-question, gets no reply
+//   rq_ai_error_path     the AI returned nothing: retry once, then "One moment, checking for you 🙏",
+//                        alert ops and hand over — never "I didn't understand" for a system failure
+//   rq_missed_log        log every fallback (Unanswered questions list, weekly email, spike alert)
+//   rq_delivery_alert    a bot reply WhatsApp failed to deliver (red ⚠) → label + owner email
+//   rq_answers           [{q, a}] answers added from the Unanswered list (given to the AI as-is)
 
 export const RQ_BURST_WAIT_MS=9000;
 export const RQ_DEDUPE_WINDOW_MS=60*1000;
 export const RQ_OPENER_WINDOW_MS=24*60*60*1000;
 
-const RQ_BOOL_KEYS=['rq_burst_wait','rq_dedupe','rq_opener_gate','rq_known_state','rq_language_rule','rq_fact_sheet','rq_media_aware','rq_photo_first','rq_soft_optout'];
+const RQ_BOOL_KEYS=['rq_burst_wait','rq_dedupe','rq_opener_gate','rq_known_state','rq_language_rule','rq_fact_sheet','rq_media_aware','rq_photo_first','rq_soft_optout',
+  'rq_handover_after_fallback','rq_ignore_reactions','rq_ai_error_path','rq_missed_log','rq_delivery_alert'];
 export const RQ_TOGGLES=RQ_BOOL_KEYS;
 
 function parseObj(raw){
@@ -42,7 +51,8 @@ export function rqConfig(cOrBotConfig){
   out.opener_signatures=String(bc.rq_opener_signatures||'').split('\n').map(s=>s.trim()).filter(s=>s.length>=6).slice(0,10);
   out.fact_sheet_text=String(bc.rq_fact_sheet_text||'').trim().slice(0,6000);
   out.unknown_reply=String(bc.rq_unknown_reply||'').trim().slice(0,300);
-  out.any=RQ_BOOL_KEYS.some(k=>bc[k]===true);
+  out.answers=Array.isArray(bc.rq_answers)?bc.rq_answers.filter(x=>x&&x.q&&x.a).map(x=>({q:String(x.q).slice(0,300), a:String(x.a).slice(0,600)})).slice(-60):[];
+  out.any=RQ_BOOL_KEYS.some(k=>bc[k]===true)||out.answers.length>0;
   return out;
 }
 
@@ -78,6 +88,9 @@ export function rqExplicitLanguageRequest(text){
 // Malayalam written in English letters (Manglish). One clear marker is enough.
 const MANGLISH_RE=/\b(?:ndo|undo|undu|und|venam|venda|vende|ethra|etra|aano|ano|aanu|alle|ille|illa|illey|enthu|entha|enth|ningal|ningalude|kittumo|kittum|kitumo|cheyyumo|cheyyamo|cheyyo|ayakkamo|ayakko|ayakku|ayakkanda|ayakkenda|kanikkamo|kanikko|kaanan|kanan|mathi|sheri|shari|evide|eppo|eppozha|onnu|pinne|kunju|kunjinu|kuttikku|vila|paisa|kodukkamo|tharamo|parayamo|manassilayilla|manasilayilla|mone|mole|chechi|chetta|ikka|itha|ithu|athu|aayi|aayo|kollam|nokkatte)\b/i;
 export function rqIsManglish(text){ return MANGLISH_RE.test(String(text||'')); }
+// Tamil written in English letters (Tanglish). Checked before Manglish; words shared by both are left out.
+const TANGLISH_RE=/\b(?:evlo|evvalavu|evalo|irukka|irukkaa|irukku|iruku|venum|vendum|nalaiku|naalaikku|naalai|enna|ennaku|enaku|epdi|eppadi|sollunga|sollu|pannunga|pannanum|panna|anuppunga|anupunga|kudunga|kodunga|theriyuma|theriyala|puriyala|vanakkam|seri|sari|illai|illaya|dubai\s*ku|chennai\s*ku|trichy\s*ku|singapore\s*ku|madurai\s*ku|ku\s+ticket)\b/i;
+export function rqIsTanglish(text){ return TANGLISH_RE.test(String(text||'')); }
 // Short acknowledgements that carry no language signal of their own.
 const FILLER_RE=/^(?:ok+|okay+|okk+|k+|kk+|sorry|sry|hmm+|hm+|mm+|yes|yeah|ya+|yup|no|nope|thanks?|thank you|thx|ty|tq|fine|good|nice|super|done|sure|alright|haa+|ha+|oh+|ohk+|accha|seri|sheri|\?+|\.+)$/i;
 export function rqIsFiller(text){
@@ -92,6 +105,7 @@ export function rqDecideLanguage({text, history=[], detected=null, fallback='en'
   if(explicit) return {lang:explicit, reason:'asked'};
   const script=rqScriptLang(text);
   if(script && script!=='en') return {lang:script, reason:'script'};
+  if(script==='en' && rqIsTanglish(text) && !rqIsManglish(text)) return {lang:'ta', reason:'tanglish'};
   if(script==='en' && rqIsManglish(text)) return {lang:'ml', reason:'manglish'};
   const msgs=(history||[]).filter(m=>m && typeof m.content==='string');
   const lastBot=[...msgs].reverse().find(m=>m.role==='assistant');
@@ -167,7 +181,8 @@ const OCCASIONS=[['naming ceremony',/naming|name\s*ceremony|noolukett|nool\s*ket
 export function rqExtractOccasion(text){ const t=String(text||''); const hit=OCCASIONS.find(([, re])=>re.test(t)); return hit?hit[0]:null; }
 
 // Builds the state from the lead, the chat so far and the current message. Values are short strings.
-export function rqKnownState({history=[], userText='', lead=null, babyProfile=null, lang='', stage=''}={}){
+export function rqKnownState({history=[], userText='', lead=null, babyProfile=null, lang='', stage='', travel=null}={}){
+  if(travel) return {...rqTravelKnown(travel), language:rqLangName(lang||''), stage:rqStageLabel(stage||lead?.Stage||'')};
   const userMsgs=[...(history||[]).filter(m=>m?.role==='user').map(m=>String(m.content||'')), String(userText||'')];
   let age=null, occasion=null;
   for(const t of userMsgs){ age=rqExtractAge(t)||age; occasion=rqExtractOccasion(t)||occasion; }
@@ -178,6 +193,13 @@ export function rqKnownState({history=[], userText='', lead=null, babyProfile=nu
   const product=String(lead?.InterestedProduct||lead?.['Last Product Name']||lead?.ProductInterest||'').trim().slice(0,80);
   const stageLabel=rqStageLabel(stage||lead?.Stage||'');
   return {baby_age:age||'', occasion:occasion||'', product_interest:product, language:rqLangName(lang||''), stage:stageLabel};
+}
+// Travel: what the fare/trip collector (travel-bot.js) already knows about this trip.
+export function rqTravelKnown(t){
+  const s=t?.slots||{};
+  return {service:t?.kind||'', from:s.from||'', to:s.to||s.destination||s.country||'', travel_date:s.date||s.travel_date||s.month||'',
+    passengers:s.pax||[s.adults&&`${s.adults} adult${s.adults>1?'s':''}`, s.children&&`${s.children} child`, s.infants&&`${s.infants} infant`].filter(Boolean).join(', '),
+    trip_type:s.trip_type||''};
 }
 export function rqStageLabel(stage){
   const s=String(stage||'').toLowerCase();
@@ -197,10 +219,21 @@ export function rqDefaultUnknownReply(lang){
 }
 export function rqUnknownReply(cfg, lang){ return cfg?.unknown_reply||rqDefaultUnknownReply(lang); }
 
-export function rqPromptBlock(cfg, {known=null, lang='en', babycare=false}={}){
+export function rqPromptBlock(cfg, {known=null, lang='en', babycare=false, travel=false}={}){
   if(!cfg?.any) return '';
   const parts=[];
-  if(cfg.known_state){
+  if(cfg.known_state && travel){
+    const k=known||{};
+    const fields=['service','from','to','travel_date','passengers','trip_type','language','stage'].map(key=>`${key}: ${k[key]||'not known yet'}`).join(', ');
+    parts.push(`KNOWN SO FAR: ${fields}
+
+Rules:
+- Never repeat the welcome message. It has already been sent.
+- Never ask again for anything listed above as known. Use it.
+- Answer the customer's last message first, in one or two short sentences.
+- If the customer uses a word or code you don't know (for example "P4 login"), ask about that word by name ("Is P4 an agent portal login or a booking reference?"). Never reply with a general "please share more details".
+- Never quote an air fare, visa fee or package price unless it is written in the data above. Fares change every hour: collect from, to, date and passengers, and say our travel expert will share the best fares.`);
+  } else if(cfg.known_state){
     const k=known||{};
     const fields=[['baby_age', k.baby_age], ['occasion', k.occasion], ['product_interest', k.product_interest], ['language', k.language], ['stage', k.stage]]
       .filter(([key])=>babycare || (key!=='baby_age' && key!=='occasion'))
@@ -217,6 +250,9 @@ ${babycare?'- If baby_age is known, never ask for it again. Use it.\n':'- Never 
   }
   if(cfg.media_aware){
     parts.push('MEDIA: You CAN send photos. The system sends product and category photos for you. Never say you cannot send photos, pictures or images — if the customer wants photos, tell them they are on the way or ask which product or category they want to see.');
+  }
+  if(cfg.answers?.length){
+    parts.push('TEAM ANSWERS — when the customer asks one of these, give this answer (in their language):\n'+cfg.answers.map(x=>`Q: ${x.q}\nA: ${x.a}`).join('\n'));
   }
   if(cfg.fact_sheet){
     const unknown=rqUnknownReply(cfg, lang);
@@ -282,4 +318,67 @@ export function rqIsRecentDuplicate(text, recent=[], nowMs=Date.now(), windowMs=
   const n=rqNormText(text);
   if(!n) return false;
   return (recent||[]).some(r=>r && rqNormText(r.text)===n && nowMs-Number(r.at||0)<windowMs);
+}
+
+// ── Stuck turns (dead-end fallbacks) ─────────────────────────────────────────────────────────────
+// A bot reply that only says "I didn't understand" — the built-in fallback or the AI's own words,
+// in English, Tamil, Malayalam or Hindi (the Nanthana chat: "…புரியவில்லை…" twice in a row).
+const DONT_UNDERSTAND_RES=[
+  /\b(?:i'?m|i am)\s+(?:not\s+sure|sorry)[^.?!]{0,30}\b(?:i\s+)?(?:got|get|understood|understand|follow)\b/i,
+  /\bi\s+(?:did\s*n[o']?t|do\s*n[o']?t|could\s*n[o']?t|cannot|can'?t)\s+(?:quite\s+)?(?:understand|get\s+(?:that|it|you)|follow)\b/i,
+  /\bcould\s+you\s+(?:please\s+)?(?:share|give|provide|tell\s+me)\s+(?:a\s+(?:bit|little)\s+)?more\s+(?:details|information|info)\b/i,
+  /\b(?:could|can)\s+you\s+(?:please\s+)?(?:clarify|rephrase|explain\s+(?:what|that))\b/i,
+  /புரியவில்லை|புரியல|தெரியவில்லை|விளக்கமாகச்\s*சொல்ல/,
+  /മനസ്സിലായില്ല|മനസിലായില്ല|വ്യക്തമാക്കാമോ|കൂടുതൽ\s*വിവരങ്ങൾ\s*തരാമോ/,
+  /समझ\s*नहीं\s*(?:आया|पाया|पाई)|थोड़ा\s*और\s*बताइए/,
+];
+export function rqIsDontUnderstand(text){
+  const t=String(text||'');
+  if(!t.trim() || t.length>400) return false;
+  return DONT_UNDERSTAND_RES.some(re=>re.test(t));
+}
+// Was the bot's previous reply in this chat also a "didn't understand"?
+export function rqLastBotWasStuck(history){
+  const bot=[...(history||[])].reverse().find(m=>m?.role==='assistant' && typeof m.content==='string');
+  return !!bot && rqIsDontUnderstand(bot.content);
+}
+// 👍 / 🙏 / a WhatsApp reaction: nothing but emoji, symbols or punctuation.
+export function rqIsEmojiOnly(text){
+  const t=String(text||'').trim();
+  return !!t && !/[\p{L}\p{N}]/u.test(t);
+}
+const ACK_RE=/^(?:ok+|okay+|okk+|k+|kk+|thanks?|thank\s*you|thx|ty|tq|fine|noted|alright|sure|seri|sari|sheri|shari|hmm+|hm+)$/i;
+// A reaction or a bare acknowledgement that needs no answer. "ok" after a question is an answer,
+// so it only counts when the bot's last message didn't ask anything.
+export function rqIsNoReplyNeeded(text, history=[], isReaction=false){
+  if(isReaction || rqIsEmojiOnly(text)) return true;
+  if(!ACK_RE.test(rqNormText(text))) return false;
+  const bot=[...(history||[])].reverse().find(m=>m?.role==='assistant' && typeof m.content==='string');
+  return !!bot && !/[?？]/.test(bot.content);
+}
+export function rqHandoverText(lang, travel=false){
+  const who={en:travel?'our travel expert':'our team', ml:travel?'ഞങ്ങളുടെ ട്രാവൽ എക്സ്പെർട്ട്':'ഞങ്ങളുടെ ടീം', ta:travel?'எங்கள் டிராவல் எக்ஸ்பர்ட்':'எங்கள் டீம்', hi:travel?'हमारे ट्रैवल एक्सपर्ट':'हमारी टीम'};
+  if(lang==='ml') return `ഞാൻ ${who.ml}-നെ കണക്ട് ചെയ്യാം — കുറച്ച് മിനിറ്റിനുള്ളിൽ അവർ മറുപടി തരും 🙏`;
+  if(lang==='ta') return `${who.ta}-ஐ இணைக்கிறேன் — சில நிமிடங்களில் பதில் தருவார்கள் 🙏`;
+  if(lang==='hi') return `मैं ${who.hi} से जोड़ रही हूँ — वे कुछ ही मिनटों में जवाब देंगे 🙏`;
+  return `Let me connect you with ${who.en} — they'll reply in a few minutes 🙏`;
+}
+export function rqCheckingText(lang){
+  if(lang==='ml') return 'ഒരു നിമിഷം, ഞാൻ നോക്കിയിട്ട് പറയാം 🙏';
+  if(lang==='ta') return 'ஒரு நிமிடம், சரிபார்த்துச் சொல்கிறேன் 🙏';
+  if(lang==='hi') return 'एक पल, मैं देखकर बताती हूँ 🙏';
+  return 'One moment, checking for you 🙏';
+}
+// Grouping key for the Unanswered list: route / visa country for travel, else the first content words.
+const STOP_WORDS=new Set('i me my we you your the a an is are was to for of in on at and or what how much can could please pls plz do does any is there have has get want need tell about this that it be will with from'.split(' '));
+export function rqMissedTopic(text, travel=null){
+  if(travel?.slots){
+    const s=travel.slots, k=travel.kind||'';
+    if(k==='flight' && s.from && s.to) return `${s.from}–${s.to} fare`;
+    if(k==='visa' && (s.country||s.to)) return `${s.country||s.to} ${s.visa_type||''} visa`.replace(/\s+/g,' ');
+    if(k==='umrah') return 'Umrah package';
+    if(k==='package' && (s.destination||s.to)) return `${s.destination||s.to} package`;
+  }
+  const words=rqNormText(text).split(' ').filter(w=>w && !STOP_WORDS.has(w));
+  return words.slice(0,5).join(' ').slice(0,60)||'(empty message)';
 }

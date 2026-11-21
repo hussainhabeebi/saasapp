@@ -1,5 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
-import {rqConfig,rqDecideLanguage,rqIsSoftOptOut,rqOptOutReply,rqIsPhotoAsk,rqPhotoAskAsEnglish,rqKnownState,rqPromptBlock,rqUsedUnknownReply,rqIsOpenerText,rqBotRepliedWithin,rqIsRecentDuplicate,rqFallbackReply,rqFallbackButtons,rqWelcomeBack,rqIsGreetingOnly,rqNormText,RQ_BURST_WAIT_MS,RQ_DEDUPE_WINDOW_MS,RQ_OPENER_WINDOW_MS} from './reply-quality.js';
+import {rqConfig,rqDecideLanguage,rqIsSoftOptOut,rqOptOutReply,rqIsPhotoAsk,rqPhotoAskAsEnglish,rqKnownState,rqPromptBlock,rqUsedUnknownReply,rqIsOpenerText,rqBotRepliedWithin,rqIsRecentDuplicate,rqFallbackReply,rqFallbackButtons,rqWelcomeBack,rqIsGreetingOnly,rqNormText,RQ_BURST_WAIT_MS,RQ_DEDUPE_WINDOW_MS,RQ_OPENER_WINDOW_MS,
+  rqIsDontUnderstand,rqLastBotWasStuck,rqIsNoReplyNeeded,rqHandoverText,rqCheckingText,rqMissedTopic} from './reply-quality.js';
+import {trConfig,trMenuText,trIsFareAsk,trDetectKind,trExtractPrompt,trParseExtraction,trMergeSlots,trNextMissing,trQuestion,trSummary,trConfirmText,trConfirmButtons,trIsYes,trIsChange,trWaitText,trDocKind,trDocReply} from './travel-bot.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
@@ -19597,6 +19599,10 @@ export function hotLeadAlertReasonText(reason, detail){
   if(reason==='hot_moment') return detail?`asked: "${d}"`:'is asking about price or availability';
   if(reason==='lead_ad') return detail?`just filled your lead form (${d})`:'just filled your lead form';
   if(reason==='trip_request') return detail?`sent a trip request: ${d}`:'sent a trip request';
+  // Reply Quality / Travel bot handovers (reply-quality.js, travel-bot.js).
+  if(reason==='bot_handover') return detail?`needs a person, the bot could not answer: "${d}"`:'needs a person, the bot could not answer';
+  if(reason==='fare_request') return detail?`wants fares: ${d}`:'wants fares';
+  if(reason==='document') return detail?`sent a ${d}`:'sent a document';
   if(reason==='test') return 'is a test alert, all set';
   return 'needs a call';
 }
@@ -26607,9 +26613,10 @@ export function engineReplyQualityPromptBlock(c, state, lang){
   if(!rq.any) return '';
   const bc=engineParseJsonField(c?.bot_config,{});
   const babycare=c?.industry==='ecommerce'&&bc.ecom_communication_style==='baby_care';
+  const travel=taIsTravelClient(c);
   const known=rq.known_state?rqKnownState({history:state?.activeHistory||[], userText:state?.rqUserText||'', lead:state?.lead||null,
-    babyProfile:state?.babyProfile||null, lang, stage:state?.stage||''}):null;
-  return rqPromptBlock(rq, {known, lang, babycare});
+    babyProfile:state?.babyProfile||null, lang, stage:state?.stage||'', travel:travel?(state?.trSession||{kind:'', slots:{}}):null}):null;
+  return rqPromptBlock(rq, {known, lang, babycare, travel});
 }
 export function engineReplyStyleRules(c){
   const botCfg=engineParseJsonField(c?.bot_config,{});
@@ -29193,6 +29200,269 @@ export async function engineRqGuardOutgoing(env, c, clientId, convId, text, {lan
   return out;
 }
 
+// ── Missed questions, stuck turns, delivery failures (Reply Quality) ───────────────────────────
+let _rqMissedReady=false;
+async function engineRqEnsureMissed(env){
+  if(_rqMissedReady||!env?.DB) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rq_missed (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER, phone TEXT, conv_id TEXT, text TEXT, topic TEXT, reason TEXT, status TEXT NOT NULL DEFAULT 'open', at TEXT NOT NULL)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_rq_missed_client ON rq_missed (client_id, status, at)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rq_alerts (client_id INTEGER NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (client_id, key))`).run();
+  _rqMissedReady=true;
+}
+// reason: no_answer | ai_error | media | delivery_failed
+async function engineRqLogMissed(env, clientId, state, text, reason){
+  try{
+    await engineRqEnsureMissed(env);
+    const topic=rqMissedTopic(text, state?.trSession||null);
+    await env.DB.prepare(`INSERT INTO rq_missed (client_id, lead_id, phone, conv_id, text, topic, reason, at) VALUES (?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId), state?.leadId?Number(state.leadId):null, String(state?.phone||''), String(state?.convId||''), String(text||'').slice(0,500), topic, reason, new Date().toISOString()).run();
+  }catch(e){ await reportOpsError(env, 'engineRqLogMissed', e, {clientId}); }
+}
+// True once per key per `hours` for this client (alert de-duplication).
+async function engineRqAlertOnce(env, clientId, key, hours){
+  await engineRqEnsureMissed(env);
+  const row=await env.DB.prepare(`SELECT at FROM rq_alerts WHERE client_id=? AND key=?`).bind(Number(clientId), key).first().catch(()=>null);
+  if(row && Date.now()-Date.parse(row.at)<hours*3600000) return false;
+  await env.DB.prepare(`INSERT OR REPLACE INTO rq_alerts (client_id, key, at) VALUES (?,?,?)`).bind(Number(clientId), key, new Date().toISOString()).run();
+  return true;
+}
+async function engineRqPrivateNote(c, convId, text){
+  if(!c?.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST',
+    headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'}, body:JSON.stringify({content:text, message_type:'outgoing', private:true})}).catch(()=>null);
+}
+async function engineRqLabels(c, convId, labels){
+  if(!c?.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/labels`, {method:'POST',
+    headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'}, body:JSON.stringify({labels})}).catch(()=>null);
+}
+// The FAQ reply is a dead end ("I didn't understand", or the AI gave nothing). Decides what goes out:
+//   AI error (after one retry) → "One moment, checking for you 🙏", ops alert, handover if switched on
+//   second "didn't understand" in a row → handover ("our travel expert will reply in a few minutes")
+//   travel + fallback menu → Flight / Visa / Umrah / Package / My booking / Agent list
+// Returns null when the reply isn't a dead end. {reply, handover, menu, reason} otherwise.
+export async function engineRqStuckTurn(env, c, clientId, state, {userText, reply, usedFallback=false, aiError=false, mediaType='text', lang='en'}={}){
+  const rq=rqConfig(c), tr=trConfig(c), travel=taIsTravelClient(c);
+  if(!rq.any && !tr.any) return null;
+  const stuck=usedFallback||aiError||rqIsDontUnderstand(reply);
+  if(!stuck) return null;
+  const reason=mediaType==='voice'&&usedFallback?'media':(usedFallback||aiError)?'ai_error':'no_answer';
+  if(rq.missed_log) await engineRqLogMissed(env, clientId, state, userText, reason);
+  if(aiError && rq.ai_error_path){
+    await reportOpsError(env, 'AI gave no reply twice — the customer got "checking for you" (check AI credits / provider)', new Error(`client ${clientId} (${c.client_name||''})`), {clientId, convId:state?.convId});
+    return {reply:rqCheckingText(lang), handover:rq.handover_after_fallback, reason};
+  }
+  if(rq.handover_after_fallback && rqLastBotWasStuck(state?.activeHistory||state?.history||[])) return {reply:rqHandoverText(lang, travel), handover:true, reason};
+  if(travel && tr.fallback_menu) return {reply:trMenuText(lang), menu:tr.menu_items, reason};
+  return {reply, reason};
+}
+// Hand the chat to a person after a dead end: Human Deals (route human → Handover Yes on the lead),
+// the human-requested label and a WhatsApp alert to the lead's owner / account owner.
+async function engineRqHandover(env, c, clientId, convId, state, routing, userText, replyLang, ctx, reason){
+  routing.route='human'; routing.humanReason='rq_stuck';
+  await engineSendHandoverLabel(c, convId);
+  await engineSendHandoverContact(env, c, clientId, convId, userText, replyLang, ctx).catch(()=>{});
+  if(state?.leadId) await engineMaybeSendHotLeadAlert(env, c, clientId, state.leadId, state.lead, {...(state.lead||{})},
+    {inboxId:state.inboxId, reason:'bot_handover', detail:String(userText||'').slice(0,100)}).catch(()=>{});
+  botTrace(c, 'rq_handover', {why:reason});
+}
+// message_updated with status failed on one of our replies (the red ⚠ in WhatsApp).
+async function engineRqDeliveryFailed(env, c, convId, body){
+  try{
+    const rq=rqConfig(c);
+    if(!rq.delivery_alert || !convId) return;
+    if(rq.missed_log) await engineRqLogMissed(env, c.Id, {convId, phone:body?.conversation?.meta?.sender?.phone_number||''}, String(body?.content||'').slice(0,300), 'delivery_failed');
+    if(!await engineRqAlertOnce(env, c.Id, 'fail:'+convId, 6)) return;
+    await engineRqLabels(c, convId, ['delivery-failed']);
+    const to=String(c.authentik_email||'').trim();
+    if(!to) return;
+    const link=c.chatwoot_base?`${c.chatwoot_base}/app/accounts/${c.chatwoot_account_id}/conversations/${convId}`:'';
+    const esc=t=>String(t||'').replace(/[&<>"]/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+    await CHATS_V2_DEPS.sendEmail(env, to, 'A WhatsApp reply did not reach your customer',
+      `<p>A reply to <b>${esc(body?.conversation?.meta?.sender?.name||'a customer')}</b> failed to deliver on WhatsApp (red ⚠). The customer has not seen it and may still be waiting.</p>`
+      +`<p><i>${esc(String(body?.content||'').slice(0,300))}</i></p>`
+      +`<p>Common reasons: the 24-hour WhatsApp window had closed (send an approved template), the number is not on WhatsApp, or Meta rejected the message.</p>`
+      +(link?`<p><a href="${esc(link)}">Open the chat</a></p>`:'')).catch(()=>null);
+  }catch(e){ await reportOpsError(env, 'engineRqDeliveryFailed', e, {clientId:c?.Id, convId}); }
+}
+
+// ── Travel bot: documents and fare collection (travel-bot.js) ────────────────────────────────────
+let _trReady=false;
+async function engineTrEnsure(env){
+  if(_trReady||!env?.DB) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tr_sessions (client_id INTEGER NOT NULL, phone TEXT NOT NULL, kind TEXT NOT NULL, slots_json TEXT NOT NULL DEFAULT '{}', stage TEXT NOT NULL DEFAULT 'collect', updated_at TEXT NOT NULL, PRIMARY KEY (client_id, phone))`).run();
+  _trReady=true;
+}
+const TR_SESSION_MS=6*3600000;
+async function engineTrLoadSession(env, clientId, phone){
+  await engineTrEnsure(env);
+  const row=await env.DB.prepare(`SELECT kind, slots_json, stage, updated_at FROM tr_sessions WHERE client_id=? AND phone=?`).bind(Number(clientId), String(phone||'')).first().catch(()=>null);
+  if(!row || Date.now()-Date.parse(row.updated_at)>TR_SESSION_MS) return null;
+  let slots={}; try{ slots=JSON.parse(row.slots_json||'{}')||{}; }catch(e){}
+  return {kind:row.kind, slots, stage:row.stage};
+}
+async function engineTrSaveSession(env, clientId, phone, ses){
+  if(!ses) return env.DB.prepare(`DELETE FROM tr_sessions WHERE client_id=? AND phone=?`).bind(Number(clientId), String(phone||'')).run().catch(()=>null);
+  return env.DB.prepare(`INSERT OR REPLACE INTO tr_sessions (client_id, phone, kind, slots_json, stage, updated_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(clientId), String(phone||''), ses.kind, JSON.stringify(ses.slots||{}), ses.stage||'collect', new Date().toISOString()).run().catch(()=>null);
+}
+// A passport / visa / ticket photo or a PDF: short acknowledgement, label, handover, owner alert.
+// The AI's description of the photo is never sent back, so document numbers stay out of the chat.
+async function engineTrDocTurn(env, c, clientId, state, {userText, messageId, isNewLead, startMs, mediaType, ctx, replyLang, convId}){
+  const kind=trDocKind(userText, mediaType);
+  if(!kind) return null;
+  const turn={text:trDocReply(kind, replyLang), route:'human', next:'human_handover', lang:replyLang, buttons:[], mediaUrl:''};
+  const leadId=await enginePersistFirstGreetingTurn(env, c, clientId, state, mediaType==='document'?'(sent a document)':`(sent a ${kind} photo)`, messageId, isNewLead, turn, startMs, mediaType, ctx);
+  await engineRqLabels(c, convId, ['human-requested', 'doc-received']);
+  if(leadId) await engineMaybeSendHotLeadAlert(env, c, clientId, leadId, state.lead, {...(state.lead||{})}, {inboxId:state.inboxId, reason:'document', detail:kind==='document'?'document':kind+' copy'}).catch(()=>{});
+  return json({ok:true, route:'tr_document', kind});
+}
+// Fare / visa / Umrah / package asks: collect → confirm → hand over with a summary. Returns a
+// Response when it handled the turn, null to let the normal bot answer.
+async function engineTrFareTurn(env, c, clientId, state, {userText, messageId, isNewLead, startMs, mediaType, ctx, replyLang, convId, phone}){
+  let ses=await engineTrLoadSession(env, clientId, phone);
+  const fresh=!ses;
+  if(fresh){
+    if(!trIsFareAsk(userText)) return null;
+    const kind=trDetectKind(userText)||'flight';
+    // Agencies with live fares connected quote flights themselves (Live Ticketing).
+    if(kind==='flight' && ltLiveAgencyEnabled(c) && await ltLiveTicketsConnected(env, clientId).catch(()=>false)) return null;
+    ses={kind, slots:{}, stage:'collect'};
+  }
+  state.trSession=ses;
+  const send=async(text, {buttons=[], handover=false}={})=>{
+    const localized=await engineLocalizeReply(env, c, text, replyLang);
+    const turn={text:localized, route:handover?'human':'travel_faq', next:handover?'human_handover':(state.stage||'new'), preserveCrmStage:!handover, lang:replyLang, buttons, mediaUrl:''};
+    return enginePersistFirstGreetingTurn(env, c, clientId, state, userText, messageId, isNewLead, turn, startMs, mediaType, ctx);
+  };
+  if(ses.stage==='confirm' && trIsYes(userText)){
+    const summary=trSummary(ses.kind, ses.slots);
+    const leadId=await send(trWaitText(ses.kind), {handover:true});
+    await engineTrSaveSession(env, clientId, phone, null);
+    await engineRqPrivateNote(c, convId, `${summary}\n— collected by the bot, confirmed by the customer. Please share the best options.`);
+    await engineRqLabels(c, convId, ['human-requested', 'fare-request']);
+    if(leadId) await engineMaybeSendHotLeadAlert(env, c, clientId, leadId, state.lead, {...(state.lead||{})}, {inboxId:state.inboxId, reason:'fare_request', detail:summary.replace(/^\S+\s/, '')}).catch(()=>{});
+    return json({ok:true, route:'tr_fare_handover', kind:ses.kind});
+  }
+  const lastBot=[...(state.activeHistory||[])].reverse().find(m=>m?.role==='assistant')?.content||'';
+  const raw=await engineCallLlm(env, c, trExtractPrompt(ses.kind)+(lastBot?`\n\nThe agent's last message was: "${String(lastBot).slice(0,300)}"`:''), userText, 200).catch(()=>null);
+  const add=trParseExtraction(raw, ses.kind);
+  const changed=Object.keys(add).filter(k=>add[k]!==ses.slots[k]);
+  if(!changed.length && !fresh){
+    if(ses.stage==='confirm' && trIsChange(userText)){
+      ses.stage='collect';
+      await engineTrSaveSession(env, clientId, phone, {...ses, slots:{...ses.slots, _change:'1'}});
+      await send('Sure — what should I change? (date, cities, passengers…)');
+      return json({ok:true, route:'tr_fare_change'});
+    }
+    // The customer moved on to something else: close the collector and let the normal bot answer.
+    if(!ses.slots._change){ await engineTrSaveSession(env, clientId, phone, null); state.trSession=null; return null; }
+  }
+  ses.slots=trMergeSlots(ses.slots, add); delete ses.slots._change;
+  const missing=trNextMissing(ses.kind, ses.slots);
+  if(missing){
+    ses.stage='collect';
+    await engineTrSaveSession(env, clientId, phone, ses);
+    await send(trQuestion(ses.kind, missing));
+    return json({ok:true, route:'tr_fare_collect', asked:missing});
+  }
+  ses.stage='confirm';
+  await engineTrSaveSession(env, clientId, phone, ses);
+  await send(trConfirmText(ses.kind, ses.slots), {buttons:trConfirmButtons()});
+  return json({ok:true, route:'tr_fare_confirm'});
+}
+
+// ── Unanswered questions (Bot Behavior → 📭 Unanswered questions) ────────────────────────────────
+async function handleRqRoute(request, env, url){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cid=Number(payload.cid);
+  await engineRqEnsureMissed(env);
+  const path=url.pathname.replace(/^\/rq/, '');
+  if(path==='/missed' && request.method==='GET'){
+    const since=new Date(Date.now()-30*86400000).toISOString();
+    const r=await env.DB.prepare(`SELECT id, text, topic, reason, at, lead_id FROM rq_missed WHERE client_id=? AND status='open' AND at>=? ORDER BY at DESC LIMIT 1000`).bind(cid, since).all();
+    const groups=new Map();
+    for(const row of r.results||[]){
+      const g=groups.get(row.topic)||{topic:row.topic, count:0, examples:[], reasons:{}, last_at:row.at, lead_ids:[]};
+      g.count++; g.reasons[row.reason]=(g.reasons[row.reason]||0)+1;
+      if(g.examples.length<3 && row.text && !g.examples.includes(row.text)) g.examples.push(row.text);
+      if(row.lead_id && g.lead_ids.length<5 && !g.lead_ids.includes(row.lead_id)) g.lead_ids.push(row.lead_id);
+      groups.set(row.topic, g);
+    }
+    const weekAgo=new Date(Date.now()-7*86400000).toISOString();
+    const week=(r.results||[]).filter(x=>x.at>=weekAgo).length;
+    const c=await getClientById(env, cid);
+    return json({groups:[...groups.values()].sort((a,b)=>b.count-a.count).slice(0,100), week_count:week, answers:rqConfig(c||{}).answers});
+  }
+  const body=await request.json().catch(()=>({}));
+  const topic=String(body.topic||'').slice(0,200);
+  if(path==='/missed/answer' && request.method==='POST'){
+    const q=String(body.question||'').trim().slice(0,300), a=String(body.answer||'').trim().slice(0,600);
+    if(!q||!a) return json({error:'Question and answer are both needed'}, 400);
+    const c=await getClientByIdFresh(env, cid);
+    let bc={}; try{ bc=JSON.parse(c?.bot_config||'{}')||{}; }catch(e){}
+    const answers=Array.isArray(bc.rq_answers)?bc.rq_answers:[];
+    answers.push({q, a, at:new Date().toISOString()});
+    bc.rq_answers=answers.slice(-60);
+    await patchClientFields(env, cid, {bot_config:JSON.stringify(bc)});
+    if(topic) await env.DB.prepare(`UPDATE rq_missed SET status='answered' WHERE client_id=? AND topic=? AND status='open'`).bind(cid, topic).run();
+    return json({ok:true, answers:bc.rq_answers, bot_config:bc});
+  }
+  if(path==='/missed/dismiss' && request.method==='POST'){
+    await env.DB.prepare(`UPDATE rq_missed SET status='dismissed' WHERE client_id=? AND topic=? AND status='open'`).bind(cid, topic).run();
+    return json({ok:true});
+  }
+  if(path==='/answers/delete' && request.method==='POST'){
+    const c=await getClientByIdFresh(env, cid);
+    let bc={}; try{ bc=JSON.parse(c?.bot_config||'{}')||{}; }catch(e){}
+    const i=Number(body.index);
+    if(Array.isArray(bc.rq_answers) && i>=0 && i<bc.rq_answers.length) bc.rq_answers.splice(i,1);
+    await patchClientFields(env, cid, {bot_config:JSON.stringify(bc)});
+    return json({ok:true, answers:bc.rq_answers||[], bot_config:bc});
+  }
+  return json({error:'Not found'}, 404);
+}
+// Every 15 minutes: a client whose dead-end rate jumps above 15% in the last hour (≥6 replies)
+// usually means AI credits ran out or the model is down — tell the operator (reportOpsError).
+export async function runRqFallbackSpikeCheck(env){
+  try{
+    if(!env?.DB) return;
+    await engineRqEnsureMissed(env); await engineRqEnsureTables(env);
+    const hourAgo=new Date(Date.now()-3600000).toISOString();
+    const r=await env.DB.prepare(`SELECT client_id, COUNT(*) n, SUM(CASE WHEN reason='ai_error' THEN 1 ELSE 0 END) ai FROM rq_missed WHERE at>=? AND reason IN ('no_answer','ai_error','media') GROUP BY client_id`).bind(hourAgo).all();
+    for(const row of r.results||[]){
+      const sent=await env.DB.prepare(`SELECT COUNT(*) n FROM rq_sent_log WHERE client_id=? AND at>=?`).bind(row.client_id, Date.now()-3600000).first().catch(()=>null);
+      const total=Math.max(Number(sent?.n)||0, Number(row.n)||0);
+      if(total<6 || Number(row.n)/total<=0.15) continue;
+      if(!await engineRqAlertOnce(env, row.client_id, 'spike', 6)) continue;
+      await reportOpsError(env, `Fallback spike: ${row.n} of ${total} bot replies in the last hour were dead ends${Number(row.ai)>=2?' — mostly AI errors: check AI credits / provider':''}`, new Error(`client ${row.client_id}`), {clientId:row.client_id});
+    }
+  }catch(e){ await reportOpsError(env, 'runRqFallbackSpikeCheck', e); }
+}
+// Monday: "Your bot missed N questions this week. Top 5 topics…" to each account with the log on.
+export async function runRqWeeklyMissedDigest(env){
+  try{
+    if(!env?.DB) return;
+    await engineRqEnsureMissed(env);
+    const since=new Date(Date.now()-7*86400000).toISOString();
+    const r=await env.DB.prepare(`SELECT client_id, topic, COUNT(*) n FROM rq_missed WHERE at>=? AND reason!='delivery_failed' GROUP BY client_id, topic ORDER BY client_id, n DESC`).bind(since).all();
+    const by=new Map();
+    for(const row of r.results||[]){ const a=by.get(row.client_id)||[]; a.push(row); by.set(row.client_id, a); }
+    for(const [cid, rows] of by){
+      const c=await getClientById(env, cid).catch(()=>null);
+      if(!c || !rqConfig(c).missed_log || !c.authentik_email) continue;
+      if(!await engineRqAlertOnce(env, cid, 'weekly', 24*6)) continue;
+      const total=rows.reduce((t,x)=>t+Number(x.n), 0);
+      const esc=t=>String(t||'').replace(/[&<>"]/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+      await CHATS_V2_DEPS.sendEmail(env, c.authentik_email, `Your bot missed ${total} question${total===1?'':'s'} this week`,
+        `<p>Your WhatsApp bot couldn't answer <b>${total}</b> customer question${total===1?'':'s'} this week. Top topics:</p><ol>`
+        +rows.slice(0,5).map(x=>`<li>${esc(x.topic)} ×${x.n}</li>`).join('')+'</ol>'
+        +'<p>Open <b>Settings → Bot Behavior → 📭 Unanswered questions</b> and press <b>Add answer</b> — the bot uses it from the next message.</p>').catch(()=>null);
+    }
+  }catch(e){ await reportOpsError(env, 'runRqWeeklyMissedDigest', e); }
+}
+
 async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, quickReplies, ctx}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
@@ -30648,6 +30918,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       try{
         await chatsV2MessageStatus(env, c.Id, {cwId:msgId, convId, content:body.content, status}, {broadcast:engineBroadcastUpdate});
       }catch(e){}
+      if(status==='failed') await engineRqDeliveryFailed(env, c, convId, body);
     }
     if(await fv3IsEnabled(env,c.Id)){
       await fv3EnsureSchema(env);
@@ -30864,6 +31135,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // customer writes again on their own, the chat reopens. A STOP opt-out stays silent as before.
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start' && await engineRqClearSoftOptOut(env, clientId, phone, state)) state.leadOptOut='No';
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
+    // Reply Quality → a 👍 / 🙏 / WhatsApp reaction, or "ok" after a statement, needs no reply.
+    if(rqConfig(c).ignore_reactions && mediaType==='text' && rqIsNoReplyNeeded(text, state.activeHistory||state.history, engineAttrsObj(body.content_attributes)?.is_reaction===true||engineAttrsObj(body.message?.content_attributes)?.is_reaction===true)){
+      await logEngineSkip(env, clientId, phone, convId, 'rq-no-reply-needed', 'Reply Quality: reaction / emoji / acknowledgement — no reply needed');
+      return json({ok:true, skipped:'no-reply-needed'});
+    }
 
     // After-sales support: won/converted leads never enter the AI pipeline.
     // Open ticket → append message silently (no reply). No open ticket → create one and confirm.
@@ -31357,6 +31633,21 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // isn't confident) — see engineLocalizeReply's own comment for the scripted-content half of
     // this; the AI-generated branches below pass this straight into their own system prompt.
     const replyLang=routing.customerLanguage||c.language||'en';
+    // Travel bot (travel-bot.js): documents and fare / visa / Umrah / package collection.
+    if(taIsTravelClient(c) && !routing.isOptOut && !routing.isResub && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit')){
+      const _tr=trConfig(c);
+      const _trArgs={userText, messageId, isNewLead, startMs, mediaType, ctx, replyLang, convId, phone};
+      if(_tr.doc_detect && (mediaType==='image'||mediaType==='document')){
+        const _docRes=await engineTrDocTurn(env, c, clientId, state, _trArgs).catch(e=>{ reportOpsError(env, 'engineTrDocTurn', e, {clientId}); return null; });
+        if(_docRes) return _docRes;
+      }
+      if(_tr.fare_collect && mediaType!=='image' && mediaType!=='document'){
+        const _fareRes=await engineTrFareTurn(env, c, clientId, state, _trArgs).catch(e=>{ reportOpsError(env, 'engineTrFareTurn', e, {clientId}); return null; });
+        if(_fareRes) return _fareRes;
+      } else if(rqConfig(c).known_state){
+        state.trSession=await engineTrLoadSession(env, clientId, phone).catch(()=>null);
+      }
+    }
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
     const isElectronicsEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='electronics';
     // Per-customer flow override: check if this phone has a specific enabled flag in baby_care_customer_flows.
@@ -33383,7 +33674,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       const ecomPriceGuard=routing.route==='ecom_faq' ? enginePriceGuardOpts(c, sysPrompt, userText, replyLang) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks, ecomPriceGuard);
+      // Reply Quality → AI-error path: one retry before anything goes to the customer.
+      let _rqAiError=false, _rqUsedFallback=false;
+      if((!reply||reply.trim()==='One moment 🙏') && _rq.ai_error_path && mediaType!=='voice'){
+        reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks, ecomPriceGuard);
+        if(!reply||reply.trim()==='One moment 🙏') _rqAiError=true;
+      }
       if(!reply||reply.trim()==='One moment 🙏'){
+        _rqUsedFallback=true;
         let fallbackMsg;
         if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
         else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
@@ -33391,6 +33689,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         botTrace(c,'fallback_used',{why:mediaType==='voice'?'voice message could not be read':'the AI gave no usable reply (see the AI steps above)',handover:c.handover_enabled==='No'?'off — "not sure I got that" message':'on — callback message',text:fallbackMsg});
         reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
       }
+      // Reply Quality / Travel bot → dead ends: log, then menu, handover or "checking for you".
+      const _stuck=await engineRqStuckTurn(env, c, clientId, state, {userText, reply, usedFallback:_rqUsedFallback, aiError:_rqAiError, mediaType, lang:replyLang})
+        .catch(e=>{ reportOpsError(env, 'engineRqStuckTurn', e, {clientId}); return null; });
+      if(_stuck?.reply && _stuck.reply!==reply) reply=['en','ml','ta','hi'].includes(replyLang)?_stuck.reply:await engineLocalizeReply(env,c,_stuck.reply,replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -33537,8 +33839,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
       // branch it might have taken instead, voice/image/plain text, returns something else) — see
       // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
+      if(_stuck?.menu) faqQuickReplies=_stuck.menu;
+      if(_stuck?.handover) faqQuickReplies=null;
       const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies, ctx});
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
+      if(_stuck?.handover) await engineRqHandover(env, c, clientId, convId, state, routing, userText, replyLang, ctx, _stuck.reason);
       // Auto-send attestation service checklist PDF when the bot's reply names a specific service
       if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
       // Resort/hotel photos, video and brochure — when the lead names one, asks for its media, or the reply recommends it
@@ -46396,6 +46701,7 @@ export default {
         }else res=json({error:'Method not allowed'},405);
       }
       else if(url.pathname.startsWith('/followups/v3/')){ res=await fv3HandleRoute(request, env, FOLLOWUP_V3_DEPS, url); }
+      else if(url.pathname.startsWith('/rq/')){ res=await handleRqRoute(request, env, url); }
       else if(url.pathname.startsWith('/meta/ads-report/')){ res=await marHandleRoute(request, env, META_ADS_REPORT_DEPS, url); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
       else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
@@ -46662,6 +46968,8 @@ export default {
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
       // Follow-up V3 — only clients who switched it on (the classic sweep above skips them). See followup-v3.js.
       ctx.waitUntil(fv3RunForAllClients(env, FOLLOWUP_V3_DEPS).catch(e=>reportOpsError(env, 'followup v3 sweep', e)));
+      // Reply Quality: dead-end spike alert (see runRqFallbackSpikeCheck).
+      ctx.waitUntil(runRqFallbackSpikeCheck(env));
       // Baby Care product summary follow-up (Ecom → Settings) — see babyCareSummaryDue.
       ctx.waitUntil(runBabyCareSummaryFollowupsForAllClients(env));
       // Monthly Marketing (Campaigns → 📅 Monthly Marketing) — on this tick rather than the daily
@@ -46692,7 +47000,7 @@ export default {
       // summary/alerts, a few accounts per tick from 01:00 UTC. See marRunDue.
       ctx.waitUntil(marRunDue(env, META_ADS_REPORT_DEPS).catch(e=>reportOpsError(env, 'ads report daily run', e)));
     }
-    else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
+    else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); ctx.waitUntil(runRqWeeklyMissedDigest(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }
 };
