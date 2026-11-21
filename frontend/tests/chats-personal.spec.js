@@ -31,9 +31,11 @@ test('mark as personal, then make a lead again', async ({ page }) => {
   await page.locator('[onclick="toggleMenu()"]').click();
   await page.locator('#chatMenu button', { hasText: 'Mark as personal (no reply)' }).click();
   await expect.poll(() => patches).toEqual([{ Id: 7, Tags: 'Hot, Personal', OptOut: 'Yes' }]);
+  await expect(page.locator('#botPill')).toContainText('Personal · no reply');
 
   await page.locator('[onclick="toggleMenu()"]').click();
   await page.locator('#chatMenu button', { hasText: 'Make a lead again' }).click();
   await expect.poll(() => patches.length).toBe(2);
   expect(patches[1]).toEqual({ Id: 7, Tags: 'Hot', OptOut: 'No' });
+  await expect(page.locator('#botPill')).toContainText('Bot active');
 });
