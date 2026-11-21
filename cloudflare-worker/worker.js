@@ -5,6 +5,7 @@ import {trConfig,trMenuText,trIsFareAsk,trDetectKind,trExtractPrompt,trParseExtr
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
 import {HILLORA_CHAT_BUTTON,HILLORA_UNITS_PROMPT,HILLORA_FORM_SCREEN,HILLORA_FORM_VERSION,hilloraIsStyle,hilloraDecide,hilloraUnitPage,hilloraUnitDetailsText,hilloraPhotoUrls,hilloraFormFlowJson,hilloraFormInviteText,hilloraFormTextFallback,hilloraThanksText,hilloraStaffLink,hilloraCleanDetails,hilloraParseDetails,hilloraIsDetailsReply,hilloraQual,hilloraSummaryLines,hilloraHandoverLiftable,hilloraReleasePatch} from './hospitality-hillora.js';
+import {wsHandleRoute,wsRunDue} from './website-sync.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
@@ -215,6 +216,9 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/ecom/public/order'&&m==='POST', bucket:'ecom-order', limit:20, windowSec:600},
   // Each resync pulls up to ~3k Shopify records, so a handful an hour is plenty.
   {test:(p,m)=>p==='/ecom/shopify/resync'&&m==='POST', bucket:'shopify-resync', limit:6, windowSec:3600},
+  // 🌐 Website Sync: a full sync reads the whole catalogue; webhooks are per-store and cheap.
+  {test:(p,m)=>(p==='/ecom/website/sync'||p==='/ecom/website/connect'||p==='/ecom/website/test')&&m==='POST', bucket:'website-sync', limit:20, windowSec:3600},
+  {test:(p,m)=>p.startsWith('/ecom/website/hook/')&&m==='POST', bucket:'website-hook', limit:600, windowSec:600},
   {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
   {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
   {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
@@ -9018,6 +9022,36 @@ async function ensureEcomShopifyOrderFields(env, tableId){
   if(ok) _ecomShopifyOrderFieldsEnsured.add(tableId);
 }
 
+// Ecom → 🌐 Website Sync (website-sync.js) links orders by website_order_id; created on first use.
+const _ecomWebsiteOrderFieldsEnsured=new Set();
+async function ensureEcomWebsiteOrderFields(env, tableId){
+  if(_ecomWebsiteOrderFieldsEnsured.has(tableId)) return;
+  const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
+  if(!r.ok) return;
+  const names=new Set(((await r.json().catch(()=>({})))?.list||[]).map(f=>f.title));
+  let ok=true;
+  for(const [title, uidt] of [['website_order_id','SingleLineText'], ['line_items_json','LongText'], ['customer_email','SingleLineText']]){
+    if(names.has(title)) continue;
+    const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt}});
+    if(!cr.ok) ok=false;
+  }
+  if(ok) _ecomWebsiteOrderFieldsEnsured.add(tableId);
+}
+
+// Products deleted from Ecom (by hand or by a sync) also leave the D1 mirror — the bot's catalogue
+// read prefers the mirror (ecomListActiveProducts), so a row left there kept being offered — and
+// the bot's product memory.
+async function ecomForgetDeletedProducts(env, clientId, ids){
+  const list=(ids||[]).map(Number).filter(Boolean);
+  if(!list.length) return;
+  if(env.DB){
+    try{ for(let i=0; i<list.length; i+=50){ const chunk=list.slice(i, i+50); await env.DB.prepare(`DELETE FROM ecom_products_mirror WHERE client_id=? AND nocodb_id IN (${chunk.map(()=>'?').join(',')})`).bind(Number(clientId), ...chunk).run(); } }
+    catch(e){ console.error('[ecomForgetDeletedProducts] mirror delete failed', e.message); }
+  }
+  for(const id of list) await engineMemoryForgetProduct(env, clientId, id).catch(()=>{});
+  await kvDelEcomProducts(env, clientId);
+}
+
 // Upserts Shopify orders into Ecom Orders, matched on shopify_order_id (stable, unlike the order
 // name a merchant can edit). `status` forces one; otherwise it's derived from the order. Never
 // moves an order's status backwards (shopifyEcomNextStatus).
@@ -10814,7 +10848,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['shopify_product_id','style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
+const ECOM_STYLE_FIELD_TITLES=['shopify_product_id','website_product_id','style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -11283,7 +11317,7 @@ async function handleEcomDelete(request, env, kind){
     const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:chunk.map(id=>({Id:id}))});
     if(r.ok) deleted+=chunk.length;
   }
-  if(kind==='products' && deleted) await kvDelEcomProducts(env, clientId);
+  if(kind==='products' && deleted) await ecomForgetDeletedProducts(env, clientId, ownedIds);
   return json({deleted, requested:ids.length});
 }
 
@@ -11346,6 +11380,12 @@ async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
     for(const ext of ECOM_CATEGORY_IMAGE_EXTS){ try{ await env.ECOM_CATEGORY_MEDIA.delete(ecomCategoryMediaKey(clientId, categoryId, slot, ext)); }catch(e){} }
   }
 }
+async function ecomDeleteCategoryById(env, clientId, id){
+  await ecomCategoryDeleteAllMedia(env, clientId, id);
+  await env.DB.prepare(`DELETE FROM ecom_category_media_sent WHERE category_id=?`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM ecom_categories WHERE id=? AND client_id=?`).bind(id, Number(clientId)).run();
+  try{ await env.DB.prepare(`DELETE FROM memory_chunks WHERE client_id=? AND kind='category' AND ref_id=?`).bind(Number(clientId), String(id)).run(); }catch(e){}
+}
 async function handleEcomCategoryDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
@@ -11353,9 +11393,7 @@ async function handleEcomCategoryDelete(request, env){
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEcomCategory(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
-  await ecomCategoryDeleteAllMedia(env, clientId, id);
-  await env.DB.prepare(`DELETE FROM ecom_category_media_sent WHERE category_id=?`).bind(id).run();
-  await env.DB.prepare(`DELETE FROM ecom_categories WHERE id=?`).bind(id).run();
+  await ecomDeleteCategoryById(env, clientId, id);
   return json({ok:true});
 }
 
@@ -41579,6 +41617,40 @@ async function ceoBotTaskChanged(env, cid, taskId, prevStatus){
   const event=prevStatus===''?'created':row.status!==prevStatus?'status_changed':'';
   await pmQueueTaskLifecycle(env, row, {event, prevStatus});
 }
+// Ecom → 🌐 Website Sync (website-sync.js): a merchant's own website API → Ecom Products/Orders/Categories.
+const WEBSITE_SYNC_DEPS={
+  json, requireSession, getClientById, reportOpsError,
+  encrypt:HI_DEPS.encrypt, decrypt:HI_DEPS.decrypt,
+  webhookBase:env=>String(env.WORKER_BASE_URL||'').replace(/\/+$/, ''),
+  ecomTable:(env, cid, kind)=>ecomResolveTable(env, cid, kind),
+  listRows:(env, tableId, cid, where, fields)=>ecomListClientRows(env, tableId, cid, where, fields),
+  bulkWrite:async(env, tableId, method, rows)=>{
+    if(method!=='DELETE') return ecomBulkWrite(env, tableId, method, rows);
+    // NocoDB rejects large bulk-delete arrays with a 422 (see handleEcomDelete).
+    for(let i=0; i<rows.length; i+=40){
+      const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:rows.slice(i, i+40)});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); throw new Error(`NocoDB DELETE ${r.status}: ${d?.msg||d?.error||''}`); }
+    }
+    return [];
+  },
+  ensureProductFields:(env, tableId)=>ensureEcomProductStyleFields(env, tableId),
+  ensureOrderFields:(env, tableId)=>ensureEcomWebsiteOrderFields(env, tableId),
+  productsSaved:async(env, cid, saved)=>{
+    await ecomMirrorProductsToD1(env, cid, saved);
+    await kvDelEcomProducts(env, cid);
+    for(const p of saved.filter(p=>p.status==='inactive')) await engineMemoryIndexProduct(env, cid, p).catch(()=>{});
+    for(const p of saved.filter(p=>p.status!=='inactive').slice(0, 60)) await engineMemoryIndexProduct(env, cid, p).catch(()=>{});
+  },
+  productsDeleted:(env, cid, ids)=>ecomForgetDeletedProducts(env, cid, ids),
+  listCategories:async(env, cid)=>((await env.DB.prepare(`SELECT id, name FROM ecom_categories WHERE client_id=?`).bind(Number(cid)).all()).results||[]),
+  createCategory:async(env, cid, name)=>{
+    const r=await env.DB.prepare(`INSERT INTO ecom_categories (client_id, name, created_at) VALUES (?,?,?)`).bind(Number(cid), name, new Date().toISOString()).run();
+    const id=r.meta.last_row_id;
+    await engineMemoryIndexCategory(env, cid, {id, name}).catch(()=>{});
+    return id;
+  },
+  deleteCategory:(env, cid, id)=>ecomDeleteCategoryById(env, cid, id),
+};
 const SHOPIFY_SYNC_DEPS={
   json, ncFetch, getClientById, ncTableMeta, reportOpsError,
   clientsTable:CLIENTS_TABLE, apiVersion:SHOPIFY_API_VERSION,
@@ -46845,6 +46917,7 @@ export default {
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
       else if(url.pathname.startsWith('/ecom/shopify/') && (res=await shopifySyncHandleRoute(request, env, SHOPIFY_SYNC_DEPS, url))){ /* Shopify Orders / Stock — shopify-sync.js */ }
+      else if(url.pathname.startsWith('/ecom/website/')){ res=await wsHandleRoute(request, env, WEBSITE_SYNC_DEPS, url); /* 🌐 Website Sync — website-sync.js */ }
       else if((url.pathname.startsWith('/ecom/wa-shop/')||url.pathname.startsWith('/wa/shop/')) && (res=await waShopHandleRoute(request, env, WA_SHOP_DEPS, url, ctx))){ /* 🛍️ WhatsApp Shop — wa-commerce.js */ }
       else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
       else if(url.pathname==='/ecom/order-phones' && request.method==='GET'){ res=await handleEcomOrderPhones(request, env); }
@@ -47315,6 +47388,8 @@ export default {
       ctx.waitUntil(hsRunForAllClients(env, HS_DEPS).catch(e=>reportOpsError(env, 'hospitality suite sweep', e)));
       // Hospitality → API Import — re-sync each API link whose own interval is up; see hiRunDue.
       ctx.waitUntil(hiRunDue(env, HI_DEPS).catch(e=>reportOpsError(env, 'hospitality api import sync', e)));
+      // Ecom → 🌐 Website Sync — catch-up poll (orders updated_since + catalogue) per store interval; see wsRunDue.
+      ctx.waitUntil(wsRunDue(env, WEBSITE_SYNC_DEPS).catch(e=>reportOpsError(env, 'website sync', e)));
       // CEO Bot — briefs, staff reminders, standups, escalations, wrap, weekly report; only clients
       // with a connected CEO number, and nothing unless ceo_bot_enabled + active. See ceo-bot.js.
       ctx.waitUntil(ceoRunForAllClients(env, CEO_DEPS));
