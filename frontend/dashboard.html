@@ -2864,11 +2864,20 @@ const ROLES = {
                   <option value="shopify">Shopify / general store</option>
                   <option value="furniture_appliances">Furniture &amp; home appliances</option>
                   <option value="baby_care">Baby Care &amp; Apparel</option>
+                  <option value="four_l">4L</option>
                   <option value="medical_centre">Medical Centre</option>
                 </select>
               </div>
               <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
               <span class="save-msg" id="saveEcomCommunicationStyleMsg"></span>
+            </div>
+            <!-- 4L: Baby Care + the bot answers product questions only (cloudflare-worker/four-l.js). -->
+            <div id="fourLRow" style="display:none;margin-top:12px;max-width:640px">
+              <div class="s-note">4L: the bot sends the greeting and answers product questions only (size, colour, price, stock, fabric, photos, products by name, the order flow). Anything else gets one short note and goes to your team. Product questions asked while the customer waits are still answered. As soon as someone from your team replies, the bot stops for that chat until you tap “Hand back to bot”.</div>
+              <label class="form-label" style="margin-top:10px">Team handoff message</label>
+              <textarea class="form-input" id="cfgFourLHandoffText" rows="3" placeholder="Thank you for your message 🙏 Our team will reply to you here shortly. Meanwhile, feel free to ask me about any product — size, colour, price or availability."></textarea>
+              <label class="form-label" style="margin-top:10px">Extra product words (comma separated)</label>
+              <input class="form-input" id="cfgFourLKeywords" type="text" placeholder="e.g. anarkali, co-ord, maternity">
             </div>
             <!-- Shopify / general store: button-led shopping chat (worker.js engineShopifyFlowTurn). -->
             <label id="shopifyFlowRow" style="display:none;margin-top:12px;gap:10px;align-items:flex-start;cursor:pointer">
@@ -10857,7 +10866,7 @@ async function saveLeadNow(){
 // order assignment — see worker.js unattendedReallocProcessClient.
 function isBabyCareClient(){
   if(clientRecord?.industry!=='ecommerce') return false;
-  try{ return JSON.parse(clientRecord?.bot_config||'{}')?.ecom_communication_style==='baby_care'; }catch(e){ return false; }
+  try{ return ['baby_care','four_l'].includes(JSON.parse(clientRecord?.bot_config||'{}')?.ecom_communication_style); }catch(e){ return false; }
 }
 // Tells the Worker this person opened the lead, so it isn't reassigned as unattended. Fire and forget.
 function recordLeadOpened(id){
@@ -14397,6 +14406,8 @@ function populateSettings(){
   $id('ecomCommunicationStyleCard').style.display=(clientRecord.ecom_enabled==='Yes')?'block':'none';
   $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
   $id('cfgShopifyFlowEnabled').checked=ecomBotConfig.shopify_flow_enabled!==false;
+  $id('cfgFourLHandoffText').value=ecomBotConfig.four_l_handoff_text||'';
+  $id('cfgFourLKeywords').value=ecomBotConfig.four_l_product_keywords||'';
   renderShopifyFlowRow();
   $id('eduCommunicationStyleCard').style.display=clientRecord.industry==='education'?'block':'none';
   $id('cfgEduCommunicationStyle').value=ecomBotConfig.edu_communication_style||'';
@@ -15595,6 +15606,7 @@ $id('saveIgMobileIntro').addEventListener('click',async()=>{
 // The guided-chat switch only applies to the Shopify / general store style.
 function renderShopifyFlowRow(){
   $id('shopifyFlowRow').style.display=$id('cfgEcomCommunicationStyle').value==='shopify'?'flex':'none';
+  $id('fourLRow').style.display=$id('cfgEcomCommunicationStyle').value==='four_l'?'block':'none';
 }
 $id('cfgEcomCommunicationStyle').addEventListener('change',renderShopifyFlowRow);
 $id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
@@ -15604,6 +15616,11 @@ $id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
   if(selected) botConfig.ecom_communication_style=selected;
   else delete botConfig.ecom_communication_style;
   if(selected==='shopify') botConfig.shopify_flow_enabled=$id('cfgShopifyFlowEnabled').checked;
+  if(selected==='four_l'){
+    const ho=$id('cfgFourLHandoffText').value.trim(), kw=$id('cfgFourLKeywords').value.trim();
+    if(ho) botConfig.four_l_handoff_text=ho.slice(0,600); else delete botConfig.four_l_handoff_text;
+    if(kw) botConfig.four_l_product_keywords=kw.slice(0,2000); else delete botConfig.four_l_product_keywords;
+  }
   await saveField('saveEcomCommunicationStyle','saveEcomCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveEduCommunicationStyle').addEventListener('click',async()=>{
