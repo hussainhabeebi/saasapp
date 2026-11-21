@@ -3132,7 +3132,8 @@ async function deleteTestimonialById(id) {
 }
 
 // ── ORDERS ──────────────────────────────────────
-function isBabyCareStore() { return botConfig?.ecom_communication_style === 'baby_care'; }
+// 4L (four_l) is Baby Care plus a bot/team split, so it gets every Baby Care screen.
+function isBabyCareStore() { return ['baby_care', 'four_l'].includes(botConfig?.ecom_communication_style); }
 function orderColCount() { return isBabyCareStore() ? 11 : 8; }
 function assigneeKey(o) { return String(o.assigned_to || '').trim().toLowerCase(); }
 function teamOptions(selected, { auto = false, pick = false } = {}) {

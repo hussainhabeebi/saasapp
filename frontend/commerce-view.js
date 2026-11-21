@@ -88,7 +88,7 @@ function cvSetPref(v){ try{ localStorage.setItem(CV_PREF_KEY(),v); }catch(e){} }
 const CV_DESKTOP=window.matchMedia('(min-width:768px)');
 function isCommerceView(){ return clientRecord?.industry==='ecommerce' && cvPref()!=='classic' && CV_DESKTOP.matches; }
 function cvShopifyOn(){ return !!clientRecord?.shopify_shop_domain; }
-function cvBabyCare(){ try{ return JSON.parse(clientRecord?.bot_config||'{}')?.ecom_communication_style==='baby_care'; }catch(e){ return false; } }
+function cvBabyCare(){ try{ return ['baby_care','four_l'].includes(JSON.parse(clientRecord?.bot_config||'{}')?.ecom_communication_style); }catch(e){ return false; } }
 
 // Same rule as applyUserModulePermissions(): owner or no saved restriction = everything. Store
 // screens need the 'ecommerce' module permission.

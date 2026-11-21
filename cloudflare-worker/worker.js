@@ -8,6 +8,7 @@ import {wsHandleRoute,wsRunDue} from './website-sync.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
+import {FOUR_L_STYLE,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
 import {buildHealthReport,healthOverall,healthRecurringIssues,healthCriticalAlerts,healthSummaryLine} from './health-report.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -3010,6 +3011,16 @@ async function handleChatResolveLead(request, env){
 export function engineManualTakeoverActive(lead){
   return !!lead && lead.Handover==='Yes' && !!String(lead.HandoverBy||'').trim();
 }
+// 4L (four-l.js): a person replied, so the chat is theirs — the same fields as Chats → Take over.
+export async function engineFourLTakeOver(env, lead, by, at=new Date().toISOString()){
+  if(!lead?.Id || engineManualTakeoverActive(lead)) return false;
+  await ensureLeadsColumns(env, ['HandoverBy']);
+  const fields={Handover:'Yes', HandoverBy:String(by||'Team').slice(0,120), HandoverAt:at, SlaAlerted:'Yes'};
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ...fields}});
+  if(!r?.ok) return false;
+  await chatsV2ApplyLeadPatch(env, lead.Id, fields, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+  return true;
+}
 // Pure: drops the end-of-turn fields that would undo a change a person made to the lead while
 // the bot's turn was running (state = the lead as the turn read it, fresh = as it is now).
 export function engineKeepStaffLeadChanges(body, state, fresh){
@@ -3075,7 +3086,10 @@ async function chatsRecordOutgoing(env, cid, leadId, msg, payload=null){
   if(String(lead.ClientId)!==String(cid)) return;
   if(await d1HasChatwootMessage(env, leadId, msg.attachment?.cw_id)) return;
   const ts=new Date().toISOString();
-  const sender=payload?chatsAgentSender(await getClientById(env, cid).catch(()=>null), payload):{};
+  const _c=payload?await getClientById(env, cid).catch(()=>null):null;
+  const sender=payload?chatsAgentSender(_c, payload):{};
+  // 4L: a person sending from Chats takes the chat over right away (no wait for the webhook echo).
+  if(payload && fourLIsStyle(_c)) await engineFourLTakeOver(env, lead, String(payload.email||payload.sub||'Team'), ts).catch(()=>{});
   await d1InsertLeadMessage(env, leadId, cid, {role:'assistant', ts, ...sender, ...msg});
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
     {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:ts}}).catch(()=>{});
@@ -6523,7 +6537,7 @@ export async function runBabyCareSummaryFollowupsForAllClients(env){
 }
 async function babyCareSummaryProcessClient(env, c){
   const bc=engineParseJsonField(c.bot_config, {});
-  if(bc.baby_care_summary_followup_enabled!==true || bc.ecom_communication_style!=='baby_care') return;
+  if(bc.baby_care_summary_followup_enabled!==true || !ecomStyleIsBabyCare(bc.ecom_communication_style)) return;
   if(c.industry!=='ecommerce' || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   if(!followupWithinQuietHours(c)) return; // picked up on a later tick, still inside 24h
   const mins=Math.max(10, Number(bc.baby_care_summary_followup_mins)||BABY_SUMMARY_DEFAULT_MINS);
@@ -14718,7 +14732,7 @@ async function engineTrackBabyCareChatOrder(env, c, clientId, phone, name, state
 // when "please change the address" tends to arrive.
 async function engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, lead, ctx){
   try{
-    if(!text || c.industry!=='ecommerce' || engineParseJsonField(c.bot_config,{}).ecom_communication_style!=='baby_care') return;
+    if(!text || c.industry!=='ecommerce' || !ecomStyleIsBabyCare(engineParseJsonField(c.bot_config,{}).ecom_communication_style)) return;
     if(ECOM_DRAFT_ORDER_STAGES.has(lead?.Stage)) return;
     let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
     const work=engineMaybeApplyCustomerOrderUpdate(env, c, clientId, phone, text, hist);
@@ -14795,7 +14809,8 @@ async function handleEcomOrderFromChat(request, env){
    was assigned to, the chat session behind it, which customers the AI has talked to several
    times without an order yet (warm leads), and to stop the same phone number placing the same
    order twice. Baby Care only — other ecom styles keep the Orders page exactly as it was. */
-export function ecomIsBabyCare(c){ return engineParseJsonField(c?.bot_config, {})?.ecom_communication_style==='baby_care'; }
+// 4L (four-l.js) is Baby Care plus a strict bot / team split, so it counts as Baby Care everywhere.
+export function ecomIsBabyCare(c){ return ecomStyleIsBabyCare(engineParseJsonField(c?.bot_config, {})?.ecom_communication_style); }
 // Last 10 digits — "+91 98765 43210", "919876543210" and "9876543210" are the same customer.
 export function ecomPhoneKey(phone){ const d=String(phone||'').replace(/\D/g,''); return d.length>10?d.slice(-10):d; }
 export const ECOM_OPEN_ORDER_STATUSES=['pending','received','processing'];
@@ -26348,7 +26363,9 @@ REPLY RULES:
 • IMAGE RULE: Never write placeholder text like "(Image of X)" or "[Photo]" — real product photos are sent separately by the system.`
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
-    if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
+    // 4L (four-l.js): Baby Care's voice and rules, plus product-only scope — anything else is the team's.
+    if(ecomCommunicationStyle===FOUR_L_STYLE) sys+='\n\n'+ecomStyleInstructions.baby_care+'\n\n4L SCOPE RULE: You only answer product questions — size, colour, price, availability, fabric, photos and the products/categories in VERIFIED ECOM PRODUCT DATA — and guide the shopping/order flow. For anything else (orders already placed, delivery status, returns, exchanges, payments, complaints, business or contact questions) do not answer it yourself: say briefly that our team will reply here shortly. Never promise anything on behalf of the team.';
+    else if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
     // Shopify guided flow (engineShopifyFlowTurn): the next step's buttons follow every answer as
     // their own message, so the answer itself stays short and never builds a menu.
     if(engineShopifyFlowOn(c, engineParseJsonField(c.bot_config, {}))) sys+='\n\nGUIDED SHOPPING FLOW IS ON: Answer only what the customer just asked, in 1–3 short sentences, from VERIFIED ECOM PRODUCT DATA and the business prompt. Do not list categories or products as choices, do not write OPTIONS:, do not paste order links and do not ask what they would like to browse — tappable buttons for the next step (categories, sizes, checkout, order tracking) are sent automatically right after your answer.';
@@ -26650,7 +26667,7 @@ export function engineReplyQualityPromptBlock(c, state, lang){
   const rq=rqConfig(c);
   if(!rq.any) return '';
   const bc=engineParseJsonField(c?.bot_config,{});
-  const babycare=c?.industry==='ecommerce'&&bc.ecom_communication_style==='baby_care';
+  const babycare=c?.industry==='ecommerce'&&ecomStyleIsBabyCare(bc.ecom_communication_style);
   const travel=taIsTravelClient(c);
   const known=rq.known_state?rqKnownState({history:state?.activeHistory||[], userText:state?.rqUserText||'', lead:state?.lead||null,
     babyProfile:state?.babyProfile||null, lang, stage:state?.stage||'', travel:travel?(state?.trSession||{kind:'', slots:{}}):null}):null;
@@ -29514,6 +29531,14 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
     await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply not sent');
     return false;
   }
+  // 4L: a person may have taken the chat over while this turn was thinking — never answer on top of them.
+  if(convId && fourLIsStyle(c)){
+    const fresh=await engineLeadForChatwootBody(env, clientId, {conversation:{id:convId}}, 'Id,Handover,HandoverBy').catch(()=>null);
+    if(engineManualTakeoverActive(fresh)){
+      await logEngineSkip(env, clientId, null, convId, 'four-l-agent-active', `taken over by ${fresh.HandoverBy} — bot reply not sent`);
+      return false;
+    }
+  }
   const raw=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   // Last line of defence for replies that never went through engineCallLlm — see engineStripPromptLeak.
   const trimmed=engineStripPromptLeak(raw);
@@ -30034,7 +30059,9 @@ async function engineJournalStageChange(env, clientId, leadId, fromStage, toStag
 export async function engineHandoverSilenceTurn(env, c, clientId, body, state, parsed, text, startMs=Date.now(), ctx=null){
   const healthcare=engineHealthcareHandoverSilenceActive(c,state,startMs);
   const handedOver=!!state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover');
-  const configured=c.industry!=='healthcare' && handedOver && c.handover_silence_enabled==='Yes';
+  // 4L (four-l.js) decides per message instead: product questions are still answered while the
+  // customer waits for the team, everything else stays silent (engineFourLGate).
+  const configured=c.industry!=='healthcare' && handedOver && c.handover_silence_enabled==='Yes' && !fourLIsStyle(c);
   // Travel Settings → Chat Style "Greetings only": once greeted (and so handed over) the bot never
   // replies to that customer again, whatever the handover-silence setting says.
   const greetingOnly=!healthcare && !configured && handedOver && greetingOnlyOn(c);
@@ -30051,6 +30078,32 @@ export async function engineHandoverSilenceTurn(env, c, clientId, body, state, p
   const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':destRouted?'destination-routed':resortsV1?'resorts-v1-booked':'handed-over';
   await logEngineSkip(env,clientId,parsed.phone,parsed.convId,reason,`stage ${state.stage||''} — message saved to Chats, no bot reply`);
   return json({ok:true,skipped:reason,lead_collected:true});
+}
+
+// 4L gate (four-l.js fourLDecide) — returns a response when this turn is the team's, else null
+// so the normal Baby Care pipeline answers it.
+export async function engineFourLGate(env, c, clientId, body, state, parsed, {userText, mediaType, isNewLead, messageId, startMs=Date.now(), ctx=null}={}){
+  const t=String(userText||'').trim();
+  const isOptOut=ENGINE_OPT_OUT_WORDS.includes(t.toLowerCase());
+  let decision=fourLDecide({text:t, mediaType, stage:state.stage, lead:state.lead, isNewLead, isOptOut, extraKeywords:fourLExtraKeywords(c)});
+  // Not caught by the word lists — a product or category named in the message still counts.
+  if(decision!=='bot'){
+    const products=await ecomListActiveProducts(env, clientId).catch(()=>[]);
+    if(products?.length) decision=fourLDecide({text:t, mediaType, stage:state.stage, lead:state.lead, isNewLead, isOptOut, products, extraKeywords:fourLExtraKeywords(c)});
+  }
+  if(decision==='bot') return null;
+  if(decision==='queue'){
+    await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, t);
+    await engineSilentBabyCareOrderUpdate(env, c, clientId, parsed.phone, t, state.lead, ctx);
+    await logEngineSkip(env, clientId, parsed.phone, parsed.convId, 'four-l-team', 'not a product question — waiting for the team, no bot reply');
+    return json({ok:true, skipped:'four-l-team', lead_collected:true});
+  }
+  const lang=c.language||'en';
+  const text=await engineLocalizeReply(env, c, fourLHandoffText(c, {isNewLead, name:state.name||state.lead?.Name, business:c.client_name}), lang);
+  const turn={text, route:'human', next:'human_handover', intent:'FOUR_L_TEAM', lang, buttons:[], mediaUrl:''};
+  await enginePersistFirstGreetingTurn(env, c, clientId, state, t, messageId, isNewLead, turn, startMs, mediaType, ctx);
+  await engineSendHandoverLabel(c, parsed.convId).catch(()=>{});
+  return json({ok:true, route:'four_l_handoff', sent:c.bot_reply_disabled!=='Yes'});
 }
 
 async function engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text){
@@ -30542,16 +30595,19 @@ export function engineIsHumanAgentMessage(body, convHistory, recentAssistantRows
     return x && (x===n || (n.length>=20 && x.includes(n)) || n.endsWith(x));
   });
 }
-async function engineTrackHumanAgentReply(env, clientId, body, at){
+async function engineTrackHumanAgentReply(env, clientId, body, at, c=null){
   const convId=String(body.conversation?.id||'');
   if(!convId) return;
   await ensureLeadsColumns(env, ['LastAgentMsgAt']);
-  const lead=await engineLeadForChatwootBody(env, clientId, body, 'Id,ConvHistory');
+  const fourL=fourLIsStyle(c);
+  const lead=await engineLeadForChatwootBody(env, clientId, body, fourL?'Id,ConvHistory,Handover,HandoverBy':'Id,ConvHistory');
   if(!lead?.Id) return;
   const {results}=await env.DB.prepare(`SELECT content, sender_type FROM lead_messages WHERE lead_id=? AND role='assistant' ORDER BY ts DESC LIMIT 6`)
     .bind(Number(lead.Id)).all().catch(()=>({results:[]}));
   if(!engineIsHumanAgentMessage(body, lead.ConvHistory, results)) return;
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), LastAgentMsgAt:at}});
+  // 4L: a person replied → they have the chat; the bot stays silent until "Hand back to bot".
+  if(fourL) await engineFourLTakeOver(env, lead, fourLAgentLabel(body), at).catch(()=>{});
   // Also reset the Durable Object cadence so it doesn't fire while the human is active
   try{
     const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${lead.Id}`));
@@ -31031,7 +31087,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // writing ConvHistory/D1 and the echo is recognised and skipped. Tracking reads
         // ConvHistory before Leadvyne v2 appends this message to it (+ Chats thread, + promises → facts).
         const work=new Promise(r=>setTimeout(r, 8000))
-          .then(()=>engineTrackHumanAgentReply(env, clientId, body, at).catch(()=>{}))
+          .then(()=>engineTrackHumanAgentReply(env, clientId, body, at, c).catch(()=>{}))
           .then(()=>engineV2On(c)?engineV2HandleStaffMessage(env, c, clientId, body):engineRecordStaffReply(env, c, clientId, body)).catch(()=>{});
         if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
       }
@@ -31499,6 +31555,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // question (e.g. "Where is the shop?"), the intro is skipped so the AI can answer the
     // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
     // new leads in that path.
+    // 4L (four-l.js): the bot greets and answers product questions only; everything else is the
+    // team's — one "our team will reply" note, then silence on those messages. Product questions
+    // asked while the customer waits for the team are still answered.
+    if(c.industry==='ecommerce' && fourLIsStyle(c)){
+      const _fl=await engineFourLGate(env, c, clientId, body, state, parsed, {userText, mediaType, isNewLead, messageId, startMs, ctx});
+      if(_fl) return _fl;
+    }
     const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
     // A new/returning lead whose opener is a real ask ("price & photos of the name printed set")
     // gets that answered first — see engineIsSpecificFirstQuestion; the intro rides after it.
@@ -31549,7 +31612,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     // For fashion, electronics and baby_care ecom, skip the generic greeting when the first message
     // already contains product/category content — let the product detection pipeline handle it.
-    const _ecomStylesWithProductGreeting=new Set(['fashion','electronics','baby_care']);
+    const _ecomStylesWithProductGreeting=new Set(['fashion','electronics','baby_care',FOUR_L_STYLE]);
     const _ecomNewWithProduct=isNewLead&&c.industry==='ecommerce'
       &&_ecomStylesWithProductGreeting.has(botConfig.ecom_communication_style||'')
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
@@ -31581,7 +31644,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // button-driven stage — the stage handler will deterministically handle the turn
     // regardless of intent. Opt-out and resub keywords still bypass this fast path so
     // ENGINE_OPT_OUT_WORDS / "start" re-subscribe remain honoured.
-    const _ecomStyle=c.industry==='ecommerce'?(botConfig.ecom_communication_style||''):'';
+    // 4L runs the Baby Care flow, so it reads as baby_care for the fast path below.
+    const _ecomStyle=c.industry==='ecommerce'?(ecomStyleIsBabyCare(botConfig.ecom_communication_style)?'baby_care':(botConfig.ecom_communication_style||'')):'';
     const _isActiveEcomStage=
       (_ecomStyle==='fashion'     && state.stage?.startsWith('fashion_order_')) ||
       (_ecomStyle==='baby_care'   && state.stage?.startsWith('baby_'))          ||
@@ -31695,7 +31759,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _bcCustomer=_bcCustomerFlows[phone]||_bcCustomerFlows[phone.replace(/^\+/,'')]||null;
     const _bcGlobalEnabled=botConfig.baby_care_flow_enabled!==false; // default true
     const _bcCustomerEnabled=_bcCustomer!=null?(_bcCustomer.enabled!==false):_bcGlobalEnabled;
-    const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care'&&_bcCustomerEnabled;
+    const isBabyCareEcom=c.industry==='ecommerce'&&ecomStyleIsBabyCare(botConfig.ecom_communication_style)&&_bcCustomerEnabled;
     // Baby Care: the baby's age (said now, earlier in the chat, or remembered) narrows every product
     // picker below to age-appropriate products — a 9-month-old gets T-shirts, not newborn sets.
     // Boy/girl and budget narrow it the same way; what they asked for ("T-shirt") goes first.
@@ -33943,7 +34007,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     // Baby Care: keep the Orders tab in step with the chat (draft orders + customer changes).
     // After the reply has gone out and never throws, so it can't change what the customer sees.
-    if(c.industry==='ecommerce' && botConfig.ecom_communication_style==='baby_care')
+    if(c.industry==='ecommerce' && ecomStyleIsBabyCare(botConfig.ecom_communication_style))
       await engineTrackBabyCareChatOrder(env, c, clientId, phone, name, state, routing, userText, ctx).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
