@@ -29,6 +29,8 @@ function updateChatBadge(){
   const dnBadge=$id('dnChatBadge'), bnBadge=$id('bnChatBadge');
   if(dnBadge){ dnBadge.style.display=count?'inline-block':'none'; dnBadge.textContent=count>99?'99+':count; }
   if(bnBadge){ bnBadge.style.display=count?'block':'none'; }
+  const tvBadge=$id('tvChatBadge'); // travel workspace nav (travel-view.js)
+  if(tvBadge){ tvBadge.style.display=count?'inline-block':'none'; tvBadge.textContent=count>99?'99+':count; }
 }
 
 let _chatsReady=false, _chatsPending=null;

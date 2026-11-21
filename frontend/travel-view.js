@@ -26,32 +26,53 @@ const TV_AGENCY_GATED=new Set([...Object.keys(TV_AGENCY_PAGES),'departures','tvl
 // Mobile: everything except Today / Trips (own bottom-nav buttons) lights up the More button.
 MORE_GROUP.push(...Object.keys(TV_AGENCY_PAGES).filter(p=>p!=='tvtrips'),'departures','tvlive','tvstatus');
 
-// Desktop nav: [page, label] or a dropdown group {group, items:[[page,label],…]}.
+// Desktop nav, grouped by how an agent works (sell → talk → operate → catalogue/money/grow) so it
+// stays on one line. Entries: {page,label,icon} a tab; {group,icon,items:[[page,label],…]} a
+// dropdown; 'sep' a thin divider; 'end' pushes the rest (Settings, More) to the right edge, where
+// they show as icons only. Icons are one monochrome line set (TV_ICONS) that takes the text colour,
+// so only the active tab is in the brand colour.
 const TV_NAV=[
-  ['travelhome','🏠 Today'],
-  ['leads','📥 Inquiries'],
-  ['tvstatus','📌 Status Board'],
-  ['chats','💬 Inbox'],
-  ['tvtrips','🎫 Trips'],
-  ['profiles','👤 Travellers'],
-  ['tvquotes','🗺️ Quotes & Itineraries'],
-  ['departures','📅 Departures'],
-  {group:'🧳 Products', items:[
-    ['tvpackages','📦 Packages'],['tvvisa','🛂 Visa & Docs'],['tvumrah','🕌 Umrah / Hajj'],
-    ['tvservices','🗂️ Services'],['tvattest','📋 Attestation'],['tvgroupfares','👥 Group Fares'],
-    ['tvspecialfares','🎟️ Special Fares'],['tvcars','🚗 Cars'],
+  {page:'travelhome', label:'Today', icon:'home'},
+  'sep',
+  {group:'Sales', icon:'target', items:[
+    ['leads','Inquiries'],['tvstatus','Status Board'],['tvquotes','Quotes & Itineraries'],
   ]},
-  ['tvlive','✈️ Live Flights'],
-  ['tvfinance','💰 Finance'],
-  {group:'📣 Grow', items:[
-    ['broadcast','📢 Campaigns'],['followups','🔁 Follow-ups'],['reports','📈 Reports'],['team','📊 Team'],
+  {page:'chats', label:'Inbox', icon:'inbox', badge:'tvChatBadge'},
+  'sep',
+  {group:'Operations', icon:'plane', items:[
+    ['tvtrips','Trips'],['departures','Departures'],['tvlive','Live Flights'],
   ]},
-  ['settings','⚙️ Settings'],
-  {group:'⋯ More', items:[
-    ['humandeals','🤝 Human Deals'],['bizai','🤖 AI Assistant'],['accounting','💰 Accounting'],
-    ['billing','💳 Billing'],['home','🏠 Classic Home'],['__classic','↩️ Classic CRM view'],
+  {page:'profiles', label:'Travellers', icon:'users'},
+  'sep',
+  {group:'Catalogue', icon:'package', items:[
+    ['tvpackages','Packages'],['tvvisa','Visa & Docs'],['tvumrah','Umrah / Hajj'],
+    ['tvservices','Services'],['tvattest','Attestation'],['tvgroupfares','Group Fares'],
+    ['tvspecialfares','Special Fares'],['tvcars','Cars'],
+  ]},
+  {page:'tvfinance', label:'Finance', icon:'wallet'},
+  {group:'Grow', icon:'trend', items:[
+    ['broadcast','Campaigns'],['followups','Follow-ups'],['reports','Reports'],['team','Team'],
+  ]},
+  'end',
+  {page:'settings', label:'Settings', icon:'gear', iconOnly:true},
+  {group:'More', icon:'dots', iconOnly:true, items:[
+    ['humandeals','Human Deals'],['bizai','AI Assistant'],['accounting','Accounting'],
+    ['billing','Billing'],['home','Classic Home'],['__classic','Switch to classic CRM view'],
   ]},
 ];
+const TV_ICONS={
+  home:'<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+  target:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  inbox:'<path d="M21 12h-6l-2 3h-2l-2-3H3"/><path d="M5.5 5h13L21 12v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6z"/>',
+  plane:'<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
+  users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  package:'<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/><path d="m7.5 5.5 9 5"/>',
+  wallet:'<path d="M19 7V5a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3v2a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V6"/><path d="M21 13v4"/>',
+  trend:'<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  dots:'<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+};
+function tvIcon(name){ return `<svg class="tv-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TV_ICONS[name]||''}</svg>`; }
 // Mobile "More" sheet: travel items shown above the regular ones.
 const TV_MORE=[
   ['tvstatus','📌','Status Board'],
@@ -87,10 +108,30 @@ function tvInjectStyle(){
   if($id('tvStyle')) return;
   const st=document.createElement('style'); st.id='tvStyle';
   st.textContent=`
-#travelNav{display:none;gap:2px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0;flex-wrap:wrap}
+#travelNav{display:none;gap:2px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0;flex-wrap:nowrap;align-items:stretch;min-width:0}
 @media(min-width:768px){html.tv-mode #travelNav{display:flex}html.tv-mode #desktopNav{display:none!important}}
-#travelNav .dnTab{white-space:nowrap}
+#travelNav .dnTab,#travelNav .dnGroupBtn{white-space:nowrap;display:flex;align-items:center;gap:7px;padding:12px 11px}
+#travelNav .tv-ic{flex-shrink:0;opacity:.85}
+#travelNav .active .tv-ic,#travelNav .dnGroup:has(.dnTab.active) .tv-ic{opacity:1}
+#travelNav .tv-sep{width:1px;background:var(--line);margin:12px 6px;flex-shrink:0}
+#travelNav .tv-end{margin-left:auto}
+#travelNav .tv-icononly{padding:12px 10px}
+#travelNav .tv-icononly .tv-lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+#travelNav .dnGroupBtn{position:relative}
+#travelNav .tv-gdot{display:none;width:7px;height:7px;border-radius:50%;background:#DC2626;position:absolute;top:9px;right:4px}
+#travelNav .dnGroup:has(.tsb-badge) .tv-gdot{display:block}
+#travelNav .dnGroup:hover .tv-gdot{display:none}
+#travelNav .tv-badge{display:none;min-width:18px;box-sizing:border-box;padding:1px 6px;border-radius:999px;background:#DC2626;color:#fff;font-size:10.5px;font-weight:700;line-height:16px;text-align:center;font-family:var(--mono)}
 #travelNav .tv-dd{display:none;position:absolute;top:100%;left:0;min-width:200px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:60;flex-direction:column}
+#travelNav .tv-dd-right .tv-dd{left:auto;right:0}
+#travelNav .tv-dd .dnTab::after{display:none}
+#travelNav .tv-dd .dnTab{justify-content:space-between}
+/* Narrow desktops: icons only (label as tooltip), except the tab you're on */
+@media(min-width:768px) and (max-width:1023px){
+  #travelNav .dnTab:not(.active)>.tv-lbl,#travelNav .dnGroup:not(:has(.dnTab.active))>.dnGroupBtn>.tv-lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  #travelNav .tv-dd .dnTab>.tv-lbl{position:static;width:auto;height:auto;clip:auto}
+  #travelNav .dnTab,#travelNav .dnGroupBtn{padding:12px 10px}
+}
 #travelNav .dnGroup:hover .tv-dd,#travelNav .dnGroup:focus-within .tv-dd{display:flex}
 #travelNav .tv-dd .dnTab{text-align:left;border-bottom:none;border-radius:6px;padding:8px 12px;margin:0}
 #travelNav .tv-dd .dnTab:hover{background:var(--accent-soft)}
@@ -188,9 +229,11 @@ function tvEnsurePages(){
   }
 }
 
-function tvNavButton(page,label){
+function tvNavButton(page,label,icon,opts={}){
   const b=document.createElement('button');
-  b.className='dnTab'; b.dataset.page=page==='__classic'?'':page; b.textContent=label;
+  b.className='dnTab'+(opts.iconOnly?' tv-icononly':''); b.dataset.page=page==='__classic'?'':page;
+  b.innerHTML=(icon?tvIcon(icon):'')+`<span class="tv-lbl">${esc(label)}</span>`+(opts.badge?`<span class="tv-badge" id="${opts.badge}"></span>`:'');
+  b.title=label; b.setAttribute('aria-label',label);
   if(page==='__classic') b.dataset.tvAction='classic';
   b.addEventListener('click',()=>tvGo(page));
   return b;
@@ -198,23 +241,36 @@ function tvNavButton(page,label){
 function tvBuildDesktopNav(){
   let nav=$id('travelNav');
   if(!nav){
-    nav=document.createElement('div'); nav.id='travelNav';
+    nav=document.createElement('div'); nav.id='travelNav'; nav.setAttribute('role','navigation');
     $id('desktopNav')?.insertAdjacentElement('afterend',nav);
   }
   nav.innerHTML='';
+  let pushEnd=false;
+  const add=el=>{ if(pushEnd){ el.classList.add('tv-end'); pushEnd=false; } nav.appendChild(el); };
   TV_NAV.forEach(item=>{
-    if(Array.isArray(item)){
-      if(tvCanSee(item[0])) nav.appendChild(tvNavButton(item[0],item[1]));
+    if(item==='end'){ pushEnd=true; return; }
+    if(item==='sep'){
+      // No divider at the start, after another divider, or right before the right-hand icons.
+      const last=nav.lastElementChild;
+      if(last && !last.classList.contains('tv-sep')){ const d=document.createElement('span'); d.className='tv-sep'; nav.appendChild(d); }
+      return;
+    }
+    if(item.page){
+      if(tvCanSee(item.page)) add(tvNavButton(item.page,item.label,item.icon,item));
       return;
     }
     const visible=item.items.filter(([p])=>tvCanSee(p));
     if(!visible.length) return;
-    const g=document.createElement('div'); g.className='dnGroup';
-    g.innerHTML=`<button class="dnGroupBtn">${esc(item.group)} <span class="arr">▾</span></button><div class="tv-dd"></div>`;
+    const g=document.createElement('div'); g.className='dnGroup'+(item.iconOnly?' tv-dd-right':'');
+    g.innerHTML=`<button class="dnGroupBtn${item.iconOnly?' tv-icononly':''}" title="${esc(item.group)}" aria-label="${esc(item.group)}" aria-haspopup="true">${tvIcon(item.icon)}<span class="tv-lbl">${esc(item.group)}</span>${item.iconOnly?'':'<span class="arr">▾</span>'}<span class="tv-gdot"></span></button><div class="tv-dd"></div>`;
     const dd=g.querySelector('.tv-dd');
     visible.forEach(([p,l])=>dd.appendChild(tvNavButton(p,l)));
-    nav.appendChild(g);
+    add(g);
   });
+  // Drop a trailing divider (or one left before the right-hand icons).
+  nav.querySelectorAll('.tv-sep').forEach(d=>{ const n=d.nextElementSibling; if(!n||n.classList.contains('tv-end')||n.classList.contains('tv-sep')) d.remove(); });
+  if(typeof updateChatBadge==='function') try{ updateChatBadge(); }catch(e){}
+  if(typeof tsUpdateBadge==='function') try{ tsUpdateBadge(); }catch(e){}
 }
 
 // Mobile: retarget the bottom nav to Today / Inbox / Trips / Inquiries / More, and add the travel
