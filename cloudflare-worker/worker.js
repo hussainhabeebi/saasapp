@@ -33572,7 +33572,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Follow-up V3 (followup-v3.js fv3OnInbound) credits only the latest follow-up within its
     // attribution window, notes opt-outs and the lead's usual writing hour instead.
     if(userText && resolvedLeadId && await fv3IsEnabled(env,c.Id)) await fv3Schedule(env,c.Id).catch(e=>reportOpsError(env,'followup alarm',e,{clientId:c.Id}));
-    if(userText && resolvedLeadId && !await fv3OnInbound(env, c, resolvedLeadId, {optOut:leadBody?.OptOut==='Yes', text:userText, lang:routing?.customerLanguage||''})){
+    // A reply to a follow-up also moves the lead one pipeline stage up (fv3NextStage), unless this
+    // turn already changed its stage — so the next silence gets that stage's own follow-ups.
+    const fv3Stage=leadBody?.Stage||state.stage||'new';
+    if(userText && resolvedLeadId && !await fv3OnInbound(env, c, resolvedLeadId, {optOut:leadBody?.OptOut==='Yes', text:userText, lang:routing?.customerLanguage||'',
+      stage:fv3Stage, stageChanged:!!leadBody?.Stage && leadBody.Stage!==state.stage,
+      advanceStage:async to=>{
+        const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:resolvedLeadId, Stage:to}});
+        if(!r.ok) throw new Error('stage advance failed: '+r.status);
+        await engineJournalStageChange(env, clientId, resolvedLeadId, fv3Stage, to);
+        await engineBroadcastUpdate(env, clientId, {type:'lead_updated', lead_ids:[Number(resolvedLeadId)], fields:['Stage'], by:'followup', at:new Date().toISOString()});
+      }})){
       try{
         await env.DB.prepare(`UPDATE followup_sends SET replied_at=? WHERE lead_id=? AND replied_at IS NULL`)
           .bind(new Date().toISOString(), resolvedLeadId).run();

@@ -709,3 +709,120 @@ describe('meeting follow-ups', ()=>{
     assert.equal(FV3_MEETING_STEPS[11].label, 'After meeting · day 3');
   });
 });
+
+// ── Stage ladder: a reply to a follow-up moves the lead up a stage, and the next cycle is that stage's ──
+import {fv3NextStage, fv3StageLadderPreset, fv3StageLadderSteps, fv3LadderStages, fv3StageLadderKind} from './followup-v3.js';
+describe('stage ladder', ()=>{
+  const saas={Id:42, client_name:'Acme', industry:'saas_digital_marketing', bot_config:JSON.stringify({timezone:'UTC'})};
+  test('next stage: one step up the pipeline, never into a stage track, a closed stage or out of a bot-flow step', ()=>{
+    assert.deepEqual(fv3NextStage(saas, 'new'), {id:'contacted', label:'Contacted'});
+    assert.deepEqual(fv3NextStage(saas, ''), {id:'contacted', label:'Contacted'});
+    assert.deepEqual(fv3NextStage(saas, 'contacted'), {id:'demo', label:'Demo'});
+    assert.equal(fv3NextStage(saas, 'demo'), null, 'Proposal Sent needs a real proposal');
+    assert.deepEqual(fv3NextStage(saas, 'proposal_sent'), {id:'negotiation', label:'Negotiation'});
+    assert.equal(fv3NextStage(saas, 'negotiation'), null, 'last open stage');
+    assert.equal(fv3NextStage(saas, 'won'), null);
+    assert.equal(fv3NextStage(saas, 'human_handover'), null);
+    assert.equal(fv3NextStage(saas, 'ask_budget'), null, 'bot-flow step is left alone');
+    assert.equal(fv3NextStage({industry:'travel'}, 'new'), null, 'no pipeline, no move');
+    const custom={flow_json:JSON.stringify({pipeline:[{id:'new'}, {id:'warm', label:'Warm lead'}, {id:'hot'}, {id:'won'}]})};
+    assert.deepEqual(fv3NextStage(custom, 'new'), {id:'warm', label:'Warm lead'});
+    assert.deepEqual(fv3NextStage(custom, 'warm'), {id:'hot', label:'Hot'});
+    assert.equal(fv3NextStage(custom, 'hot'), null);
+  });
+  test('presets: one per stage and day, Meta-safe, worded for the stage', ()=>{
+    const stages=fv3LadderStages(saas);
+    assert.deepEqual(stages.map(s=>s.id), ['contacted', 'demo', 'negotiation']);
+    const all=stages.flatMap(st=>[3, 4, 5].map(s=>fv3StageLadderPreset(st.id, st.label, s, {businessName:'Acme'})));
+    assert.equal(new Set(all.map(p=>p.body)).size, all.length, 'no two bodies alike');
+    for(const p of all){
+      assert.match(p.kind, /^s[345]_/);
+      assert.ok(!p.body.trim().startsWith('{{') && !p.body.trim().endsWith('}}'));
+      assert.match(p.body, /Reply STOP to opt out\.$/);
+      assert.deepEqual(p.params, ['name', 'business', 'interest']);
+    }
+    assert.match(fv3StageLadderPreset('demo', 'Demo', 3).body, /time for the demo for \{\{3\}\}/);
+    assert.match(fv3StageLadderPreset('contacted', 'Contacted', 3).body, /now at the contacted stage/);
+  });
+  test('steps: stage template once approved, generic until then; nudges reworded; merchant overrides win', ()=>{
+    const cfg2=fv3Config({});
+    const stages=fv3LadderStages(saas);
+    const templates=[{kind:fv3StageLadderKind('demo', 3), name:'lv_followup_s3_demo', language:'en', status:'APPROVED', params:'["name","business","interest"]'},
+      {kind:fv3StageLadderKind('demo', 4), name:'lv_followup_s4_demo', language:'en', status:'PENDING', params:'[]'}];
+    const out=fv3StageLadderSteps(steps, cfg2, {Stage:'demo'}, {templates, stages});
+    assert.equal(out[3].template_name, 'lv_followup_s3_demo'); assert.equal(out[3].template_body_vars, 3);
+    assert.equal(out[4].template_name, 'tpl4', 'pending → generic meanwhile');
+    assert.match(out[1].message, /time for the demo/); assert.equal(out[1].message_b, '');
+    assert.equal(fv3StageLadderSteps(steps, cfg2, {Stage:'new'}, {templates, stages}), steps, 'new keeps the generic ladder');
+    assert.equal(fv3StageLadderSteps(steps, fv3Config({stage_ladder:false}), {Stage:'demo'}, {templates, stages}), steps);
+    const own=fv3Config({stage_sequences:{demo:{1:{message:'Mine {name}', hours:2}, 3:{template_name:'my3'}}}});
+    const o2=fv3StageLadderSteps(steps, own, {Stage:'demo'}, {templates, stages});
+    assert.equal(o2[1].message, 'Hi {name}, A1', 'left for fv3StepsForLead to apply the merchant\'s own');
+    assert.equal(o2[3].template_name, 'tpl3');
+  });
+  test('inbound: a reply to a follow-up moves the lead up once; not when the bot already moved it or on STOP', async ()=>{
+    const db=freshDb(); const env={DB:d1(db)};
+    await fv3SaveSettings(env, 42, {enabled:true});
+    const now=Date.now();
+    db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (42,7,1,'A',?)`).run(iso(now-H));
+    const moves=[];
+    const advanceStage=async to=>{ moves.push(to); };
+    await fv3OnInbound(env, saas, 7, {at:now, stage:'new', stageChanged:true, advanceStage});
+    assert.deepEqual(moves, [], 'bot changed the stage this turn');
+    db.prepare(`UPDATE followup_sends SET replied_at=NULL`).run();
+    await fv3OnInbound(env, saas, 7, {at:now, stage:'new', optOut:true, advanceStage});
+    assert.deepEqual(moves, []);
+    db.prepare(`UPDATE followup_sends SET replied_at=NULL`).run();
+    await fv3OnInbound(env, saas, 7, {at:now, stage:'new', advanceStage});
+    assert.deepEqual(moves, ['contacted']);
+    await fv3OnInbound(env, saas, 7, {at:now+60000, stage:'contacted', advanceStage});
+    assert.deepEqual(moves, ['contacted'], 'a second message is not another reply to that follow-up');
+    db.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (42,7,3,'A',?)`).run(iso(now+2*H));
+    await fv3SaveSettings(env, 42, {config:{advance_stage_on_reply:false}});
+    await fv3OnInbound(env, saas, 7, {at:now+3*H, stage:'contacted', advanceStage});
+    assert.deepEqual(moves, ['contacted'], 'switched off');
+  });
+  test('sweep: a lead at a stage gets that stage\'s day-1 template and nudge wording', async ()=>{
+    const db=freshDb(); const env={DB:d1(db)}; const realFetch=globalThis.fetch;
+    globalThis.fetch=async url=>new Response(JSON.stringify({data:[{name:new URL(url).searchParams.get('name'), status:'APPROVED'}]}));
+    try{
+      const now=Date.now();
+      await fv3SaveSettings(env, 42, {enabled:true, industry:'saas_digital_marketing', config:{quiet_start:0, quiet_end:0, objection_branching:false, ai_variant_b:false}});
+      db.prepare(`UPDATE followup_v3_settings SET maint_at=?, enabled_at=? WHERE client_id=42`).run(iso(now), iso(now-5*D));
+      const ins=db.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, message, template_name, template_body_vars, updated_at) VALUES (42,?,?,?,?,?,?,?)`);
+      ins.run(1, 'session', 1, 'Hi {name} generic', '', 0, iso(now));
+      ins.run(3, 'template', 25, '', 'lv_followup_s3', 3, iso(now));
+      const tpl=db.prepare(`INSERT INTO followup_v3_templates (client_id, kind, name, status, params, submitted_at) VALUES (42,?,?,'APPROVED','["name","business","interest"]',?)`);
+      tpl.run('s3', 'lv_followup_s3', iso(now)); tpl.run('s3_demo', 'lv_followup_s3_demo', iso(now));
+      const leads=[
+        {Id:1, Name:'Asha', Phone:'91900', Stage:'demo', CreatedAt:iso(now-3*D), LastCustomerMsgAt:iso(now-27*H)},
+        {Id:2, Name:'Ravi', Phone:'91901', Stage:'new', CreatedAt:iso(now-3*D), LastCustomerMsgAt:iso(now-27*H)},
+        {Id:3, Name:'Mini', Phone:'91902', Stage:'contacted', CreatedAt:iso(now-3*D), LastCustomerMsgAt:iso(now-2*H), ConversationID:5},
+      ];
+      const sent=[];
+      const deps={leadsTable:'L', ensureLeadsColumns:async()=>{}, metaCreds:()=>({waba_id:'W', wa_token:'tok', wa_phone_id:'P'}),
+        ncFetch:async(e,path)=>new Response(JSON.stringify(/records\/\d+$/.test(path)?{...leads.find(l=>l.Id===Number(path.split('/').pop())),ClientId:42}:{list:leads})),
+        sendStep:async(env2, c, lead, step, stepCfg, opts)=>{ sent.push({lead:lead.Id, step, stepCfg, opts}); }};
+      await fv3ProcessClient(env, deps, saas, await fv3GetSettings(env, 42), {now});
+      const by=Object.fromEntries(sent.map(x=>[x.lead, x]));
+      assert.equal(by[1].stepCfg.template_name, 'lv_followup_s3_demo');
+      assert.deepEqual(by[1].opts.templateParams, ['Asha', 'Acme', 'your enquiry']);
+      assert.equal(by[2].stepCfg.template_name, 'lv_followup_s3', 'New keeps the generic day-1');
+      assert.equal(by[3].step, 1); assert.match(by[3].stepCfg.message, /next step on \{product\}/);
+    } finally { globalThis.fetch=realFetch; }
+  });
+  test('setup submits each stage\'s own day-1/3/7 templates', async ()=>{
+    const db=freshDb(); const env={DB:d1(db)}; const realFetch=globalThis.fetch; const posts=[];
+    globalThis.fetch=async (url, opts={})=>{
+      if((opts.method||'GET')==='POST'){ posts.push(JSON.parse(opts.body).name); return new Response(JSON.stringify({id:'1', status:'PENDING'})); }
+      return new Response(JSON.stringify({data:[{name:new URL(String(url)).searchParams.get('name'), status:'PENDING', language:'en'}]}));
+    };
+    try{
+      const settings=await fv3SaveSettings(env, 42, {enabled:true, industry:'saas_digital_marketing', config:{stage_sequences:{demo:{4:{template_name:'my_demo_d3'}}}}});
+      await fv3Setup(env, {metaCreds:()=>({waba_id:'W', wa_token:'tok', wa_phone_id:'P'}), ai:async()=>null}, saas, settings);
+      assert.deepEqual(posts.filter(n=>/^lv_followup_s\d_/.test(n)), ['lv_followup_s3_contacted', 'lv_followup_s4_contacted', 'lv_followup_s5_contacted',
+        'lv_followup_s3_demo', 'lv_followup_s5_demo', 'lv_followup_s3_negotiation', 'lv_followup_s4_negotiation', 'lv_followup_s5_negotiation']);
+      assert.equal(db.prepare(`SELECT template_name FROM followup_ladder_steps WHERE client_id=42 AND step=3`).get().template_name, '', 'stage templates never attach to the generic ladder');
+    } finally { globalThis.fetch=realFetch; }
+  });
+});
