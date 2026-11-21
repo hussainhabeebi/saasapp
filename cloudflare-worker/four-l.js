@@ -62,17 +62,30 @@ export function fourLIsGreeting(text){ return GREETING_RE.test(String(text||'').
 const ACK_RE=/^(?:ok+|okay|k+|kk|fine|sure|yes|yeah|yep|no|nope|thanks?|thank\s*you|thx|ty|great|good|nice|super|done|👍|🙏|😊|❤️|♥️)[\s!.,😊🙏👍]*$/i;
 export function fourLIsAck(text){ return ACK_RE.test(String(text||'').trim()); }
 // Tapped buttons and list rows the shopping flows send (BABY_*, FASHION_*, SHOP flow, FLOW_ANSWER:…).
-const BUTTON_RE=/^(?:(?:BABY|FASHION|ELEC|SHOP|ECOM|PROD|CAT|ORDER)_[A-Z0-9_:\-]+|FLOW_ANSWER:.+)$/i;
+const BUTTON_RE=/^(?:(?:BABY|FASHION|ELEC|SHOP|ECOM|PROD|CAT|ORDER|CHAT)_[A-Z0-9_:\-]+|FLOW_ANSWER:.+)$/i;
 
 function norm(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9ഀ-ൿ]+/g,' ').trim(); }
-// A product / category / SKU named in the message (whole-word, 4+ letter names only).
+const NAME_STOP=new Set(['the','and','for','with','set','new','size','colour','color','free','pack','piece','pcs']);
+function nameTokens(s){ return norm(s).split(' ').filter(w=>w.length>=3 && !NAME_STOP.has(w)); }
+// A product / category / SKU named in the message — whole name, or a cut-off / partly typed one
+// ("Royal Ivory Embroidered Sharara Suit Se"): most of the name's words are in the message.
 export function fourLMentionsCatalogue(text, {products=[], categories=[]}={}){
-  const t=` ${norm(text)} `;
-  if(t.trim().length<3) return false;
+  const tn=norm(text);
+  const t=` ${tn} `;
+  if(tn.length<3) return false;
+  const words=new Set(nameTokens(tn));
   const names=[];
   for(const p of products||[]){ if(p?.name) names.push(p.name); if(p?.sku) names.push(p.sku); if(p?.category) names.push(p.category); }
   for(const cat of categories||[]) names.push(typeof cat==='string'?cat:(cat?.name||''));
-  return names.some(n=>{ const x=norm(n); return x.length>=4 && t.includes(` ${x} `); });
+  return names.some(n=>{
+    const x=norm(n);
+    if(x.length>=4 && t.includes(` ${x} `)) return true;
+    if(tn.length>=8 && x.startsWith(tn)) return true;
+    const toks=nameTokens(x);
+    if(toks.length<2) return false;
+    const hit=toks.filter(w=>words.has(w)).length;
+    return hit>=2 && hit/toks.length>=0.6;
+  });
 }
 
 // Clearly a team matter even when a product word is in it ("refund for the blue dress").
@@ -140,4 +153,14 @@ export function fourLHandoffText(c, {isNewLead=false, name='', business=''}={}){
 export function fourLAgentLabel(body){
   const s=body?.sender||{};
   return String(s.email||s.available_name||s.name||'Team').trim().slice(0,120)||'Team';
+}
+
+// Product card text with the checkout link under it (when the product has one).
+export function fourLProductCard(card, link=''){
+  const l=String(link||'').trim();
+  return l?`${String(card||'').trim()}\n\n🛒 Check out here:\n${l}`:String(card||'').trim();
+}
+export function fourLCheckoutText(product={}, link=''){
+  const name=String(product.name||'this').trim();
+  return `Great choice! 🛍️ *${name}*\n\n🛒 Complete your order here:\n${String(link||'').trim()}\n\nChoose your size and colour on the page. Reply here if you need any help 😊`;
 }

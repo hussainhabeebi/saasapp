@@ -9,7 +9,7 @@ import {wsHandleRoute,wsRunDue} from './website-sync.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
-import {FOUR_L_STYLE,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
+import {FOUR_L_STYLE,fourLProductCard,fourLCheckoutText,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
 import {buildHealthReport,healthOverall,healthRecurringIssues,healthCriticalAlerts,healthSummaryLine} from './health-report.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -30103,6 +30103,53 @@ export async function engineHandoverSilenceTurn(env, c, clientId, body, state, p
   return json({ok:true,skipped:reason,lead_collected:true});
 }
 
+// 4L greeting: a greeting that offers no choices of its own goes out with the shop's menu.
+async function engineFourLGreetingMenu(env, c, clientId, state, turn){
+  if(!turn || turn.deliver || (turn.buttons||turn.quickReplies||[]).length || !state.convId) return;
+  const items=await engineFourLMenuItems(env, clientId);
+  turn.deliver=()=>engineSendEcomVerifiedPicker(env, c, clientId, state.convId, state.phone, turn.text||turn.reply||'', items);
+}
+// 4L menu: the shop's verified categories / products as choices (WhatsApp list), else the
+// catalogue + team buttons.
+async function engineFourLMenuItems(env, clientId){
+  const [cats, prods]=await Promise.all([ecomListCategories(env, clientId).catch(()=>[]), ecomListActiveProducts(env, clientId).catch(()=>[])]);
+  const items=ecomAvailableCatalogueItems(cats, prods);
+  return items.length?items:[{title:'View Our Catalog 📸', value:'BABY_VIEW_CATALOG'}, {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'}];
+}
+// 4L product reply: the answer to their question (if any), the product photo with its card and
+// checkout link, then buttons. An order tap with a checkout link sends the link to pay.
+async function engineFourLProductTurn(env, c, clientId, convId, phone, name, state, replyLang, isNewLead, routing, userText, product, {answerFirst=false, isOrder=false, checkoutLink='', sendMedia=false, mediaType='text', ctx=null}={}){
+  const img=String(product.image_url||'').trim();
+  const buttons=[
+    {title:'View Our Catalog 📸', value:'BABY_VIEW_CATALOG'},
+    {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'},
+  ];
+  if(isOrder && checkoutLink){
+    const text=await engineLocalizeReply(env, c, fourLCheckoutText(product, checkoutLink), replyLang);
+    if(img) routing.media={url:engineResolveDirectImageUrl(img), type:'image'};
+    await engineDeliverReply(env, c, clientId, convId, text, {mediaType, langCode:replyLang, imageUrl:img||null, ctx});
+    const next=await engineLocalizeReply(env, c, 'Anything else I can help you with? 😊', replyLang);
+    routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, next, buttons);
+    routing.reply=`${text}\n\n${next}`;
+    await logPendingOrder(env, c, clientId, phone, name, product).catch(()=>{});
+    return {sentText:next};
+  }
+  const answer=answerFirst?await engineEcomProductAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText, product):'';
+  if(answer) await engineDeliverReply(env, c, clientId, convId, answer, {mediaType, langCode:replyLang, ctx});
+  const card=fourLProductCard(ecomBabyCareProductCard(product), checkoutLink);
+  if(img) routing.media={url:engineResolveDirectImageUrl(img), type:'image'};
+  await engineDeliverReply(env, c, clientId, convId, card, {mediaType, langCode:replyLang, imageUrl:img||null, ctx});
+  if(sendMedia) await engineMaybeSendProductMedia(env, c, clientId, convId, product).catch(()=>{});
+  const followUp=await engineLocalizeReply(env, c, checkoutLink
+    ? 'Tap the link above to check out, or ask me about size, colour or anything else 😊'
+    : 'Would you like to order this? I can take your order right here — or ask me anything about it 😊', replyLang);
+  routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, followUp, [
+    {title:checkoutLink?'Buy Now 🛒':'Order this 🛒', value:'CHAT_ORDER_START'}, ...buttons]);
+  routing.reply=`${answer?answer+'\n\n':''}${card}\n\n${followUp}`;
+  if(checkoutLink) await logPendingOrder(env, c, clientId, phone, name, product).catch(()=>{});
+  return {sentText:followUp};
+}
+
 // 4L gate (four-l.js fourLDecide) — returns a response when this turn is the team's, else null
 // so the normal Baby Care pipeline answers it.
 export async function engineFourLGate(env, c, clientId, body, state, parsed, {userText, mediaType, isNewLead, messageId, startMs=Date.now(), ctx=null}={}){
@@ -31614,6 +31661,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const configuredGreetingTurn=!_rqOpenerBlocked&&!rv1IsStyle(c)&&!hilloraIsStyle(c)&&(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
+    if(configuredGreetingTurn && c.industry==='ecommerce' && fourLIsStyle(c)) await engineFourLGreetingMenu(env,c,clientId,state,configuredGreetingTurn);
     if(configuredGreetingTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'intro_saved',sent:c.bot_reply_disabled!=='Yes',cached:true});
@@ -31656,6 +31704,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const greetingTurn=!_rqOpenerBlocked&&(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow&&!rv1IsStyle(c)&&!hilloraIsStyle(c)
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
+    if(greetingTurn && c.industry==='ecommerce' && fourLIsStyle(c)) await engineFourLGreetingMenu(env,c,clientId,state,greetingTurn);
     if(greetingTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
@@ -31795,6 +31844,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _bcGlobalEnabled=botConfig.baby_care_flow_enabled!==false; // default true
     const _bcCustomerEnabled=_bcCustomer!=null?(_bcCustomer.enabled!==false):_bcGlobalEnabled;
     const isBabyCareEcom=c.industry==='ecommerce'&&ecomStyleIsBabyCare(botConfig.ecom_communication_style)&&_bcCustomerEnabled;
+    // 4L (four-l.js): Baby Care, but catalogue-led — product questions get tappable product/category
+    // buttons, the product photo and its checkout link instead of a prompt-only text answer.
+    const isFourLEcom=isBabyCareEcom&&fourLIsStyle(c);
     // Baby Care: the baby's age (said now, earlier in the chat, or remembered) narrows every product
     // picker below to age-appropriate products — a 9-month-old gets T-shirts, not newborn sets.
     // Boy/girl and budget narrow it the same way; what they asked for ("T-shirt") goes first.
@@ -32026,9 +32078,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             {title:'Cancel ❌',value:'BABY_CANCEL'},
           ]);
         } else {
-          const txt=await engineLocalizeReply(env,c,_bcMsg('welcome_return','Welcome back! 👶🏻 What would you like to do?'),replyLang);
+          const txt=await engineLocalizeReply(env,c,_bcMsg('welcome_return',isFourLEcom?'Welcome back! 😊 What are you looking for today?':'Welcome back! 👶🏻 What would you like to do?'),replyLang);
           sentText=txt; routing.reply=txt; routing.next='new';
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,[
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,isFourLEcom?await engineFourLMenuItems(env,clientId):[
             {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
             {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
             {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
@@ -32040,11 +32092,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // Returning visitors who send a question or free text fall through to AI (ecom_faq) so
         // they get an actual answer instead of looping back to this welcome screen.
         const welcomeIntro=isNewLead
-          ? await engineBuildFirstTouchIntro(env,c,_bcMsg('welcome_new','Welcome! 👶🏻 How can we help you today?'),replyLang,state.name||state.lead?.Name)
-          : await engineLocalizeReply(env,c,_bcMsg('welcome_return','Welcome back! 👶🏻 What would you like to do?'),replyLang);
+          ? await engineBuildFirstTouchIntro(env,c,_bcMsg('welcome_new',isFourLEcom?'Welcome! How can we help you today? 😊':'Welcome! 👶🏻 How can we help you today?'),replyLang,state.name||state.lead?.Name)
+          : await engineLocalizeReply(env,c,_bcMsg('welcome_return',isFourLEcom?'Welcome back! 😊 What are you looking for today?':'Welcome back! 👶🏻 What would you like to do?'),replyLang);
         sentText=welcomeIntro;
         routing.reply=sentText; routing.next='new';
-        if(isNewLead && engineMainPromptDefinesFirstReply(c.main_prompt)){
+        if(isFourLEcom){
+          // 4L: the greeting always carries the shop's categories / products as tappable choices.
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,await engineFourLMenuItems(env,clientId));
+        } else if(isNewLead && engineMainPromptDefinesFirstReply(c.main_prompt)){
           // The prompt's own first reply (price, offer, its question) goes out as written — no
           // fixed three-button menu on top of the options the prompt chose.
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
@@ -32077,9 +32132,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const catalogLink=(c.external_store_link||'').trim();
           if(catalogLink){
             sentText=await engineLocalizeReply(env,c,
-              `Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
+              isFourLEcom?`Here's our catalog — browse our latest collections:\n${catalogLink}\n\nOr pick below and I'll share photos, sizes and the checkout link 😊`
+                :`Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
             routing.reply=sentText; routing.next='new';
-            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,isFourLEcom?await engineFourLMenuItems(env,clientId):[
               {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
               {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
             ]);
@@ -32088,7 +32144,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             const _catalogItems=ecomAvailableCatalogueItems(babyAgeCategories(_cats,_prods),babyAgeProducts(_prods));
             if(_catalogItems.length){
               sentText=await engineLocalizeReply(env,c,
-                '🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
+                isFourLEcom?'🛍️ *Our Collection*\n\nChoose a category or product — I\'ll share photos, sizes, price and the checkout link! 📸'
+                  :'🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
               routing.reply=sentText; routing.next='new';
               routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,_catalogItems);
             } else {
@@ -32987,12 +33044,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         detection.category=undefined;
         detection.sku=exactSelectedProduct.sku||undefined;
         detection.productName=exactSelectedProduct.name;
-      }else if(isBabyCareEcom && matchedCategory && ecomNormalizeCatalogueText(userText)!==ecomNormalizeCatalogueText(matchedCategory) && !ecomIsExplicitBrowseRequest(userText)){
+      }else if(isBabyCareEcom && !isFourLEcom && matchedCategory && ecomNormalizeCatalogueText(userText)!==ecomNormalizeCatalogueText(matchedCategory) && !ecomIsExplicitBrowseRequest(userText)){
         // Baby Care: a loose category word in free text ("baby set") is answered by the prompt;
         // only a tapped category button (its exact name) opens that category's products.
         detection.signal=false;
         routing.route='ecom_faq';
-      }else if(isBabyCareEcom && ecomIsPriceQuestion(userText) && !state.lead?.['Last Product Sku'] && !ecomIsExplicitBrowseRequest(userText)){
+      }else if(isBabyCareEcom && !isFourLEcom && ecomIsPriceQuestion(userText) && !state.lead?.['Last Product Sku'] && !ecomIsExplicitBrowseRequest(userText)){
         // Baby Care: "Rate?" / "Prize?" with no product in context — the prompt holds the price.
         detection.signal=false;
         routing.route='ecom_faq';
@@ -33010,7 +33067,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // (explicit browse verbs above, or an actual product broad-match) goes to the picker.
         detection.signal=false;
         routing.route='ecom_faq';
-      }else if(isBabyCareEcom && (broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)) && !ecomIsExplicitBrowseRequest(userText)){
+      }else if(isBabyCareEcom && !isFourLEcom && (broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)) && !ecomIsExplicitBrowseRequest(userText)){
         // Baby Care: "Baby set" etc. — the prompt answers (and offers its own options); the full
         // catalogue picker is kept for an explicit "show me your products".
         detection.signal=false;
@@ -33158,11 +33215,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(_chatOrderStarted){
           // handled above
         } else if(isBabyCareEcom && product && !_babyPhotoAsk && (detection.mode==='order'||detection.mode==='enquiry')
-          && (resolvedFromHistory||(_babyProductQuestion&&!_answerFirst)||(state.stage&&state.stage.startsWith('baby_')))){
+          && (resolvedFromHistory||(_babyProductQuestion&&!_answerFirst&&!isFourLEcom)||(state.stage&&state.stage.startsWith('baby_')&&!isFourLEcom))){
           // Baby care: a question about a product (or a follow-up on an earlier one, or anything
           // said mid-flow) is answered by the FAQ LLM with this product's verified row (name,
           // description, price) in context — never a canned card or a human handoff.
           routing.route='ecom_faq';
+        } else if(isFourLEcom && product && (detection.mode==='order'||detection.mode==='enquiry')){
+          // 4L product: answer (if asked) → photo + card + checkout link → buttons. "Order this"
+          // with a checkout link sends the link; without one the in-chat order above takes it.
+          const _fl=await engineFourLProductTurn(env,c,clientId,convId,phone,name,state,replyLang,isNewLead,routing,userText,product,{
+            answerFirst:_answerFirst, isOrder:detection.mode==='order', checkoutLink:_chatOrderLink, sendMedia:sendProductImage, mediaType, ctx});
+          sentText=_fl.sentText;
+          orderHandledInline=true;
         } else if(isBabyCareEcom && product && (detection.mode==='order'||detection.mode==='enquiry')){
           // Baby care product selection: formatted card with the stored price, then the baby care
           // actions. A missing product link is normal for custom sets (ordered via the in-chat
@@ -33920,7 +33984,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // Ecom Product rows only.
         // Baby Care is prompt-led: no catalogue menu is appended under the prompt's answer (the
         // prompt decides which options to offer); mid-flow customers still get "Continue Order" above.
-        if(!faqQuickReplies && routing.route==='ecom_faq' && !isBabyCareEcom){
+        if(!faqQuickReplies && routing.route==='ecom_faq' && (!isBabyCareEcom || isFourLEcom)){
           const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
           // Electronics: show product-only buttons — no category clutter mixed in.
           faqQuickReplies=isElectronicsEcom
@@ -33933,6 +33997,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             const _isBabyStageForFaq=state.stage&&state.stage.startsWith('baby_');
             faqQuickReplies=_isBabyStageForFaq
               ? [{title:'Continue Order 🔄',value:'BABY_RESUME_STAGE'},{title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'}]
+              : isFourLEcom?[{title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},{title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'}]
               : [{title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},{title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},{title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'}];
           }
         }

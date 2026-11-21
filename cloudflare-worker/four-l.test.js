@@ -63,3 +63,20 @@ test('extra keywords from settings count as product questions', () => {
   assert.deepEqual(extraKeywords, ['anarkali', 'co-ord']);
   assert.equal(fourLDecide({ text: 'anarkali undo?', extraKeywords }), 'bot');
 });
+
+test('a cut-off or partly typed product name still counts as a product question', async () => {
+  const { fourLMentionsCatalogue } = await import('./four-l.js');
+  const products = [{ name: 'Royal Ivory Embroidered Sharara Suit Set', sku: 'RIS-01', category: 'Salwar Suits' }];
+  assert.equal(fourLMentionsCatalogue('Royal Ivory Embroidered Sharara Suit Se', { products }), true);
+  assert.equal(fourLMentionsCatalogue('royal ivory sharara', { products }), true);
+  assert.equal(fourLMentionsCatalogue('is the shop open on friday', { products }), false);
+  assert.equal(fourLDecide({ text: 'Royal Ivory Embroidered Sharara Suit Se', products }), 'bot');
+  assert.equal(fourLDecide({ text: 'CHAT_ORDER_START' }), 'bot');
+});
+
+test('product card and checkout text carry the checkout link', async () => {
+  const { fourLProductCard, fourLCheckoutText } = await import('./four-l.js');
+  assert.match(fourLProductCard('*Suit*\nQAR 190', 'https://4l.example/p/1'), /Check out here:\nhttps:\/\/4l\.example\/p\/1$/);
+  assert.equal(fourLProductCard('*Suit*', ''), '*Suit*');
+  assert.match(fourLCheckoutText({ name: 'Suit' }, 'https://x.y/z'), /\*Suit\*[\s\S]*https:\/\/x\.y\/z/);
+});
