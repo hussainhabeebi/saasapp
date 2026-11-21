@@ -29,6 +29,8 @@ test('Sign out clears the local session and goes to Authentik\'s logout flow', a
     page.evaluate(() => signOut()),
   ]);
   expect(hits.some((u) => u.pathname === '/if/flow/default-invalidation-flow/')).toBe(true);
+  // Next login after sign-out lands back in the app, not Authentik's "My applications" page.
+  expect(hits.some((u) => u.searchParams.get('next') === '/application/launch/leadvyne/')).toBe(true);
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
   const left = await page.evaluate(() => ['lv_cid', 'lv_session', 'lv_me_email'].map((k) => localStorage.getItem(k)));
   expect(left).toEqual([null, null, null]);

@@ -1425,6 +1425,10 @@ const CONFIG = {
   // Authentik's built-in logout flow (user_logout stage) — Sign out sends the browser here so the
   // Authentik session ends too, not just this app's local token (see signOut()).
   AUTHENTIK_INVALIDATION_FLOW:'default-invalidation-flow',
+  // Slug of the Leadvyne Application in Authentik (Admin → Applications). After Sign out, the next
+  // login on Authentik's page goes to /application/launch/<slug>/ — i.e. straight back into this
+  // dashboard (the app's Launch URL) instead of Authentik's "My applications" library page.
+  AUTHENTIK_APP_SLUG:'leadvyne',
   AUTHENTIK_MAGIC_LINK_FLOW:'',
   // Both are public identifiers used only in browser-side Meta JS SDK calls (never secrets —
   // the App Secret used for the server-side token exchange lives only in the Worker). Get
@@ -6418,7 +6422,11 @@ function signOut(){
   // this tab still won't silently sign the same person back in. Cleared by the next Sign in click.
   sessionStorage.setItem('lv_no_silent_auth','1');
   setGBtnState(true, 'Signing out…');
-  window.location.href=`${CONFIG.AUTHENTIK_BASE}/if/flow/${encodeURIComponent(CONFIG.AUTHENTIK_INVALIDATION_FLOW)}/`;
+  // `next` must be a path on Authentik itself (absolute URLs are refused by its flow executor).
+  // The launch view needs a logged-in user, so once the logout stage has run it shows the login
+  // page, then forwards to the app's Launch URL — never to the "My applications" library.
+  const next=CONFIG.AUTHENTIK_APP_SLUG?`?next=${encodeURIComponent(`/application/launch/${CONFIG.AUTHENTIK_APP_SLUG}/`)}`:'';
+  window.location.href=`${CONFIG.AUTHENTIK_BASE}/if/flow/${encodeURIComponent(CONFIG.AUTHENTIK_INVALIDATION_FLOW)}/${next}`;
 }
 $id('hLogout').addEventListener('click', signOut);
 
