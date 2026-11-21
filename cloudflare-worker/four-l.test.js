@@ -117,3 +117,38 @@ test('AI catalogue context puts the asked-for product first, even deep in a big 
   assert.equal(top[0].name, 'Floral Embroidery Kurti');
   assert.equal(ecomRankProductsForQuery(products, '')[0].name, 'Plain Suit 0');
 });
+
+test('photos follow an AI answer that names products', async () => {
+  const { fourLProductsNamedIn } = await import('./four-l.js');
+  const products = [{ name: 'Navy Blue Floral Embroidered Kurta Set' }, { name: 'Olive Green Rose Embroidered Kurta Set' }, { name: 'Kurta Set' }, { name: 'Plain Suit' }];
+  const reply = 'These are in stock:\n• Navy Blue Floral Embroidered Kurta Set, QAR 135\n• Olive Green Rose Embroidered Kurta Set, QAR 180';
+  assert.deepEqual(fourLProductsNamedIn(reply, products).map(p => p.name), ['Navy Blue Floral Embroidered Kurta Set', 'Olive Green Rose Embroidered Kurta Set']);
+});
+
+test('image proxy fallback converts to JPEG', async () => {
+  const { fourLImageProxyUrl } = await import('./worker.js');
+  assert.equal(fourLImageProxyUrl('https://4lfashion.com.qa/a b.webp'), 'https://wsrv.nl/?url=https%3A%2F%2F4lfashion.com.qa%2Fa%20b.webp&output=jpg&q=85&w=1600&we');
+});
+
+test('WebP photos are converted to JPEG before going to WhatsApp', async () => {
+  const { waPhotoNeedsConversion, waFetchPhoto, fourLImageProxyUrl } = await import('./worker.js');
+  assert.equal(waPhotoNeedsConversion('image/webp', 'https://x/a.webp'), true);
+  assert.equal(waPhotoNeedsConversion('image/avif', 'https://x/a'), true);
+  assert.equal(waPhotoNeedsConversion('image/jpeg', 'https://x/a.webp'), false);
+  assert.equal(waPhotoNeedsConversion('application/octet-stream', 'https://x/a.jpg'), false);
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    const isProxy = String(url).startsWith('https://wsrv.nl/');
+    return new Response(new Blob([new Uint8Array(10)]), { status: 200, headers: { 'content-type': isProxy ? 'image/jpeg' : 'image/webp' } });
+  };
+  try {
+    const photo = await waFetchPhoto('https://4lfashion.com.qa/uploads/kurti.webp');
+    assert.equal(photo.error, undefined);
+    assert.equal(photo.type, 'image/jpeg');
+    assert.equal(photo.name, 'photo.jpg');
+    assert.equal(photo.converted, true);
+    assert.deepEqual(asked, ['https://4lfashion.com.qa/uploads/kurti.webp', fourLImageProxyUrl('https://4lfashion.com.qa/uploads/kurti.webp')]);
+  } finally { globalThis.fetch = realFetch; }
+});

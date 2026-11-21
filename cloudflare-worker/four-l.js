@@ -252,3 +252,20 @@ export function fourLCardText(p={}, link=''){
   if(l) lines.push(`🛍️ *Shop now:*\n${l}`);
   return lines.join('\n\n');
 }
+
+// Products whose full name appears in a reply the AI wrote (longest names first, so "Floral
+// Embroidery Kurti Set" wins over "Floral Embroidery Kurti"). One per name.
+export function fourLProductsNamedIn(text, products=[]){
+  const t=` ${norm(text)} `;
+  if(t.trim().length<4) return [];
+  const list=(products||[]).filter(p=>norm(p?.name).length>=6).sort((a,b)=>norm(b.name).length-norm(a.name).length);
+  const out=[], names=new Set();
+  let rest=t;
+  for(const p of list){
+    const n=norm(p.name);
+    if(names.has(n) || !rest.includes(` ${n} `)) continue;
+    names.add(n); out.push(p);
+    rest=rest.split(` ${n} `).join('  ');
+  }
+  return out;
+}

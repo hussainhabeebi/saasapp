@@ -119,12 +119,23 @@ const INACTIVE=/^(draft|inactive|archived|hidden|disabled|unpublished|private|un
 export function wsIsDeleted(o){
   return !!(o?.deleted===true||o?.is_deleted===true||o?.deleted_at||/^(deleted|trashed|trash)$/i.test(String(o?.status||'')));
 }
-function mediaUrl(v){
+// A media URL from the website's feed, made absolute: "//cdn…/a.jpg" → https:, and a relative path
+// ("/uploads/a.jpg", "uploads/a.jpg") resolved against the site. Relative paths used to be dropped,
+// so a website that lists its photos that way synced every product with no photo at all.
+export function wsMediaUrl(v, base=''){
   if(!v) return '';
-  if(typeof v==='string') return /^https?:\/\//i.test(v.trim())?v.trim():'';
-  if(isObj(v)) return mediaUrl(pick(v, ['url','src','image','original','large','full','path']));
+  if(typeof v==='string'){
+    const u=v.trim();
+    if(!u || /^(?:data|blob|javascript):/i.test(u)) return '';
+    if(/^https?:\/\//i.test(u)) return u;
+    if(u.startsWith('//')) return 'https:'+u;
+    if(!base || /\s/.test(u)) return '';
+    try{ return new URL(u, base).href; }catch(e){ return ''; }
+  }
+  if(isObj(v)) return wsMediaUrl(pick(v, ['url','src','image','image_url','secure_url','original','large','full','path','file','thumbnail_url']), base);
   return '';
 }
+const mediaUrl=(v, base='')=>wsMediaUrl(v, base);
 function variantList(p){
   const v=pick(p, ['variants','variations','options_stock','skus','sizes_stock']);
   return Array.isArray(v)?v.filter(isObj):[];
@@ -166,10 +177,16 @@ export function wsProductFields(p, {baseUrl='', currency=''}={}){
   const f={name, sku, status:active?'active':'inactive', website_product_id:id};
   if(price!=null) f.price=price;
   if(stock!=null) f.stock=Math.max(0, stock);
+  let siteBase='';
+  try{ siteBase=baseUrl?new URL(baseUrl).origin+'/':''; }catch(e){}
+  let link=mediaUrl(pick(p, ['url','permalink','link','product_url','web_url']), siteBase);
+  // Relative photos resolve against the product page's own site when we know it, else the API's.
+  let mediaBase=siteBase;
+  try{ if(link) mediaBase=new URL(link).origin+'/'; }catch(e){}
   const images=[];
-  [pick(p, ['image','image_url','thumbnail','featured_image','main_image','cover'])].concat(Array.isArray(p.images)?p.images:Array.isArray(p.gallery)?p.gallery:Array.isArray(p.photos)?p.photos:[])
-    .forEach(v=>{ const u=mediaUrl(v); if(u&&!images.includes(u)) images.push(u); });
-  let link=mediaUrl(pick(p, ['url','permalink','link','product_url','web_url']));
+  const gallery=[p.images, p.image_urls, p.gallery, p.photos, p.pictures, p.media].find(Array.isArray)||[];
+  [pick(p, ['image','image_url','thumbnail','thumbnail_url','featured_image','main_image','cover','cover_image','primary_image'])].concat(gallery)
+    .forEach(v=>{ const u=mediaUrl(v, mediaBase); if(u&&!images.includes(u)) images.push(u); });
   if(!link&&baseUrl&&pick(p, ['slug','handle'])){
     try{ link=`${new URL(baseUrl).origin}/products/${encodeURIComponent(pick(p, ['slug','handle']))}`; }catch(e){}
   }
