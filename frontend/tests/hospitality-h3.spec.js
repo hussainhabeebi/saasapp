@@ -106,3 +106,16 @@ test('Resorts V1: option, how-it-works row, and the Agency warning while Agency 
   await page.evaluate(() => { /* @ts-ignore */ clientRecord.hospitality_style = 'h3'; /* @ts-ignore */ initHospitalitySettings(); });
   await expect(page.locator('#hospRv1SettingsRow')).toHaveCSS('display', 'none');
 });
+
+test('Hillora: option, settings row with the staff WhatsApp number', async ({ page }) => {
+  await openProperties(page, 'h3');
+  await page.evaluate(() => { /* @ts-ignore */ clientRecord.hospitality_style = 'hillora'; /* @ts-ignore */ clientRecord.hillora_staff_phone = '+91 98765 43210'; /* @ts-ignore */ initHospitalitySettings(); });
+  await expect(page.locator('#cfgHospitalityStyle option[value="hillora"]')).toHaveText('Hillora — Units → form → staff');
+  await expect(page.locator('#cfgHospitalityStyle')).toHaveValue('hillora');
+  await expect(page.locator('#hospHilloraSettingsRow')).toHaveCSS('display', 'flex');
+  await expect(page.locator('#cfgHilloraStaffPhone')).toHaveValue('+91 98765 43210');
+  await expect(page.locator('#hospH3SettingsRow')).toHaveCSS('display', 'none');
+  await expect(page.locator('#hospRv1SettingsRow')).toHaveCSS('display', 'none');
+  await page.evaluate(() => { /* @ts-ignore */ clientRecord.hospitality_style = 'h3'; /* @ts-ignore */ initHospitalitySettings(); });
+  await expect(page.locator('#hospHilloraSettingsRow')).toHaveCSS('display', 'none');
+});

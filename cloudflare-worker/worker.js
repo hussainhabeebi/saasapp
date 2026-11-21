@@ -4,6 +4,7 @@ import {rqConfig,rqDecideLanguage,rqIsSoftOptOut,rqOptOutReply,rqIsPhotoAsk,rqPh
 import {trConfig,trMenuText,trIsFareAsk,trDetectKind,trExtractPrompt,trParseExtraction,trMergeSlots,trNextMissing,trQuestion,trSummary,trConfirmText,trConfirmButtons,trIsYes,trIsChange,trWaitText,trDocKind,trDocReply} from './travel-bot.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
+import {HILLORA_CHAT_BUTTON,HILLORA_UNITS_PROMPT,HILLORA_FORM_SCREEN,HILLORA_FORM_VERSION,hilloraIsStyle,hilloraDecide,hilloraUnitPage,hilloraUnitDetailsText,hilloraPhotoUrls,hilloraFormFlowJson,hilloraFormInviteText,hilloraFormTextFallback,hilloraThanksText,hilloraStaffLink,hilloraCleanDetails,hilloraParseDetails,hilloraIsDetailsReply,hilloraQual,hilloraSummaryLines,hilloraHandoverLiftable,hilloraReleasePatch} from './hospitality-hillora.js';
 import {wsHandleRoute,wsRunDue} from './website-sync.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
@@ -29073,6 +29074,15 @@ async function handleNativeFormEndpoint(request, env){
       return respond({version:'3.0', screen:'SUCCESS', data:{extension_message_response:{params:{flow_token:decrypted.flow_token||''}}}});
     }
 
+    // Hillora stay details form: handover + "Chat with Staff" button, then the bot is silent.
+    if(flowMeta.k==='hillora'){
+      const dec=v=>{ try{ return decodeURIComponent(v||''); }catch(e){ return ''; } };
+      const f=hilloraCleanDetails(decrypted.data||{});
+      await hospHilloraFormSubmitted(env, c, clientId, {phone:flowMeta.phone, convId:flowMeta.convId, unit:dec(flowMeta.unit)}, f)
+        .catch(e=>reportOpsError(env, 'Hillora — details form submission failed', e, {clientId}));
+      return respond({version:'3.0', screen:'SUCCESS', data:{extension_message_response:{params:{flow_token:decrypted.flow_token||''}}}});
+    }
+
     const qualQuestions=engineParseJsonField(c.qual_questions, []);
     const submitted=decrypted.data||{};
     const answers={};
@@ -30032,6 +30042,16 @@ async function engineJournalStageChange(env, clientId, leadId, fromStage, toStag
 // dropped, so a handed-over lead's new messages never showed in Chats / "Needs human" — exactly
 // the chats the team most needs to see. Returns the webhook response, or null when not silent.
 export async function engineHandoverSilenceTurn(env, c, clientId, body, state, parsed, text, startMs=Date.now(), ctx=null){
+  // Hillora: the bot's handover lifts by itself 2 days after it started (also on the 15-minute
+  // cron) — the lead is marked new and this message is answered like a new guest's.
+  if(hilloraIsStyle(c) && state.lead && hilloraHandoverLiftable(state.lead, startMs)){
+    const patch=await hilloraReleaseLead(env, c, clientId, {...state.lead, Id:state.leadId||state.lead.Id}).catch(()=>null);
+    if(patch){
+      Object.assign(state.lead, patch);
+      if(patch.Stage) state.stage=patch.Stage;
+      state.hilloraFresh=true;
+    }
+  }
   const healthcare=engineHealthcareHandoverSilenceActive(c,state,startMs);
   const handedOver=!!state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover');
   const configured=c.industry!=='healthcare' && handedOver && c.handover_silence_enabled==='Yes';
@@ -30044,11 +30064,14 @@ export async function engineHandoverSilenceTurn(env, c, clientId, body, state, p
   // Destination Staff Routing: the customer was handed to a teammate's own number — the bot on
   // this number stays silent for them, whatever the handover-silence setting says.
   const destRouted=!healthcare && !configured && !greetingOnly && handedOver && !!state.lead?.DsrStaff;
-  if(!healthcare && !configured && !greetingOnly && !resortsV1 && !destRouted) return null;
+  // Hillora: once the stay details are in (and so handed over) the bot is silent for that guest
+  // until the handover lifts (2 days, above), whatever the handover-silence setting says.
+  const hillora=!healthcare && !configured && !greetingOnly && !resortsV1 && !destRouted && handedOver && hilloraIsStyle(c);
+  if(!healthcare && !configured && !greetingOnly && !resortsV1 && !destRouted && !hillora) return null;
   await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
   // A Baby Care customer changing their order still updates it.
   if(configured) await engineSilentBabyCareOrderUpdate(env, c, clientId, parsed.phone, text, state.lead, ctx);
-  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':destRouted?'destination-routed':resortsV1?'resorts-v1-booked':'handed-over';
+  const reason=healthcare?'healthcare-handover-5h':greetingOnly?'greeting-only':destRouted?'destination-routed':resortsV1?'resorts-v1-booked':hillora?'hillora-handover':'handed-over';
   await logEngineSkip(env,clientId,parsed.phone,parsed.convId,reason,`stage ${state.stage||''} — message saved to Chats, no bot reply`);
   return json({ok:true,skipped:reason,lead_collected:true});
 }
@@ -31358,6 +31381,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         return json({ok:true,route:rv1Turn.turn.route==='human'?'resorts_v1_booked':'resorts_v1',sent:c.bot_reply_disabled!=='Yes'});
       }
     }
+    // Hillora (Hospitality sub-style): intro → unit buttons → photos & details → stay form →
+    // handover. Runs here, before menus and greeting intros, like Resorts V1. Questions (aiFirst)
+    // carry on below, where the AI answers and the unit buttons follow (hospHilloraPlan again).
+    if(!introAction && hilloraIsStyle(c) && mediaType==='text' && convId && userText
+      && !ENGINE_OPT_OUT_WORDS.includes(String(userText).toLowerCase().trim())){
+      const hlTurn=await engineHilloraTurn(env,c,clientId,state,userText,isNewLead||state.hilloraFresh===true).catch(e=>{reportOpsError(env,'Hillora turn failed',e,{clientId}).catch(()=>{});return null;});
+      if(hlTurn){
+        const leadId=await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,hlTurn.turn,startMs,mediaType,ctx);
+        if(leadId && hlTurn.patch()) await hospH3SaveCtx(env,clientId,leadId,hlTurn.patch());
+        return json({ok:true,route:hlTurn.turn.route==='human'?'hillora_handover':'hillora',sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
     // Travel Settings → 🧩 Flows: a published flow whose keyword or package this message matches
     // (or a chat already in one) — AI-first, so side questions are still answered. Runs before
     // Flyindo, so a flow takes over only for its own trigger; everything else is unchanged.
@@ -31513,7 +31548,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_wbTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'rq_welcome_back',sent:c.bot_reply_disabled!=='Yes'});
     }
-    const configuredGreetingTurn=!_rqOpenerBlocked&&!rv1IsStyle(c)&&(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
+    const configuredGreetingTurn=!_rqOpenerBlocked&&!rv1IsStyle(c)&&!hilloraIsStyle(c)&&(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -31555,7 +31590,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
     // Shopify-style stores open with their own guided menu (engineShopifyFlowTurn below) instead.
     const _shopifyFlow=engineShopifyFlowOn(c, botConfig);
-    const greetingTurn=!_rqOpenerBlocked&&(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow&&!rv1IsStyle(c)
+    const greetingTurn=!_rqOpenerBlocked&&(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow&&!rv1IsStyle(c)&&!hilloraIsStyle(c)
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -31569,7 +31604,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
     // If the LLM call inside it fails, it returns the plain question which is still better than
     // "I'll connect you with our team shortly." on a first contact.
-    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk && !_shopifyFlow && !rv1IsStyle(c)){
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk && !_shopifyFlow && !rv1IsStyle(c) && !hilloraIsStyle(c)){
       const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
       if(_noFlowIntro && _noFlowIntro.trim()){
         const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
@@ -33465,7 +33500,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){ await reportOpsError(env, 'hospitalitySuiteTurn', e, {clientId, convId}); }
     }
     // H3 never quotes a price — the human agent does at checkout — so Pro's instant quotes are off.
-    if(!orderHandledInline && hpEnabled(c) && !h3IsStyle(c) && !rv1IsStyle(c) && state.leadId){
+    if(!orderHandledInline && hpEnabled(c) && !h3IsStyle(c) && !rv1IsStyle(c) && !hilloraIsStyle(c) && state.leadId){
       try{
         const hp=await hpHandleTurn(env, HP_DEPS, {c, clientId, convId, leadId:state.leadId, phone, name:state.name, userText, rawText:text,
           mediaType, mediaUrl, lang:replyLang, selectedUnit:state.lead?.HospSelectedUnit||'',
@@ -33516,6 +33551,16 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         rv1Plan=await hospRv1Plan(env, c, clientId, userText, state, isNewLead);
         if(rv1Plan && !rv1Plan.action?.aiFirst) rv1Plan=null;
       }catch(e){ await reportOpsError(env, 'hospRv1Plan', e, {clientId, convId}); }
+    }
+
+    // Hillora: what reaches here is a new guest's question — the AI answers it, then the unit
+    // buttons follow (aiFirst). Every other message is the AI's.
+    let hilloraPlan=null;
+    if(!orderHandledInline && hilloraIsStyle(c) && convId && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && routing.route!=='human'){
+      try{
+        hilloraPlan=await hospHilloraPlan(env, c, clientId, userText, state, isNewLead);
+        if(hilloraPlan && !hilloraPlan.action?.aiFirst) hilloraPlan=null;
+      }catch(e){ await reportOpsError(env, 'hospHilloraPlan', e, {clientId, convId}); }
     }
 
     // Education enrollment flow — deterministic name/phone collection + D1 insert.
@@ -33684,9 +33729,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const resortCtx=await engineBuildResortContext(env, clientId);
         if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
       }
-      // H3: the Hospitality module's live stays catalogue — every location, full details for the
-      // one the guest is browsing.
-      if(h3IsStyle(c)){
+      // H3 / Hillora: the Hospitality module's live stays catalogue (no rates — staff give the
+      // price) — every location, full details for the one the guest is browsing.
+      if(h3IsStyle(c) || hilloraIsStyle(c)){
         const h3Ctx=await hospH3BuildAiContext(env, c, clientId, state.lead, userText).catch(()=>'');
         if(h3Ctx) contextBlock=(contextBlock||'')+h3Ctx;
       }
@@ -34023,6 +34068,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     if(h3Plan && !hpTurnHandled) await hospH3Execute(env, c, clientId, convId, resolvedLeadId, h3Plan);
     if(rv1Plan && !hpTurnHandled) await hospRv1Execute(env, c, clientId, convId, resolvedLeadId, rv1Plan);
+    if(hilloraPlan && !hpTurnHandled) await hospHilloraExecute(env, c, clientId, convId, resolvedLeadId, hilloraPlan);
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -42597,11 +42643,286 @@ export async function engineResortsV1Turn(env, c, clientId, state, userText, isN
   return {patch:()=>patch, turn};
 }
 
+// ── Hospitality style "Hillora" (hospitality-hillora.js): units → photos & details → stay form →
+// handover with a "Chat with Staff" button → bot silent → the handover lifts after 2 days and the
+// lead is marked new. The guest's unit / form state is kept in hosp_h3_state (unit, form).
+// Every active unit — except one linked to a property that has been switched off.
+async function hospHilloraLoadData(env, clientId){
+  const [{results:properties},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=?`).bind(Number(clientId)).all().catch(()=>({results:[]})),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+  ]);
+  const props=properties||[];
+  const off=new Set(props.filter(p=>Number(p.active)===0).map(p=>Number(p.id)));
+  return {properties:props.filter(p=>!off.has(Number(p.id))), units:(units||[]).filter(u=>!u.property_id || !off.has(Number(u.property_id)))};
+}
+async function hospHilloraPlan(env, c, clientId, userText, state, isNewLead){
+  const {properties, units}=await hospHilloraLoadData(env, clientId);
+  if(!units.length) return null;
+  const ctx=await hospH3GetCtx(env, clientId, state.leadId, state.lead);
+  if(state.lead) Object.assign(state.lead, {HospSelectedUnit:ctx.unit});
+  const action=hilloraDecide({text:userText, isNewLead, ctx, units});
+  return {action, data:{properties, units, ctx, phone:state.phone||state.lead?.Phone||''}};
+}
+// Sends this turn's Hillora step. Returns {text, options, patch} like hospRv1Execute.
+async function hospHilloraExecute(env, c, clientId, convId, leadId, plan){
+  const out={text:'', options:null, patch:null};
+  if(!plan?.action || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return out;
+  const {action:a, data:{properties, units}}=plan;
+  try{
+    if(a.type==='units'){
+      const paged=hilloraUnitPage(units, a.page);
+      // The intro is written from the bot's main prompt, ending with the "choose a unit" line.
+      const text=a.intro
+        ? await engineBuildFirstTouchIntro(env, c, HILLORA_UNITS_PROMPT, c.language||'en').catch(()=>HILLORA_UNITS_PROMPT)
+        : HILLORA_UNITS_PROMPT;
+      out.text=text; out.options=paged.rows;
+      await engineSendChatwootQuickReply(env, c, clientId, convId, text, paged.rows);
+      out.patch={unit:'', form:''};
+    }else if(a.type==='unit'){
+      const u=units.find(x=>Number(x.id)===Number(a.unitId));
+      if(!u) return out;
+      const prop=u.property_id ? properties.find(p=>Number(p.id)===Number(u.property_id)) : null;
+      // Photos of this unit only, then its details.
+      const deadline=Date.now()+H3_PHOTO_BUDGET_MS;
+      let sent=false;
+      for(const url of hilloraPhotoUrls(u)){
+        if(Date.now()>deadline) break;
+        if(await hospH3SendImage(env, c, convId, url, sent?'':`📸 ${u.name}`, 'unit.jpg')) sent=true;
+      }
+      if(sent && leadId) await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+        .bind(Number(clientId), leadId, u.id, new Date().toISOString()).run().catch(()=>{});
+      const details=hilloraUnitDetailsText(u, prop);
+      await hospitalityChatwootText(c, convId, details);
+      out.text=details;
+      // Then the stay details form for this unit.
+      await hospHilloraSendForm(env, c, clientId, convId, plan.data.phone, u.name);
+      out.patch={unit:u.name, form:'sent', ...(prop?{property:prop.name}:{})};
+    }
+    if(leadId && out.patch) await hospH3SaveCtx(env, clientId, leadId, out.patch);
+  }catch(e){ await reportOpsError(env, 'hospHilloraExecute', e, {clientId, convId, step:a?.type}); }
+  return out;
+}
+
+// The stay details form: a WhatsApp Flow (same encrypted endpoint as Native Forms) created and
+// published for the client on first use; else the same questions as a message (read back by
+// hilloraParseDetails).
+const _hilloraFlowFailedAt=new Map();
+async function hospHilloraEnsureFlow(env, c, clientId){
+  if(c.hillora_flow_id && String(c.hillora_flow_ver||'')===HILLORA_FORM_VERSION && c.wa_phone_id && c.wa_token) return c.hillora_flow_id;
+  if(Date.now()-(_hilloraFlowFailedAt.get(String(clientId))||0)<3600000) return '';
+  const missing=[['client waba_id',c.waba_id],['client wa_token',c.wa_token],['client wa_phone_id',c.wa_phone_id],
+    ['secret NATIVE_FORMS_PUBLIC_KEY_PEM',env.NATIVE_FORMS_PUBLIC_KEY_PEM],['secret NATIVE_FORMS_PRIVATE_KEY_PEM',env.NATIVE_FORMS_PRIVATE_KEY_PEM],
+    ['secret META_APP_SECRET',env.META_APP_SECRET],['var WORKER_BASE_URL',env.WORKER_BASE_URL]].filter(([,v])=>!String(v||'').trim()).map(([k])=>k);
+  if(missing.length){
+    _hilloraFlowFailedAt.set(String(clientId), Date.now());
+    await reportOpsError(env, 'Hillora — WhatsApp form not available (the questions go out as a message instead)', new Error('Missing: '+missing.join(', ')), {clientId});
+    return '';
+  }
+  try{
+    const G='https://graph.facebook.com/v18.0', auth={Authorization:`Bearer ${c.wa_token}`};
+    const keyR=await fetch(`${G}/${c.waba_id}/whatsapp_business_encryption`, {method:'POST', headers:{...auth, 'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({business_public_key:env.NATIVE_FORMS_PUBLIC_KEY_PEM})});
+    if(!keyR.ok) throw new Error('encryption key: HTTP '+keyR.status+' '+(await keyR.text().catch(()=>'')).slice(0,200));
+    const createR=await fetch(`${G}/${c.waba_id}/flows`, {method:'POST', headers:{...auth, 'Content-Type':'application/json'},
+      body:JSON.stringify({name:`leadvyne-hillora-${clientId}-v${HILLORA_FORM_VERSION}`, categories:['LEAD_GENERATION'], endpoint_uri:`${env.WORKER_BASE_URL}/native-forms/endpoint`})});
+    const created=await createR.json().catch(()=>({}));
+    if(!createR.ok||!created.id) throw new Error('create flow: '+(created?.error?.message||'HTTP '+createR.status));
+    const fd=new FormData();
+    fd.append('file', new Blob([JSON.stringify(hilloraFormFlowJson())], {type:'application/json'}), 'flow.json');
+    fd.append('name', 'flow.json'); fd.append('asset_type', 'FLOW_JSON');
+    const assetR=await fetch(`${G}/${created.id}/assets`, {method:'POST', headers:auth, body:fd});
+    if(!assetR.ok) throw new Error('upload flow: HTTP '+assetR.status+' '+(await assetR.text().catch(()=>'')).slice(0,200));
+    const pubR=await fetch(`${G}/${created.id}/publish`, {method:'POST', headers:auth});
+    if(!pubR.ok) throw new Error('publish flow: HTTP '+pubR.status+' '+(await pubR.text().catch(()=>'')).slice(0,200));
+    await ensureClientColumns(env, ['hillora_flow_id','hillora_flow_ver']);
+    await patchClientFields(env, clientId, {hillora_flow_id:String(created.id), hillora_flow_ver:HILLORA_FORM_VERSION});
+    c.hillora_flow_id=String(created.id); c.hillora_flow_ver=HILLORA_FORM_VERSION;
+    return c.hillora_flow_id;
+  }catch(e){
+    _hilloraFlowFailedAt.set(String(clientId), Date.now());
+    await reportOpsError(env, 'Hillora — WhatsApp form could not be set up (the questions go out as a message instead)', e, {clientId});
+    return '';
+  }
+}
+export function hospHilloraFlowToken({clientId, convId, phone, unit=''}){
+  return btoa(JSON.stringify({k:'hillora', clientId:String(clientId), convId:convId?String(convId):null, phone:String(phone||''),
+    unit:encodeURIComponent(String(unit||'').slice(0,80))})).replace(/=+$/,'');
+}
+async function hospHilloraSendForm(env, c, clientId, convId, phone, unit){
+  const flowId=phone?await hospHilloraEnsureFlow(env, c, clientId):'';
+  if(flowId){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {method:'POST',
+        headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({messaging_product:'whatsapp', to:String(phone).replace(/[^\d]/g,''), type:'interactive', interactive:{
+          type:'flow', body:{text:hilloraFormInviteText(unit)},
+          action:{name:'flow', parameters:{flow_message_version:'3', flow_token:hospHilloraFlowToken({clientId, convId, phone, unit}),
+            flow_id:flowId, flow_cta:'Fill details', flow_action:'navigate',
+            flow_action_payload:{screen:HILLORA_FORM_SCREEN, data:{unit:unit?`🏡 ${unit}`:'🏡 Your stay'}}}}}})});
+      if(r.ok){
+        await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST',
+          headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+          body:JSON.stringify({content:`📝 Stay details form sent to the guest${unit?` (${unit})`:''}.`, message_type:'outgoing', private:true})}).catch(()=>{});
+        return true;
+      }
+      await reportOpsError(env, 'Hillora — WhatsApp form send refused (sent as a message instead)', new Error(`HTTP ${r.status} ${(await r.text().catch(()=>'')).slice(0,300)}`), {clientId});
+    }catch(e){ await reportOpsError(env, 'Hillora — WhatsApp form send failed', e, {clientId}); }
+  }
+  await hospitalityChatwootText(c, convId, hilloraFormTextFallback(unit));
+  return true;
+}
+// The stay details in a typed reply: the rule-based reader first, then (only for a reply that holds
+// numbers and gave too little) a small AI extraction checked against the text.
+async function hospHilloraReadDetails(env, c, text){
+  const parsed=hilloraParseDetails(text);
+  if(hilloraIsDetailsReply(text, parsed)) return parsed;
+  if(!/\d/.test(String(text||'')) || (!env.GEMINI_API_KEY && !c.openrouter_key && !env.AI)) return parsed;
+  try{
+    const system='Extract stay booking details a guest typed. Return JSON only: {"checkin":"YYYY-MM-DD"|null,"checkout":"YYYY-MM-DD"|null,"rooms":number|null,"requirement":"Resort"|"Homestay"|null,"pool":"With Pool"|"Without Pool"|null,"adults":number|null,"kids_6_12":number|null,"kids_below_6":number|null}. Adults are guests above 12 years. Use null for anything not written in the message — never guess. Today is '+new Date().toISOString().slice(0,10)+'.';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, String(text).slice(0,600), {temperature:0, maxOutputTokens:160, json:true, caller:'hillora-details', cfBackup:true}))||'';
+    const m=String(raw).replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(!m) return parsed;
+    const ai=hilloraCleanDetails(JSON.parse(m[0]));
+    // Numbers the AI returned must be written in the text.
+    const t=String(text);
+    for(const k of ['rooms','adults','kids_6_12','kids_below_6']) if(ai[k]!=null && !new RegExp(`\\b${ai[k]}\\b`).test(t)) delete ai[k];
+    return {...ai, ...parsed};
+  }catch(e){ return parsed; }
+}
+// The staff WhatsApp number the "Chat with Staff" button opens: Hospitality → Hillora setting,
+// else the lead owner's WhatsApp number (Team), else the business's own WhatsApp number.
+function hilloraStaffPhone(c, lead){
+  const set=String(c.hillora_staff_phone||'').replace(/\D/g,'');
+  if(set.length>=8) return set;
+  const owner=String(lead?.Owner||'').trim().toLowerCase();
+  const team=owner?String(parseTeamWhatsapp(c)[owner]||'').replace(/\D/g,''):'';
+  if(team.length>=8) return team;
+  return String(c.wa_display_phone||'').replace(/\D/g,'');
+}
+// Thanks + "Chat with Staff" button (a WhatsApp cta_url; a plain link when that can't be sent),
+// and a private note with the details for the team.
+async function hospHilloraSendHandover(env, c, clientId, convId, phone, inboxId, lead, unit, f){
+  const link=hilloraStaffLink(hilloraStaffPhone(c, lead), {unit, f});
+  const text=hilloraThanksText(unit);
+  if(link) await engineSendDsrChatButton(env, c, clientId, convId, phone, inboxId, {text, button:HILLORA_CHAT_BUTTON, url:link});
+  else await engineSendChatwootReply(env, c, clientId, convId, text.replace(/\s*Tap below to chat with our staff 👇$/, ''));
+  if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST',
+      headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+      body:JSON.stringify({content:`📝 Hillora — stay details received:\n${hilloraSummaryLines(f, unit).join('\n')}\n\nThe bot is silent for this guest for 2 days; then the handover lifts and the lead is marked new.`, message_type:'outgoing', private:true})}).catch(()=>{});
+  }
+  await engineSendHandoverLabel(c, convId).catch(()=>{});
+  return text;
+}
+// WhatsApp form submitted (handleNativeFormEndpoint): the lead is handed to the team with the
+// details, the guest gets the thanks + "Chat with Staff" button, and the bot stays silent.
+export async function hospHilloraFormSubmitted(env, c, clientId, {phone, convId, unit=''}, f){
+  const state=await engineGetLeadState(env, clientId, phone, 'Phone');
+  state.phone=phone; state.convId=convId||state.lead?.ConversationID||null;
+  const qual={...(state.qualAnswers||{}), ...hilloraQual(f, unit)};
+  const now=new Date().toISOString();
+  const history=(state.history||[]).slice();
+  history.push({role:'user', content:`📝 Stay details: ${hilloraSummaryLines(f, unit).join(' · ')}`, ts:now});
+  const text=hilloraThanksText(unit);
+  history.push({role:'assistant', content:text, ts:now});
+  const leadBody={ClientId:String(clientId), Phone:phone||state.lead?.Phone||'', ConversationID:state.convId, Channel:'whatsapp',
+    QualAnswers:JSON.stringify(qual), Stage:'human_handover', Handover:'Yes', HandoverAt:now, SlaAlerted:'No', ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:now};
+  const leadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+  if(!leadId) return;
+  await d1InsertLeadMessage(env, leadId, clientId, {role:'assistant', sender_type:'bot', content:text, ts:now}).catch(()=>{});
+  if(state.stage!=='human_handover') await engineJournalStageChange(env, clientId, leadId, state.stage, 'human_handover').catch(()=>{});
+  await engineMaybeSendHotLeadAlert(env, c, clientId, leadId, state.lead, leadBody, {inboxId:state.lead?.InboxId||null}).catch(()=>{});
+  if(state.convId) await hospHilloraSendHandover(env, c, clientId, state.convId, phone, state.lead?.InboxId||null, state.lead, unit, f);
+  await hospH3SaveCtx(env, clientId, leadId, {form:'done'});
+  await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:leadId, channel:'whatsapp', at:now}).catch(()=>{});
+}
+
+// The early Hillora turn (handleEngineWebhook, before menus and greeting intros): a step the flow
+// owns, as a turn for enginePersistFirstGreetingTurn, or null (the AI answers; aiFirst units follow).
+export async function engineHilloraTurn(env, c, clientId, state, userText, isNewLead){
+  const plan=await hospHilloraPlan(env, c, clientId, userText, state, isNewLead);
+  if(!plan) return null;
+  const lang=c.language||'en';
+  let patch=null;
+  const ctx=plan.data.ctx||{};
+  // The form is out and this isn't a tap in the flow: read the reply as the stay details.
+  if(ctx.form==='sent' && !plan.action){
+    const f=await hospHilloraReadDetails(env, c, userText);
+    if(hilloraIsDetailsReply(userText, f)){
+      const unit=ctx.unit||'';
+      patch={form:'done'};
+      const turn={route:'human', next:'human_handover', preserveCrmStage:false, intent:'BOOKING', lang, text:hilloraThanksText(unit), historyUserText:userText,
+        qualAnswers:{...(state.qualAnswers||{}), ...hilloraQual(f, unit)},
+        deliver:async()=>{ await hospHilloraSendHandover(env, c, clientId, state.convId, state.phone||state.lead?.Phone||'', state.inboxId||state.lead?.InboxId||null, state.lead, unit, f); return null; }};
+      return {patch:()=>patch, turn};
+    }
+  }
+  if(!plan.action || plan.action.aiFirst) return null;
+  const turn={route:'faq', next:state.stage||'new', preserveCrmStage:true, intent:'FLOW_ENTRY', lang, text:'', historyUserText:userText,
+    deliver:async()=>{
+      const r=await hospHilloraExecute(env, c, clientId, state.convId, state.leadId||null, plan);
+      turn.text=r.text; patch=state.leadId?null:r.patch;
+      return r.options||null;
+    }};
+  return {patch:()=>patch, turn};
+}
+
+// Lifts a Hillora handover (2 days after it started): the bot answers again and the lead is
+// marked new (unless the team moved its stage on). Returns the patched fields, or null.
+export async function hilloraReleaseLead(env, c, clientId, lead){
+  if(!lead?.Id) return null;
+  const patch=hilloraReleasePatch(lead);
+  await ensureLeadsColumns(env, ['HandoverBy']).catch(()=>{});
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ...patch}});
+  if(!r.ok) return null;
+  await chatsV2ApplyLeadPatch(env, lead.Id, patch, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+  if(patch.Stage && String(lead.Stage||'')!==patch.Stage) await engineJournalStageChange(env, clientId, lead.Id, lead.Stage||'', patch.Stage).catch(()=>{});
+  await hospH3SaveCtx(env, clientId, lead.Id, {unit:'', form:''});
+  if(lead.ConversationID && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${lead.ConversationID}/messages`, {method:'POST',
+      headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+      body:JSON.stringify({content:`🔄 Hillora — handover lifted after 2 days${patch.Stage?'; marked as a new lead':''}. The bot answers this guest again.`, message_type:'outgoing', private:true})}).catch(()=>{});
+  }
+  return patch;
+}
+const HILLORA_RELEASE_MAX_PER_RUN=100;
+export async function hilloraReleaseProcessClient(env, c, now=Date.now()){
+  if(!hilloraIsStyle(c)) return {released:0};
+  const where=encodeURIComponent(`(ClientId,eq,${Number(c.Id)})~and(Handover,eq,Yes)`);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=HandoverAt&limit=200&fields=Id,Stage,Handover,HandoverAt,HandoverBy,ConversationID`);
+  if(!r.ok) return {released:0};
+  const due=(((await r.json().catch(()=>({})))?.list)||[]).filter(l=>hilloraHandoverLiftable(l, now)).slice(0, HILLORA_RELEASE_MAX_PER_RUN);
+  let released=0;
+  for(const lead of due){
+    try{ if(await hilloraReleaseLead(env, c, c.Id, lead)) released++; }
+    catch(e){ await reportOpsError(env, 'hilloraReleaseLead', e, {clientId:c.Id, leadId:lead.Id}); }
+  }
+  return {released};
+}
+export async function runHilloraHandoverReleaseForAllClients(env, now=Date.now()){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!hilloraIsStyle(c)) continue;
+      try{ await hilloraReleaseProcessClient(env, c, now); }
+      catch(e){ await reportOpsError(env, 'hilloraReleaseProcessClient', e, {clientId:c.Id}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   if(h3IsStyle(c)) return; // H3 sends its own photos and pickers (hospH3Execute)
   if(rv1IsStyle(c)) return; // Resorts V1 sends its own photos and pickers (hospRv1Execute)
+  if(hilloraIsStyle(c)) return; // Hillora sends its own photos and unit buttons (hospHilloraExecute)
   try{
     const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all();
     if(!units || !units.length) return;
@@ -47036,6 +47357,7 @@ export default {
       ctx.waitUntil(runUnattendedLeadReassignForAllClients(env));
       // Not-called / unanswered leads past their window (Settings → 🔀 Lead Routing) — see runIdleLeadReassignForAllClients.
       ctx.waitUntil(runIdleLeadReassignForAllClients(env));
+      ctx.waitUntil(runHilloraHandoverReleaseForAllClients(env).catch(e=>reportOpsError(env, 'hillora handover release', e)));
       // Leads with no owner → the round-robin pool (Settings → 🔀 Lead Routing) — see runAssignUnassignedForAllClients.
       ctx.waitUntil(runAssignUnassignedForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
