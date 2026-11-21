@@ -412,6 +412,8 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
   <button class="tab desk-only shop-only" data-tab="shop-orders" onclick="showTab('shop-orders')">🛒 Shopify Orders <span class="nav-count" id="navShopOrdersCount" style="display:none"></span></button>
   <button class="tab desk-only shop-only" data-tab="shop-stock" onclick="showTab('shop-stock')">📊 Shopify Stock <span class="nav-count" id="navShopStockCount" style="display:none"></span></button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
+  <div class="nav-label">Website</div>
+  <button class="tab" data-tab="website" onclick="showTab('website')">🌐 Website Sync</button>
   <div class="nav-label">Configure</div>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
   <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')">🔀 Flow</button>
@@ -1014,6 +1016,69 @@ body.cv-shell .save-btn.sec{background:var(--accent-soft);color:var(--accent-ink
 </div>
 
 <!-- SETTINGS TAB -->
+<!-- WEBSITE SYNC TAB — a merchant's own e-commerce website (custom API, e.g. 4L Fashion): its
+     products, orders and categories sync into this module's Products / Orders / Categories, live by
+     webhook with a scheduled catch-up. website-sync.js in the Worker; the API key and webhook
+     secret are stored encrypted there and never sent back to this page. -->
+<div id="tabWebsite" class="page">
+  <div class="card">
+    <div class="card-title-row"><div class="card-title">🌐 Website store</div><span class="live-dot off" id="wsyLive" style="display:none"></span></div>
+    <div class="s-hint" style="margin:0 0 14px;line-height:1.6">Connect your own e-commerce website. Its products, orders and categories become part of <b>Products</b>, <b>Orders</b> and <b>Categories</b> here (and Reports, the storefront and the WhatsApp bot). Products and orders you already have are matched — by SKU or name for products, by order number for orders — instead of being duplicated, and anything deleted on your website is deleted here too.</div>
+    <div id="wsyBanner"></div>
+    <div id="wsyStatusRow" class="s-hint" style="margin:0 0 12px;display:none"></div>
+
+    <div class="s-sec"><span class="s-lbl">Website name</span><input class="s-input" id="wsyName" type="text" placeholder="e.g. 4L Fashion" maxlength="80"></div>
+    <div class="s-sec"><span class="s-lbl">API base URL</span><input class="s-input" id="wsyBaseUrl" type="url" placeholder="https://yourstore.com/api/v1"><div class="s-hint">From your website's API reference page (e.g. <code>https://4lfashion.com.qa/api/v1</code>).</div></div>
+    <div class="s-sec"><span class="s-lbl">API key</span>
+      <div class="s-row" style="margin-top:0">
+        <input class="s-input" id="wsyApiKey" type="password" autocomplete="off" placeholder="Paste the key your website created (e.g. 4lf_…)" style="flex:1;min-width:220px;margin-bottom:0">
+        <select class="s-input" id="wsyAuthStyle" style="width:auto;margin-bottom:0" title="How the key is sent"><option value="bearer">Authorization: Bearer</option><option value="x-api-key">X-API-Key header</option></select>
+      </div>
+      <div class="s-hint" id="wsyKeyHint"></div>
+    </div>
+    <div class="s-sec"><span class="s-lbl">Webhook signing secret (optional)</span><input class="s-input" id="wsySecret" type="password" autocomplete="off" placeholder="Paste it to verify every webhook (X-…-Signature)"><div class="s-hint" id="wsySecretHint">When set, webhooks without a valid <code>sha256=HMAC(secret, timestamp + "." + body)</code> signature are rejected.</div></div>
+    <div class="s-row" style="margin-top:0">
+      <div class="s-sec" style="flex:1;min-width:140px"><span class="s-lbl">Currency</span><input class="s-input" id="wsyCurrency" type="text" maxlength="3" placeholder="QAR" style="text-transform:uppercase"></div>
+      <div class="s-sec" style="flex:1;min-width:180px"><span class="s-lbl">Catch-up sync every</span><select class="s-input" id="wsyInterval"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="180">3 hours</option><option value="360">6 hours</option><option value="720">12 hours</option><option value="1440">24 hours</option></select></div>
+    </div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px"><div class="toggle-text"><strong>Sync products</strong><small>Name, SKU, price, stock, sizes/colours, photos and link. Stock and price come from your website.</small></div><span class="toggle-wrap"><input type="checkbox" id="wsySyncProducts" checked><span class="toggle-slider"></span></span></label>
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px"><div class="toggle-text"><strong>Sync orders</strong><small>Online and POS orders with status, payment and items. The last 90 days on the first sync.</small></div><span class="toggle-wrap"><input type="checkbox" id="wsySyncOrders" checked><span class="toggle-slider"></span></span></label>
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px"><div class="toggle-text"><strong>Sync categories</strong><small>Each product's category is added to Categories (an existing one with the same name is used).</small></div><span class="toggle-wrap"><input type="checkbox" id="wsySyncCategories" checked><span class="toggle-slider"></span></span></label>
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:10px"><div class="toggle-text"><strong>Auto-delete removed items</strong><small>Products, orders and synced categories deleted on your website are deleted here. Items you added by hand are never touched.</small></div><span class="toggle-wrap"><input type="checkbox" id="wsyDeleteMissing" checked><span class="toggle-slider"></span></span></label>
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:14px" id="wsyEnabledRow"><div class="toggle-text"><strong>Sync on</strong><small>Turn off to pause webhooks and scheduled syncs without disconnecting.</small></div><span class="toggle-wrap"><input type="checkbox" id="wsyEnabled" checked><span class="toggle-slider"></span></span></label>
+
+    <details style="margin-bottom:14px"><summary class="s-hint" style="cursor:pointer;margin:0">Advanced — endpoint paths</summary>
+      <div class="s-row">
+        <div style="flex:1;min-width:140px"><span class="s-lbl">Products</span><input class="s-input" id="wsyPathProducts" placeholder="/products"></div>
+        <div style="flex:1;min-width:140px"><span class="s-lbl">Orders</span><input class="s-input" id="wsyPathOrders" placeholder="/orders"></div>
+        <div style="flex:1;min-width:140px"><span class="s-lbl">Inventory</span><input class="s-input" id="wsyPathInventory" placeholder="/inventory"></div>
+        <div style="flex:1;min-width:140px"><span class="s-lbl">Ping</span><input class="s-input" id="wsyPathPing" placeholder="/ping"></div>
+      </div>
+    </details>
+
+    <div class="s-row">
+      <button class="save-btn sec" id="wsyTestBtn" onclick="wsyTest()">Test connection</button>
+      <button class="save-btn" id="wsySaveBtn" onclick="wsySave()">Connect &amp; sync</button>
+      <button class="save-btn sec" id="wsySyncBtn" style="display:none" onclick="wsySyncNow()">↻ Sync now</button>
+      <button class="save-btn" id="wsyDisconnectBtn" style="display:none;background:var(--muted)" onclick="wsyDisconnect()">Disconnect</button>
+      <span class="save-msg" id="wsyMsg"></span>
+    </div>
+    <div id="wsyTestOut" class="s-hint" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card" id="wsyHookCard" style="display:none">
+    <div class="card-title">Webhook — push changes instantly</div>
+    <div class="s-hint" style="margin:0 0 10px;line-height:1.6">In your website's connection form, paste this as the <b>Webhook URL</b> and tick every event (new order, order updated, cancelled, test order deleted, product added / edited / deleted, stock levels changed). Leave <b>Extra Header</b> blank — the link itself identifies your store.</div>
+    <div class="s-row" style="margin-top:0">
+      <input class="s-input" id="wsyHookUrl" type="text" readonly style="flex:1;min-width:240px;margin-bottom:0;font-family:var(--mono);font-size:12px" onclick="this.select()">
+      <button class="save-btn sec" onclick="wsyCopyHook()">Copy</button>
+      <button class="save-btn sec" onclick="wsyRotateHook()" title="Make a new link — the old one stops working">New link</button>
+    </div>
+    <div class="s-hint" id="wsyHookLast" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <div id="tabSettings" class="page">
   <div class="card">
     <div class="card-title">Product Search — What to Share</div>
@@ -1939,6 +2004,7 @@ async function init() {
   // OAuth screen via the dashboard): land on the Shopify page; a fresh connect runs the first sync.
   const shopifyParam = params.get('shopify');
   if (params.get('tab') === 'shopify' || shopifyParam) showTab('shopify');
+  else if (params.get('tab') === 'website') showTab('website');
   if (shopifyParam === 'connected' && shopDomain()) resyncShopify();
   else if (shopifyParam === 'error') document.getElementById('spConnectMsg').textContent = params.get('msg') || 'Shopify connection failed';
 }
@@ -1974,6 +2040,8 @@ function showTab(name) {
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   if (name === 'shopify') { renderShopifyPage(); if (shopDomain() && !shopStatus) loadShopStatus(); }
+  document.getElementById('tabWebsite').classList.toggle('active', name === 'website');
+  if (name === 'website') wsyLoad();
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
   document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
   document.getElementById('tabWashop').classList.toggle('active', name === 'washop');
@@ -2022,14 +2090,14 @@ function renderProductsTable() {
       <tr>
         <td><input type="checkbox" class="row-check" onchange="toggleProductSelect(${p.Id}, this.checked)" ${selectedProductIds.has(p.Id)?'checked':''}></td>
         <td>${p.image_url ? `<img src="${escAttr(p.image_url)}" alt="" class="thumb" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb thumb-empty'}))">` : '<div class="thumb thumb-empty"></div>'}</td>
-        <td><strong>${esc(p.name||p.title||'—')}</strong>${p.shopify_product_id ? ' <span class="muted-s" title="Synced from Shopify">🛍️ Shopify</span>' : ''}</td>
+        <td><strong>${esc(p.name||p.title||'—')}</strong>${p.shopify_product_id ? ' <span class="muted-s" title="Synced from Shopify">🛍️ Shopify</span>' : ''}${p.website_product_id ? ' <span class="muted-s" title="Synced from your website">🌐 Website</span>' : ''}</td>
         <td style="font-family:var(--mono);font-size:12px">${esc(p.sku||'—')}</td>
         <td>${esc(p.category||'—')}</td>
         <td>${esc(PRODUCT_STYLE_LABELS[p.style] || PRODUCT_STYLE_LABELS.fashion_garments)}</td>
         <td>${esc(p.color||'—')}</td>
         <td>${esc(p.size||'—')}</td>
         <td>${esc(p.currency||'INR')} ${Number(p.price||0).toLocaleString()}</td>
-        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" ${p.shopify_product_id ? 'readonly title="Stock comes from Shopify"' : `onchange="updateProductStock(${p.Id}, this.value)"`}></td>
+        <td><input type="number" class="stock-input" min="0" value="${p.stock ?? 0}" ${p.shopify_product_id ? 'readonly title="Stock comes from Shopify"' : p.website_product_id ? 'readonly title="Stock comes from your website"' : `onchange="updateProductStock(${p.Id}, this.value)"`}></td>
         <td><span class="badge ${p.status==='active'?'shipped':p.status==='inactive'?'cancelled':''}">${esc(p.status||'—')}</span></td>
         <td><div class="row-actions">
           <button class="icon-btn" onclick="copyProductLink(${p.Id})" title="Copy this product's link">🔗</button>
@@ -5286,6 +5354,121 @@ function renderShopBanners() {
     el.classList.toggle('off', off);
     el.textContent = off ? 'Sync paused' : 'Live sync';
   });
+}
+
+// ── WEBSITE SYNC (🌐 Website Sync tab) ──
+// Session-gated Worker routes (/ecom/website/*, website-sync.js): the API key and webhook secret
+// are stored encrypted on the Worker, so they need the dashboard sign-in, not just client_id.
+let wsyConfig = null;
+function wsyHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (ecomSessionToken) h.Authorization = 'Bearer ' + ecomSessionToken;
+  return h;
+}
+async function wsyCall(path, body) {
+  const r = await fetch(`${WORKER_BASE}/ecom/website${path}?client_id=${encodeURIComponent(clientId)}`, body === undefined ? { headers: wsyHeaders() } : { method: 'POST', headers: wsyHeaders(), body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok && !('ok' in d && d.ok === false)) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+function wsyMsg(text, isErr) { const el = document.getElementById('wsyMsg'); el.textContent = text || ''; el.style.color = isErr ? 'var(--red, #B91C1C)' : ''; }
+async function wsyLoad() {
+  if (!ecomSessionToken) { document.getElementById('wsyBanner').innerHTML = `<div class="banner"><span>🔑</span><div><b>Sign in needed.</b>Open Ecommerce from the dashboard to set up Website Sync.</div></div>`; return; }
+  try { wsyConfig = await wsyCall('/status'); wsyRender(); }
+  catch (e) { document.getElementById('wsyBanner').innerHTML = `<div class="banner"><span>⚠️</span><div><b>Couldn't load Website Sync.</b>${esc(e.message)}</div></div>`; }
+}
+function wsyRender() {
+  const c = wsyConfig || {};
+  const on = !!c.connected;
+  const set = (id, v) => { document.getElementById(id).value = v ?? ''; };
+  const chk = (id, v) => { document.getElementById(id).checked = v !== false; };
+  if (on) {
+    set('wsyName', c.name); set('wsyBaseUrl', c.base_url); set('wsyAuthStyle', c.auth_style || 'bearer');
+    set('wsyCurrency', c.currency); set('wsyInterval', String(c.sync_minutes || 60));
+    chk('wsySyncProducts', c.sync_products); chk('wsySyncOrders', c.sync_orders); chk('wsySyncCategories', c.sync_categories);
+    chk('wsyDeleteMissing', c.delete_missing); chk('wsyEnabled', c.enabled);
+    const p = c.paths || {};
+    set('wsyPathProducts', p.products); set('wsyPathOrders', p.orders); set('wsyPathInventory', p.inventory); set('wsyPathPing', p.ping);
+    document.getElementById('wsyHookUrl').value = c.webhook_url || '';
+  }
+  document.getElementById('wsyApiKey').value = '';
+  document.getElementById('wsySecret').value = '';
+  document.getElementById('wsyKeyHint').textContent = on && c.key_hint ? `Saved key ${c.key_hint} — leave blank to keep it.` : '';
+  document.getElementById('wsySecretHint').innerHTML = on && c.has_secret ? 'A signing secret is saved — every webhook is verified. Leave blank to keep it.' : 'When set, webhooks without a valid <code>sha256=HMAC(secret, timestamp + "." + body)</code> signature are rejected.';
+  document.getElementById('wsySaveBtn').textContent = on ? 'Save' : 'Connect & sync';
+  ['wsySyncBtn', 'wsyDisconnectBtn'].forEach(id => { document.getElementById(id).style.display = on ? '' : 'none'; });
+  document.getElementById('wsyHookCard').style.display = on ? '' : 'none';
+  const live = document.getElementById('wsyLive');
+  live.style.display = on ? '' : 'none';
+  const paused = on && !c.enabled, failing = on && c.last_status === 'error';
+  live.classList.toggle('off', paused || failing);
+  live.textContent = paused ? 'Paused' : failing ? 'Sync error' : 'Live sync';
+  const row = document.getElementById('wsyStatusRow');
+  row.style.display = on ? '' : 'none';
+  if (on) row.innerHTML = `Last sync ${esc(relTime(c.last_sync_at))}${c.last_status === 'running' ? ' (running…)' : ''}${c.last_summary && c.last_status !== 'error' ? ` — ${esc(c.last_summary)}` : ''}`;
+  document.getElementById('wsyBanner').innerHTML = failing ? `<div class="banner"><span>⚠️</span><div><b>The last sync failed.</b>${esc(c.last_error || '')}</div></div>` : '';
+  document.getElementById('wsyHookLast').textContent = c.last_webhook_at ? `Last webhook ${relTime(c.last_webhook_at)} (${c.last_webhook_event || 'event'})` : 'No webhook received yet.';
+}
+function wsyForm() {
+  const v = id => document.getElementById(id).value.trim();
+  const b = {
+    name: v('wsyName'), base_url: v('wsyBaseUrl'), auth_style: v('wsyAuthStyle'), currency: v('wsyCurrency'),
+    sync_minutes: Number(v('wsyInterval')),
+    sync_products: document.getElementById('wsySyncProducts').checked, sync_orders: document.getElementById('wsySyncOrders').checked,
+    sync_categories: document.getElementById('wsySyncCategories').checked, delete_missing: document.getElementById('wsyDeleteMissing').checked,
+    enabled: document.getElementById('wsyEnabled').checked,
+    paths: { products: v('wsyPathProducts'), orders: v('wsyPathOrders'), inventory: v('wsyPathInventory'), ping: v('wsyPathPing') },
+  };
+  if (v('wsyApiKey')) b.api_key = v('wsyApiKey');
+  if (v('wsySecret')) b.webhook_secret = v('wsySecret');
+  return b;
+}
+async function wsyTest() {
+  const out = document.getElementById('wsyTestOut');
+  out.textContent = 'Testing…';
+  try {
+    const d = await wsyCall('/test', wsyForm());
+    if (!d.ok) { out.innerHTML = `❌ ${esc(d.error || 'Connection failed')}`; return; }
+    const rows = (d.products_sample || []).map(p => `<li>${esc(p.name)}${p.sku ? ` · ${esc(p.sku)}` : ''}${p.price != null ? ` · ${esc(String(p.price))}` : ''}${p.stock != null ? ` · stock ${esc(String(p.stock))}` : ''}${p.category ? ` · ${esc(p.category)}` : ''}${p.status === 'inactive' ? ' · inactive' : ''}</li>`).join('');
+    out.innerHTML = `✅ Connected.${d.orders_ok ? ' Orders readable.' : ` ⚠️ Orders: ${esc(d.orders_error || 'not readable')}`}${rows ? `<ul style="margin:6px 0 0 18px">${rows}</ul>` : ' No products returned yet.'}`;
+  } catch (e) { out.innerHTML = `❌ ${esc(e.message)}`; }
+}
+async function wsyAfterSync(result) {
+  if (result && result.ok === false) wsyMsg('Saved, but the sync failed: ' + (result.error || ''), true);
+  else if (result) wsyMsg('✓ ' + (result.summary || 'Synced'));
+  loadProducts(); loadOrders(); loadCategories();
+}
+async function wsySave() {
+  const btn = document.getElementById('wsySaveBtn');
+  const connecting = !(wsyConfig && wsyConfig.connected);
+  btn.disabled = true; wsyMsg(connecting ? 'Connecting and syncing — this can take a minute…' : 'Saving…');
+  try {
+    const d = await wsyCall('/connect', { ...wsyForm(), sync_now: connecting });
+    wsyConfig = d.config; wsyRender();
+    if (connecting) await wsyAfterSync(d.result); else wsyMsg('✓ Saved');
+  } catch (e) { wsyMsg(e.message, true); }
+  finally { btn.disabled = false; }
+}
+async function wsySyncNow() {
+  const btn = document.getElementById('wsySyncBtn');
+  btn.disabled = true; btn.textContent = '↻ Syncing…'; wsyMsg('');
+  try { const d = await wsyCall('/sync', {}); wsyConfig = d.config || wsyConfig; wsyRender(); await wsyAfterSync(d); }
+  catch (e) { wsyMsg('Sync failed: ' + e.message, true); wsyLoad(); }
+  finally { btn.disabled = false; btn.textContent = '↻ Sync now'; }
+}
+function wsyCopyHook() {
+  const el = document.getElementById('wsyHookUrl');
+  (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject()).then(() => wsyMsg('✓ Webhook URL copied'), () => { el.select(); document.execCommand('copy'); wsyMsg('✓ Webhook URL copied'); });
+}
+async function wsyRotateHook() {
+  if (!confirm('Make a new webhook link? The old link stops working — paste the new one into your website.')) return;
+  try { const d = await wsyCall('/rotate-hook', {}); wsyConfig = d.config; wsyRender(); wsyMsg('✓ New link — update it on your website'); }
+  catch (e) { wsyMsg(e.message, true); }
+}
+async function wsyDisconnect() {
+  if (!confirm('Disconnect your website? Products and orders already synced stay here as ordinary items; nothing more will sync.')) return;
+  try { const d = await wsyCall('/disconnect', {}); wsyConfig = d.config; wsyRender(); wsyMsg('Disconnected'); }
+  catch (e) { wsyMsg(e.message, true); }
 }
 
 async function resyncShopify(btn) {
