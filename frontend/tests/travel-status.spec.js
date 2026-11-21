@@ -68,6 +68,7 @@ async function pick(page, id, key) {
 
 test('status board counts every status, with auto statuses before anyone marks one', async ({ page }) => {
   await boot(page);
+  await page.locator('#travelNav .dnGroup:has([data-page="tvstatus"]) .dnGroupBtn').hover(); // inside the Sales / Operations dropdown
   await page.locator('#travelNav .dnTab[data-page="tvstatus"]').click();
   await expect(page.locator('#pageTvstatus')).toBeVisible();
   await expect(page.locator('#tsBody .tsb-group[data-group=""] .n')).toHaveText('4');

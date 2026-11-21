@@ -65,6 +65,7 @@ test.describe('travel workspace', () => {
     await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
     // @ts-ignore
     await page.evaluate((ret) => { _taBookings[1].return_date = ret; }, iso(6));
+    await page.locator('#travelNav .dnGroup:has([data-page="departures"]) .dnGroupBtn').hover(); // inside the Sales / Operations dropdown
     await page.locator('#travelNav .dnTab[data-page="departures"]').click();
     // @ts-ignore
     await page.evaluate((m) => { _tvCalMonth = m; renderDepartures(); }, iso(6).slice(0, 7));
@@ -73,6 +74,7 @@ test.describe('travel workspace', () => {
 
   test('departures calendar shows trips and inquiry travel dates', async ({ page }) => {
     await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
+    await page.locator('#travelNav .dnGroup:has([data-page="departures"]) .dnGroupBtn').hover(); // inside the Sales / Operations dropdown
     await page.locator('#travelNav .dnTab[data-page="departures"]').click();
     const dep = page.locator('#tvDepBody');
     await expect(dep.locator('.tv-ev.booking', { hasText: 'Meera' }).first()).toBeVisible();
@@ -97,6 +99,7 @@ test.describe('travel workspace', () => {
     await expect(soon.locator('.tv-row', { hasText: 'Fathima' })).toContainText('Calicut → Dubai');
     await expect(soon.locator('.tv-row', { hasText: 'Fathima' })).toContainText('from chat');
 
+    await page.locator('#travelNav .dnGroup:has([data-page="departures"]) .dnGroupBtn').hover(); // inside the Sales / Operations dropdown
     await page.locator('#travelNav .dnTab[data-page="departures"]').click();
     const dep = page.locator('#tvDepBody');
     // @ts-ignore — look at the month of Fathima's travel date (the test may run at a month end).
@@ -128,6 +131,7 @@ test.describe('travel workspace', () => {
 
   test('Trips opens the agency frame on bookings in travel-shell mode', async ({ page }) => {
     await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
+    await page.locator('#travelNav .dnGroup:has([data-page="tvtrips"]) .dnGroupBtn').hover(); // inside the Sales / Operations dropdown
     await page.locator('#travelNav .dnTab[data-page="tvtrips"]').click();
     await expect(page.locator('#pageAgency')).toBeVisible();
     const src = await page.locator('#agencyFrame').getAttribute('src');
