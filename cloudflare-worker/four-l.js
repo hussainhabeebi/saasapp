@@ -1,0 +1,271 @@
+// 4L — Ecom communication style (bot_config.ecom_communication_style === 'four_l').
+//
+// Built for 4L Fashion. It is the full Baby Care style (button-led shopping, fabric tiers,
+// customisation, chat orders, order assignment, summary follow-ups…) plus a strict bot / team split:
+//
+//   1. The bot sends the greeting.
+//   2. The bot answers only product questions — size, colour, price, stock, fabric, photos, a
+//      product or category by name, and the shopping/order flow itself.
+//   3. Anything else goes to the team: one short "our team will reply" note, the chat is handed
+//      over (Handover='Yes') and the bot stays quiet on those messages from then on.
+//   4. Product questions asked in between — while the customer waits for the team — are still
+//      answered by the bot, so nobody waits for a size or colour.
+//   5. As soon as a person replies (Chatwoot, the Chats page, the WhatsApp Business app) the chat
+//      is taken over (HandoverBy set) and the bot goes fully silent until "Hand back to bot".
+//      engineDeliverReply re-checks this right before sending, so the bot and a person never
+//      answer the same message.
+//
+// Settings (bot_config): four_l_handoff_text (the team note), four_l_product_keywords (extra
+// words, comma separated, that count as product questions).
+// Pure helpers only — worker.js wires them into the turn.
+
+export const FOUR_L_STYLE='four_l';
+
+function cfg(c){
+  if(!c) return {};
+  if(c.bot_config && typeof c.bot_config==='object') return c.bot_config;
+  try{ return JSON.parse(c.bot_config||'{}')||{}; }catch(e){ return {}; }
+}
+export function fourLIsStyle(c){ return cfg(c).ecom_communication_style===FOUR_L_STYLE; }
+// 4L runs everything Baby Care runs.
+export function ecomStyleIsBabyCare(style){ return style==='baby_care' || style===FOUR_L_STYLE; }
+
+// Product words — English, Manglish and Malayalam. Word-boundary matched on a lowercased text.
+const PRODUCT_WORDS=[
+  'size','sizes','sizing','fit','fits','fitting','measurement','measurements','length','width','chest','waist','inch','inches','cm',
+  'xs','xl','xxl','xxxl','2xl','3xl','4xl','small','medium','large','free size',
+  'colour','colours','color','colors','shade','shades','kalar','niram',
+  'price','prices','rate','rates','cost','costs','mrp','how much','vila','vilai','amount','offer','discount','combo',
+  'stock','available','availability','in stock','out of stock','have this','do you have','undo','undoo','kittumo','kittum',
+  'fabric','material','cloth','cotton','linen','silk','rayon','polyester','jersey','interlock','quality','wash','washable',
+  'design','designs','pattern','print','printed','model','models','style','styles','variant','variants','collection','new arrival','new arrivals',
+  'photo','photos','pic','pics','picture','pictures','image','images','video','catalogue','catalog','show me','details','detail','specification','specs',
+  'months','month','yrs','newborn','baby','kids','boy','girl','sets','baby set',
+  'dress','dresses','shirt','shirts','tshirt','t-shirt','top','tops','kurti','kurtis','saree','sarees','frock','frocks','pant','pants','jeans','churidar','gown','gowns','lehenga','skirt','shorts','nightwear','innerwear',
+  'order','buy','purchase','book','cart','checkout','cod',
+  'സൈസ്','നിറം','കളർ','വില','സ്റ്റോക്ക്','ഫോട്ടോ','ഡിസൈൻ','മെറ്റീരിയൽ',
+];
+function escapeRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+function wordRe(words){
+  const latin=words.filter(w=>/^[\x00-\x7f]+$/.test(w)).map(escapeRe);
+  const other=words.filter(w=>!/^[\x00-\x7f]+$/.test(w)).map(escapeRe);
+  const parts=[];
+  if(latin.length) parts.push(`(?:^|[^a-z0-9])(?:${latin.join('|')})(?=$|[^a-z0-9])`);
+  if(other.length) parts.push(`(?:${other.join('|')})`);
+  return new RegExp(parts.join('|'), 'i');
+}
+const PRODUCT_RE=wordRe(PRODUCT_WORDS);
+// Bare sizes in the text ("38", "size 40", "2-3 yrs") also count.
+const SIZE_NUMBER_RE=/(?:^|\s)(?:2[0-9]|3[0-9]|4[0-9]|5[0-2])(?:\s|$)|\b\d{1,2}\s*-\s*\d{1,2}\s*(?:m|y|yr|yrs|months?|years?)\b/i;
+const GREETING_RE=/^(?:hi+|hii+|hello+|helo|hey+|hai+|hlo|good\s+(?:morning|afternoon|evening|night|noon)|gm|namaskaram|namaste|salam|assalamu\s*alaikum|നമസ്കാരം|ഹായ്|ഹലോ)[\s!.,?😊🙏👋]*$/i;
+export function fourLIsGreeting(text){ return GREETING_RE.test(String(text||'').trim()); }
+const ACK_RE=/^(?:ok+|okay|k+|kk|fine|sure|yes|yeah|yep|no|nope|thanks?|thank\s*you|thx|ty|great|good|nice|super|done|👍|🙏|😊|❤️|♥️)[\s!.,😊🙏👍]*$/i;
+export function fourLIsAck(text){ return ACK_RE.test(String(text||'').trim()); }
+// Tapped buttons and list rows the shopping flows send (BABY_*, FASHION_*, SHOP flow, FLOW_ANSWER:…).
+const BUTTON_RE=/^(?:(?:BABY|FASHION|ELEC|SHOP|ECOM|PROD|CAT|ORDER|CHAT)_[A-Z0-9_:\-]+|FLOW_ANSWER:.+)$/i;
+
+function norm(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9ഀ-ൿ]+/g,' ').trim(); }
+const NAME_STOP=new Set(['the','and','for','with','set','new','size','colour','color','free','pack','piece','pcs']);
+function nameTokens(s){ return norm(s).split(' ').filter(w=>w.length>=3 && !NAME_STOP.has(w)); }
+// A product / category / SKU named in the message — whole name, or a cut-off / partly typed one
+// ("Royal Ivory Embroidered Sharara Suit Se"): most of the name's words are in the message.
+export function fourLMentionsCatalogue(text, {products=[], categories=[]}={}){
+  const tn=norm(text);
+  const t=` ${tn} `;
+  if(tn.length<3) return false;
+  const words=new Set(nameTokens(tn));
+  const names=[];
+  for(const p of products||[]){ if(p?.name) names.push(p.name); if(p?.sku) names.push(p.sku); if(p?.category) names.push(p.category); }
+  for(const cat of categories||[]) names.push(typeof cat==='string'?cat:(cat?.name||''));
+  return names.some(n=>{
+    const x=norm(n);
+    if(x.length>=4 && t.includes(` ${x} `)) return true;
+    if(tn.length>=8 && x.startsWith(tn)) return true;
+    const toks=nameTokens(x);
+    if(toks.length<2) return false;
+    const hit=toks.filter(w=>words.has(w)).length;
+    return hit>=2 && hit/toks.length>=0.6;
+  });
+}
+
+// Clearly a team matter even when a product word is in it ("refund for the blue dress").
+const TEAM_RE=/(?:^|[^a-z])(?:refund|return|returns|exchange|replace|replacement|complaint|complain|damaged|damage|defect|defective|wrong (?:item|product|size|colour|color)|missing|track|tracking|where is my order|order status|not (?:received|delivered)|delay|delayed|late|cancel|cancellation|payment (?:failed|issue|problem)|paid|transaction|invoice|bill|gst|wholesale|bulk|franchise|reseller|job|vacancy|career|manager|owner|call me|phone number|contact number|talk to|speak to|human|agent|staff|person)(?=$|[^a-z])/i;
+export function fourLIsTeamMatter(text){ return TEAM_RE.test(String(text||'')); }
+
+export function fourLIsProductQuery(text, {products=[], categories=[], extraKeywords=[]}={}){
+  const t=String(text||'').trim();
+  if(!t) return false;
+  if(BUTTON_RE.test(t)) return true;
+  if(fourLIsTeamMatter(t)) return false;
+  if(PRODUCT_RE.test(t) || SIZE_NUMBER_RE.test(t)) return true;
+  const extra=(extraKeywords||[]).map(w=>String(w||'').trim().toLowerCase()).filter(Boolean);
+  if(extra.length && wordRe(extra).test(t)) return true;
+  return fourLMentionsCatalogue(t, {products, categories});
+}
+export function fourLExtraKeywords(c){
+  const raw=cfg(c).four_l_product_keywords;
+  const list=Array.isArray(raw)?raw:String(raw||'').split(/[,\n]/);
+  return list.map(w=>String(w||'').trim()).filter(Boolean).slice(0,200);
+}
+
+// Waiting for the team: the bot (or a person) already handed this chat over.
+export function fourLWithTeam(lead, stage){
+  return !!lead && (lead.Handover==='Yes' || stage==='human_handover' || lead.Stage==='human_handover');
+}
+// A shopping / order step is in progress — names, addresses, quantities typed into it are part of
+// the flow, not "other questions".
+export function fourLInShoppingStep(stage){
+  return /^(?:baby_|order_collect_|fashion_order_|shop_)/.test(String(stage||''));
+}
+
+// What the bot does with this message:
+//   'bot'    — answer it (greeting, product question, flow step, opt-out / restart words)
+//   'handoff'— not a product question: send the team note once and hand the chat over
+//   'queue'  — not a product question and the team already has the chat: stay silent
+export function fourLDecide({text='', mediaType='text', stage='', lead=null, isNewLead=false, isOptOut=false, products=[], categories=[], extraKeywords=[]}={}){
+  if(isOptOut) return 'bot';
+  const withTeam=fourLWithTeam(lead, stage);
+  const t=String(text||'').trim();
+  // A photo from the customer is usually "do you have this?" — the product matcher handles it.
+  if(mediaType==='image' && !withTeam) return 'bot';
+  if(mediaType!=='text' && mediaType!=='image' && mediaType!=='audio') return withTeam?'queue':'handoff';
+  if(!t) return withTeam?'queue':'bot';
+  if(/^(?:stop|start|unsubscribe)$/i.test(t)) return 'bot';
+  if(fourLIsGreeting(t)) return withTeam?'queue':'bot';
+  if(!BUTTON_RE.test(t) && fourLIsTeamMatter(t)) return withTeam?'queue':'handoff';
+  if(!withTeam && fourLInShoppingStep(stage)) return 'bot';
+  if(fourLIsProductQuery(t, {products, categories, extraKeywords})) return 'bot';
+  if(fourLIsAck(t)) return withTeam?'queue':(isNewLead?'bot':'queue');
+  return withTeam?'queue':'handoff';
+}
+
+export const FOUR_L_DEFAULT_HANDOFF='Thank you so much for your message 💐 Our team will reply to you here very shortly 🌸\n\nMeanwhile, ask me anything about our collection — sizes, colours, prices or availability 👗✨';
+export function fourLHandoffText(c, {isNewLead=false, name='', business=''}={}){
+  const custom=String(cfg(c).four_l_handoff_text||'').trim();
+  const body=custom||FOUR_L_DEFAULT_HANDOFF;
+  if(!isNewLead) return body;
+  const who=String(name||'').trim().split(/\s+/)[0]||'';
+  const biz=String(business||'').trim();
+  return `Hi${who?' '+who:''} 🌸 Welcome${biz?' to *'+biz+'*':''} 💖\n\n${body}`;
+}
+
+// The person who took the chat over, for HandoverBy.
+export function fourLAgentLabel(body){
+  const s=body?.sender||{};
+  return String(s.email||s.available_name||s.name||'Team').trim().slice(0,120)||'Team';
+}
+
+// Product card text with the checkout link under it (when the product has one).
+export function fourLProductCard(card, link=''){
+  const l=String(link||'').trim();
+  return l?`${String(card||'').trim()}\n\n🛒 Check out here:\n${l}`:String(card||'').trim();
+}
+export function fourLCheckoutText(product={}, link=''){
+  const name=String(product.name||'this').trim();
+  return `Lovely choice! 💖 *${name}* ✨\n\n🛍️ *Complete your order here:*\n${String(link||'').trim()}\n\n👗 Pick your size & colour on the page — I'm right here if you need any help 🌸`;
+}
+
+// Products the customer means by this message: exact name / SKU first (several when colour
+// variants share a name), else a cut-off name ("…Suit Se"), else the best word match (≥60% of the
+// product name's words). [] when nothing is close.
+export function fourLFindProducts(text, products=[]){
+  const tn=norm(text);
+  if(tn.length<3) return [];
+  const list=(products||[]).filter(p=>p && (p.name||p.sku));
+  const exact=list.filter(p=>[p.name, p.short_label, p.sku].some(v=>v && norm(v)===tn));
+  if(exact.length) return exact;
+  if(tn.length>=8){
+    const prefix=list.filter(p=>norm(p.name).startsWith(tn));
+    if(prefix.length) return prefix;
+  }
+  const words=new Set(nameTokens(tn));
+  let best=0, hits=[];
+  for(const p of list){
+    const toks=nameTokens(p.name);
+    if(toks.length<2) continue;
+    const n=toks.filter(w=>words.has(w)).length;
+    const score=n/toks.length;
+    if(n<2 || score<0.6) continue;
+    if(score>best){ best=score; hits=[p]; } else if(score===best) hits.push(p);
+  }
+  return hits;
+}
+// One choice per row, no repeats: categories that only differ in case / spacing / "&" collapse.
+export function fourLDedupeItems(items=[]){
+  const seen=new Set(), out=[];
+  for(const it of items||[]){
+    const key=norm(String(it?.title||it?.value||'').replace(/&/g,' and '));
+    if(!key || seen.has(key)) continue;
+    seen.add(key); out.push(it);
+  }
+  return out;
+}
+// Variant row label: name + what tells it apart (colour / size / price).
+// Variant label: name + colour only — the size list belongs on the card, not in the choice.
+export function fourLVariantColour(p={}){
+  const c=String(p.color||'').trim() || String(p.variant||'').split(/[,/|]/)[0].trim();
+  return c.length>30?c.slice(0,30).trim():c;
+}
+export function fourLVariantTitle(p={}){
+  const name=String(p.name||p.sku||'').trim();
+  const c=fourLVariantColour(p);
+  return c && !name.toLowerCase().includes(c.toLowerCase())?`${name} – ${c}`:name;
+}
+
+// Every photo URL the product has, in order (image_url, image_url_2 … image_url_5), no repeats.
+export function fourLProductImages(p={}){
+  const out=[];
+  for(const k of ['image_url','image_url_2','image_url_3','image_url_4','image_url_5']){
+    let u=String(p?.[k]||'').trim();
+    if(!u) continue;
+    if(u.startsWith('//')) u='https:'+u;
+    if(!/^https?:\/\//i.test(u)) continue;
+    if(!out.includes(u)) out.push(u);
+  }
+  return out;
+}
+function money(p){
+  if(p?.price==null || p.price==='') return '';
+  return `${String(p.currency||'').trim()} ${p.price}`.trim();
+}
+export function fourLPhotoCaption(p={}, title=''){
+  const price=money(p);
+  return `🌸 *${String(title||p.name||'').trim()}*${price?`\n💖 ${price}`:''}`;
+}
+// The 4L product card: name, description, price, sizes, colour and ONE checkout link.
+export function fourLCardText(p={}, link=''){
+  const lines=[`🌸 *${String(p.name||'').trim()}* 🌸`];
+  const desc=String(p.description||'').trim();
+  if(desc){
+    const chunks=desc.split(/\n+/).map(s=>s.trim().replace(/^[-•*]\s*/,'')).filter(Boolean);
+    lines.push(chunks.length>1?chunks.map(s=>`✨ ${s}`).join('\n'):`✨ ${chunks[0]}`);
+  }
+  const d=[];
+  const price=money(p);
+  if(price) d.push(`💖 *Price:* ${price}`);
+  if(p.size) d.push(`📏 *Sizes:* ${String(p.size).trim()}`);
+  const colour=String(p.color||'').trim();
+  if(colour) d.push(`🎨 *Colour:* ${colour}`);
+  if(p.fabric_type) d.push(`🧵 *Fabric:* ${String(p.fabric_type).trim()}`);
+  if(d.length) lines.push(d.join('\n'));
+  const l=String(link||p.shopify_product_url||p.product_link||'').trim();
+  if(l) lines.push(`🛍️ *Shop now:*\n${l}`);
+  return lines.join('\n\n');
+}
+
+// Products whose full name appears in a reply the AI wrote (longest names first, so "Floral
+// Embroidery Kurti Set" wins over "Floral Embroidery Kurti"). One per name.
+export function fourLProductsNamedIn(text, products=[]){
+  const t=` ${norm(text)} `;
+  if(t.trim().length<4) return [];
+  const list=(products||[]).filter(p=>norm(p?.name).length>=6).sort((a,b)=>norm(b.name).length-norm(a.name).length);
+  const out=[], names=new Set();
+  let rest=t;
+  for(const p of list){
+    const n=norm(p.name);
+    if(names.has(n) || !rest.includes(` ${n} `)) continue;
+    names.add(n); out.push(p);
+    rest=rest.split(` ${n} `).join('  ');
+  }
+  return out;
+}

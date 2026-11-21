@@ -1,0 +1,825 @@
+/* ── TRAVEL WORKSPACE (industry === 'travel') ────────────────────────────────────────────────────
+   A separate app shell for travel clients: its own top nav, mobile bottom nav and "More" sheet,
+   a travel "Today" home (#pageTravelhome) and a Departures calendar (#pageDepartures). Everything
+   else is reused, not rebuilt: Inquiries is the Leads page, Inbox is Chats, and Trips / Quotes /
+   Packages / Visa / Umrah / Finance are travel-agency.html sub-pages inside the existing
+   #agencyFrame (driven by ?tab= on first load and a 'ta:goto' postMessage after that). Live
+   Flights embeds live-travel-agency.html in its own frame.
+   A user can switch back to the classic CRM nav (More ▾ → Classic CRM view); that choice is
+   per-browser in localStorage, since it's a viewing preference, not account config.
+   Uses dashboard.html's own globals: $id, esc, navigate, PAGE_HOST, MORE_GROUP, clientRecord,
+   clientId, sessionToken, allLeads, _taBookings/_taUmrahGroups/_taCarBookings, taLoad,
+   renderAgency, openAddLead, openDetail, closeMoreSheet, isAccountOwner, myEmail,
+   getTeamPermissions, TODAY.
+   Bump the ?v= on its <script> tag in dashboard.html when changing this file — sw.js serves
+   scripts cache-first. ── */
+
+// Travel pages that are really a travel-agency.html sub-page inside #pageAgency.
+const TV_AGENCY_PAGES={
+  tvtrips:'bookings', tvquotes:'itineraries', tvpackages:'packages', tvvisa:'visas',
+  tvumrah:'umrah', tvfinance:'finance', tvservices:'services', tvattest:'attestation',
+  tvgroupfares:'groupfares', tvspecialfares:'specialfares', tvcars:'cars',
+};
+Object.keys(TV_AGENCY_PAGES).forEach(p=>{ PAGE_HOST[p]='agency'; });
+// Pages that need the Travel Agency module (ta_enabled) and the 'agency' module permission.
+const TV_AGENCY_GATED=new Set([...Object.keys(TV_AGENCY_PAGES),'departures','tvlive']);
+// Mobile: everything except Today / Trips (own bottom-nav buttons) lights up the More button.
+MORE_GROUP.push(...Object.keys(TV_AGENCY_PAGES).filter(p=>p!=='tvtrips'),'departures','tvlive','tvstatus');
+
+// Desktop nav, grouped by how an agent works (sell → talk → operate → catalogue/money/grow) so it
+// stays on one line. Entries: {page,label,icon} a tab; {group,icon,items:[[page,label],…]} a
+// dropdown; 'sep' a thin divider; 'end' pushes the rest (Settings, More) to the right edge, where
+// they show as icons only. Icons are one monochrome line set (TV_ICONS) that takes the text colour,
+// so only the active tab is in the brand colour.
+const TV_NAV=[
+  {page:'travelhome', label:'Today', icon:'home'},
+  'sep',
+  {group:'Sales', icon:'target', items:[
+    ['leads','Inquiries'],['tvstatus','Status Board'],['tvquotes','Quotes & Itineraries'],
+  ]},
+  {page:'chats', label:'Inbox', icon:'inbox', badge:'tvChatBadge'},
+  'sep',
+  {group:'Operations', icon:'plane', items:[
+    ['tvtrips','Trips'],['departures','Departures'],['tvlive','Live Flights'],
+  ]},
+  {page:'profiles', label:'Travellers', icon:'users'},
+  'sep',
+  {group:'Catalogue', icon:'package', items:[
+    ['tvpackages','Packages'],['tvvisa','Visa & Docs'],['tvumrah','Umrah / Hajj'],
+    ['tvservices','Services'],['tvattest','Attestation'],['tvgroupfares','Group Fares'],
+    ['tvspecialfares','Special Fares'],['tvcars','Cars'],
+  ]},
+  {page:'tvfinance', label:'Finance', icon:'wallet'},
+  {group:'Grow', icon:'trend', items:[
+    ['broadcast','Campaigns'],['followups','Follow-ups'],['reports','Reports'],['team','Team'],
+  ]},
+  'end',
+  {page:'settings', label:'Settings', icon:'gear', iconOnly:true},
+  {group:'More', icon:'dots', iconOnly:true, items:[
+    ['humandeals','Human Deals'],['bizai','AI Assistant'],['accounting','Accounting'],
+    ['billing','Billing'],['home','Classic Home'],['__classic','Switch to classic CRM view'],
+  ]},
+];
+const TV_ICONS={
+  home:'<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+  target:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  inbox:'<path d="M21 12h-6l-2 3h-2l-2-3H3"/><path d="M5.5 5h13L21 12v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6z"/>',
+  plane:'<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
+  users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  package:'<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/><path d="m7.5 5.5 9 5"/>',
+  wallet:'<path d="M19 7V5a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3v2a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V6"/><path d="M21 13v4"/>',
+  trend:'<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  dots:'<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+};
+function tvIcon(name){ return `<svg class="tv-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TV_ICONS[name]||''}</svg>`; }
+// Mobile "More" sheet: travel items shown above the regular ones.
+const TV_MORE=[
+  ['tvstatus','📌','Status Board'],
+  ['profiles','👤','Travellers'],
+  ['departures','📅','Departures'],['tvquotes','🗺️','Quotes'],['tvpackages','📦','Packages'],
+  ['tvvisa','🛂','Visa & Docs'],['tvumrah','🕌','Umrah'],['tvlive','✈️','Live Flights'],
+  ['tvfinance','💰','Finance'],['__classic','↩️','Classic view'],
+];
+
+const TV_PREF_KEY=()=>'lv_travel_view_'+clientId;
+function tvPref(){ try{ return localStorage.getItem(TV_PREF_KEY())||'travel'; }catch(e){ return 'travel'; } }
+function tvSetPref(v){ try{ localStorage.setItem(TV_PREF_KEY(),v); }catch(e){} }
+function isTravelView(){ return clientRecord?.industry==='travel' && tvPref()!=='classic'; }
+function tvAgencyEnabled(){ return clientRecord?.ta_enabled==='Yes'; }
+// Same rule as applyUserModulePermissions(): owner or no saved restriction = everything.
+function tvCanSee(page){
+  if(TV_AGENCY_GATED.has(page)){
+    if(!tvAgencyEnabled()) return false;
+    page='agency';
+  }
+  if(page==='travelhome'||page==='__classic') return true;
+  if(page==='tvstatus') page='leads'; // the status board is a view of the inquiries the user can already see
+  if(!clientRecord||!myEmail||isAccountOwner()) return true;
+  const mine=getTeamPermissions()[myEmail];
+  if(!mine||!Array.isArray(mine.modules)) return true;
+  if(page==='followups') page='broadcast';
+  if(typeof ALWAYS_ON_MODULES!=='undefined'&&ALWAYS_ON_MODULES.has(page)) return true;
+  const known=(typeof MODULE_PERMISSIONS!=='undefined'?MODULE_PERMISSIONS:[]).some(m=>m.key===page);
+  return !known||mine.modules.includes(page);
+}
+
+function tvInjectStyle(){
+  if($id('tvStyle')) return;
+  const st=document.createElement('style'); st.id='tvStyle';
+  st.textContent=`
+#travelNav{display:none;gap:2px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0;flex-wrap:nowrap;align-items:stretch;min-width:0}
+@media(min-width:768px){html.tv-mode #travelNav{display:flex}html.tv-mode #desktopNav{display:none!important}}
+#travelNav .dnTab,#travelNav .dnGroupBtn{white-space:nowrap;display:flex;align-items:center;gap:7px;padding:12px 11px}
+#travelNav .tv-ic{flex-shrink:0;opacity:.85}
+#travelNav .active .tv-ic,#travelNav .dnGroup:has(.dnTab.active) .tv-ic{opacity:1}
+#travelNav .tv-sep{width:1px;background:var(--line);margin:12px 6px;flex-shrink:0}
+#travelNav .tv-end{margin-left:auto}
+#travelNav .tv-icononly{padding:12px 10px}
+#travelNav .tv-icononly .tv-lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+#travelNav .dnGroupBtn{position:relative}
+#travelNav .tv-gdot{display:none;width:7px;height:7px;border-radius:50%;background:#DC2626;position:absolute;top:9px;right:4px}
+#travelNav .dnGroup:has(.tsb-badge) .tv-gdot{display:block}
+#travelNav .dnGroup:hover .tv-gdot{display:none}
+#travelNav .tv-badge{display:none;min-width:18px;box-sizing:border-box;padding:1px 6px;border-radius:999px;background:#DC2626;color:#fff;font-size:10.5px;font-weight:700;line-height:16px;text-align:center;font-family:var(--mono)}
+#travelNav .tv-dd{display:none;position:absolute;top:100%;left:0;min-width:200px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:60;flex-direction:column}
+#travelNav .tv-dd-right .tv-dd{left:auto;right:0}
+#travelNav .tv-dd .dnTab::after{display:none}
+#travelNav .tv-dd .dnTab{justify-content:space-between}
+/* Narrow desktops: icons only (label as tooltip), except the tab you're on */
+@media(min-width:768px) and (max-width:1023px){
+  #travelNav .dnTab:not(.active)>.tv-lbl,#travelNav .dnGroup:not(:has(.dnTab.active))>.dnGroupBtn>.tv-lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  #travelNav .tv-dd .dnTab>.tv-lbl{position:static;width:auto;height:auto;clip:auto}
+  #travelNav .dnTab,#travelNav .dnGroupBtn{padding:12px 10px}
+}
+#travelNav .dnGroup:hover .tv-dd,#travelNav .dnGroup:focus-within .tv-dd{display:flex}
+#travelNav .tv-dd .dnTab{text-align:left;border-bottom:none;border-radius:6px;padding:8px 12px;margin:0}
+#travelNav .tv-dd .dnTab:hover{background:var(--accent-soft)}
+#travelNav .tv-dd .dnTab.active{background:var(--accent-soft)}
+html.tv-mode .tv-hide{display:none!important}
+html:not(.tv-mode) .tv-only{display:none!important}
+.tv-hero{background:linear-gradient(135deg,var(--accent),#38BDF8);color:#fff;border-radius:var(--r);padding:18px 20px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.tv-hero h2{margin:0;font-family:var(--disp);font-size:20px}
+.tv-hero .tv-sub{opacity:.85;font-size:13px;margin-top:4px}
+.tv-actions{display:flex;gap:8px;flex-wrap:wrap}
+.tv-actions button{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:8px;padding:8px 12px;font-family:var(--disp);font-weight:600;font-size:12.5px;cursor:pointer}
+.tv-actions button:hover{background:rgba(255,255,255,.3)}
+.tv-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+.tv-kpi{cursor:pointer}
+.tv-kpi .stat-val{font-size:26px}
+.tv-kpi.warn .stat-val{color:#B45309}
+.tv-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+@media(max-width:900px){.tv-grid{grid-template-columns:1fr}}
+.tv-list{display:flex;flex-direction:column}
+.tv-row{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}
+.tv-row:last-child{border-bottom:none}
+.tv-row:hover{background:var(--accent-soft)}
+.tv-date{font-family:var(--mono);font-size:11px;color:var(--accent-ink);background:var(--accent-soft);border-radius:6px;padding:3px 6px;min-width:58px;text-align:center;flex-shrink:0}
+.tv-main{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tv-meta{font-size:11.5px;color:var(--muted)}
+.tv-amt{font-family:var(--mono);font-size:12px;font-weight:700;white-space:nowrap}
+.tv-empty{color:var(--muted);font-size:13px;padding:14px 0}
+.tv-funnel{display:flex;flex-direction:column;gap:8px}
+.tv-fbar{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.tv-fbar .lbl{width:110px;color:var(--muted)}
+.tv-fbar .bar{flex:1;height:22px;background:var(--line);border-radius:6px;overflow:hidden}
+.tv-fbar .bar span{display:block;height:100%;background:var(--accent);border-radius:6px}
+.tv-fbar .n{width:44px;text-align:right;font-family:var(--mono);font-weight:700}
+.tv-chips{display:flex;flex-wrap:wrap;gap:6px}
+.tv-chip{background:var(--accent-soft);color:var(--accent-ink);border-radius:20px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer}
+.tv-chip b{margin-left:4px}
+.tv-banner{background:#FEF3C7;border:1px solid #F59E0B;color:#92400E;border-radius:var(--r-sm);padding:12px 14px;font-size:13px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.tv-cal-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.tv-cal-head h2{margin:0;font-family:var(--disp);font-size:18px;min-width:170px}
+.tv-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
+.tv-dow{background:var(--card);font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;padding:6px;text-align:center}
+.tv-day{background:var(--card);min-height:92px;padding:5px;overflow:hidden}
+.tv-day.out{background:var(--bg);opacity:.55}
+.tv-day .num{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:3px}
+.tv-day.today .num{color:#fff;background:var(--accent);border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center}
+.tv-ev{display:block;font-size:10.5px;border-radius:4px;padding:2px 5px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-left:3px solid}
+.tv-ev.booking{background:#E0F2FE;border-color:#0284C7;color:#075985}
+.tv-ev.return{background:#F3E8FF;border-color:#9333EA;color:#6B21A8}
+.tv-ev.umrah{background:#DCFCE7;border-color:#16A34A;color:#166534}
+.tv-ev.car{background:#FFEDD5;border-color:#EA580C;color:#9A3412}
+.tv-ev.inquiry{background:#F1F5F9;border-color:#94A3B8;color:#475569}
+.tv-ev.auto{border-left-style:dashed}.tv-ev.done{opacity:.55}
+.tv-cal-head select{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:inherit;max-width:200px}
+.tv-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin:10px 0}
+.tv-legend .tv-ev{display:inline-block;margin:0 4px 0 0;padding:0 6px}
+@media(max-width:640px){.tv-day{min-height:58px}.tv-ev{font-size:9px;padding:1px 3px}}
+.tv-frame-page{padding:0!important}
+.tv-hero{background:linear-gradient(135deg,var(--accent),var(--tv-brand-2,#38BDF8))}
+.tv-brand{display:flex;align-items:center;gap:14px;min-width:0}
+.tv-logo{width:64px;height:64px;border-radius:14px;background:#fff;display:flex;align-items:center;justify-content:center;padding:6px;flex-shrink:0;box-shadow:0 2px 10px rgba(0,0,0,.15)}
+.tv-logo img{max-width:100%;max-height:100%;object-fit:contain}
+.tv-company{font-family:var(--disp);font-size:22px;font-weight:800;line-height:1.15;overflow-wrap:anywhere}
+.tv-tagline{opacity:.92;font-size:13px;margin-top:2px}
+.tv-greet{opacity:.85;font-size:12.5px;margin-top:6px}
+.tv-about{display:grid;grid-template-columns:1.4fr 1fr;gap:18px}
+@media(max-width:900px){.tv-about{grid-template-columns:1fr}}
+.tv-bio{font-size:13.5px;line-height:1.55;white-space:pre-line;color:var(--ink)}
+.tv-bio.clamp{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+.tv-contact{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line);overflow-wrap:anywhere}
+.tv-contact:last-child{border-bottom:none}
+.tv-contact a{color:var(--accent-ink);text-decoration:none;font-weight:600}
+.tv-contact .ic{width:20px;flex-shrink:0;text-align:center}
+@media(max-width:640px){.tv-logo{width:52px;height:52px}.tv-company{font-size:18px}}
+`;
+  document.head.appendChild(st);
+}
+
+function tvEnsurePages(){
+  const pages=$id('pages'); if(!pages) return;
+  if(typeof tsEnsurePage==='function') tsEnsurePage(); // 📌 Status Board (travel-status.js)
+  if(!$id('pageTravelhome')){
+    const d=document.createElement('div'); d.className='page hidden'; d.id='pageTravelhome';
+    d.innerHTML='<div class="page-pad" id="tvHomeBody"></div>';
+    pages.appendChild(d);
+  }
+  if(!$id('pageDepartures')){
+    const d=document.createElement('div'); d.className='page hidden'; d.id='pageDepartures';
+    d.innerHTML='<div class="page-pad" id="tvDepBody"></div>';
+    pages.appendChild(d);
+  }
+  if(!$id('pageTvlive')){
+    const d=document.createElement('div'); d.className='page hidden tv-frame-page'; d.id='pageTvlive';
+    d.innerHTML='<iframe id="tvLiveFrame" title="Live Flights" style="width:100%;height:100%;border:none;display:block"></iframe>';
+    pages.appendChild(d);
+  }
+}
+
+function tvNavButton(page,label,icon,opts={}){
+  const b=document.createElement('button');
+  b.className='dnTab'+(opts.iconOnly?' tv-icononly':''); b.dataset.page=page==='__classic'?'':page;
+  b.innerHTML=(icon?tvIcon(icon):'')+`<span class="tv-lbl">${esc(label)}</span>`+(opts.badge?`<span class="tv-badge" id="${opts.badge}"></span>`:'');
+  b.title=label; b.setAttribute('aria-label',label);
+  if(page==='__classic') b.dataset.tvAction='classic';
+  b.addEventListener('click',()=>tvGo(page));
+  return b;
+}
+function tvBuildDesktopNav(){
+  let nav=$id('travelNav');
+  if(!nav){
+    nav=document.createElement('div'); nav.id='travelNav'; nav.setAttribute('role','navigation');
+    $id('desktopNav')?.insertAdjacentElement('afterend',nav);
+  }
+  nav.innerHTML='';
+  let pushEnd=false;
+  const add=el=>{ if(pushEnd){ el.classList.add('tv-end'); pushEnd=false; } nav.appendChild(el); };
+  TV_NAV.forEach(item=>{
+    if(item==='end'){ pushEnd=true; return; }
+    if(item==='sep'){
+      // No divider at the start, after another divider, or right before the right-hand icons.
+      const last=nav.lastElementChild;
+      if(last && !last.classList.contains('tv-sep')){ const d=document.createElement('span'); d.className='tv-sep'; nav.appendChild(d); }
+      return;
+    }
+    if(item.page){
+      if(tvCanSee(item.page)) add(tvNavButton(item.page,item.label,item.icon,item));
+      return;
+    }
+    const visible=item.items.filter(([p])=>tvCanSee(p));
+    if(!visible.length) return;
+    const g=document.createElement('div'); g.className='dnGroup'+(item.iconOnly?' tv-dd-right':'');
+    g.innerHTML=`<button class="dnGroupBtn${item.iconOnly?' tv-icononly':''}" title="${esc(item.group)}" aria-label="${esc(item.group)}" aria-haspopup="true">${tvIcon(item.icon)}<span class="tv-lbl">${esc(item.group)}</span>${item.iconOnly?'':'<span class="arr">▾</span>'}<span class="tv-gdot"></span></button><div class="tv-dd"></div>`;
+    const dd=g.querySelector('.tv-dd');
+    visible.forEach(([p,l])=>dd.appendChild(tvNavButton(p,l)));
+    add(g);
+  });
+  // Drop a trailing divider (or one left before the right-hand icons).
+  nav.querySelectorAll('.tv-sep').forEach(d=>{ const n=d.nextElementSibling; if(!n||n.classList.contains('tv-end')||n.classList.contains('tv-sep')) d.remove(); });
+  if(typeof updateChatBadge==='function') try{ updateChatBadge(); }catch(e){}
+  if(typeof tsUpdateBadge==='function') try{ tsUpdateBadge(); }catch(e){}
+}
+
+// Mobile: retarget the bottom nav to Today / Inbox / Trips / Inquiries / More, and add the travel
+// items to the More sheet. Classic elements get .tv-hide; travel ones .tv-only — so switching
+// views is just the html.tv-mode class.
+function tvBuildMobileNav(){
+  const bn=$id('bottomNav');
+  if(bn && !$id('bnTvHome')){
+    const mk=(id,page,icon,label)=>{
+      const b=document.createElement('button');
+      b.className='bnItem tv-only'; b.id=id; b.dataset.page=page;
+      b.innerHTML=`<span class="bnIcon">${icon}</span><span class="bnLabel">${esc(label)}</span>`;
+      b.addEventListener('click',()=>tvGo(page));
+      return b;
+    };
+    bn.querySelector('.bnItem[data-page="home"]')?.classList.add('tv-hide');
+    bn.querySelector('.bnItem[data-page="humandeals"]')?.classList.add('tv-hide');
+    bn.prepend(mk('bnTvHome','travelhome','🏠','Today'));
+    const more=$id('bnMore');
+    bn.insertBefore(mk('bnTvTrips','tvtrips','🎫','Trips'),more);
+    // Leads → "Inquiries" label while in travel mode
+    const leads=bn.querySelector('.bnItem[data-page="leads"] .bnLabel');
+    if(leads && !leads.dataset.classic) leads.dataset.classic=leads.textContent;
+  }
+  const leadsLbl=bn?.querySelector('.bnItem[data-page="leads"] .bnLabel');
+  if(leadsLbl) leadsLbl.textContent=isTravelView()?'Inquiries':(leadsLbl.dataset.classic||'Leads');
+  const trips=$id('bnTvTrips'); if(trips) trips.style.display=tvCanSee('tvtrips')?'':'none';
+
+  const grid=document.querySelector('#moreSheet .more-sheet-grid');
+  if(grid){
+    grid.querySelectorAll('.tv-more').forEach(el=>el.remove());
+    const first=grid.firstElementChild;
+    TV_MORE.forEach(([page,icon,label])=>{
+      if(!tvCanSee(page)) return;
+      const b=document.createElement('button');
+      b.className='more-item tv-only tv-more';
+      if(page!=='__classic') b.dataset.page=page;
+      b.innerHTML=`<span class="bnIcon">${icon}</span><span class="bnLabel">${esc(label)}</span>`;
+      b.addEventListener('click',()=>{ closeMoreSheet(); tvGo(page); });
+      grid.insertBefore(b,first);
+    });
+    $id('moreAgencyTab')?.classList.add('tv-hide');
+  }
+}
+
+// Classic nav entry back into the travel workspace (travel clients who switched to classic).
+function tvBuildClassicEntry(){
+  const show=clientRecord?.industry==='travel' && !isTravelView();
+  let b=$id('dnTvSwitch');
+  if(!b){
+    b=document.createElement('button'); b.id='dnTvSwitch'; b.className='dnTab';
+    b.textContent='✈️ Travel workspace';
+    b.addEventListener('click',()=>tvSwitch('travel'));
+    $id('desktopNav')?.insertBefore(b,$id('desktopNav').firstElementChild?.nextSibling||null);
+  }
+  b.style.display=show?'':'none';
+  let m=$id('moreTvSwitch');
+  const grid=document.querySelector('#moreSheet .more-sheet-grid');
+  if(!m && grid){
+    m=document.createElement('button'); m.id='moreTvSwitch'; m.className='more-item';
+    m.innerHTML='<span class="bnIcon">✈️</span><span class="bnLabel">Travel workspace</span>';
+    m.addEventListener('click',()=>{ closeMoreSheet(); tvSwitch('travel'); });
+    grid.prepend(m);
+  }
+  if(m) m.style.display=show?'':'none';
+}
+
+// Called from applyTheme() (login + industry change) and updateAgencyTabVisibility() (module toggle).
+function tvApply(){
+  if(!clientRecord) return;
+  tvInjectStyle();
+  tvEnsurePages();
+  const on=isTravelView();
+  document.documentElement.classList.toggle('tv-mode',on);
+  if(clientRecord.industry==='travel'){
+    tvBuildDesktopNav();
+    tvBuildMobileNav();
+  }
+  tvBuildClassicEntry();
+  if(on){ tvSeedFromCache(); tvSchedulePreload(); }
+  tvApplyBrand();
+}
+
+/* ── speed: cached trip data + background preload ── */
+// The trips/Umrah/car rows Today and Departures read, kept in sessionStorage (same 5-minute,
+// tab-scoped pattern as dashboard.html's leads cache) so a reload paints them immediately
+// while taLoad() refreshes them.
+const TV_TA_CACHE_KEY=()=>'lv_tv_ta_'+clientId;
+const TV_TA_CACHE_TTL=300000;
+function tvCacheTa(){
+  try{ sessionStorage.setItem(TV_TA_CACHE_KEY(),JSON.stringify({ts:Date.now(),bookings:_taBookings,umrah:_taUmrahGroups,cars:_taCarBookings})); }
+  catch(e){ try{ sessionStorage.removeItem(TV_TA_CACHE_KEY()); }catch(e2){} }
+}
+function tvSeedFromCache(){
+  if(!tvAgencyEnabled()||_taLoaded||_taBookings.length) return;
+  try{
+    const c=JSON.parse(sessionStorage.getItem(TV_TA_CACHE_KEY())||'null');
+    if(!c||Date.now()-c.ts>TV_TA_CACHE_TTL) return;
+    _taBookings=c.bookings||[]; _taUmrahGroups=c.umrah||[]; _taCarBookings=c.cars||[];
+  }catch(e){}
+}
+// Load the Trips/Quotes frame once the dashboard has settled, so the first click on Trips,
+// Quotes, Packages… switches instantly instead of loading a whole page and its data.
+let _tvPreloadTimer=null;
+function tvSchedulePreload(){
+  if(_tvPreloadTimer||!tvAgencyEnabled()||!tvCanSee('tvtrips')) return;
+  const go=()=>{ const f=$id('agencyFrame'); if(f&&!f.getAttribute('src')&&isTravelView()) renderAgency('bookings'); };
+  _tvPreloadTimer=setTimeout(()=>{
+    if('requestIdleCallback' in window) requestIdleCallback(go,{timeout:4000}); else go();
+  },2500);
+}
+
+function tvSwitch(mode){
+  tvSetPref(mode);
+  // The agency frame's tab bar differs between views (&shell=travel) — reload it on next open.
+  $id('agencyFrame')?.removeAttribute('src');
+  tvApply();
+  navigate(isTravelView()?'travelhome':'home');
+}
+
+function tvGo(page){
+  if(page==='__classic'){ tvSwitch('classic'); return; }
+  navigate(page);
+}
+
+// Hook from navigate(): render whichever travel page was just shown.
+function tvOnNavigate(page){
+  if(page==='travelhome'){ renderTravelHome(); tvRefreshTa(); }
+  else if(page==='departures'){ renderDepartures(); tvRefreshTa(); }
+  else if(page==='tvstatus'){ if(typeof renderTravelStatus==='function') renderTravelStatus(); }
+  else if(page==='tvlive'){
+    const f=$id('tvLiveFrame');
+    if(f && !f.getAttribute('src')) f.src=`live-travel-agency.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+  }
+  else if(TV_AGENCY_PAGES[page]) renderAgency(TV_AGENCY_PAGES[page],_tvNextAction);
+}
+
+// Called at the end of dashboard.html's taLoad().
+function tvAfterTaLoad(){
+  _tvTaLoadedAt=Date.now();
+  if(clientRecord?.industry==='travel') tvCacheTa();
+  if(!$id('pageTravelhome')?.classList.contains('hidden')) renderTravelHome();
+  if(!$id('pageDepartures')?.classList.contains('hidden')) renderDepartures();
+}
+
+// dashboard.html's _ta* copies are loaded once at sign-in; edits happen inside the agency frame,
+// so refresh them (at most once a minute) whenever a travel page that reads them is opened.
+let _tvTaLoadedAt=0;
+function tvRefreshTa(){
+  if(!tvAgencyEnabled()||Date.now()-_tvTaLoadedAt<60000) return;
+  _tvTaLoadedAt=Date.now();
+  taLoad().catch(()=>{});
+}
+
+// Opens a travel-agency.html sub-page with its "+ New …" form already open.
+let _tvNextAction='';
+function tvNew(page){
+  _tvNextAction='new';
+  navigate(page);
+  _tvNextAction='';
+}
+
+/* ── data helpers ── */
+function tvNum(v){ const n=parseFloat(v); return isNaN(n)?0:n; }
+function tvDay(d){ return String(d||'').slice(0,10); }
+function tvAddDays(iso,n){ const d=new Date(iso+'T00:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+function tvShort(iso){ if(!iso) return '—'; try{ return new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'}); }catch(e){ return iso; } }
+// Bookings can carry different currencies — total per currency instead of adding AED to INR.
+function tvSumByCur(rows,fn){
+  const m={};
+  rows.forEach(r=>{ const v=fn(r); if(!v) return; const c=(r.currency||clientRecord?.currency||'').toUpperCase()||'—'; m[c]=(m[c]||0)+v; });
+  return m;
+}
+function tvFmtCur(m){
+  const parts=Object.entries(m).sort((a,b)=>b[1]-a[1]).map(([c,v])=>`${c==='—'?'':c+' '}${Math.round(v).toLocaleString()}`);
+  return parts.length?parts.join(' · '):'0';
+}
+function tvLeadTravelFrom(l){ return tvDay(String(l.TravelDates||'').split('→')[0].trim()); }
+function tvLeadTravelTo(l){ const p=String(l.TravelDates||'').split('→'); return tvDay((p[1]||'').trim()); }
+// An inquiry's trips: its 🧳 travel profile (travel-crm.js — TravelTrips, picked up from the chat or
+// added by staff, with the older TravelDates as a fallback) while route & travel dates are on; else
+// just the older TravelDates field, as before.
+function tvLeadTrips(l){
+  if(typeof tcLeadTrips==='function' && typeof tcTripsOn==='function' && tcTripsOn()) return tcLeadTrips(l);
+  const a=tvLeadTravelFrom(l), b=tvLeadTravelTo(l), ok=v=>/^\d{4}-\d{2}-\d{2}$/.test(v);
+  return ok(a)?[{depart:a, ret:ok(b)?b:'', route:''}]:[];
+}
+function tvTripRoute(l,t){ return String(t?.route||(typeof tcNormRoute==='function'?tcNormRoute(l.TravelRoute):l.TravelRoute)||'').trim(); }
+// The next trip starting on/after `from` (YYYY-MM-DD), or null.
+function tvLeadNextTrip(l, from){ return tvLeadTrips(l).filter(t=>(t.depart||t.ret)>=from).sort((a,b)=>(a.depart||a.ret).localeCompare(b.depart||b.ret))[0]||null; }
+function tvIsClosedLead(l){ return ['won','converted','lost'].includes(l.Stage); }
+// A trip that is going ahead (quoted or later). New requests from the WhatsApp bot (requested /
+// contacted) have no price and no confirmed date yet, so departures, quotes and sales leave them out.
+function tvBookingLive(b){ const s=b.status||'quoted'; return s!=='cancelled'&&s!=='requested'&&s!=='contacted'; }
+function tvIsTripRequest(b){ return ['requested','contacted'].includes(b.status); }
+function tvRequestWaitingMin(b){
+  if(b.status!=='requested') return null;
+  const t=Date.parse(b.requested_at||b.status_changed_at||b.CreatedAt||'');
+  return Number.isFinite(t)?Math.max(0,(Date.now()-t)/60000):null;
+}
+function tvBookings(){ return (typeof _taBookings!=='undefined'?_taBookings:[]).filter(Boolean); }
+function tvUmrah(){ return (typeof _taUmrahGroups!=='undefined'?_taUmrahGroups:[]).filter(Boolean); }
+function tvCarBookings(){ return (typeof _taCarBookings!=='undefined'?_taCarBookings:[]).filter(Boolean); }
+function tvCreated(r){ return tvDay(r.CreatedAt||r.created_at); }
+
+/* ── Leads by service category (Today page and the classic Home for travel clients) ──
+   One row per category: leads that came in during the period, how many of them are still open,
+   won (Won/Converted) or lost, and the conversion rate. A teammate without full access sees their
+   own leads only (dashboard.html withHomeScope narrows allLeads before this runs). */
+let _tvCatPeriod='month';
+const TV_CAT_PERIODS=[['month','This month'],['30','Last 30 days'],['90','Last 90 days'],['all','All time']];
+function tvCatPeriodStart(p){
+  if(p==='month') return TODAY.slice(0,7)+'-01';
+  if(p==='30') return tvAddDays(TODAY,-29);
+  if(p==='90') return tvAddDays(TODAY,-89);
+  return '';
+}
+function tvCategoryReportRows(leads, period){
+  const from=tvCatPeriodStart(period);
+  const rows={};
+  for(const l of leads||[]){
+    if(from && tvDay(l.Date)<from) continue;
+    const c=String(l.ServiceCategory||'').trim()||'Uncategorised';
+    const r=rows[c]||(rows[c]={cat:c, total:0, open:0, won:0, lost:0});
+    r.total++;
+    if(l.Stage==='won'||l.Stage==='converted') r.won++;
+    else if(l.Stage==='lost') r.lost++;
+    else r.open++;
+  }
+  return Object.values(rows).sort((a,b)=>b.total-a.total||a.cat.localeCompare(b.cat));
+}
+function tvSetCatPeriod(p){
+  _tvCatPeriod=p;
+  if(typeof renderHome==='function') renderHome(); // also redraws the Today page when it is open
+}
+function tvCategoryReportHtml(leads){
+  const rows=tvCategoryReportRows(leads,_tvCatPeriod);
+  const tot=rows.reduce((t,r)=>({total:t.total+r.total, open:t.open+r.open, won:t.won+r.won, lost:t.lost+r.lost}),{total:0,open:0,won:0,lost:0});
+  const pct=r=>r.total?Math.round(r.won/r.total*100)+'%':'—';
+  const icon=c=>c==='Uncategorised'?'🗂️':(typeof serviceCategoryIcon==='function'?serviceCategoryIcon(c):'🗂️');
+  const tr=r=>`<tr style="cursor:pointer" onclick="tvOpenLeadsCategory(${esc(JSON.stringify(r.cat))})"><td>${icon(r.cat)} ${esc(r.cat)}</td><td class="n">${r.total}</td><td class="n">${r.open}</td><td class="n" style="color:#047857">${r.won}</td><td class="n" style="color:#B91C1C">${r.lost}</td><td class="n">${pct(r)}</td></tr>`;
+  return `<div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">🗂️ Leads by category
+      <select class="form-input" aria-label="Period" style="margin-left:auto;max-width:160px;padding:6px 8px;font-size:12px" onchange="tvSetCatPeriod(this.value)">
+        ${TV_CAT_PERIODS.map(([k,l])=>`<option value="${k}"${_tvCatPeriod===k?' selected':''}>${l}</option>`).join('')}</select></div>
+    ${rows.length?`<div style="overflow-x:auto"><table class="leads-tbl tv-cat-tbl" style="width:100%;font-size:13px">
+      <thead><tr><th>Category</th><th class="n">Leads</th><th class="n">Open</th><th class="n">Won</th><th class="n">Lost</th><th class="n">Conversion</th></tr></thead>
+      <tbody>${rows.map(tr).join('')}</tbody>
+      <tfoot><tr style="font-weight:700"><td>Total</td><td class="n">${tot.total}</td><td class="n">${tot.open}</td><td class="n">${tot.won}</td><td class="n">${tot.lost}</td><td class="n">${pct(tot)}</td></tr></tfoot>
+    </table></div>`:'<div class="tv-empty">No leads in this period.</div>'}`;
+}
+
+/* ── 🏠 TODAY ── */
+// Narrowed to a teammate's own leads like the classic Home (dashboard.html withHomeScope).
+/* ── Company branding (Settings → 📇 People & Contacts = the company profile) ──
+   The travel workspace takes its accent from the company's brand colour (brand_color, kept in
+   step with Quotation settings' accent), else the main colour of its logo; the Today home shows
+   the logo, official name, tagline, bio and contacts. Contacts come from /settings/contacts, read
+   once per page load (any teammate may read it). */
+let _tvLogoColor={src:'',hex:''};
+let _tvProfile=null, _tvProfileLoading=false;
+function tvBrandHex(){
+  const c=String(clientRecord?.brand_color||clientRecord?.quote_accent_color||'').trim().toLowerCase();
+  if(/^#[0-9a-f]{6}$/.test(c)) return c;
+  return _tvLogoColor.src&&_tvLogoColor.src===(clientRecord?.quote_logo_url||'')?_tvLogoColor.hex:'';
+}
+async function tvApplyBrand(){
+  if(!clientRecord) return;
+  const logo=clientRecord.quote_logo_url||'';
+  if(!tvBrandHex() && logo && _tvLogoColor.src!==logo && typeof window.lvLogoColor==='function'){
+    _tvLogoColor={src:logo,hex:''};
+    _tvLogoColor.hex=await window.lvLogoColor(logo).catch(()=>'');
+  }
+  const sh=typeof window.lvBrandShades==='function'?window.lvBrandShades(tvBrandHex()):null;
+  let st=$id('tvBrandStyle');
+  if(!sh){ if(st) st.remove(); return; }
+  if(!st){ st=document.createElement('style'); st.id='tvBrandStyle'; document.head.appendChild(st); }
+  // Light mode only for the app accent (dark mode keeps its own readable accents); the hero uses it in both.
+  st.textContent=`html.tv-mode:not(.dark){--accent:${sh.accent};--accent-ink:${sh.ink};--accent-soft:${sh.soft}}
+html.tv-mode .tv-hero{background:linear-gradient(135deg,${sh.accent},${sh.light})}`;
+}
+function tvLoadProfile(){
+  if(_tvProfile||_tvProfileLoading||typeof CONFIG==='undefined'||typeof sessionToken==='undefined'||!sessionToken) return;
+  _tvProfileLoading=true;
+  fetch(`${CONFIG.WORKER_BASE}/settings/contacts`,{headers:{Authorization:'Bearer '+sessionToken}})
+    .then(r=>r.ok?r.json():null).then(d=>{ _tvProfile={identity:d?.data?.identity||{}, canManage:!!d?.can_manage}; })
+    .catch(()=>{ _tvProfile={identity:{},canManage:false}; })
+    .finally(()=>{ _tvProfileLoading=false; if(!$id('pageTravelhome')?.classList.contains('hidden')) renderTravelHome(); });
+}
+// Called after 📇 People & Contacts is saved, with what it saved.
+function tvSetProfile(identity){ if(identity) _tvProfile={...(_tvProfile||{canManage:true}),identity}; }
+function tvCompanyName(){
+  const n=String(_tvProfile?.identity?.official_name||clientRecord?.business_name||'').trim();
+  return n||(typeof companyDisplayName==='function'?companyDisplayName():clientRecord?.client_name||'');
+}
+function tvAboutCardHtml(){
+  const id=_tvProfile?.identity||{};
+  const about=String(id.about||clientRecord?.business_about||'').trim();
+  const digits=v=>String(v||'').replace(/\D/g,'');
+  const safe=u=>/^https:\/\//i.test(String(u||''))?String(u):'';
+  const rows=[
+    id.address&&['📍',esc(id.address)+(safe(id.map_url)?` · <a href="${esc(safe(id.map_url))}" target="_blank" rel="noopener">Map</a>`:'')],
+    id.phone&&['📞',`<a href="tel:+${digits(id.phone)}">${esc(id.phone)}</a>`],
+    id.whatsapp&&['💬',`<a href="https://wa.me/${digits(id.whatsapp)}" target="_blank" rel="noopener">${esc(id.whatsapp)}</a>`],
+    id.email&&['✉️',`<a href="mailto:${esc(id.email)}">${esc(id.email)}</a>`],
+    safe(id.website)&&['🌐',`<a href="${esc(safe(id.website))}" target="_blank" rel="noopener">${esc(safe(id.website).replace(/^https:\/\//i,'').replace(/\/$/,''))}</a>`],
+    id.hours&&['🕘',esc(id.hours)],
+    (id.licence||clientRecord?.business_licence)&&['🪪',esc(id.licence||clientRecord.business_licence)],
+  ].filter(Boolean);
+  const canEdit=_tvProfile?.canManage||(typeof isAccountOwner==='function'&&isAccountOwner());
+  const edit=canEdit?`<button class="btn btn-secondary btn-sm" onclick="navigate('peoplecontacts')">✏️ Edit company profile</button>`:'';
+  if(!about&&!rows.length){
+    return canEdit?`<div class="card" style="margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:200px"><div class="card-title" style="margin-bottom:4px">🏢 Your company profile</div><div class="tv-meta">Add your logo, brand colour, bio, address and contacts once — they appear here and on every quotation, itinerary and invoice.</div></div>${edit}</div>`:'';
+  }
+  const long=about.length>420;
+  return `<div class="card" style="margin-bottom:14px" id="tvAboutCard">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><div class="card-title" style="margin:0;flex:1">🏢 About ${esc(tvCompanyName())}</div>${edit}</div>
+    <div class="tv-about">
+      <div>${about?`<div class="tv-bio${long?' clamp':''}" id="tvBio">${esc(about)}</div>${long?`<a href="#" style="font-size:12.5px" onclick="const b=$id('tvBio');b.classList.toggle('clamp');this.textContent=b.classList.contains('clamp')?'Read more':'Show less';return false">Read more</a>`:''}`:`<div class="tv-empty">${canEdit?'No company bio yet — add one in the company profile.':'No company bio yet.'}</div>`}</div>
+      <div>${rows.map(([ic,v])=>`<div class="tv-contact"><span class="ic">${ic}</span><span>${v}</span></div>`).join('')||'<div class="tv-empty">No contact details yet.</div>'}</div>
+    </div></div>`;
+}
+
+function renderTravelHome(){
+  const r=typeof withHomeScope==='function'?withHomeScope(renderTravelHomeScoped):renderTravelHomeScoped();
+  // 🏆 Weekly Arena (call-score.js) — team-wide, so drawn after the scoped render, and skipped when
+  // renderHome is the caller (it draws the arena itself once its own scope has ended).
+  if(!(typeof _homeScoped!=='undefined'&&_homeScoped)) try{ window.csRenderHomeArena?.(); }catch(e){}
+  return r;
+}
+function renderTravelHomeScoped(){
+  const el=$id('tvHomeBody');
+  // renderHome() calls this on every leads refresh — skip the work while Today isn't on screen;
+  // tvOnNavigate renders it fresh when it's opened.
+  if(!el || !isTravelView() || $id('pageTravelhome')?.classList.contains('hidden')) return;
+  const today=TODAY, in7=tvAddDays(TODAY,7), in14=tvAddDays(TODAY,14), ago30=tvAddDays(TODAY,-30);
+  const month=TODAY.slice(0,7);
+  const leads=typeof allLeads!=='undefined'?allLeads:[];
+  const bks=tvBookings(), live=bks.filter(tvBookingLive);
+  const agency=tvAgencyEnabled();
+
+  const depToday=live.filter(b=>tvDay(b.departure_date)===today);
+  const depWeek=live.filter(b=>{ const d=tvDay(b.departure_date); return d>=today&&d<=in7; });
+  const umrahWeek=tvUmrah().filter(g=>{ const d=tvDay(g.departure_date); return d>=today&&d<=in7; });
+  const returnsWeek=tvUmrah().filter(g=>{ const d=tvDay(g.return_date); return d>=today&&d<=in7; });
+  const newToday=leads.filter(l=>tvDay(l.Date)===today);
+  const waiting=leads.filter(l=>!tvIsClosedLead(l)&&(l.Stage==='human_handover'||l.Handover==='Yes'));
+  const quoted=live.filter(b=>(b.status||'quoted')==='quoted');
+  const requests=bks.filter(b=>b.status==='requested');
+  const slaMin=parseInt(clientRecord?.sla_minutes)||15;
+  const lateRequests=requests.filter(b=>{ const w=tvRequestWaitingMin(b); return w!==null&&w>slaMin; });
+  const due=live.filter(b=>b.status!=='completed'&&tvNum(b.sell_price)-tvNum(b.deposit)>0.5)
+    .sort((a,b)=>(tvDay(a.departure_date)||'9999').localeCompare(tvDay(b.departure_date)||'9999'));
+  const dueSoon=due.filter(b=>{ const d=tvDay(b.departure_date); return d&&d<=in14; });
+  const thisMonth=live.filter(b=>tvCreated(b).slice(0,7)===month);
+  const revenue=tvSumByCur(thisMonth,b=>tvNum(b.sell_price));
+  const margin=tvSumByCur(thisMonth,b=>tvNum(b.sell_price)-tvNum(b.cost_price));
+  const travellingSoon=leads.filter(l=>{ if(['lost'].includes(l.Stage)) return false; const t=tvLeadNextTrip(l,today); return t&&(t.depart||t.ret)<=in14; })
+    .map(l=>({l,t:tvLeadNextTrip(l,today)}))
+    .sort((a,b)=>(a.t.depart||a.t.ret).localeCompare(b.t.depart||b.t.ret));
+
+  // Funnel over the last 30 days: inquiries → quotes → booked → travelled.
+  const fInq=leads.filter(l=>tvDay(l.Date)>=ago30).length;
+  const recentBks=bks.filter(b=>tvCreated(b)>=ago30&&tvBookingLive(b)||tvCreated(b)>=ago30&&b.status==='cancelled'&&tvNum(b.sell_price)>0);
+  const fQuoted=recentBks.length;
+  const fBooked=recentBks.filter(b=>['advance_paid','confirmed','completed'].includes(b.status)).length;
+  const fTravelled=recentBks.filter(b=>b.status==='completed').length;
+  const fMax=Math.max(fInq,fQuoted,1);
+
+  // Top destinations (last 90 days) and service-category split.
+  const ago90=tvAddDays(TODAY,-90);
+  const destCount={};
+  leads.filter(l=>tvDay(l.Date)>=ago90&&l.Destination).forEach(l=>{
+    const k=String(l.Destination).trim(); if(k) destCount[k]=(destCount[k]||0)+1;
+  });
+  const topDest=Object.entries(destCount).sort((a,b)=>b[1]-a[1]).slice(0,10);
+
+  const hour=new Date().getHours();
+  const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+  tvLoadProfile();
+  const logo=String(clientRecord?.quote_logo_url||'').trim();
+  const company=tvCompanyName();
+  const tagline=String(_tvProfile?.identity?.tagline||clientRecord?.business_tagline||'').trim();
+  const kpi=(label,val,sub,go,warn)=>`<div class="stat tv-kpi${warn?' warn':''}" onclick="${go}"><div class="stat-lbl">${esc(label)}</div><div class="stat-val">${val}</div><div class="stat-sub">${sub}</div></div>`;
+  const row=(date,main,meta,amt,go)=>`<div class="tv-row" onclick="${go}"><span class="tv-date">${esc(date)}</span><div class="tv-main">${main}<div class="tv-meta">${meta}</div></div>${amt?`<span class="tv-amt">${amt}</span>`:''}</div>`;
+  const cur=b=>esc((b.currency||'').toUpperCase());
+
+  const upcoming=[
+    ...depWeek.map(b=>({d:tvDay(b.departure_date),html:row(tvShort(tvDay(b.departure_date)),`🛫 ${esc(b.client_name||'Traveler')}`,`${esc(b.package_name||'Booking')} · ${tvNum(b.pax)||1} pax · ${esc(b.status||'quoted')}`,'',"navigate('tvtrips')")})),
+    ...umrahWeek.map(g=>({d:tvDay(g.departure_date),html:row(tvShort(tvDay(g.departure_date)),`🕌 ${esc(g.name||'Umrah group')}`,`${(Array.isArray(g.pilgrims)?g.pilgrims.length:0)} pilgrims · ${tvNum(g.seats)} seats`,'',"navigate('tvumrah')")})),
+    ...returnsWeek.map(g=>({d:tvDay(g.return_date),html:row(tvShort(tvDay(g.return_date)),`🛬 ${esc(g.name||'Umrah group')} returns`,'Return','',"navigate('tvumrah')")})),
+  ].sort((a,b)=>a.d.localeCompare(b.d));
+
+  el.innerHTML=`
+    <div class="tv-hero">
+      <div class="tv-brand">
+        ${logo?`<div class="tv-logo"><img src="${esc(logo)}" alt="${esc(company)} logo"></div>`:''}
+        <div style="min-width:0"><div class="tv-company">${esc(company||'Your travel agency')}</div>
+          ${tagline?`<div class="tv-tagline">${esc(tagline)}</div>`:''}
+          <div class="tv-greet">${greet} ✈️ · ${depToday.length} departure${depToday.length===1?'':'s'} today · ${newToday.length} new inquir${newToday.length===1?'y':'ies'} · ${waiting.length} waiting for an agent</div></div>
+      </div>
+      <div class="tv-actions">
+        <button onclick="openAddLead()">+ Inquiry</button>
+        ${agency?`<button onclick="tvNew('tvquotes')">+ Itinerary</button><button onclick="tvNew('tvtrips')">+ Quote / Booking</button>`:''}
+        ${agency&&tvCanSee('tvlive')?`<button onclick="navigate('tvlive')">✈️ Search flights</button>`:''}
+      </div>
+    </div>
+    ${agency?'':`<div class="tv-banner">✈️ Turn on the <b>Travel Agency</b> module to track trips, quotes, departures and payments here.
+      ${isAccountOwner()?`<button class="btn btn-primary btn-sm" onclick="navigate('modules')">Enable in Settings → Modules</button>`:'Ask your account owner to enable it.'}</div>`}
+    ${tvAboutCardHtml()}
+    <div id="tvHomeArena" style="display:none;margin-bottom:14px"></div>
+    <div class="tv-kpis">
+      ${kpi('Departures today',depToday.length,`${depWeek.length+umrahWeek.length} in the next 7 days`,"navigate('departures')")}
+      ${kpi('New inquiries',newToday.length,'today',"navigate('leads')")}
+      ${kpi('Waiting for agent',waiting.length,'handed over by the bot',"navigate('humandeals')",waiting.length>0)}
+      ${agency?kpi('New trip requests',requests.length,lateRequests.length?`⏰ ${lateRequests.length} waiting > ${slaMin} min`:'from the WhatsApp bot',"navigate('tvtrips')",lateRequests.length>0):''}
+      ${agency?kpi('Open quotes',quoted.length,tvFmtCur(tvSumByCur(quoted,b=>tvNum(b.sell_price))),"navigate('tvtrips')"):''}
+      ${agency?kpi('Balance due ≤14d',dueSoon.length,tvFmtCur(tvSumByCur(dueSoon,b=>tvNum(b.sell_price)-tvNum(b.deposit))),"navigate('tvfinance')",dueSoon.length>0):''}
+      ${agency?kpi('Sales this month',tvFmtCur(revenue),`margin ${tvFmtCur(margin)}`,"navigate('tvfinance')"):''}
+    </div>
+    <div class="tv-grid">
+      <div class="card"><div class="card-title">🛫 Departures & returns — next 7 days</div>
+        <div class="tv-list">${upcoming.length?upcoming.slice(0,10).map(u=>u.html).join(''):`<div class="tv-empty">${agency?'Nothing departing this week.':'Enable the Travel Agency module to see departures.'}</div>`}</div></div>
+      <div class="card"><div class="card-title">💳 Balance due</div>
+        <div class="tv-list">${due.length?due.slice(0,8).map(b=>row(b.departure_date?tvShort(tvDay(b.departure_date)):'No date',esc(b.client_name||'Traveler'),`${esc(b.package_name||'Booking')} · paid ${cur(b)} ${Math.round(tvNum(b.deposit)).toLocaleString()}`,`${cur(b)} ${Math.round(tvNum(b.sell_price)-tvNum(b.deposit)).toLocaleString()}`,"navigate('tvtrips')")).join(''):'<div class="tv-empty">No outstanding balances.</div>'}</div></div>
+    </div>
+    ${typeof tsSummaryHtml==='function'?tsSummaryHtml():''}
+    <div class="card" style="margin-bottom:14px" id="tvCategoryReport">${tvCategoryReportHtml(leads)}</div>
+    ${typeof leadsSourceReportHtml==='function'&&leads.length?`<div class="card" style="margin-bottom:14px" id="tvSourceReport">${leadsSourceReportHtml(leads)}</div>`:''}
+    <div class="card" style="margin-bottom:14px"><div id="tvStaffPerf"></div></div>
+    <div class="tv-grid">
+      <div class="card"><div class="card-title">📥 Newest inquiries</div>
+        <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
+      <div class="card"><div class="card-title">🧳 Inquiries travelling in the next 14 days</div>
+        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(({l,t})=>row(tvShort(t.depart||t.ret),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),`${esc(tvTripRoute(l,t)||l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}${t.auto?' · 🤖 from chat':''}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
+    </div>
+    <div class="tv-grid">
+      <div class="card"><div class="card-title">📊 Last 30 days</div>
+        <div class="tv-funnel">
+          ${[['Inquiries',fInq],['Quoted',fQuoted],['Booked',fBooked],['Travelled',fTravelled]].map(([l,n])=>`<div class="tv-fbar"><span class="lbl">${l}</span><div class="bar"><span style="width:${Math.round(n/fMax*100)}%"></span></div><span class="n">${n}</span></div>`).join('')}
+        </div>
+        <div class="tv-meta" style="margin-top:8px">Quoted / booked / travelled come from Trips (Agency bookings) created in this period.</div></div>
+      <div class="card"><div class="card-title">🌍 Top destinations — 90 days</div>
+        ${topDest.length?`<div class="tv-chips">${topDest.map(([d,n])=>`<span class="tv-chip" style="cursor:default">${esc(d)}<b>${n}</b></span>`).join('')}</div>`:'<div class="tv-empty">Add a Destination to inquiries to see this.</div>'}</div>
+    </div>`;
+  if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('tvStaffPerf'));
+}
+
+function tvOpenLeadsCategory(cat){
+  navigate('leads');
+  if(cat==='Uncategorised') return;
+  setTimeout(()=>{
+    const f=$id('leadCategoryFilter'); if(!f) return;
+    if(typeof setLeadsCategory==='function'){ f.value=''; setLeadsCategory(cat); }
+    else { f.value=cat; if(typeof onLeadsFilterChange==='function') onLeadsFilterChange(); }
+  },50);
+}
+/* ── 📅 DEPARTURES ── */
+let _tvCalMonth=TODAY.slice(0,7);
+function tvCalShift(n){
+  const [y,m]=_tvCalMonth.split('-').map(Number);
+  const d=new Date(y,m-1+n,1);
+  _tvCalMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  renderDepartures();
+}
+function tvCalToday(){ _tvCalMonth=TODAY.slice(0,7); renderDepartures(); }
+
+function tvDepartureEvents(){
+  const ev=[];
+  tvBookings().filter(tvBookingLive).forEach(b=>{
+    const d=tvDay(b.departure_date); if(!d) return;
+    ev.push({d,kind:'booking',label:`🛫 ${b.client_name||'Traveler'}${b.package_name?' · '+b.package_name:''}`,meta:`${tvNum(b.pax)||1} pax · ${b.status||'quoted'}`,go:"navigate('tvtrips')"});
+    const r=tvDay(b.return_date);
+    if(r&&r>d) ev.push({d:r,kind:'return',label:`🛬 ${b.client_name||'Traveler'}${b.package_name?' · '+b.package_name:''}`,meta:'returns',go:"navigate('tvtrips')"});
+  });
+  tvUmrah().forEach(g=>{
+    const n=Array.isArray(g.pilgrims)?g.pilgrims.length:0;
+    if(tvDay(g.departure_date)) ev.push({d:tvDay(g.departure_date),kind:'umrah',label:`🕌 ${g.name||'Umrah group'}`,meta:`${n}/${tvNum(g.seats)} pilgrims · departs`,go:"navigate('tvumrah')"});
+    if(tvDay(g.return_date)) ev.push({d:tvDay(g.return_date),kind:'return',label:`🛬 ${g.name||'Umrah group'}`,meta:'returns',go:"navigate('tvumrah')"});
+  });
+  tvCarBookings().filter(c=>c.status!=='cancelled').forEach(c=>{
+    if(tvDay(c.pickup_date)) ev.push({d:tvDay(c.pickup_date),kind:'car',label:`🚗 ${c.customer_name||'Customer'} · ${c.car_name||'car'}`,meta:'pickup',go:"navigate('tvcars')"});
+  });
+  // Inquiry travel dates — every trip in the inquiry's 🧳 travel profile (picked up from the chat or
+  // added by staff): its travel day and, when given, its return. Tapping one opens the inquiry.
+  if(_tvShowInquiries){
+    (typeof allLeads!=='undefined'?allLeads:[]).filter(l=>l.Stage!=='lost').forEach(l=>{
+      const who=(typeof leadDisplayName==='function'?leadDisplayName(l):'')||l.Name||l.Phone||'Inquiry';
+      tvLeadTrips(l).forEach(t=>{
+        const route=tvTripRoute(l,t), done=typeof tcTripStatus==='function'&&tcTripStatus(t,TODAY)==='Completed';
+        if(_tvCalRoute && route!==_tvCalRoute) return;
+        const tags=`${t.auto?' · 🤖 from chat':''}${done?' · ✅ Completed':''}`, cls=`${t.auto?' auto':''}${done?' done':''}`;
+        const dep=t.depart||t.ret;
+        if(dep) ev.push({d:dep,kind:'inquiry'+cls,route,label:`📥 ${who}${route?' · '+route:(l.Destination?' · '+l.Destination:'')}`,meta:`inquiry · ${stageLabel(l.Stage||'new')}${tags}`,go:`openDetail(${Number(l.Id)})`});
+        if(t.depart&&t.ret&&t.ret!==t.depart) ev.push({d:t.ret,kind:'return'+cls,route,label:`🛬 ${who}${route?' · '+route.split('→').reverse().map(x=>x.trim()).join(' → '):''}`,meta:`inquiry returns${tags}`,go:`openDetail(${Number(l.Id)})`});
+      });
+    });
+  }
+  return ev.sort((a,b)=>a.d.localeCompare(b.d));
+}
+let _tvShowInquiries=true, _tvCalRoute='';
+function tvToggleInquiries(v){ _tvShowInquiries=v; renderDepartures(); }
+function tvSetCalRoute(v){ _tvCalRoute=String(v||''); renderDepartures(); }
+// The routes of inquiries with travel dates, for the calendar's route picker.
+function tvCalRoutes(){
+  const set=new Set();
+  (typeof allLeads!=='undefined'?allLeads:[]).filter(l=>l.Stage!=='lost').forEach(l=>tvLeadTrips(l).forEach(t=>{ const r=tvTripRoute(l,t); if(r) set.add(r); }));
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}
+
+function renderDepartures(){
+  const el=$id('tvDepBody'); if(!el) return;
+  const [y,m]=_tvCalMonth.split('-').map(Number);
+  const first=new Date(y,m-1,1);
+  const startDow=(first.getDay()+6)%7; // Monday-first
+  const gridStart=new Date(y,m-1,1-startDow);
+  const events=tvDepartureEvents();
+  const byDay={};
+  events.forEach(e=>{ (byDay[e.d]=byDay[e.d]||[]).push(e); });
+  const cells=[];
+  for(let i=0;i<42;i++){
+    const d=new Date(gridStart); d.setDate(gridStart.getDate()+i);
+    const iso=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    if(i>=35 && d.getMonth()!==m-1) break;
+    const list=byDay[iso]||[];
+    cells.push(`<div class="tv-day${d.getMonth()!==m-1?' out':''}${iso===TODAY?' today':''}"><div class="num">${d.getDate()}</div>
+      ${list.slice(0,3).map(e=>`<span class="tv-ev ${e.kind}" title="${esc(e.label+' — '+e.meta)}" onclick="${e.go}">${esc(e.label)}</span>`).join('')}
+      ${list.length>3?`<span class="tv-meta">+${list.length-3} more</span>`:''}</div>`);
+  }
+  const monthEvents=events.filter(e=>e.d.slice(0,7)===_tvCalMonth);
+  const title=first.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+  el.innerHTML=`
+    <div class="tv-cal-head">
+      <button class="btn-ghost" onclick="tvCalShift(-1)" aria-label="Previous month">‹</button>
+      <h2>${esc(title)}</h2>
+      <button class="btn-ghost" onclick="tvCalShift(1)" aria-label="Next month">›</button>
+      <button class="btn-ghost" onclick="tvCalToday()">Today</button>
+      <label style="font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-left:auto"><input type="checkbox" ${_tvShowInquiries?'checked':''} onchange="tvToggleInquiries(this.checked)"> Show inquiry travel dates</label>
+      ${_tvShowInquiries&&(tvCalRoutes().length||_tvCalRoute)?`<select aria-label="Inquiry route" title="Show inquiries on one route" onchange="tvSetCalRoute(this.value)"><option value="">🛫 All routes</option>${[...new Set([...tvCalRoutes(),...(_tvCalRoute?[_tvCalRoute]:[])])].map(r=>`<option value="${esc(r)}"${r===_tvCalRoute?' selected':''}>${esc(r)}</option>`).join('')}</select>`:''}
+      ${tvCanSee('tvtrips')?`<button class="btn btn-primary btn-sm" onclick="tvNew('tvtrips')">+ New booking</button>`:''}
+    </div>
+    <div class="tv-cal">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<div class="tv-dow">${d}</div>`).join('')}${cells.join('')}</div>
+    <div class="tv-legend"><span><span class="tv-ev booking">&nbsp;</span>Trip departure</span><span><span class="tv-ev umrah">&nbsp;</span>Umrah group</span><span><span class="tv-ev return">&nbsp;</span>Return</span><span><span class="tv-ev car">&nbsp;</span>Car pickup</span><span><span class="tv-ev inquiry">&nbsp;</span>Inquiry travel date</span><span><span class="tv-ev inquiry auto">&nbsp;</span>From chat</span><span><span class="tv-ev inquiry done">&nbsp;</span>Completed</span></div>
+    <div class="card"><div class="card-title">🗓️ ${esc(title)} — ${monthEvents.length} item${monthEvents.length===1?'':'s'}</div>
+      <div class="tv-list">${monthEvents.length?monthEvents.map(e=>`<div class="tv-row" onclick="${e.go}"><span class="tv-date">${esc(tvShort(e.d))}</span><div class="tv-main">${esc(e.label)}<div class="tv-meta">${esc(e.meta)}</div></div></div>`).join(''):'<div class="tv-empty">Nothing scheduled this month.</div>'}</div></div>`;
+}
+
+/* ── frame → dashboard messages (travel-agency.html in travel-shell mode) ── */
+window.addEventListener('message',e=>{
+  if(e.origin!==location.origin) return;
+  const d=e.data||{};
+  if(d.type==='ta:navigate' && typeof d.page==='string' && (d.page==='tvlive'||TV_AGENCY_PAGES[d.page])) navigate(d.page);
+});

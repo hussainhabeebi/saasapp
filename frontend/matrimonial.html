@@ -1,0 +1,889 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Leadvyne · Matrimonial</title><meta name="theme-color" content="#be185d"><link rel="manifest" href="manifest.json"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet"><style>
+:root{--bg:#fdf2f8;--card:#fff;--ink:#3b0764;--muted:#7e3a6e;--a:#be185d;--a2:#9d174d;--soft:#fce7f3;--line:#fbcfe8;--bad:#b91c1c;--ok:#047857;--r:14px}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px Inter,sans-serif}button,input,select,textarea{font:inherit}
+header{height:58px;padding:0 20px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:20}
+.brand{font:700 17px "Space Grotesk"}.brand span{color:var(--a)}.chip,.badge{display:inline-block;border-radius:20px;padding:4px 9px;background:var(--soft);color:var(--a2);font-size:11px;font-weight:700}.badge.gray{background:#f1f5f9;color:#475569}.badge.ok{background:#d1fae5;color:var(--ok)}.badge.warn{background:#fef3c7;color:#92400e}.badge.danger{background:#fee2e2;color:var(--bad)}.back{margin-left:auto}
+/* App layout */
+#app{display:flex;height:calc(100vh - 58px)}
+#sidebar{width:56px;background:#18072e;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:3px;position:sticky;top:58px;height:calc(100vh - 58px);overflow:hidden;z-index:19}
+#content{flex:1;overflow:auto;min-width:0}
+.nav-btn{width:40px;height:40px;border:0;background:none;border-radius:10px;cursor:pointer;color:#a78bca;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;position:relative;flex-shrink:0}
+.nav-btn:hover{background:#2d0f52;color:#e879f9}
+.nav-btn.active{background:linear-gradient(135deg,#be185d,#9d174d);color:#fff;box-shadow:0 2px 10px #be185d60}
+.nav-tip{position:absolute;left:calc(100% + 12px);top:50%;transform:translateY(-50%);background:#18072e;color:#f0abfc;font:600 11.5px Inter,sans-serif;padding:5px 10px;border-radius:7px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:200;border:1px solid #4c1d95;box-shadow:0 4px 12px #00000040}
+.nav-btn:hover .nav-tip{opacity:1}
+.nav-spacer{flex:1}
+.nav-sep{width:32px;height:1px;background:#2d0f52;margin:4px 0;flex-shrink:0}
+/* Webhook bar */
+#webhookBar{background:#fff7fd;border-bottom:1px solid var(--line);padding:0;overflow:hidden;transition:max-height .25s;max-height:0;z-index:18}
+#webhookBar.open{max-height:380px}
+.wh-inner{padding:12px 20px 14px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.wh-section{flex:1;min-width:220px}
+.wh-label{font:700 10px "Space Grotesk";text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
+.wh-url{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:11.5px;font-family:monospace;word-break:break-all;color:var(--a2);position:relative}
+.wh-token{display:flex;gap:6px;align-items:center;margin-top:6px}
+.wh-token code{font-size:12px;background:#f9e8f3;border:1px solid var(--line);border-radius:6px;padding:4px 8px;flex:1;letter-spacing:.04em;word-break:break-all}
+.wh-cols{margin-top:8px}
+.col-pill{display:inline-block;background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:11px;margin:2px 2px 2px 0;font-family:monospace;color:var(--a2)}
+.wh-log{margin-top:8px;font-size:11.5px;color:var(--muted)}
+.wh-toggle{display:flex;align-items:center;gap:6px;padding:6px 20px 0;cursor:pointer;font-size:12px;font-weight:600;color:var(--a);background:#fff7fd;border-bottom:1px solid var(--line);border-top:1px solid var(--line)}
+.wh-toggle svg{transition:transform .2s}
+#webhookBar.open ~ .wh-toggle svg{transform:rotate(180deg)}
+main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{display:block}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;margin-bottom:18px}
+.stat,.card{background:#fff;border:1px solid var(--line);border-radius:var(--r);box-shadow:0 4px 16px #be185d0d}.stat{padding:16px}.stat b{font:700 26px "Space Grotesk";color:var(--a2);display:block}.stat span{color:var(--muted);font-size:12px}.card{padding:18px;margin-bottom:16px}
+.title-row{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}.title{font:700 14px "Space Grotesk";text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{border:0;border-radius:9px;padding:8px 13px;background:linear-gradient(135deg,#be185d,#ec4899);color:#fff;font-weight:700;cursor:pointer}.btn.sec{background:var(--soft);color:var(--a2);border:1px solid var(--a)}.btn.ghost{background:#fff;color:var(--muted);border:1px solid var(--line)}.btn.danger{background:#fee2e2;color:var(--bad)}.btn.sm{padding:5px 9px;font-size:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.profile-card{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:16px;cursor:pointer;transition:box-shadow .15s}.profile-card:hover{box-shadow:0 4px 20px #be185d20}
+.profile-photo{width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--soft);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
+.hint{color:var(--muted);font-size:12px;line-height:1.55}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:10px;text-transform:uppercase;color:var(--muted);letter-spacing:.05em}.empty{text-align:center;color:var(--muted);padding:30px!important}
+.input{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--bg);color:var(--ink);width:100%}.search{width:200px}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.field.full{grid-column:1/-1}.field label{display:block;color:var(--muted);text-transform:uppercase;font-size:10px;font-weight:700;margin:0 0 5px}
+.modal-bg{display:none;position:fixed;inset:0;background:#3b076480;z-index:100;padding:20px;align-items:center;justify-content:center}.modal-bg.on{display:flex}.modal{background:#fff;width:min(860px,100%);max-height:92vh;overflow:auto;border-radius:16px;padding:22px}.modal h2{font:700 19px "Space Grotesk";margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}
+.row-actions{display:flex;gap:5px}.status-pill{display:inline-block;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:700}.plan-free{background:#f1f5f9;color:#475569}.plan-silver{background:#e2e8f0;color:#334155}.plan-gold{background:#fef3c7;color:#92400e}.plan-platinum{background:#ede9fe;color:#5b21b6}
+.story-card{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:16px;text-align:center}.story-photo{width:80px;height:80px;border-radius:50%;object-fit:cover;background:var(--soft);margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:32px}
+.toggle{display:flex!important;align-items:center;gap:8px;text-transform:none!important;font-size:13px!important}.toggle input{width:18px;height:18px}
+.log-row-ok{color:var(--ok)}.log-row-err{color:var(--bad)}
+@media(max-width:800px){.grid2,.grid3{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}main{padding:12px}.search{width:100%}.wh-inner{gap:12px}}
+@media(max-width:640px){
+  #app{flex-direction:column-reverse;height:auto}
+  #content{height:calc(100vh - 58px - 56px);overflow:auto}
+  #sidebar{width:100%;height:56px;flex-direction:row;justify-content:space-around;top:auto;bottom:0;position:fixed;z-index:30;padding:0 4px;gap:0;border-top:1px solid #2d0f52}
+  .nav-spacer,.nav-sep{display:none}
+  .nav-btn{flex-direction:column;width:auto;flex:1;height:52px;border-radius:0;gap:2px}
+  .nav-tip{position:static;transform:none;opacity:1;background:none;border:0;box-shadow:none;color:inherit;font-size:9px;font-weight:700;padding:0;letter-spacing:.02em}
+  .nav-btn:hover .nav-tip{opacity:1}
+  body{padding-bottom:0}
+}
+</style></head><body>
+<header>
+  <span class="chip">💍 Matrimonial</span>
+  <span id="hdrServiceName" style="color:var(--muted);font:600 14px 'Space Grotesk';flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
+  <button class="btn ghost back" onclick="location.href='dashboard.html?client='+clientId">← CRM</button>
+</header>
+<div id="app">
+<nav id="sidebar">
+  <button class="nav-btn active" data-page="overview"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="nav-tip">Overview</span></button>
+  <button class="nav-btn" data-page="profiles"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M16 3.13a4 4 0 010 7.75M21 21v-2a4 4 0 00-3-3.87"/></svg><span class="nav-tip">Profiles</span></button>
+  <button class="nav-btn" data-page="matches"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg><span class="nav-tip">Matches</span></button>
+  <button class="nav-btn" data-page="shortlists"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg><span class="nav-tip">Shortlists</span></button>
+  <button class="nav-btn" data-page="stories"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span class="nav-tip">Success Stories</span></button>
+  <div class="nav-spacer"></div>
+  <div class="nav-sep"></div>
+  <button class="nav-btn" data-page="activated"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg><span class="nav-tip">Activated Customers</span></button>
+  <button class="nav-btn" data-page="settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span class="nav-tip">Settings</span></button>
+</nav>
+<div id="content">
+
+<!-- Webhook bar (slides open below tabs) -->
+<div id="webhookBar">
+  <div class="wh-inner" id="webhookBarContent"></div>
+</div>
+<div class="wh-toggle" id="webhookToggle" onclick="toggleWebhookBar()" style="display:none">
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 5l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  <span id="webhookToggleLabel">🔗 Google Sheets Webhook</span>
+</div>
+
+<main>
+
+<!-- OVERVIEW -->
+<section class="page active" id="page-overview">
+  <div class="stats" id="stats"></div>
+  <div class="grid2">
+    <div class="card"><div class="title">Recent profiles</div><div id="recentProfiles"></div></div>
+    <div class="card"><div class="title">Recent matches</div><div id="recentMatches"></div></div>
+  </div>
+  <div class="card"><div class="title">System readiness</div><div id="readiness"></div></div>
+</section>
+
+<!-- PROFILES -->
+<section class="page" id="page-profiles">
+  <div class="card">
+    <div class="title-row">
+      <div class="title">All Profiles</div>
+      <div class="actions">
+        <select class="input" id="filterType" onchange="renderProfiles()" style="max-width:130px"><option value="">All types</option><option value="bride">Bride</option><option value="groom">Groom</option></select>
+        <select class="input" id="filterPlan" onchange="renderProfiles()" style="max-width:130px"><option value="">All plans</option><option value="free">Free</option><option value="silver">Silver</option><option value="gold">Gold</option><option value="platinum">Platinum</option></select>
+        <input class="input search" id="profileSearch" placeholder="Search serial, name, city…" oninput="renderProfiles()">
+        <button class="btn" onclick="openProfile()">+ Add Profile</button>
+      </div>
+    </div>
+    <div class="profile-grid" id="profileGrid"></div>
+  </div>
+</section>
+
+<!-- MATCHES -->
+<section class="page" id="page-matches">
+  <div class="card">
+    <div class="title-row">
+      <div class="title">Match Records</div>
+      <div class="actions">
+        <select class="input" id="filterMatchStatus" onchange="renderMatches()" style="max-width:160px">
+          <option value="">All statuses</option><option value="suggested">Suggested</option><option value="interest_sent">Interest Sent</option><option value="mutual">Mutual Interest</option><option value="family_meeting_arranged">Meeting Arranged</option><option value="family_meeting_done">Meeting Done</option><option value="engaged">Engaged</option><option value="married">Married</option><option value="rejected">Rejected</option><option value="on_hold">On Hold</option>
+        </select>
+        <button class="btn" onclick="openMatch()">+ New Match</button>
+      </div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Profile 1</th><th>Profile 2</th><th>Score</th><th>Status</th><th>Family Meeting</th><th>Notes</th><th>Actions</th></tr></thead><tbody id="matchRows"></tbody></table></div>
+  </div>
+</section>
+
+<!-- SHORTLISTS -->
+<section class="page" id="page-shortlists">
+  <div class="card">
+    <div class="title-row">
+      <div class="title">Shortlists</div>
+      <button class="btn" onclick="openShortlist()">+ Add Shortlist</button>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Profile</th><th>Shortlisted Profile</th><th>Notes</th><th>Date</th><th>Actions</th></tr></thead><tbody id="shortlistRows"></tbody></table></div>
+  </div>
+</section>
+
+<!-- SUCCESS STORIES -->
+<section class="page" id="page-stories">
+  <div class="card">
+    <div class="title-row"><div class="title">Success Stories</div><button class="btn" onclick="openStory()">+ Add Story</button></div>
+    <div class="grid3" id="storyGrid"></div>
+  </div>
+</section>
+
+<!-- SETTINGS -->
+<section class="page" id="page-activated">
+  <div class="card">
+    <div class="title-row">
+      <div class="title">💍 Activated Customers</div>
+      <div class="actions">
+        <button class="btn sec" onclick="openLeadSearch()">🔗 From Leads</button>
+        <button class="btn" onclick="openAddActivated()">+ Activate Customer</button>
+      </div>
+    </div>
+    <p class="hint">Customers listed here can view profiles via the WhatsApp chat menu. Each customer has their own daily/monthly view limit and profile-type access.</p>
+    <div class="table-wrap" style="margin-top:12px"><table id="activatedTable">
+      <thead><tr><th>Name</th><th>Phone</th><th>Plan</th><th>Can View</th><th>Daily Limit</th><th>Monthly Limit</th><th>Today</th><th>Month</th><th>Expiry</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody id="activatedRows"></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- Activate Customer Modal -->
+<div class="modal-bg" id="modalActivated" onclick="if(event.target===this)modal('modalActivated',false)">
+  <div class="modal" style="max-width:500px">
+    <h2 id="actModalTitle">Activate Customer</h2>
+    <input type="hidden" id="actId">
+    <div class="form-grid" style="margin-top:12px">
+      <div class="field"><label>WhatsApp Phone *</label><input class="input" id="actPhone" placeholder="9190xxxxxxxx"></div>
+      <div class="field"><label>Name</label><input class="input" id="actName" placeholder="Customer name"></div>
+      <div class="field">
+        <label>Can View</label>
+        <select class="input" id="actCanView">
+          <option value="both">Both (Bride &amp; Groom)</option>
+          <option value="bride">Bride only</option>
+          <option value="groom">Groom only</option>
+        </select>
+      </div>
+      <div class="field"><label>Status</label>
+        <select class="input" id="actStatus">
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="expired">Expired</option>
+        </select>
+      </div>
+      <div class="field"><label>Daily limit (profiles)</label><input class="input" type="number" id="actDailyLimit" min="1" value="10"></div>
+      <div class="field"><label>Monthly limit (profiles)</label><input class="input" type="number" id="actMonthlyLimit" min="1" value="50"></div>
+      <div class="field"><label>Expiry date (leave blank = no expiry)</label><input class="input" type="date" id="actExpiry"></div>
+      <div class="field full"><label>Notes</label><textarea class="input" id="actNotes" rows="2" placeholder="Internal notes"></textarea></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn" onclick="saveActivated()">Save</button>
+      <button class="btn sec" onclick="modal('modalActivated',false)">Cancel</button>
+      <span id="actMsg" style="color:var(--ok);font-size:13px;align-self:center"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Lead Search Modal -->
+<div class="modal-bg" id="modalLeadSearch" onclick="if(event.target===this)modal('modalLeadSearch',false)">
+  <div class="modal" style="max-width:540px">
+    <h2>🔗 Connect Lead</h2>
+    <p class="hint" style="margin:0 0 12px">Search CRM contacts to activate them for the WhatsApp chat menu.</p>
+    <input class="input" id="leadSearchQ" placeholder="Search by name or phone…" oninput="searchLeads()" autocomplete="off">
+    <div id="leadSearchResults" style="margin-top:12px;max-height:340px;overflow:auto;border-radius:8px;border:1px solid var(--line)"></div>
+    <div style="margin-top:14px"><button class="btn sec" onclick="modal('modalLeadSearch',false)">Close</button></div>
+  </div>
+</div>
+
+<section class="page" id="page-settings">
+  <div class="card">
+    <div class="title">Service Settings</div>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="field"><label>Service name</label><input class="input" id="setServiceName" placeholder="Matrimonial Service"></div>
+      <div class="field"><label>Privacy note</label><input class="input" id="setPrivacyNote" placeholder="All profiles are verified and kept confidential."></div>
+      <div class="field full"><label>Membership plans JSON (e.g. {"free":"Basic","gold":"Priority"})</label><textarea class="input" id="setMembershipPlans" rows="3"></textarea></div>
+      <div class="field"><label><label class="toggle"><input type="checkbox" id="setHoroscopeEnabled"> Enable horoscope matching</label></label></div>
+      <div class="field"><label><label class="toggle"><input type="checkbox" id="setAutoSuggest"> Auto-suggest matches on new profile</label></label></div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:9px"><button class="btn" onclick="saveSettings()">Save Settings</button><span id="setMsg" style="color:var(--ok);font-size:13px;align-self:center"></span></div>
+  </div>
+
+  <!-- WhatsApp Chat Menu Settings -->
+  <div class="card" style="margin-top:0">
+    <div class="title-row">
+      <div class="title">💬 WhatsApp Chat Menu</div>
+      <label class="toggle" style="font-size:13px;gap:8px"><input type="checkbox" id="setChatEnabled"> Enable chat menu bot</label>
+    </div>
+    <p class="hint">When enabled, inbound WhatsApp messages are handled by a keyword-driven menu (View Profiles, List Profile, Talk to Agent) instead of the default AI reply.</p>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="field full"><label>Welcome message</label><textarea class="input" id="setChatWelcome" rows="3" placeholder="Welcome to Nikah Kerala 💜&#10;&#10;Please choose an option:"></textarea></div>
+      <div class="field"><label>View profiles keyword (default: 1)</label><input class="input" id="setChatKwView" placeholder="1" maxlength="10"></div>
+      <div class="field"><label>List profile keyword (default: 2)</label><input class="input" id="setChatKwList" placeholder="2" maxlength="10"></div>
+      <div class="field"><label>Talk to agent keyword (default: 3)</label><input class="input" id="setChatKwAgent" placeholder="3" maxlength="10"></div>
+      <div class="field"><label>Free subscribe keyword (default: 4)</label><input class="input" id="setChatKwSubscribe" placeholder="4" maxlength="10"></div>
+      <div class="field"><label>Paid plans keyword (default: 5)</label><input class="input" id="setChatKwPlans" placeholder="5" maxlength="10"></div>
+      <div class="field"><label>Profiles per message</label><input class="input" type="number" id="setChatPerMsg" min="1" max="10" placeholder="3"></div>
+      <div class="field"><label>List Profile form URL</label><input class="input" type="url" id="setChatFormUrl" placeholder="https://leadvyne.com/form/nikah-kerala"></div>
+      <div class="field full">
+        <label>Show only plans (uncheck to include all non-free)</label>
+        <div style="display:flex;gap:12px;margin-top:6px">
+          <label style="display:flex;gap:5px;align-items:center;font-size:13px"><input type="checkbox" id="chatPlanGold" value="gold"> Gold</label>
+          <label style="display:flex;gap:5px;align-items:center;font-size:13px"><input type="checkbox" id="chatPlanSilver" value="silver"> Silver</label>
+          <label style="display:flex;gap:5px;align-items:center;font-size:13px"><input type="checkbox" id="chatPlanPlatinum" value="platinum"> Platinum</label>
+        </div>
+      </div>
+      <div class="field full">
+        <label>Profile preview fields (shown in each card)</label>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="full_name"> Name</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="age"> Age</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="city"> City</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="district"> District</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="education"> Education</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="occupation"> Occupation</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="religion"> Religion</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="plan_label"> Plan</label>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:9px"><button class="btn" onclick="saveChatSettings()">Save Chat Settings</button><span id="chatMsg" style="color:var(--ok);font-size:13px;align-self:center"></span></div>
+  </div>
+
+  <!-- Razorpay Paid Plans -->
+  <div class="card" style="margin-top:0">
+    <div class="title">💳 Razorpay Paid Plans</div>
+    <p class="hint">Configure paid subscription plans. Customers can select a plan via WhatsApp (keyword 5) and pay through a Razorpay link. When payment is confirmed, their account is activated automatically via the Razorpay webhook.</p>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="field"><label>Razorpay Key ID (live key_...)</label><input class="input" id="setRzpKeyId" placeholder="rzp_live_..."></div>
+      <div class="field"><label>Razorpay Key Secret</label><input class="input" type="password" id="setRzpKeySecret" placeholder="••••••••••••••••"></div>
+      <div class="field full"><label>Webhook Secret (from Razorpay dashboard → Webhooks)</label><input class="input" type="password" id="setRzpWebhookSecret" placeholder="••••••••••••••••"></div>
+      <div class="field full">
+        <label>Paid Plans (JSON array)</label>
+        <textarea class="input" id="setRzpPlans" rows="6" placeholder='[{"key":"silver","label":"Silver","price":299,"daily_limit":50,"monthly_limit":500,"can_view":"both","expiry_days":30},{"key":"gold","label":"Gold","price":499,"daily_limit":100,"monthly_limit":1000,"can_view":"both","expiry_days":30}]'></textarea>
+        <div class="hint" style="margin-top:4px">Each plan: <code>key</code> (unique slug), <code>label</code>, <code>price</code> (₹), <code>daily_limit</code>, <code>monthly_limit</code>, <code>can_view</code> (both/bride/groom), <code>expiry_days</code> (0 = no expiry)</div>
+      </div>
+      <div class="field full">
+        <label>Razorpay Webhook URL (add this in Razorpay Dashboard → Webhooks)</label>
+        <div class="wh-url" id="rzpWebhookUrl" style="font-size:11px;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent).then(()=>this.style.color='var(--ok)').catch(()=>{})"></div>
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:9px;flex-wrap:wrap">
+      <button class="btn" onclick="saveRazorpaySettings()">Save Razorpay Settings</button>
+      <button class="btn sec" id="btnTestPayLink" onclick="testCreatePaymentLink()">🔗 Test Payment Link</button>
+      <span id="rzpMsg" style="color:var(--ok);font-size:13px;align-self:center"></span>
+    </div>
+  </div>
+
+  <!-- Webhook management -->
+  <div class="card" style="margin-top:0">
+    <div class="title-row">
+      <div class="title">🔗 Webhook Tokens &amp; Column Mapping</div>
+      <button class="btn sec" onclick="regenerateTokens()">↺ Regenerate All Tokens</button>
+    </div>
+    <p class="hint">Each table has its own secret token. Paste the endpoint URL into n8n's HTTP Request node (POST). The token authenticates the request — keep it private. Regenerating invalidates all existing tokens immediately.</p>
+    <div id="tokenCards" style="margin-top:12px"></div>
+  </div>
+
+  <!-- Column mapping editor -->
+  <div class="card" style="margin-top:0">
+    <div class="title">Column Mapping (Google Sheets header → DB column)</div>
+    <p class="hint">If your Google Sheet uses different column names (e.g. "Name" instead of "full_name"), enter the mapping below. Leave empty to send column names that match exactly. Format: one mapping per line — <code>SheetHeader = db_column</code></p>
+    <div class="grid2" style="margin-top:12px">
+      <div class="field"><label>Profiles mapping</label><textarea class="input" id="mapProfiles" rows="6" placeholder="Name = full_name&#10;DOB = date_of_birth&#10;Religion = religion"></textarea></div>
+      <div class="field"><label>Matches mapping</label><textarea class="input" id="mapMatches" rows="6" placeholder="Profile1 = profile_id_1&#10;Profile2 = profile_id_2&#10;Score = match_score"></textarea></div>
+      <div class="field"><label>Shortlists mapping</label><textarea class="input" id="mapShortlists" rows="4" placeholder="From = profile_id&#10;To = shortlisted_profile_id"></textarea></div>
+      <div class="field"><label>Stories mapping</label><textarea class="input" id="mapStories" rows="4" placeholder="Bride = bride_name&#10;Groom = groom_name&#10;Date = wedding_date"></textarea></div>
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <div class="field"><label>Profiles dedup key (DB column, leave blank = always insert)</label><input class="input" id="dedupProfiles" placeholder="full_name"></div>
+      <div class="field"><label>Matches dedup key</label><input class="input" id="dedupMatches" placeholder=""></div>
+      <div class="field"><label>Shortlists dedup key</label><input class="input" id="dedupShortlists" placeholder=""></div>
+      <div class="field"><label>Stories dedup key</label><input class="input" id="dedupStories" placeholder="bride_name"></div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:9px"><button class="btn" onclick="saveMappings()">Save Mappings</button><span id="mapMsg" style="color:var(--ok);font-size:13px;align-self:center"></span></div>
+  </div>
+
+  <!-- Sync log -->
+  <div class="card" style="margin-top:0">
+    <div class="title-row"><div class="title">Sync Log</div><button class="btn sm ghost" onclick="loadLog()">Refresh</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Table</th><th>Received</th><th>Inserted</th><th>Updated</th><th>Skipped</th><th>Status</th><th>When</th></tr></thead><tbody id="logRows"></tbody></table></div>
+  </div>
+</section>
+
+</main>
+</div><!-- #content -->
+</div><!-- #app -->
+<div id="modals"></div>
+<script>
+const API='https://leadvyne-api-proxy.leadvyne.workers.dev',P=new URLSearchParams(location.search),clientId=P.get('client')||'';
+let token=P.get('token')||sessionStorage.getItem('lv_matrimonial_token')||'';
+if(P.get('token'))sessionStorage.setItem('lv_matrimonial_token',P.get('token'));
+const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let profiles=[],matches=[],shortlists=[],stories=[],settings={};
+let currentPage='overview';
+
+// Column reference for each table (canonical DB columns)
+const TABLE_COLS={
+  profiles:['serial_number','profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status'],
+  matches:['profile_id_1','profile_id_2','match_score','status','notes','family_meeting_date','family_meeting_venue','outcome_notes'],
+  shortlists:['profile_id','shortlisted_profile_id','notes'],
+  stories:['bride_name','groom_name','wedding_date','testimonial','photo_url','featured'],
+};
+
+async function api(path,o={}){const r=await fetch(API+path,{...o,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(o.headers||{})}}),d=await r.json().catch(()=>({}));if(!r.ok||d.error)throw new Error(d.error||'HTTP '+r.status);return d}
+function modal(id,on=true){$(id).classList.toggle('on',on)}
+
+// TAB SWITCHING — sidebar nav buttons + mobile bottom bar
+document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.nav-btn,.page').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');$('page-'+b.dataset.page).classList.add('active');
+  currentPage=b.dataset.page;
+  // Scroll content area back to top on tab change
+  const c=$('content'); if(c) c.scrollTop=0;
+  updateWebhookBar();
+  if(b.dataset.page==='settings'){renderSettings();loadLog();}
+});
+
+// ── WEBHOOK BAR ──────────────────────────────────────────────────────────────
+function updateWebhookBar(){
+  const hasToken=k=>settings[k+'_webhook_token'];
+  const pagesWithWebhook=['profiles','matches','shortlists','stories'];
+  const toggle=$('webhookToggle');
+  if(!pagesWithWebhook.includes(currentPage)){toggle.style.display='none';closeWebhookBar();return;}
+  const kind=currentPage;
+  const t=settings[kind+'_webhook_token'];
+  if(!t){toggle.style.display='none';closeWebhookBar();return;}
+  toggle.style.display='flex';
+  const lastSync=settings['_lastSync_'+kind]||null;
+  const url=`${API}/matrimonial/webhook/${kind}?token=${t}`;
+  const cols=(TABLE_COLS[kind]||[]);
+  $('webhookBarContent').innerHTML=`
+    <div class="wh-section" style="flex:2;min-width:280px">
+      <div class="wh-label">Endpoint URL (POST)</div>
+      <div class="wh-url" id="whUrl_${kind}">${esc(url)}</div>
+      <div class="wh-token">
+        <code id="whToken_${kind}">${esc(t)}</code>
+        <button class="btn sm sec" onclick="copyText('whUrl_${kind}')">Copy URL</button>
+        <button class="btn sm ghost" onclick="copyText('whToken_${kind}')">Copy Token</button>
+      </div>
+    </div>
+    <div class="wh-section">
+      <div class="wh-label">Expected columns (DB names)</div>
+      <div class="wh-cols">${cols.map(c=>`<span class="col-pill">${c}</span>`).join('')}</div>
+      <div class="wh-log" style="margin-top:8px">n8n: HTTP Request node → POST → this URL → JSON body → array of objects</div>
+    </div>
+    <div class="wh-section" style="min-width:140px">
+      <div class="wh-label">Dedup key</div>
+      <div style="font-size:12px;padding:4px 0"><code>${esc(settings[kind+'_dedup_key']||'(none – always insert)')}</code></div>
+      <div class="wh-label" style="margin-top:10px">Column map</div>
+      <div style="font-size:11px;color:var(--muted)">${renderMapPreview(settings[kind+'_col_map'])}</div>
+    </div>`;
+  $('webhookToggleLabel').textContent='🔗 Google Sheets Webhook — '+kind;
+}
+function renderMapPreview(mapJson){
+  let m={};try{m=JSON.parse(mapJson||'{}')}catch(e){}
+  const entries=Object.entries(m);
+  if(!entries.length)return'<span style="opacity:.6">No mapping — use exact DB column names</span>';
+  return entries.slice(0,6).map(([k,v])=>`<span class="col-pill">${esc(k)}</span> → <span class="col-pill">${esc(v)}</span>`).join(' ')+( entries.length>6?` +${entries.length-6} more`:'');
+}
+function toggleWebhookBar(){
+  const bar=$('webhookBar');
+  bar.classList.toggle('open');
+}
+function closeWebhookBar(){$('webhookBar').classList.remove('open');}
+function copyText(elId){
+  const t=document.getElementById(elId)?.textContent||'';
+  navigator.clipboard.writeText(t).then(()=>{showCopyFlash(elId);}).catch(()=>{});
+}
+function showCopyFlash(elId){
+  const el=document.getElementById(elId);if(!el)return;
+  const orig=el.style.outline;el.style.outline='2px solid var(--ok)';
+  setTimeout(()=>el.style.outline=orig,800);
+}
+
+// ── DATA HELPERS ──────────────────────────────────────────────────────────────
+function profileName(id){return profiles.find(x=>+x.id===+id)?.full_name||'#'+id}
+function planBadge(plan){return `<span class="status-pill plan-${plan||'free'}">${(plan||'free').toUpperCase()}</span>`}
+function statusBadge(s){const map={suggested:'gray',interest_sent:'warn',mutual:'warn',family_meeting_arranged:'warn',family_meeting_done:'warn',engaged:'ok',married:'ok',rejected:'danger',on_hold:'gray'};return `<span class="badge ${map[s]||'gray'}">${esc((s||'—').replace(/_/g,' '))}</span>`}
+
+// ── MODALS ────────────────────────────────────────────────────────────────────
+function buildModals(){
+  const field=(id,label,type='text',full='')=>`<div class="field ${full}"><label>${label}</label><input class="input" id="${id}" type="${type}"></div>`,
+        area=(id,label)=>`<div class="field full"><label>${label}</label><textarea class="input" id="${id}" rows="3"></textarea></div>`,
+        sel=(id,label,opts)=>`<div class="field"><label>${label}</label><select class="input" id="${id}">${opts}</select></div>`,
+        box=(id,title,body,save)=>`<div class="modal-bg" id="${id}"><div class="modal"><h2>${title}</h2>${body}<div class="modal-actions"><button class="btn sec" onclick="modal('${id}',false)">Cancel</button><button class="btn" onclick="${save}()">Save</button></div></div></div>`;
+  const status='<option>active</option><option>inactive</option><option>matched</option><option>hidden</option>';
+  const memPlans='<option value="free">Free</option><option value="silver">Silver</option><option value="gold">Gold</option><option value="platinum">Platinum</option>';
+  $('modals').innerHTML=
+    box('profileModal','Profile',`<input type="hidden" id="pId"><div class="form-grid">
+      ${field('pSerial','Serial number')}\n      ${sel('pType','Profile type *','<option value="bride">Bride</option><option value="groom">Groom</option>')}
+      ${field('pName','Full name *')}${field('pDob','Date of birth','date')}${field('pAge','Age','number')}
+      ${field('pReligion','Religion')}${field('pCaste','Caste')}${field('pSubCaste','Sub-caste')}
+      ${field('pMother','Mother tongue')}${field('pHeight','Height (cm)','number')}${field('pComplexion','Complexion')}
+      ${field('pBodyType','Body type')}${field('pEducation','Education')}${field('pRequiredEd','Required education (partner)')}
+      ${field('pOccupation','Occupation')}${field('pJobPlace','Job place')}${field('pIncome','Annual / Economic status')}
+      ${field('pCity','City')}${field('pDistrict','District')}${field('pState','State')}${field('pCountry','Country')}
+      ${field('pPhone','Phone no.')}${field('pWhatsapp','WhatsApp no.')}${field('pGuardianPhone','Guardian no.')}
+      ${field('pMarriageStatus','Marriage status')}${field('pExpectedAge','Expected partner age')}${field('pExpectedDob','Expected partner DOB')}
+      ${area('pOtherConditions','Other conditions / preferences')}
+      ${sel('pFamilyType','Family type','<option value="">—</option><option value="nuclear">Nuclear</option><option value="joint">Joint</option>')}
+      ${field('pFatherName','Father name')}${field('pFatherOcc','Father occupation')}${field('pMotherName','Mother name')}${field('pMotherOcc','Mother occupation')}
+      ${field('pSiblings','Siblings')}${field('pStar','Horoscope star')}${field('pRashi','Horoscope rashi')}
+      ${sel('pManglik','Manglik','<option value="">—</option><option value="yes">Yes</option><option value="no">No</option><option value="partial">Partial</option>')}
+      ${area('pHoroscope','Horoscope notes')}${area('pAbout','About')}
+      ${field('pPhoto','Photo URL','url','full')}${field('pPhoto2','Photo 2 URL','url','full')}${field('pPhoto3','Photo 3 URL','url','full')}
+      ${field('pBiodata','Biodata PDF URL','url','full')}
+      ${sel('pPlan','Membership plan',memPlans)}${field('pPlanLabel','Plan label (raw)')}${field('pExpiry','Membership expiry','date')}
+      ${field('pPaymentAmount','Payment amount')}${field('pPaymentLink','Payment link','url','full')}
+      ${field('pWhatsappFilled','WhatsApp filled?')}${sel('pStatus','Status',status)}
+      ${area('pRemarks','Remarks')}</div>`,'saveProfile')+
+    box('matchModal','Match Record',`<input type="hidden" id="mId"><div class="form-grid">
+      ${sel('mProfile1','Profile 1 *','<option value="">Select…</option>')}${sel('mProfile2','Profile 2 *','<option value="">Select…</option>')}
+      ${field('mScore','Compatibility score (0–100)','number')}
+      ${sel('mStatus','Status','<option value="suggested">Suggested</option><option value="interest_sent">Interest Sent</option><option value="mutual">Mutual Interest</option><option value="family_meeting_arranged">Meeting Arranged</option><option value="family_meeting_done">Meeting Done</option><option value="engaged">Engaged</option><option value="married">Married</option><option value="rejected">Rejected</option><option value="on_hold">On Hold</option>')}
+      ${field('mMeetingDate','Family meeting date','date')}${field('mMeetingVenue','Meeting venue')}${area('mNotes','Notes')}${area('mOutcome','Outcome notes')}</div>`,'saveMatch')+
+    box('shortlistModal','Shortlist Entry',`<input type="hidden" id="slId"><div class="form-grid">
+      ${sel('slProfile','Profile *','<option value="">Select…</option>')}${sel('slTarget','Shortlisted profile *','<option value="">Select…</option>')}${area('slNotes','Notes')}</div>`,'saveShortlist')+
+    box('storyModal','Success Story',`<input type="hidden" id="stId"><div class="form-grid">
+      ${field('stBride','Bride name *')}${field('stGroom','Groom name *')}${field('stDate','Wedding date','date')}
+      ${field('stPhoto','Photo URL','url','full')}${area('stTestimonial','Testimonial')}
+      <div class="field"><label><label class="toggle"><input type="checkbox" id="stFeatured"> Feature on overview</label></label></div></div>`,'saveStory');
+  document.querySelectorAll('.modal-bg').forEach(m=>m.onclick=e=>{if(e.target===m)modal(m.id,false)});
+}
+
+// ── LOAD ALL ──────────────────────────────────────────────────────────────────
+let activated=[];
+async function loadAll(){
+  const [p,m,sl,st,se,ac]=await Promise.all([api('/matrimonial/profiles'),api('/matrimonial/matches'),api('/matrimonial/shortlists'),api('/matrimonial/stories'),api('/matrimonial/settings'),api('/matrimonial/activated')]);
+  profiles=p.list||[];matches=m.list||[];shortlists=sl.list||[];stories=st.list||[];settings=se;activated=ac.list||[];
+  fillSelects();renderAll();renderActivated();updateWebhookBar();
+  const hn=$('hdrServiceName'); if(hn&&settings.service_name) hn.textContent=settings.service_name;
+}
+function fillSelects(){
+  const opts='<option value="">Select profile…</option>'+profiles.map(p=>`<option value="${p.id}">${esc(p.full_name)} (${p.profile_type})</option>`).join('');
+  [$('mProfile1'),$('mProfile2'),$('slProfile'),$('slTarget')].forEach(el=>{if(el)el.innerHTML=opts});
+}
+function renderAll(){renderOverview();renderProfiles();renderMatches();renderShortlists();renderStories();}
+function renderActivated(){
+  const tbody=$('activatedRows');if(!tbody)return;
+  if(!activated.length){tbody.innerHTML=`<tr><td colspan="11" style="text-align:center;padding:28px;color:var(--muted)">No activated customers yet. Click "+ Activate Customer" to add one.</td></tr>`;return;}
+  const statusBadge={active:'<span style="color:#16a34a;font-weight:600">Active</span>',suspended:'<span style="color:#ea580c;font-weight:600">Suspended</span>',expired:'<span style="color:#6b7280;font-weight:600">Expired</span>'};
+  const canViewLabel={both:'Both',bride:'Bride only',groom:'Groom only'};
+  const planBadgeAct=pt=>{if(!pt||pt==='free')return '<span style="background:#e0e7ff;color:#3730a3;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">Free</span>';const colors={silver:'background:#f3f4f6;color:#374151',gold:'background:#fef3c7;color:#92400e',platinum:'background:#ede9fe;color:#5b21b6'};const c=colors[pt.toLowerCase()]||'background:#e0f2fe;color:#0369a1';return `<span style="${c};border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">${esc(pt.charAt(0).toUpperCase()+pt.slice(1))}</span>`;};
+  tbody.innerHTML=activated.map(a=>`<tr>
+    <td>${esc(a.name||'—')}</td>
+    <td><code>${esc(a.phone)}</code></td>
+    <td>${planBadgeAct(a.plan_type)}</td>
+    <td>${canViewLabel[a.can_view]||a.can_view}</td>
+    <td>${a.daily_limit??10}</td>
+    <td>${a.monthly_limit??50}</td>
+    <td>${a.views_today??0}</td>
+    <td>${a.views_month??0}</td>
+    <td>${a.expiry_date||'No expiry'}</td>
+    <td>${statusBadge[a.status]||a.status}</td>
+    <td style="white-space:nowrap"><button class="btn sm sec" onclick="openEditActivated(${a.id})">Edit</button> <button class="btn sm ghost" title="Open in Chats" onclick="window.open('chats.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(token),'_blank')">💬</button> <button class="btn sm ghost" onclick="deleteActivated(${a.id})" style="color:#ef4444">Del</button></td>
+  </tr>`).join('');
+}
+function openAddActivated(prefillPhone='',prefillName=''){
+  $('actId').value='';
+  $('actPhone').value=prefillPhone;
+  $('actName').value=prefillName;
+  $('actCanView').value='both';
+  $('actStatus').value='active';
+  $('actDailyLimit').value=10;
+  $('actMonthlyLimit').value=50;
+  $('actExpiry').value='';
+  $('actNotes').value='';
+  $('actMsg').textContent='';
+  modal('modalActivated',true);
+}
+function openEditActivated(id){
+  const a=activated.find(x=>x.id===id);if(!a)return;
+  $('actId').value=a.id;
+  $('actPhone').value=a.phone;
+  $('actName').value=a.name||'';
+  $('actCanView').value=a.can_view||'both';
+  $('actStatus').value=a.status||'active';
+  $('actDailyLimit').value=a.daily_limit??10;
+  $('actMonthlyLimit').value=a.monthly_limit??50;
+  $('actExpiry').value=a.expiry_date||'';
+  $('actNotes').value=a.notes||'';
+  $('actMsg').textContent='';
+  modal('modalActivated',true);
+}
+async function saveActivated(){
+  const msg=$('actMsg');msg.textContent='';
+  const id=parseInt($('actId').value)||null;
+  const phone=($('actPhone').value||'').replace(/[^0-9]/g,'');
+  if(!phone){msg.textContent='Phone required';return;}
+  const body={phone,name:$('actName').value.trim()||null,can_view:$('actCanView').value,status:$('actStatus').value,daily_limit:parseInt($('actDailyLimit').value)||10,monthly_limit:parseInt($('actMonthlyLimit').value)||50,expiry_date:$('actExpiry').value||null,notes:$('actNotes').value.trim()||null};
+  if(id) body.id=id;
+  try{
+    await api('/matrimonial/activated',{method:id?'PATCH':'POST',body:JSON.stringify(body)});
+    modal('modalActivated',false);
+    const res=await api('/matrimonial/activated');activated=res.list||[];renderActivated();
+    msg.textContent='';
+  }catch(e){msg.textContent='Error: '+e.message;}
+}
+async function deleteActivated(id){
+  if(!confirm('Remove this customer\'s access?'))return;
+  try{await api('/matrimonial/activated',{method:'DELETE',body:JSON.stringify({id})});activated=activated.filter(a=>a.id!==id);renderActivated();}catch(e){alert(e.message);}
+}
+
+// ── LEAD SEARCH (Connect Lead) ─────────────────────────────────────────────
+const LEADS_TABLE='mvg6rcw0ia5qqrx';
+let _leadTimer=null;
+function openLeadSearch(){
+  $('leadSearchQ').value='';
+  $('leadSearchResults').innerHTML='<div class="hint" style="text-align:center;padding:20px">Type a name or phone to search CRM contacts…</div>';
+  modal('modalLeadSearch',true);
+  setTimeout(()=>$('leadSearchQ').focus(),60);
+}
+function searchLeads(){
+  clearTimeout(_leadTimer);
+  _leadTimer=setTimeout(doLeadSearch,350);
+}
+async function doLeadSearch(){
+  const q=($('leadSearchQ').value||'').trim();
+  const res=$('leadSearchResults');
+  if(!q){res.innerHTML='<div class="hint" style="text-align:center;padding:20px">Type a name or phone to search CRM contacts…</div>';return;}
+  res.innerHTML='<div class="hint" style="text-align:center;padding:14px">Searching…</div>';
+  try{
+    const where=`(ClientId,eq,${clientId})~and((Name,like,%${q}%)~or(Phone,like,%${q}%))`;
+    const d=await api('/nocodb/api/v2/tables/'+LEADS_TABLE+'/records?where='+encodeURIComponent(where)+'&limit=20&sort=-LastMsgAt');
+    const list=d.list||[];
+    if(!list.length){res.innerHTML=`<div class="hint" style="text-align:center;padding:20px">No contacts found for "<b>${esc(q)}</b>"</div>`;return;}
+    res.innerHTML=list.map((l,i)=>{
+      const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+      const alreadyActive=activated.some(a=>a.phone===phone);
+      return `<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line)">
+        <div style="flex:1">
+          <b>${esc(l.Name||'—')}</b>
+          <div class="hint">${esc(l.Phone||'—')}</div>
+        </div>
+        ${alreadyActive?'<span class="badge ok">Already active</span>':`<button class="btn sm" data-li="${i}">Activate</button>`}
+      </div>`;
+    }).join('');
+    list.forEach((l,i)=>{
+      const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+      const btn=res.querySelector(`[data-li="${i}"]`);
+      if(btn) btn.onclick=()=>pickLead(phone,l.Name||'');
+    });
+  }catch(e){res.innerHTML=`<div class="hint" style="text-align:center;padding:14px;color:#ef4444">Error: ${esc(e.message)}</div>`;}
+}
+function pickLead(phone,name){
+  modal('modalLeadSearch',false);
+  openAddActivated(phone,name);
+}
+
+// ── OVERVIEW ──────────────────────────────────────────────────────────────────
+function renderOverview(){
+  const brides=profiles.filter(p=>p.profile_type==='bride').length,grooms=profiles.filter(p=>p.profile_type==='groom').length;
+  const active=matches.filter(m=>!['rejected','married'].includes(m.status)).length,married=matches.filter(m=>m.status==='married').length;
+  const premium=profiles.filter(p=>p.membership_plan&&p.membership_plan!=='free').length;
+  $('stats').innerHTML=[['Total Profiles',profiles.length],['Brides',brides],['Grooms',grooms],['Active Matches',active],['Married',married],['Premium Members',premium]].map(([l,v])=>`<div class="stat"><b>${v}</b><span>${l}</span></div>`).join('');
+  $('recentProfiles').innerHTML=profiles.slice(-5).reverse().map(p=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center"><div style="font-size:24px">${p.profile_type==='bride'?'👰':'🤵'}</div><div><b>${esc(p.full_name)}</b>${p.serial_number?`<div class="hint"><b>Serial: ${esc(p.serial_number)}</b></div>`:''}<div class="hint">${esc(p.city||'—')} · ${planBadge(p.membership_plan)}</div></div></div>`).join('')||'<div class="empty">No profiles yet.</div>';
+  $('recentMatches').innerHTML=matches.slice(-5).reverse().map(m=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>${esc(profileName(m.profile_id_1))}</b> ↔ <b>${esc(profileName(m.profile_id_2))}</b><div class="hint">${statusBadge(m.status)}</div></div>`).join('')||'<div class="empty">No matches yet.</div>';
+  const hasTokens=settings.profiles_webhook_token;
+  $('readiness').innerHTML=[[profiles.length>0,'Profiles added'],[matches.length>0,'Matches recorded'],[stories.length>0,'Success stories added'],[settings.horoscope_matching_enabled,'Horoscope matching enabled'],[hasTokens,'Webhook tokens generated (Google Sheets sync ready)']].map(x=>`<p>${x[0]?'✅':'⚠️'} ${x[1]}</p>`).join('');
+}
+
+// ── PROFILES ─────────────────────────────────────────────────────────────────
+function renderProfiles(){
+  const q=($('profileSearch').value||'').toLowerCase(),type=$('filterType').value,plan=$('filterPlan').value;
+  const rows=profiles.filter(p=>{if(type&&p.profile_type!==type)return false;if(plan&&p.membership_plan!==plan)return false;if(q&&![p.serial_number,p.full_name,p.city,p.education,p.occupation].join(' ').toLowerCase().includes(q))return false;return true;});
+  $('profileGrid').innerHTML=rows.length?rows.map(p=>`<div class="profile-card" onclick="openProfile(${p.id})">
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">${p.photo_url?`<img src="${esc(p.photo_url)}" class="profile-photo" onerror="this.style.display='none'">`:`<div class="profile-photo">${p.profile_type==='bride'?'👰':'🤵'}</div>`}<div><b>${esc(p.full_name)}</b>${p.serial_number?`<div class="hint"><b>Serial: ${esc(p.serial_number)}</b></div>`:''}<div class="hint">${p.profile_type==='bride'?'Bride':'Groom'}${p.age?' · '+p.age+' yrs':''} · ${esc(p.city||p.district||'—')}</div></div></div>
+    <div class="hint">${esc(p.religion||'—')}${p.height_cm?' · '+p.height_cm+' cm':''}</div>
+    <div class="hint">${esc(p.education||'—')} · ${esc(p.occupation||'—')}</div>
+    ${p.phone||p.whatsapp?`<div class="hint" style="margin-top:4px">📞 ${esc(p.phone||p.whatsapp)}</div>`:''}
+    ${p.marriage_status?`<div class="hint">${esc(p.marriage_status)}</div>`:''}
+    <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center">${planBadge(p.membership_plan)}<span class="badge ${p.status==='active'?'ok':p.status==='matched'?'warn':'gray'}">${esc(p.status)}</span></div>
+    <div style="margin-top:8px;display:flex;gap:6px"><button class="btn sm sec" onclick="event.stopPropagation();openProfile(${p.id})">Edit</button><button class="btn sm danger" onclick="event.stopPropagation();removeRow('/matrimonial/profiles',${p.id})">Delete</button></div>
+  </div>`).join(''):'<div class="empty" style="grid-column:1/-1">No profiles found.</div>';
+}
+
+// ── MATCHES ──────────────────────────────────────────────────────────────────
+function renderMatches(){
+  const s=$('filterMatchStatus').value,rows=matches.filter(m=>!s||m.status===s);
+  $('matchRows').innerHTML=rows.length?rows.map(m=>`<tr><td><b>${esc(profileName(m.profile_id_1))}</b></td><td><b>${esc(profileName(m.profile_id_2))}</b></td><td>${m.match_score??'—'}</td><td>${statusBadge(m.status)}</td><td>${m.family_meeting_date?`${esc(m.family_meeting_date)}<div class="hint">${esc(m.family_meeting_venue||'')}</div>`:'—'}</td><td class="hint">${esc(m.notes||'—')}</td><td><div class="row-actions"><button class="btn sm sec" onclick="openMatch(${m.id})">Edit</button><button class="btn sm danger" onclick="removeRow('/matrimonial/matches',${m.id})">Delete</button></div></td></tr>`).join(''):`<tr><td colspan="7" class="empty">No match records.</td></tr>`;
+}
+
+// ── SHORTLISTS ────────────────────────────────────────────────────────────────
+function renderShortlists(){
+  $('shortlistRows').innerHTML=shortlists.length?shortlists.map(s=>`<tr><td>${esc(profileName(s.profile_id))}</td><td>${esc(profileName(s.shortlisted_profile_id))}</td><td class="hint">${esc(s.notes||'—')}</td><td class="hint">${(s.created_at||'').slice(0,10)}</td><td><button class="btn sm danger" onclick="removeRow('/matrimonial/shortlists',${s.id})">Remove</button></td></tr>`).join(''):`<tr><td colspan="5" class="empty">No shortlists.</td></tr>`;
+}
+
+// ── STORIES ──────────────────────────────────────────────────────────────────
+function renderStories(){
+  $('storyGrid').innerHTML=stories.length?stories.map(s=>`<div class="story-card">${s.photo_url?`<img src="${esc(s.photo_url)}" class="story-photo" onerror="this.style.display='none'">`:`<div class="story-photo">💍</div>`}<b>${esc(s.bride_name)} &amp; ${esc(s.groom_name)}</b>${s.wedding_date?`<div class="hint">${esc(s.wedding_date)}</div>`:''}${s.testimonial?`<p style="font-size:12px;color:var(--muted);font-style:italic;margin:8px 0">"${esc(s.testimonial)}"</p>`:''}${s.featured?'<span class="badge ok">Featured</span>':''}<div style="margin-top:8px;display:flex;gap:6px;justify-content:center"><button class="btn sm sec" onclick="openStory(${s.id})">Edit</button><button class="btn sm danger" onclick="removeRow('/matrimonial/stories',${s.id})">Delete</button></div></div>`).join(''):'<div class="empty" style="grid-column:1/-1">No success stories yet.</div>';
+}
+
+// ── SETTINGS ─────────────────────────────────────────────────────────────────
+function renderSettings(){
+  $('setServiceName').value=settings.service_name||'';
+  $('setPrivacyNote').value=settings.privacy_note||'';
+  try{$('setMembershipPlans').value=settings.membership_plans?JSON.stringify(JSON.parse(settings.membership_plans),null,2):'{}';}catch(e){$('setMembershipPlans').value='{}';}
+  $('setHoroscopeEnabled').checked=!!settings.horoscope_matching_enabled;
+  $('setAutoSuggest').checked=settings.auto_suggest_matches!==0;
+  // Webhook tokens
+  renderTokenCards();
+  // Column mappings
+  const parseMap=json=>{let m={};try{m=JSON.parse(json||'{}')}catch(e){}return Object.entries(m).map(([k,v])=>`${k} = ${v}`).join('\n');};
+  $('mapProfiles').value=parseMap(settings.profiles_col_map);
+  $('mapMatches').value=parseMap(settings.matches_col_map);
+  $('mapShortlists').value=parseMap(settings.shortlists_col_map);
+  $('mapStories').value=parseMap(settings.stories_col_map);
+  $('dedupProfiles').value=settings.profiles_dedup_key||'';
+  $('dedupMatches').value=settings.matches_dedup_key||'';
+  $('dedupShortlists').value=settings.shortlists_dedup_key||'';
+  $('dedupStories').value=settings.stories_dedup_key||'';
+  // Chat menu settings
+  $('setChatEnabled').checked=!!settings.chat_enabled;
+  $('setChatWelcome').value=settings.chat_welcome_message||'';
+  $('setChatKwView').value=settings.chat_keyword_view||'1';
+  $('setChatKwList').value=settings.chat_keyword_list||'2';
+  $('setChatKwAgent').value=settings.chat_keyword_agent||'3';
+  $('setChatKwSubscribe').value=settings.chat_keyword_subscribe||'4';
+  $('setChatKwPlans').value=settings.chat_keyword_plans||'5';
+  $('setChatPerMsg').value=settings.chat_profiles_per_msg||3;
+  $('setChatFormUrl').value=settings.chat_form_url||'';
+  // Razorpay settings
+  $('setRzpKeyId').value=settings.razorpay_key_id||'';
+  $('setRzpKeySecret').value=settings.razorpay_key_secret?'••••••••••••••••':'';
+  $('setRzpWebhookSecret').value=settings.razorpay_webhook_secret?'••••••••••••••••':'';
+  try{$('setRzpPlans').value=settings.paid_plans?JSON.stringify(JSON.parse(settings.paid_plans),null,2):'';}catch(e){$('setRzpPlans').value=settings.paid_plans||'';}
+  const rzpWh=$('rzpWebhookUrl');if(rzpWh){rzpWh.textContent=`${API}/matrimonial/razorpay/webhook`;}
+  let chatPlans=['gold','silver','platinum'];
+  try{ const p=JSON.parse(settings.chat_plan_filter||'[]');if(p.length)chatPlans=p; }catch(e){}
+  ['chatPlanGold','chatPlanSilver','chatPlanPlatinum'].forEach(id=>{ const el=$(id);if(el)el.checked=chatPlans.includes(el.value); });
+  let chatPvFields=['full_name','age','city','plan_label'];
+  try{ const p=JSON.parse(settings.chat_preview_fields||'[]');if(p.length)chatPvFields=p; }catch(e){}
+  document.querySelectorAll('.chatPvField').forEach(el=>{ el.checked=chatPvFields.includes(el.value); });
+}
+function renderTokenCards(){
+  const tc=$('tokenCards');if(!tc)return;
+  const tables=['profiles','matches','shortlists','stories'];
+  const icons={profiles:'👤',matches:'💕',shortlists:'⭐',stories:'💍'};
+  if(!settings.profiles_webhook_token){
+    tc.innerHTML=`<p class="hint">No tokens yet. <button class="btn sm" onclick="regenerateTokens()">Generate Tokens</button></p>`;return;
+  }
+  tc.innerHTML=tables.map(t=>{
+    const tok=settings[t+'_webhook_token']||'—';
+    const url=`${API}/matrimonial/webhook/${t}?token=${tok}`;
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+      <div style="font-weight:700;margin-bottom:6px">${icons[t]} ${t.charAt(0).toUpperCase()+t.slice(1)}</div>
+      <div class="wh-url" id="tUrl_${t}" style="font-size:11px">${esc(url)}</div>
+      <div style="display:flex;gap:6px;margin-top:6px"><button class="btn sm sec" onclick="copyText('tUrl_${t}')">Copy URL</button></div>
+    </div>`;
+  }).join('');
+}
+
+async function regenerateTokens(){
+  if(!confirm('Regenerate all webhook tokens? Existing n8n workflows will need the new tokens.'))return;
+  try{
+    const res=await api('/matrimonial/tokens/regenerate',{method:'POST'});
+    Object.assign(settings,res.tokens);
+    renderTokenCards();updateWebhookBar();
+    alert('Tokens regenerated. Update your n8n HTTP Request nodes with the new URLs.');
+  }catch(e){alert(e.message);}
+}
+
+function parseMapText(text){
+  const m={};
+  (text||'').split('\n').forEach(line=>{
+    const [k,...rest]=line.split('=');
+    const key=(k||'').trim(),val=(rest.join('=')|| '').trim();
+    if(key&&val)m[key]=val;
+  });
+  return m;
+}
+async function saveMappings(){
+  const msg=$('mapMsg');msg.textContent='';
+  const patch={
+    profiles_col_map:JSON.stringify(parseMapText($('mapProfiles').value)),
+    matches_col_map:JSON.stringify(parseMapText($('mapMatches').value)),
+    shortlists_col_map:JSON.stringify(parseMapText($('mapShortlists').value)),
+    stories_col_map:JSON.stringify(parseMapText($('mapStories').value)),
+    profiles_dedup_key:$('dedupProfiles').value.trim(),
+    matches_dedup_key:$('dedupMatches').value.trim(),
+    shortlists_dedup_key:$('dedupShortlists').value.trim(),
+    stories_dedup_key:$('dedupStories').value.trim(),
+  };
+  try{
+    await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify(patch)});
+    Object.assign(settings,patch);
+    msg.textContent='✓ Mappings saved';setTimeout(()=>msg.textContent='',3000);
+    updateWebhookBar();
+  }catch(e){msg.textContent='Error: '+e.message;}
+}
+
+async function loadLog(){
+  try{
+    const res=await api('/matrimonial/webhook/log');
+    const rows=res.list||[];
+    $('logRows').innerHTML=rows.length?rows.map(r=>`<tr><td><b>${esc(r.table_name)}</b></td><td>${r.rows_received}</td><td class="log-row-ok">${r.rows_inserted}</td><td>${r.rows_updated}</td><td>${r.rows_skipped}</td><td><span class="badge ${r.status==='ok'?'ok':'danger'}">${esc(r.status)}</span>${r.error?`<div class="hint">${esc(r.error)}</div>`:''}</td><td class="hint">${(r.fired_at||'').replace('T',' ').slice(0,19)}</td></tr>`).join(''):`<tr><td colspan="7" class="empty">No sync events yet.</td></tr>`;
+  }catch(e){}
+}
+
+// ── CRUD HELPERS ─────────────────────────────────────────────────────────────
+function sv(id){return $(id)?.value?.trim()||''}
+function openProfile(id){
+  const p=profiles.find(x=>+x.id===+id)||{};$('pId').value=p.id||'';
+  const map={pSerial:'serial_number',pType:'profile_type',pName:'full_name',pDob:'date_of_birth',pAge:'age',pReligion:'religion',pCaste:'caste',pSubCaste:'sub_caste',pMother:'mother_tongue',pHeight:'height_cm',pComplexion:'complexion',pBodyType:'body_type',pEducation:'education',pRequiredEd:'required_education',pOccupation:'occupation',pJobPlace:'job_place',pIncome:'annual_income',pCity:'city',pDistrict:'district',pState:'state',pCountry:'country',pPhone:'phone',pWhatsapp:'whatsapp',pGuardianPhone:'guardian_phone',pMarriageStatus:'marriage_status',pExpectedAge:'expected_partner_age',pExpectedDob:'expected_partner_dob',pOtherConditions:'other_conditions',pFamilyType:'family_type',pFatherName:'father_name',pFatherOcc:'father_occupation',pMotherName:'mother_name',pMotherOcc:'mother_occupation',pSiblings:'siblings',pStar:'horoscope_star',pRashi:'horoscope_rashi',pManglik:'manglik',pHoroscope:'horoscope_notes',pAbout:'about',pPhoto:'photo_url',pPhoto2:'photo_url_2',pPhoto3:'photo_url_3',pBiodata:'biodata_pdf_url',pPlan:'membership_plan',pPlanLabel:'plan_label',pExpiry:'membership_expiry',pPaymentAmount:'payment_amount',pPaymentLink:'payment_link',pWhatsappFilled:'whatsapp_filled',pStatus:'status',pRemarks:'remarks'};
+  Object.entries(map).forEach(([el,key])=>{const e=$(el);if(e)e.value=p[key]??''});
+  if(!id){$('pCountry').value='India';$('pPlan').value='free';$('pStatus').value='active';}
+  modal('profileModal');
+}
+async function saveProfile(){
+  const b={id:$('pId').value||undefined,serial_number:sv('pSerial'),profile_type:sv('pType'),full_name:sv('pName'),date_of_birth:sv('pDob')||null,age:+sv('pAge')||null,religion:sv('pReligion'),caste:sv('pCaste'),sub_caste:sv('pSubCaste'),mother_tongue:sv('pMother'),height_cm:+sv('pHeight')||null,complexion:sv('pComplexion'),body_type:sv('pBodyType'),education:sv('pEducation'),required_education:sv('pRequiredEd'),occupation:sv('pOccupation'),job_place:sv('pJobPlace'),annual_income:sv('pIncome'),city:sv('pCity'),district:sv('pDistrict'),state:sv('pState'),country:sv('pCountry'),phone:sv('pPhone'),whatsapp:sv('pWhatsapp'),guardian_phone:sv('pGuardianPhone'),marriage_status:sv('pMarriageStatus'),expected_partner_age:sv('pExpectedAge'),expected_partner_dob:sv('pExpectedDob')||null,other_conditions:sv('pOtherConditions'),family_type:sv('pFamilyType'),father_name:sv('pFatherName'),father_occupation:sv('pFatherOcc'),mother_name:sv('pMotherName'),mother_occupation:sv('pMotherOcc'),siblings:sv('pSiblings'),horoscope_star:sv('pStar'),horoscope_rashi:sv('pRashi'),manglik:sv('pManglik'),horoscope_notes:sv('pHoroscope'),about:sv('pAbout'),photo_url:sv('pPhoto'),photo_url_2:sv('pPhoto2'),photo_url_3:sv('pPhoto3'),biodata_pdf_url:sv('pBiodata'),membership_plan:sv('pPlan'),plan_label:sv('pPlanLabel'),membership_expiry:sv('pExpiry')||null,payment_amount:sv('pPaymentAmount'),payment_link:sv('pPaymentLink'),whatsapp_filled:sv('pWhatsappFilled'),status:sv('pStatus'),remarks:sv('pRemarks')};
+  if(!b.profile_type||!b.full_name)return alert('Profile type and full name are required');
+  await save('/matrimonial/profiles',b,'profileModal');
+}
+function openMatch(id){
+  const m=matches.find(x=>+x.id===+id)||{};$('mId').value=m.id||'';$('mProfile1').value=m.profile_id_1||'';$('mProfile2').value=m.profile_id_2||'';$('mScore').value=m.match_score??'';$('mStatus').value=m.status||'suggested';$('mMeetingDate').value=m.family_meeting_date||'';$('mMeetingVenue').value=m.family_meeting_venue||'';$('mNotes').value=m.notes||'';$('mOutcome').value=m.outcome_notes||'';
+  modal('matchModal');
+}
+async function saveMatch(){
+  const b={id:$('mId').value||undefined,profile_id_1:+$('mProfile1').value,profile_id_2:+$('mProfile2').value,match_score:+$('mScore').value||0,status:$('mStatus').value,family_meeting_date:$('mMeetingDate').value||null,family_meeting_venue:$('mMeetingVenue').value.trim(),notes:$('mNotes').value.trim(),outcome_notes:$('mOutcome').value.trim()};
+  if(!b.profile_id_1||!b.profile_id_2)return alert('Both profiles are required');
+  await save('/matrimonial/matches',b,'matchModal');
+}
+function openShortlist(){$('slId').value='';$('slProfile').value='';$('slTarget').value='';$('slNotes').value='';modal('shortlistModal');}
+async function saveShortlist(){
+  const b={id:$('slId').value||undefined,profile_id:+$('slProfile').value,shortlisted_profile_id:+$('slTarget').value,notes:$('slNotes').value.trim()};
+  if(!b.profile_id||!b.shortlisted_profile_id)return alert('Both profiles are required');
+  await save('/matrimonial/shortlists',b,'shortlistModal');
+}
+function openStory(id){
+  const s=stories.find(x=>+x.id===+id)||{};$('stId').value=s.id||'';$('stBride').value=s.bride_name||'';$('stGroom').value=s.groom_name||'';$('stDate').value=s.wedding_date||'';$('stPhoto').value=s.photo_url||'';$('stTestimonial').value=s.testimonial||'';$('stFeatured').checked=!!s.featured;
+  modal('storyModal');
+}
+async function saveStory(){
+  const b={id:$('stId').value||undefined,bride_name:$('stBride').value.trim(),groom_name:$('stGroom').value.trim(),wedding_date:$('stDate').value||null,photo_url:$('stPhoto').value.trim(),testimonial:$('stTestimonial').value.trim(),featured:$('stFeatured').checked?1:0};
+  if(!b.bride_name||!b.groom_name)return alert('Bride and groom names are required');
+  await save('/matrimonial/stories',b,'storyModal');
+}
+async function save(path,b,modalId){await api(path,{method:b.id?'PATCH':'POST',body:JSON.stringify(b)});modal(modalId,false);await loadAll();}
+async function removeRow(path,id){window.event?.stopPropagation?.();if(!confirm('Delete this record?'))return;await api(path,{method:'DELETE',body:JSON.stringify({id})});await loadAll();}
+
+async function saveSettings(){
+  const msg=$('setMsg');msg.textContent='';
+  let plans={};try{plans=JSON.parse($('setMembershipPlans').value||'{}')}catch(e){return alert('Membership plans must be valid JSON')}
+  try{
+    await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify({service_name:sv('setServiceName'),privacy_note:sv('setPrivacyNote'),membership_plans:JSON.stringify(plans),horoscope_matching_enabled:$('setHoroscopeEnabled').checked,auto_suggest_matches:$('setAutoSuggest').checked})});
+    msg.textContent='✓ Saved';setTimeout(()=>msg.textContent='',3000);
+    await loadAll();
+  }catch(e){msg.textContent='Error: '+e.message;}
+}
+
+async function saveChatSettings(){
+  const msg=$('chatMsg');msg.textContent='';
+  const plans=[...document.querySelectorAll('#chatPlanGold,#chatPlanSilver,#chatPlanPlatinum')].filter(el=>el.checked).map(el=>el.value);
+  const pvFields=[...document.querySelectorAll('.chatPvField')].filter(el=>el.checked).map(el=>el.value);
+  try{
+    await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify({
+      chat_enabled:$('setChatEnabled').checked?1:0,
+      chat_welcome_message:sv('setChatWelcome'),
+      chat_keyword_view:sv('setChatKwView')||'1',
+      chat_keyword_list:sv('setChatKwList')||'2',
+      chat_keyword_agent:sv('setChatKwAgent')||'3',
+      chat_keyword_subscribe:sv('setChatKwSubscribe')||'4',
+      chat_keyword_plans:sv('setChatKwPlans')||'5',
+      chat_profiles_per_msg:parseInt($('setChatPerMsg').value)||3,
+      chat_form_url:sv('setChatFormUrl'),
+      chat_plan_filter:JSON.stringify(plans.length?plans:['gold','silver','platinum']),
+      chat_preview_fields:JSON.stringify(pvFields.length?pvFields:['full_name','age','city','plan_label']),
+    })});
+    Object.assign(settings,{
+      chat_enabled:$('setChatEnabled').checked?1:0,
+      chat_welcome_message:sv('setChatWelcome'),
+      chat_keyword_view:sv('setChatKwView')||'1',
+      chat_keyword_list:sv('setChatKwList')||'2',
+      chat_keyword_agent:sv('setChatKwAgent')||'3',
+      chat_keyword_subscribe:sv('setChatKwSubscribe')||'4',
+      chat_keyword_plans:sv('setChatKwPlans')||'5',
+      chat_profiles_per_msg:parseInt($('setChatPerMsg').value)||3,
+      chat_form_url:sv('setChatFormUrl'),
+      chat_plan_filter:JSON.stringify(plans.length?plans:['gold','silver','platinum']),
+      chat_preview_fields:JSON.stringify(pvFields.length?pvFields:['full_name','age','city','plan_label']),
+    });
+    msg.textContent='✓ Chat settings saved';setTimeout(()=>msg.textContent='',3000);
+  }catch(e){msg.textContent='Error: '+e.message;}
+}
+
+async function saveRazorpaySettings(){
+  const msg=$('rzpMsg');msg.textContent='';
+  let paid_plans=null;
+  const raw=$('setRzpPlans').value.trim();
+  if(raw){try{paid_plans=JSON.stringify(JSON.parse(raw));}catch(e){msg.textContent='Paid plans must be valid JSON array';msg.style.color='var(--err)';return;}}
+  const patch={paid_plans};
+  const keyId=sv('setRzpKeyId');
+  if(keyId&&!keyId.startsWith('•')) patch.razorpay_key_id=keyId;
+  const keySec=$('setRzpKeySecret').value.trim();
+  if(keySec&&!keySec.startsWith('•')) patch.razorpay_key_secret=keySec;
+  const whSec=$('setRzpWebhookSecret').value.trim();
+  if(whSec&&!whSec.startsWith('•')) patch.razorpay_webhook_secret=whSec;
+  try{
+    await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify(patch)});
+    Object.assign(settings,patch);
+    msg.style.color='var(--ok)';msg.textContent='✓ Razorpay settings saved';setTimeout(()=>msg.textContent='',3000);
+  }catch(e){msg.style.color='var(--err)';msg.textContent='Error: '+e.message;}
+}
+
+async function testCreatePaymentLink(){
+  const msg=$('rzpMsg');msg.textContent='';msg.style.color='var(--ok)';
+  let plans=[];try{plans=JSON.parse(settings.paid_plans||'[]');}catch(e){}
+  if(!plans.length){msg.style.color='var(--err)';msg.textContent='Save at least one paid plan first';return;}
+  const phone=prompt('Customer phone (e.g. 919876543210)');if(!phone)return;
+  const planKey=prompt(`Plan key (${plans.map(p=>p.key).join(', ')})`);if(!planKey)return;
+  const name=prompt('Customer name (optional)','Test Customer');
+  try{
+    const r=await api('/matrimonial/razorpay/create-link',{method:'POST',body:JSON.stringify({phone:phone.replace(/[^0-9]/g,''),plan_key:planKey,name:name||phone})});
+    if(r.payment_url){window.open(r.payment_url,'_blank');msg.textContent='✓ Payment link created — opened in new tab';}
+    else{msg.style.color='var(--err)';msg.textContent=r.error||'Error';}
+  }catch(e){msg.style.color='var(--err)';msg.textContent='Error: '+e.message;}
+}
+
+async function init(){
+  if(!clientId||!token){document.body.innerHTML='<div style="text-align:center;padding:60px;color:#be185d">Open Matrimonial from the Leadvyne dashboard.</div>';return}
+  buildModals();
+  try{await loadAll();}catch(e){alert('Failed to load: '+e.message);}
+  // Handle deep-link params from chats.html: ?tab=activated&phone=91...&name=...
+  const deepTab=P.get('tab')||'';
+  const deepPhone=P.get('phone')||'';
+  const deepName=P.get('name')||'';
+  if(deepTab){
+    const tabBtn=document.querySelector(`.tab[data-page="${deepTab}"]`);
+    if(tabBtn){
+      document.querySelectorAll('.tab,.page').forEach(x=>x.classList.remove('active'));
+      tabBtn.classList.add('active');
+      const pg=$('page-'+deepTab);if(pg)pg.classList.add('active');
+      currentPage=deepTab;
+      if(deepTab==='settings'){renderSettings();loadLog();}
+    }
+  }
+  if(deepPhone&&deepTab==='activated'){
+    openAddActivated(deepPhone,deepName);
+  }
+}
+init();
+</script></body></html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Your Account</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- Client portal (accounting-ledger.js → Payment Links & Portal / customer ledgers). Public: the
+     ?t= token is the only credential and only ever returns that one customer's documents. -->
+<style>
+:root{--bg:#FFF7ED;--card:#fff;--ink:#241A0C;--muted:#8A6D4B;--accent:#C2410C;--soft:#FFEDD5;--line:#FDE8CE;--green:#059669;--red:#DC2626;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:24px 16px 60px;display:flex;flex-direction:column;gap:16px}
+header{display:flex;align-items:center;gap:14px}
+header img{max-height:48px;max-width:160px}
+h1{font-family:var(--disp);font-size:22px}
+.muted{color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.kpi .l{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.kpi .v{font-family:var(--disp);font-size:24px;font-weight:700;margin-top:4px}
+h2{font-family:var(--disp);font-size:15px;margin-bottom:10px}
+.inv{border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.inv+.inv{margin-top:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.amt{font-family:var(--mono);font-weight:600}
+.badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;text-transform:uppercase}
+.badge.paid{background:#D1FAE5;color:#065F46}.badge.open{background:#DBEAFE;color:#1E3A8A}.badge.overdue{background:#FEE2E2;color:#991B1B}
+.btn{display:inline-block;background:linear-gradient(135deg,#C2410C,#F97316);color:#fff;border:none;border-radius:10px;padding:9px 14px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;text-decoration:none}
+.btn.sec{background:var(--soft);color:var(--accent);border:1px solid var(--accent)}
+.lines{font-size:13px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+td.n,th.n{text-align:right;font-family:var(--mono)}
+.qr{display:none;padding:10px;background:#fff;border-radius:10px;align-self:flex-start}
+.empty{text-align:center;color:var(--muted);padding:40px 10px}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17120B;--card:#221A10;--ink:#F8EBDD;--muted:#C7A988;--soft:#3A2414;--line:#3A2C1C}}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="empty">Loading…</div></div>
+<script>
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const token=new URLSearchParams(location.search).get('t')||'';
+const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const money=(n,c)=>`${c||''} ${Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`.trim();
+async function load(){
+  const app=document.getElementById('app');
+  if(!token){ app.innerHTML='<div class="empty">This link is incomplete.</div>'; return; }
+  try{
+    const r=await fetch(`${WORKER_BASE}/accounting/portal/${encodeURIComponent(token)}`);
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||'Could not load your account');
+    document.title=`${d.business.name||'Your'} account — ${d.customer}`;
+    const open=d.invoices.filter(i=>i.balance>0.009);
+    const c=d.base_currency;
+    app.innerHTML=`<header>${d.business.logo?`<img src="${esc(d.business.logo)}" alt="">`:''}<div><h1>${esc(d.business.name||'Your account')}</h1><div class="muted">Account of <b>${esc(d.customer)}</b>${d.business.gstin?` · GSTIN ${esc(d.business.gstin)}`:''}</div></div></header>
+      <div class="card kpis"><div class="kpi"><div class="l">Outstanding</div><div class="v">${money(d.outstanding, c)}</div></div><div class="kpi"><div class="l">Open invoices</div><div class="v">${open.length}</div></div><div class="kpi"><div class="l">Payments received</div><div class="v">${d.receipts.length}</div></div></div>
+      ${d.subscriptions.length?`<div class="card"><h2>Subscriptions</h2><table>${d.subscriptions.map(s=>`<tr><td>${esc(s.plan_name)}</td><td class="n">${money(s.amount*s.quantity, s.currency)} / ${esc(s.interval)}</td><td>${esc(s.status)}</td><td>${s.next_billing_date?'Next bill '+esc(s.next_billing_date):''}</td></tr>`).join('')}</table></div>`:''}
+      <div class="card"><h2>Invoices</h2>${d.invoices.length?d.invoices.map(i=>`<div class="inv"><div class="row"><div><b>Invoice #${i.id}</b> <span class="muted">${esc(i.title||'')}</span><div class="muted">${i.date}${i.due_date?' · due '+i.due_date:''}</div></div><div style="text-align:right"><div class="amt">${money(i.total, i.currency)}</div><span class="badge ${i.status}">${i.status}</span></div></div>
+        <div class="lines">${i.lines.map(l=>`${esc(l.name)} × ${l.qty}`).join(' · ')}</div>
+        ${i.balance>0.009?`<div class="row"><div>Balance due <span class="amt">${money(i.balance, i.currency)}</span></div><div style="display:flex;gap:8px;flex-wrap:wrap">${i.payment_link?`<a class="btn" href="${esc(i.payment_link)}" target="_blank" rel="noopener">Pay online</a>`:''}${i.upi?`<a class="btn sec" href="${esc(i.upi)}">Pay by UPI app</a><button class="btn sec" onclick="qr(this, '${esc(i.upi)}')">Show UPI QR</button>`:''}</div></div><div class="qr"></div>`:''}</div>`).join(''):'<div class="empty">No invoices yet.</div>'}</div>
+      ${d.receipts.length||d.credit_notes.length?`<div class="card"><h2>Payments & credits</h2><table><tr><th>Date</th><th>Details</th><th class="n">Amount</th></tr>${[...d.receipts.map(r=>({date:r.date, text:`Payment${r.invoice_id?' for invoice #'+r.invoice_id:''}`, amt:money(r.amount, r.currency)})), ...d.credit_notes.map(n=>({date:n.date, text:`Credit note CN-${n.id} (${n.reason})${n.invoice_id?' on invoice #'+n.invoice_id:''}`, amt:money(n.amount, n.currency)}))].sort((a,b)=>b.date.localeCompare(a.date)).map(x=>`<tr><td>${x.date}</td><td>${esc(x.text)}</td><td class="n">${x.amt}</td></tr>`).join('')}</table></div>`:''}
+      <div class="muted" style="text-align:center">Questions about your account? Reply to any invoice email from ${esc(d.business.name||'us')}.</div>`;
+  }catch(e){ app.innerHTML=`<div class="empty">⚠️ ${esc(e.message)}</div>`; }
+}
+function qr(btn, text){
+  const box=btn.closest('.inv').querySelector('.qr');
+  if(box.style.display==='block'){ box.style.display='none'; return; }
+  box.innerHTML=''; box.style.display='block';
+  if(window.QRCode) new QRCode(box, {text, width:180, height:180}); else box.textContent=text;
+}
+load();
+</script>
+</body>
+</html>

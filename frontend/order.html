@@ -63,7 +63,15 @@ textarea{resize:vertical;min-height:60px}
   <div class="err-page" id="errMsg" style="display:none">Sorry, this order link isn't working right now — please contact the business directly.</div>
 </div>
 
+<script src="/lv-pixel.js?v=1"></script>
 <script>
+function addBrandLogo(id,url,h){ /* official logo from Settings → 📇 People & Contacts */
+  if(!url||!/^https:\/\//i.test(url)) return; const el=document.getElementById(id); if(!el||el.querySelector('img.brand-logo')) return;
+  const im=document.createElement('img'); im.className='brand-logo'; im.src=url; im.alt='';
+  im.style.cssText='height:'+h+'px;width:auto;max-width:'+(h*4)+'px;object-fit:contain;vertical-align:middle;margin-right:8px;border-radius:4px';
+  im.onerror=()=>im.remove(); el.prepend(im);
+}
+
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
 const clientId = params.get('client') || params.get('client_id') || '';
@@ -125,6 +133,8 @@ async function submitOrder(){
   if(!address){ msg.textContent='Delivery address is required.'; msg.className='msg err'; return; }
 
   btn.disabled = true; msg.textContent = 'Placing your order…'; msg.className = 'msg';
+  // One event id for the Pixel and the server's Conversions API copy — Meta keeps one Purchase.
+  const eventId = LVPixel.eventId('web_order');
   try{
     const r = await fetch(`${WORKER_BASE}/ecom/public/order`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -135,10 +145,12 @@ async function submitOrder(){
         email: document.getElementById('fEmail').value.trim(),
         size: document.getElementById('fSize')?.value || '',
         notes: document.getElementById('fNotes').value.trim(),
+        capi: LVPixel.capi(eventId),
       })
     });
     const data = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(data.error || 'Something went wrong');
+    LVPixel.track('Purchase', {content_ids:[sku], content_type:'product', value:Number(product.price)||0, currency:product.currency||'INR'}, eventId);
     document.getElementById('formArea').innerHTML = `
       <div class="card success">
         <div class="ic">✅</div>
@@ -167,6 +179,9 @@ async function load(){
 
     document.title = 'Order from ' + (bizInfo.client_name || 'us');
     document.getElementById('bizName').textContent = bizInfo.client_name || 'Complete Your Order';
+    addBrandLogo('bizName', bizInfo.logo_url, 30);
+    LVPixel.init({pixelId:bizInfo.meta_pixel_id, consent:bizInfo.pixel_consent_banner});
+    LVPixel.track('ViewContent', {content_ids:[sku], content_type:'product', content_name:product.name, value:Number(product.price)||0, currency:product.currency||'INR'});
     renderForm();
   }catch(e){
     document.getElementById('errMsg').style.display = 'block';
@@ -174,6 +189,7 @@ async function load(){
 }
 load();
 </script>
-<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
+<script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>

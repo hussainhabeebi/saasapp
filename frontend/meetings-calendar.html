@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leadvyne · Meetings Calendar</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- 📅 Meetings calendar (Dashboard → 📅 Meetings): every meeting with a lead — scheduled from Chats
+     (Google Meet / Cal.com), marked by hand, or booked on Cal.com — in a month view and a day view
+     with an hour timeline. Read-only; meetings are scheduled and changed from Chats and the lead's
+     ⋯ menu. Worker route: GET /meetings/calendar (session-gated). -->
+<style>
+:root{
+  --bg:#EEF2F0;--card:#FFFFFF;--ink:#0F1A1E;--muted:#55666B;--line:#D7E0DC;
+  --accent:#0D9C93;--accent-ink:#0A6F69;--accent-soft:#DFF6F3;
+  --video:#1a73e8;--video-soft:#E8F0FE;--phone:#7c3aed;--phone-soft:#F1EAFE;--person:#b45309;--person-soft:#FEF3C7;
+  --done:#64748b;--done-soft:#EEF1F4;--bad:#b42318;--bad-soft:#FEE4E2;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;min-height:56px;display:flex;align-items:center;gap:10px}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700}.brand span{color:var(--accent)}
+body.embed header{display:none}
+main{padding:16px 16px 32px}
+.inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.toolbar h1{font-family:var(--disp);font-size:20px;margin-right:auto;min-width:0}
+@media(max-width:600px){.toolbar h1{flex-basis:100%;font-size:18px}}
+.btn{height:36px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);padding:0 12px;cursor:pointer;font-weight:600;white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.icon{width:36px;padding:0;font-size:16px}
+.seg{display:inline-flex;border:1.5px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card)}
+.seg button{border:0;background:none;padding:0 14px;height:33px;font-weight:600;cursor:pointer;color:var(--muted)}
+.seg button.on{background:var(--accent);color:#fff}
+.summary{display:flex;gap:8px;flex-wrap:wrap}
+.pill{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:5px 12px;font-size:12.5px;color:var(--muted)}
+.pill b{color:var(--ink)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.msg{padding:30px;text-align:center;color:var(--muted)}
+/* Month */
+.month{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.dow{padding:8px 10px;font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line);background:#F7FAF9}
+.day{min-height:112px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px;display:flex;flex-direction:column;gap:3px;cursor:pointer;background:var(--card);text-align:left;border-top:0;border-left:0;min-width:0}
+.day:nth-child(7n+7){border-right:0}
+.day:hover{background:#F7FAF9}
+.day.out{background:#FAFBFB;color:#9aa6aa}
+.day .num{font-weight:700;font-size:12.5px;width:24px;height:24px;display:grid;place-items:center;border-radius:50%}
+.day.today .num{background:var(--accent);color:#fff}
+.chip{display:block;font-size:11.5px;border-radius:6px;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--video-soft);color:#174ea6;border-left:3px solid var(--video)}
+.chip.phone{background:var(--phone-soft);color:#5b21b6;border-color:var(--phone)}
+.chip.in_person{background:var(--person-soft);color:#92400e;border-color:var(--person)}
+.chip.completed{background:var(--done-soft);color:var(--done);border-color:var(--done)}
+.chip.cancelled{background:var(--bad-soft);color:var(--bad);border-color:var(--bad);text-decoration:line-through}
+.more{font-size:11.5px;color:var(--muted);padding-left:4px}
+@media(max-width:700px){.day{min-height:64px;padding:4px}.chip{font-size:0;padding:0;height:6px;border-left-width:0}.more{font-size:10.5px}.dow{padding:6px 4px;font-size:10.5px}}
+/* Day */
+.dayview{display:grid;grid-template-columns:minmax(0,1fr) 320px}
+@media(max-width:900px){.dayview{grid-template-columns:1fr}}
+.timeline{position:relative;border-right:1px solid var(--line)}
+@media(max-width:900px){.timeline{border-right:0;border-bottom:1px solid var(--line)}}
+.hour{height:56px;border-bottom:1px solid #EEF2F0;position:relative}
+.hour span{position:absolute;left:8px;top:4px;font-size:11px;color:var(--muted)}
+.lanes{position:absolute;top:0;bottom:0;left:56px;right:8px}
+.block{position:absolute;border-radius:8px;padding:5px 8px;font-size:12px;overflow:hidden;cursor:pointer;background:var(--video-soft);border-left:4px solid var(--video);color:#174ea6;text-align:left;border-top:0;border-right:0;border-bottom:0;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.block b{display:block;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.block small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85}
+.block.phone{background:var(--phone-soft);border-color:var(--phone);color:#5b21b6}
+.block.in_person{background:var(--person-soft);border-color:var(--person);color:#92400e}
+.block.completed{background:var(--done-soft);border-color:var(--done);color:var(--done)}
+.block.cancelled{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.block.cancelled b{text-decoration:line-through}
+.block.sel{outline:2px solid var(--ink);outline-offset:1px}
+.now{position:absolute;left:48px;right:0;height:2px;background:#e11d48;z-index:2}
+.now::before{content:"";position:absolute;left:-5px;top:-4px;width:10px;height:10px;border-radius:50%;background:#e11d48}
+.agenda{padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.agenda h2{font-family:var(--disp);font-size:15px}
+.item{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:4px;cursor:pointer;background:var(--card);text-align:left;width:100%}
+.item:hover,.item.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.item .t{font-weight:700;font-size:13px;border:0;background:none;padding:0;text-align:left;cursor:pointer;color:inherit}
+.item .w{font-size:12.5px;color:var(--muted)}
+.item .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.item .acts a,.item .acts button{font-size:12px;font-weight:600;border:1px solid var(--line);border-radius:8px;padding:4px 9px;background:#fff;color:var(--accent-ink);text-decoration:none;cursor:pointer}
+.note{font-size:12.5px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:6px 9px;white-space:pre-wrap;color:#5b4a12}
+.note-ed{display:grid;gap:6px}.note-ed textarea{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;resize:vertical}
+.note-ed .row{display:flex;gap:6px;align-items:center}.note-ed .err{color:var(--bad);font-size:12px}
+.badge{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);margin-left:6px;vertical-align:1px}
+.badge.cancelled{background:var(--bad-soft);color:var(--bad)}.badge.completed{background:var(--done-soft);color:var(--done)}
+.empty{color:var(--muted);font-size:13px;padding:6px 2px}
+</style>
+</head>
+<body>
+<header><div class="brand">Lead<span>vyne</span></div><span style="font-size:12px;color:var(--muted)">📅 Meetings calendar</span></header>
+<main><div class="inner">
+  <div class="toolbar">
+    <h1 id="title">Meetings</h1>
+    <button class="btn icon" id="prevBtn" title="Previous" aria-label="Previous" onclick="shift(-1)">‹</button>
+    <button class="btn" onclick="goToday()">Today</button>
+    <button class="btn icon" id="nextBtn" title="Next" aria-label="Next" onclick="shift(1)">›</button>
+    <div class="seg" role="tablist" aria-label="View"><button role="tab" id="vMonth" onclick="setView('month')">Month</button><button role="tab" id="vDay" onclick="setView('day')">Day</button></div>
+  </div>
+  <div class="summary" id="summary"></div>
+  <div class="card" id="cal"><div class="msg">Loading…</div></div>
+</div></main>
+<script>
+const WORKER_BASE='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params=new URLSearchParams(location.search);
+let sessionToken=params.get('token')||'';
+try{ if(!sessionToken) sessionToken=localStorage.getItem('lv_session')||''; }catch(e){}
+if(params.get('embed')==='1') document.body.classList.add('embed');
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DAY=86400e3, HOUR_PX=56;
+const MODE={video:'📹',phone:'📞',in_person:'📍'};
+const OUTCOME={interested:'👍 Interested',not_interested:'👎 Not interested',follow_up:'🔁 Follow-up',no_show:'🚫 No-show'};
+let view=params.get('view')==='day'?'day':'month';
+let cursor=startOfDay(params.get('date')?new Date(params.get('date')+'T00:00'):new Date());
+let meetings=[], loadedKey='', selId=null, seq=0, editing=null;
+
+function startOfDay(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
+function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+function sameDay(a,b){ return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate(); }
+function ymd(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+const fmtTime=d=>d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+// Month grid: Monday-first, 6 weeks.
+function monthRange(d){
+  const first=new Date(d.getFullYear(), d.getMonth(), 1);
+  const start=addDays(first, -((first.getDay()+6)%7));
+  return {start, end:addDays(start, 42)};
+}
+function range(){ return view==='month'?monthRange(cursor):{start:cursor, end:addDays(cursor,1)}; }
+const startOf=m=>new Date(m.start_at), endOf=m=>m.end_at?new Date(m.end_at):new Date(startOf(m).getTime()+30*60e3);
+const cls=m=>m.status==='cancelled'?'cancelled':(m.status==='completed'?'completed':(m.mode||'video'));
+
+async function load(){
+  const {start,end}=range();
+  // A month view covers its whole grid; the day view reuses it when the day is inside.
+  const mr=monthRange(cursor), key=ymd(mr.start);
+  if(key!==loadedKey){
+    const my=++seq;
+    $('cal').innerHTML='<div class="msg">Loading…</div>';
+    try{
+      const r=await fetch(`${WORKER_BASE}/meetings/calendar?from=${encodeURIComponent(mr.start.toISOString())}&to=${encodeURIComponent(mr.end.toISOString())}`,{headers:{Authorization:'Bearer '+sessionToken}});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+      if(my!==seq) return;
+      meetings=(d.meetings||[]).filter(m=>m.start_at).sort((a,b)=>startOf(a)-startOf(b));
+      loadedKey=key;
+    }catch(e){ if(my===seq) $('cal').innerHTML=`<div class="msg">Could not load meetings.<br><small>${esc(e.message)}</small></div>`; return; }
+  }
+  draw(start,end);
+}
+function inRange(s,e){ return meetings.filter(m=>{ const t=startOf(m); return t>=s&&t<e; }); }
+function draw(start,end){
+  $('vMonth').classList.toggle('on',view==='month'); $('vDay').classList.toggle('on',view==='day');
+  $('vMonth').setAttribute('aria-selected',String(view==='month')); $('vDay').setAttribute('aria-selected',String(view==='day'));
+  $('title').textContent=view==='month'?cursor.toLocaleDateString([], {month:'long', year:'numeric'}):cursor.toLocaleDateString([], {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+  const list=view==='month'?inRange(new Date(cursor.getFullYear(),cursor.getMonth(),1), new Date(cursor.getFullYear(),cursor.getMonth()+1,1)):inRange(start,end);
+  const up=list.filter(m=>m.status==='scheduled').length, done=list.filter(m=>m.status==='completed').length, can=list.filter(m=>m.status==='cancelled').length;
+  $('summary').innerHTML=[`<span class="pill"><b>${list.length}</b> meeting${list.length===1?'':'s'} ${view==='month'?'this month':'this day'}</span>`,
+    up?`<span class="pill">📅 <b>${up}</b> scheduled</span>`:'', done?`<span class="pill">✅ <b>${done}</b> held</span>`:'', can?`<span class="pill">❌ <b>${can}</b> cancelled</span>`:''].join('');
+  if(view==='month') drawMonth(start); else drawDay(start,end);
+}
+function drawMonth(start){
+  const today=startOfDay(new Date());
+  const cells=[];
+  for(let i=0;i<42;i++){
+    const d=addDays(start,i), ms=inRange(d,addDays(d,1));
+    const shown=ms.slice(0,3);
+    cells.push(`<button class="day${d.getMonth()!==cursor.getMonth()?' out':''}${sameDay(d,today)?' today':''}" data-date="${ymd(d)}" onclick="openDay('${ymd(d)}')" aria-label="${esc(d.toDateString())}: ${ms.length} meeting${ms.length===1?'':'s'}">
+      <span class="num">${d.getDate()}</span>
+      ${shown.map(m=>`<span class="chip ${cls(m)}" title="${esc(fmtTime(startOf(m))+' · '+m.title+' · '+(m.lead_name||''))}">${esc(fmtTime(startOf(m)))} ${esc(m.lead_name||m.title)}</span>`).join('')}
+      ${ms.length>3?`<span class="more">+${ms.length-3} more</span>`:''}
+    </button>`);
+  }
+  $('cal').innerHTML=`<div class="month">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<div class="dow">${d}</div>`).join('')}${cells.join('')}</div>`;
+}
+// Overlapping meetings share the width side by side (greedy lanes per overlapping group).
+function layout(list){
+  const items=list.map(m=>({m, s:startOf(m).getTime(), e:Math.max(endOf(m).getTime(), startOf(m).getTime()+20*60e3)}));
+  const groups=[]; let cur=null;
+  for(const it of items){ if(!cur||it.s>=cur.end){ cur={items:[], end:it.e}; groups.push(cur); } cur.items.push(it); cur.end=Math.max(cur.end, it.e); }
+  for(const g of groups){
+    const laneEnds=[];
+    for(const it of g.items){ let l=laneEnds.findIndex(e=>e<=it.s); if(l<0){ l=laneEnds.length; laneEnds.push(0); } laneEnds[l]=it.e; it.lane=l; }
+    g.items.forEach(it=>{ it.lanes=laneEnds.length; });
+  }
+  return items;
+}
+function drawDay(start,end){
+  const list=inRange(start,end);
+  let from=8, to=20;
+  list.forEach(m=>{ from=Math.min(from, startOf(m).getHours()); to=Math.max(to, Math.min(24, endOf(m).getHours()+(endOf(m).getMinutes()?1:0))); });
+  const hours=[]; for(let h=from;h<to;h++) hours.push(h);
+  const blocks=layout(list).map(it=>{
+    const s=new Date(it.s), top=((s.getHours()-from)*60+s.getMinutes())/60*HOUR_PX, h=Math.max(26,(it.e-it.s)/3600e3*HOUR_PX-2);
+    const w=100/it.lanes, m=it.m;
+    return `<button class="block ${cls(m)}${selId===m.id?' sel':''}" style="top:${top}px;height:${h}px;left:calc(${w*it.lane}% + 2px);width:calc(${w}% - 4px)" onclick="select(${m.id})" aria-label="${esc(fmtTime(s)+' '+m.title+' with '+(m.lead_name||'a lead'))}">
+      ${h<44?`<b>${MODE[m.mode]||'📅'} ${esc(fmtTime(s))} · ${esc(m.lead_name||m.title)}${m.note?' 📝':''}</b>`:`<b>${MODE[m.mode]||'📅'} ${esc(m.lead_name||m.title)}${m.note?' 📝':''}</b><small>${esc(fmtTime(s))}–${esc(fmtTime(endOf(m)))} · ${esc(m.title)}</small>`}</button>`;
+  }).join('');
+  const now=new Date();
+  const nowLine=sameDay(now,start)&&now.getHours()>=from&&now.getHours()<to?`<div class="now" style="top:${((now.getHours()-from)*60+now.getMinutes())/60*HOUR_PX}px"></div>`:'';
+  $('cal').innerHTML=`<div class="dayview"><div class="timeline">${hours.map(h=>`<div class="hour"><span>${esc(new Date(2000,0,1,h).toLocaleTimeString([], {hour:'numeric'}))}</span></div>`).join('')}<div class="lanes">${blocks}</div>${nowLine}</div>
+    <div class="agenda"><h2>Agenda</h2>${list.length?list.map(item).join(''):'<div class="empty">No meetings on this day.</div>'}</div></div>`;
+}
+function item(m){
+  const s=startOf(m);
+  const st=m.status==='cancelled'?'<span class="badge cancelled">Cancelled</span>':m.status==='completed'?`<span class="badge completed">${esc(OUTCOME[m.outcome]||'Held')}</span>`:'';
+  const where=m.mode==='video'?(m.join_url?'Video call':'Video call — no link yet'):m.mode==='phone'?'Phone call':m.mode==='in_person'?(m.location||'In person'):'';
+  return `<div class="item${selId===m.id?' sel':''}" id="it${m.id}" onclick="select(${m.id})">
+    <button type="button" class="t" onclick="event.stopPropagation();select(${m.id})">${MODE[m.mode]||'📅'} ${esc(fmtTime(s))}–${esc(fmtTime(endOf(m)))} · ${esc(m.title)}${st}</button>
+    <div class="w">${esc(m.lead_name||'Lead')}${where?' · '+esc(where):''}${m.owner?' · '+esc(m.owner.split('@')[0]):''}${m.source==='calcom'?' · Cal.com':m.source==='chat'?' · from Chats':''}</div>
+    ${editing===m.id?`<div class="note-ed" onclick="event.stopPropagation()"><textarea id="noteText" rows="4" maxlength="2000" aria-label="Pre-meeting notes" placeholder="Agenda, what the customer needs, what to prepare…">${esc(m.note||'')}</textarea><div class="row"><button type="button" class="btn" id="noteSave" onclick="saveNote(${m.id})">Save notes</button><button type="button" class="btn" onclick="editNote(null)">Cancel</button><span class="err" id="noteErr"></span></div></div>`
+      :m.note?`<div class="note">📝 ${esc(m.note)}</div>`:''}
+    <div class="acts">${m.join_url&&m.status!=='cancelled'?`<a href="${esc(m.join_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Join ↗</a>`:''}${m.lead_id?`<button type="button" onclick="event.stopPropagation();openChat(${m.lead_id})">💬 Open chat</button>`:''}${editing===m.id?'':`<button type="button" onclick="event.stopPropagation();editNote(${m.id})">📝 ${m.note?'Edit notes':'Add pre-meeting notes'}</button>`}</div>
+  </div>`;
+}
+// Pre-meeting notes — only the team sees them (here, the lead's meeting history and the rep's brief).
+function editNote(id){ editing=id; if(id) selId=id; const {start,end}=range(); draw(start,end); if(id) setTimeout(()=>$('noteText')?.focus(),0); }
+async function saveNote(id){
+  const btn=$('noteSave'), note=$('noteText').value.trim();
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await fetch(`${WORKER_BASE}/meetings/notes`,{method:'POST',headers:{Authorization:'Bearer '+sessionToken,'Content-Type':'application/json'},body:JSON.stringify({id, note})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const m=meetings.find(x=>x.id===id); if(m) m.note=d.note??note;
+    editNote(null);
+  }catch(e){ $('noteErr').textContent='Not saved: '+e.message; btn.disabled=false; btn.textContent='Save notes'; }
+}
+function select(id){
+  selId=id; const {start,end}=range(); draw(start,end);
+  document.getElementById('it'+id)?.scrollIntoView({block:'nearest', behavior:'smooth'});
+}
+// Inside the dashboard: open the lead's chat there; standalone: open Chats on that lead.
+function openChat(leadId){
+  try{ if(window.parent!==window && typeof window.parent.openLeadChat==='function'){ window.parent.openLeadChat(leadId); return; } }catch(e){}
+  window.open(`chats.html?lead=${encodeURIComponent(leadId)}`,'_blank');
+}
+function setView(v){ view=v; selId=null; editing=null; load(); }
+function openDay(date){ cursor=startOfDay(new Date(date+'T00:00')); view='day'; selId=null; load(); }
+function shift(n){
+  cursor=view==='month'?new Date(cursor.getFullYear(), cursor.getMonth()+n, 1):addDays(cursor,n);
+  selId=null; editing=null; load();
+}
+function goToday(){ cursor=startOfDay(new Date()); selId=null; load(); }
+document.addEventListener('keydown',e=>{ if(e.target.closest?.('input,select,textarea')) return; if(e.key==='ArrowLeft') shift(-1); else if(e.key==='ArrowRight') shift(1); });
+if(!sessionToken) $('cal').innerHTML='<div class="msg">Open this page from your Leadvyne dashboard.</div>';
+else load();
+</script>
+</body>
+</html>
