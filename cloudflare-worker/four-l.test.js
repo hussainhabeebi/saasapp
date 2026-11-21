@@ -54,7 +54,7 @@ test('handoff note: custom text, welcome line for a new customer', () => {
   assert.equal(fourLHandoffText(c4l), FOUR_L_DEFAULT_HANDOFF);
   const custom = { bot_config: { ecom_communication_style: 'four_l', four_l_handoff_text: 'Our team will reply soon.' } };
   assert.equal(fourLHandoffText(custom), 'Our team will reply soon.');
-  assert.match(fourLHandoffText(custom, { isNewLead: true, name: 'Anu K', business: '4L Fashion' }), /^Hi Anu 👋 Welcome to 4L Fashion!/);
+  assert.match(fourLHandoffText(custom, { isNewLead: true, name: 'Anu K', business: '4L Fashion' }), /^Hi Anu 🌸 Welcome to \*4L Fashion\* 💖/);
 });
 
 test('extra keywords from settings count as product questions', () => {
@@ -90,7 +90,7 @@ test('4L card: no baby emoji, one checkout link; photos in order', async () => {
   assert.equal(card.match(/https:\/\/4lfashion/g).length, 1);
   assert.match(card, /QAR 150/);
   assert.deepEqual(fourLProductImages(p), ['https://cdn.x/a.webp', 'https://cdn.x/b.jpg']);
-  assert.equal(fourLPhotoCaption(p), '*Embroidered Straight-Cut Suit Set*\n💰 QAR 150');
+  assert.equal(fourLPhotoCaption(p), '🌸 *Embroidered Straight-Cut Suit Set*\n💖 QAR 150');
 });
 
 test('4L finds same-name variants and dedupes menu rows', async () => {
@@ -99,4 +99,12 @@ test('4L finds same-name variants and dedupes menu rows', async () => {
   assert.deepEqual(fourLFindProducts('Elegant Embroidered Straight-Cut Suit Set', products).map(p => p.sku), ['A', 'B']);
   assert.deepEqual(fourLFindProducts('Embroidered Straight-Cut Suit Set', products).map(p => p.sku), ['C']);
   assert.deepEqual(fourLDedupeItems([{ title: 'Kurta & sets' }, { title: 'Kurta & Sets' }, { title: 'Kurta and sets' }, { title: 'Salwar suits' }]).map(i => i.title), ['Kurta & sets', 'Salwar suits']);
+});
+
+test('variant choice shows name and colour only, never the size list', async () => {
+  const { fourLVariantTitle } = await import('./four-l.js');
+  const p = { name: 'Floral Embroidery Kurti', color: 'Deep Teal Green', size: '3XL, 4XL, 5XL, L, M, XL, XXL', variant: 'Deep Teal Green / 3XL, Deep Teal Green / 4XL' };
+  assert.equal(fourLVariantTitle(p), 'Floral Embroidery Kurti – Deep Teal Green');
+  assert.equal(fourLVariantTitle({ name: 'Floral Embroidery Kurti', variant: 'Blue / 3XL, Blue / 4XL' }), 'Floral Embroidery Kurti – Blue');
+  assert.equal(fourLVariantTitle({ name: 'Plain Kurti' }), 'Plain Kurti');
 });

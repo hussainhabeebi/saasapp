@@ -139,14 +139,14 @@ export function fourLDecide({text='', mediaType='text', stage='', lead=null, isN
   return withTeam?'queue':'handoff';
 }
 
-export const FOUR_L_DEFAULT_HANDOFF='Thank you for your message 🙏 Our team will reply to you here shortly. Meanwhile, feel free to ask me about any product — size, colour, price or availability.';
+export const FOUR_L_DEFAULT_HANDOFF='Thank you so much for your message 💐 Our team will reply to you here very shortly 🌸\n\nMeanwhile, ask me anything about our collection — sizes, colours, prices or availability 👗✨';
 export function fourLHandoffText(c, {isNewLead=false, name='', business=''}={}){
   const custom=String(cfg(c).four_l_handoff_text||'').trim();
   const body=custom||FOUR_L_DEFAULT_HANDOFF;
   if(!isNewLead) return body;
   const who=String(name||'').trim().split(/\s+/)[0]||'';
   const biz=String(business||'').trim();
-  return `Hi${who?' '+who:''} 👋 Welcome${biz?' to '+biz:''}!\n\n${body}`;
+  return `Hi${who?' '+who:''} 🌸 Welcome${biz?' to *'+biz+'*':''} 💖\n\n${body}`;
 }
 
 // The person who took the chat over, for HandoverBy.
@@ -162,7 +162,7 @@ export function fourLProductCard(card, link=''){
 }
 export function fourLCheckoutText(product={}, link=''){
   const name=String(product.name||'this').trim();
-  return `Great choice! 🛍️ *${name}*\n\n🛒 Complete your order here:\n${String(link||'').trim()}\n\nChoose your size and colour on the page. Reply here if you need any help 😊`;
+  return `Lovely choice! 💖 *${name}* ✨\n\n🛍️ *Complete your order here:*\n${String(link||'').trim()}\n\n👗 Pick your size & colour on the page — I'm right here if you need any help 🌸`;
 }
 
 // Products the customer means by this message: exact name / SKU first (several when colour
@@ -201,9 +201,15 @@ export function fourLDedupeItems(items=[]){
   return out;
 }
 // Variant row label: name + what tells it apart (colour / size / price).
+// Variant label: name + colour only — the size list belongs on the card, not in the choice.
+export function fourLVariantColour(p={}){
+  const c=String(p.color||'').trim() || String(p.variant||'').split(/[,/|]/)[0].trim();
+  return c.length>30?c.slice(0,30).trim():c;
+}
 export function fourLVariantTitle(p={}){
-  const extra=[p.color, p.size, p.variant].map(x=>String(x||'').trim()).filter(Boolean).join(' · ');
-  return extra?`${p.name} (${extra})`:String(p.name||p.sku||'');
+  const name=String(p.name||p.sku||'').trim();
+  const c=fourLVariantColour(p);
+  return c && !name.toLowerCase().includes(c.toLowerCase())?`${name} – ${c}`:name;
 }
 
 // Every photo URL the product has, in order (image_url, image_url_2 … image_url_5), no repeats.
@@ -224,24 +230,25 @@ function money(p){
 }
 export function fourLPhotoCaption(p={}, title=''){
   const price=money(p);
-  return `*${String(title||p.name||'').trim()}*${price?`\n💰 ${price}`:''}`;
+  return `🌸 *${String(title||p.name||'').trim()}*${price?`\n💖 ${price}`:''}`;
 }
 // The 4L product card: name, description, price, sizes, colour and ONE checkout link.
 export function fourLCardText(p={}, link=''){
-  const lines=[`🛍️ *${String(p.name||'').trim()}*`];
+  const lines=[`🌸 *${String(p.name||'').trim()}* 🌸`];
   const desc=String(p.description||'').trim();
   if(desc){
     const chunks=desc.split(/\n+/).map(s=>s.trim().replace(/^[-•*]\s*/,'')).filter(Boolean);
-    lines.push(chunks.length>1?chunks.map(s=>`• ${s}`).join('\n'):chunks[0]);
+    lines.push(chunks.length>1?chunks.map(s=>`✨ ${s}`).join('\n'):`✨ ${chunks[0]}`);
   }
   const d=[];
   const price=money(p);
-  if(price) d.push(`💰 *Price:* ${price}`);
-  if(p.size) d.push(`📏 *Size:* ${String(p.size).trim()}`);
-  if(p.color) d.push(`🎨 *Colour:* ${String(p.color).trim()}`);
+  if(price) d.push(`💖 *Price:* ${price}`);
+  if(p.size) d.push(`📏 *Sizes:* ${String(p.size).trim()}`);
+  const colour=String(p.color||'').trim();
+  if(colour) d.push(`🎨 *Colour:* ${colour}`);
   if(p.fabric_type) d.push(`🧵 *Fabric:* ${String(p.fabric_type).trim()}`);
   if(d.length) lines.push(d.join('\n'));
   const l=String(link||p.shopify_product_url||p.product_link||'').trim();
-  if(l) lines.push(`🛒 *Order online:*\n${l}`);
+  if(l) lines.push(`🛍️ *Shop now:*\n${l}`);
   return lines.join('\n\n');
 }

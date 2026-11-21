@@ -26365,7 +26365,7 @@ REPLY RULES:
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     // 4L (four-l.js): Baby Care's voice and rules, plus product-only scope — anything else is the team's.
-    if(ecomCommunicationStyle===FOUR_L_STYLE) sys+='\n\n'+ecomStyleInstructions.baby_care+'\n\n4L SCOPE RULE: You only answer product questions — size, colour, price, availability, fabric, photos and the products/categories in VERIFIED ECOM PRODUCT DATA — and guide the shopping/order flow. For anything else (orders already placed, delivery status, returns, exchanges, payments, complaints, business or contact questions) do not answer it yourself: say briefly that our team will reply here shortly. Never promise anything on behalf of the team.';
+    if(ecomCommunicationStyle===FOUR_L_STYLE) sys+='\n\n4L LADIES FASHION COMMUNICATION STYLE: Answer additional questions from the configured business prompt and VERIFIED ECOM PRODUCT DATA only. Never invent sizes, colours, fabric, stock, pricing or offers. PRICING RULE: only quote the exact price stored in the product entry. IMAGE RULE: never write placeholder text for images — real product photos are sent separately by the system.\n\n4L TONE: Our shoppers are ladies — sound warm, elegant and friendly, like a stylish boutique assistant, with a few tasteful emojis (🌸 💖 ✨ 👗 🛍️), never more than three per message. 4L SCOPE RULE: You only answer product questions — size, colour, price, availability, fabric, photos and the products/categories in VERIFIED ECOM PRODUCT DATA — and guide the shopping/order flow. For anything else (orders already placed, delivery status, returns, exchanges, payments, complaints, business or contact questions) do not answer it yourself: say briefly that our team will reply here shortly. Never promise anything on behalf of the team.';
     else if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
     // Shopify guided flow (engineShopifyFlowTurn): the next step's buttons follow every answer as
     // their own message, so the answer itself stays short and never builds a menu.
@@ -30114,17 +30114,17 @@ async function engineFourLGreetingMenu(env, c, clientId, state, turn){
 async function engineFourLMenuItems(env, clientId){
   const [cats, prods]=await Promise.all([ecomListCategories(env, clientId).catch(()=>[]), ecomListActiveProducts(env, clientId).catch(()=>[])]);
   const items=fourLDedupeItems(ecomAvailableCatalogueItems(cats, prods));
-  return items.length?items:[{title:'View Our Catalog 📸', value:'BABY_VIEW_CATALOG'}, {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'}];
+  return items.length?items:[{title:'View Collection 👗', value:'BABY_VIEW_CATALOG'}, {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'}];
 }
 // 4L: several products match (colour variants sharing a name) → each one's photo with its price,
 // then a list to pick one (value = SKU, which resolves to exactly that product next turn).
 async function engineFourLVariantChooser(env, c, clientId, convId, phone, replyLang, routing, products, {mediaType='text', ctx=null}={}){
   const list=products.slice(0,10);
   for(const p of list.slice(0,4)) await engineFourLSendPhoto(env, c, clientId, convId, phone, p, fourLPhotoCaption(p, fourLVariantTitle(p)));
-  const text=await engineLocalizeReply(env, c, 'Which one would you like? Tap to see full details and the checkout link 👇', replyLang);
+  const text=await engineLocalizeReply(env, c, 'Which one catches your eye? 💖 Tap to see photos, sizes & the shop link 👇', replyLang);
   routing.reply=text;
   routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text,
-    fourLDedupeItems(list.map(p=>({title:fourLVariantTitle(p), value:String(p.sku||p.name)}))));
+    fourLDedupeItems(list.map(p=>({title:fourLVariantTitle(p), value:String(p.sku||p.name), ...(p.price!=null&&p.price!==''?{desc:`${p.currency||''} ${p.price}`.trim()}:{})}))));
   return text;
 }
 // 4L product photo, as its own message. Tries every photo the product has; WebP/AVIF (which
@@ -30182,7 +30182,7 @@ async function engineFourLSendPhoto(env, c, clientId, convId, phone, product, ca
 async function engineFourLProductTurn(env, c, clientId, convId, phone, name, state, replyLang, isNewLead, routing, userText, product, {answerFirst=false, isOrder=false, checkoutLink='', sendMedia=false, mediaType='text', ctx=null}={}){
   const img=fourLProductImages(product)[0]||'';
   const buttons=[
-    {title:'View Our Catalog 📸', value:'BABY_VIEW_CATALOG'},
+    {title:'View Collection 👗', value:'BABY_VIEW_CATALOG'},
     {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'},
   ];
   if(isOrder && checkoutLink){
@@ -30190,7 +30190,7 @@ async function engineFourLProductTurn(env, c, clientId, convId, phone, name, sta
     const shown=await engineFourLSendPhoto(env, c, clientId, convId, phone, product, fourLPhotoCaption(product));
     if(shown) routing.media={url:engineResolveDirectImageUrl(shown), type:'image'};
     await engineDeliverReply(env, c, clientId, convId, text, {mediaType, langCode:replyLang, ctx});
-    const next=await engineLocalizeReply(env, c, 'Anything else I can help you with? 😊', replyLang);
+    const next=await engineLocalizeReply(env, c, 'Anything else I can help you find today? 🌸✨', replyLang);
     routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, next, buttons);
     routing.reply=`${text}\n\n${next}`;
     await logPendingOrder(env, c, clientId, phone, name, product).catch(()=>{});
@@ -30205,10 +30205,10 @@ async function engineFourLProductTurn(env, c, clientId, convId, phone, name, sta
   await engineDeliverReply(env, c, clientId, convId, card, {mediaType, langCode:replyLang, ctx});
   if(sendMedia) await engineMaybeSendProductMedia(env, c, clientId, convId, product).catch(()=>{});
   const followUp=await engineLocalizeReply(env, c, checkoutLink
-    ? 'Tap the link above to check out, or ask me about size, colour or anything else 😊'
-    : 'Would you like to order this? I can take your order right here — or ask me anything about it 😊', replyLang);
+    ? 'Tap the link above to shop it 🛍️ — or ask me about sizes, colours or anything else 💕'
+    : 'Would you love to order this? 💖 I can take your order right here — or ask me anything about it 🌸', replyLang);
   routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, followUp, [
-    {title:checkoutLink?'Buy Now 🛒':'Order this 🛒', value:'CHAT_ORDER_START'}, ...buttons]);
+    {title:checkoutLink?'Buy Now 🛍️':'Order this 💖', value:'CHAT_ORDER_START'}, ...buttons]);
   routing.reply=`${answer?answer+'\n\n':''}${card}\n\n${followUp}`;
   if(checkoutLink) await logPendingOrder(env, c, clientId, phone, name, product).catch(()=>{});
   return {sentText:followUp};
@@ -32142,7 +32142,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             {title:'Cancel ❌',value:'BABY_CANCEL'},
           ]);
         } else {
-          const txt=await engineLocalizeReply(env,c,_bcMsg('welcome_return',isFourLEcom?'Welcome back! 😊 What are you looking for today?':'Welcome back! 👶🏻 What would you like to do?'),replyLang);
+          const txt=await engineLocalizeReply(env,c,_bcMsg('welcome_return',isFourLEcom?'Welcome back, lovely! 🌸 What are you shopping for today? 👗✨':'Welcome back! 👶🏻 What would you like to do?'),replyLang);
           sentText=txt; routing.reply=txt; routing.next='new';
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,isFourLEcom?await engineFourLMenuItems(env,clientId):[
             {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
@@ -32156,8 +32156,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // Returning visitors who send a question or free text fall through to AI (ecom_faq) so
         // they get an actual answer instead of looping back to this welcome screen.
         const welcomeIntro=isNewLead
-          ? await engineBuildFirstTouchIntro(env,c,_bcMsg('welcome_new',isFourLEcom?'Welcome! How can we help you today? 😊':'Welcome! 👶🏻 How can we help you today?'),replyLang,state.name||state.lead?.Name)
-          : await engineLocalizeReply(env,c,_bcMsg('welcome_return',isFourLEcom?'Welcome back! 😊 What are you looking for today?':'Welcome back! 👶🏻 What would you like to do?'),replyLang);
+          ? await engineBuildFirstTouchIntro(env,c,_bcMsg('welcome_new',isFourLEcom?'Welcome, lovely! 🌸 Discover our latest styles 👗✨ What are you looking for today? 💖':'Welcome! 👶🏻 How can we help you today?'),replyLang,state.name||state.lead?.Name)
+          : await engineLocalizeReply(env,c,_bcMsg('welcome_return',isFourLEcom?'Welcome back, lovely! 🌸 What are you shopping for today? 👗✨':'Welcome back! 👶🏻 What would you like to do?'),replyLang);
         sentText=welcomeIntro;
         routing.reply=sentText; routing.next='new';
         if(isFourLEcom){
@@ -32196,7 +32196,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const catalogLink=(c.external_store_link||'').trim();
           if(catalogLink){
             sentText=await engineLocalizeReply(env,c,
-              isFourLEcom?`Here's our catalog — browse our latest collections:\n${catalogLink}\n\nOr pick below and I'll share photos, sizes and the checkout link 😊`
+              isFourLEcom?`🌸 *Our Latest Collection* 🌸\n\nBrowse all our styles here 👗✨\n${catalogLink}\n\nOr pick below and I'll share photos, sizes & the shop link 💖`
                 :`Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
             routing.reply=sentText; routing.next='new';
             routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,isFourLEcom?await engineFourLMenuItems(env,clientId):[
@@ -32208,7 +32208,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             const _catalogItems=ecomAvailableCatalogueItems(babyAgeCategories(_cats,_prods),babyAgeProducts(_prods));
             if(_catalogItems.length){
               sentText=await engineLocalizeReply(env,c,
-                isFourLEcom?'🛍️ *Our Collection*\n\nChoose a category or product — I\'ll share photos, sizes, price and the checkout link! 📸'
+                isFourLEcom?'🌸 *Our Collection* 🌸\n\nChoose a category or style 👗 — I\'ll share photos, sizes, price & the shop link 💖✨'
                   :'🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
               routing.reply=sentText; routing.next='new';
               routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,_catalogItems);
@@ -33180,7 +33180,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const items=isFourLEcom?fourLDedupeItems(broadMatches.length?ecomProductChoiceItems(productChoices):ecomAvailableCatalogueItems(categories,productChoices)):ecomAvailableCatalogueItems(categories,productChoices);
           if(items.length && isFourLEcom){
             // 4L: one short line and the tappable list — never the same names written out as text.
-            sentText=await engineLocalizeReply(env, c, broadMatches.length?'Here\'s what we found 👇 Tap one to see photos, sizes and price.':'Tap a category or product to see photos, sizes and price 👇', replyLang);
+            sentText=await engineLocalizeReply(env, c, broadMatches.length?'Here\'s what we found for you 💖 Tap one to see photos, sizes & price 👇':'Explore our collection 🌸 Tap a category or style to see photos, sizes & price 👇', replyLang);
             routing.reply=sentText;
             routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
             orderHandledInline=true;
