@@ -9,7 +9,7 @@ import {wsHandleRoute,wsRunDue} from './website-sync.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
-import {FOUR_L_STYLE,fourLProductCard,fourLCheckoutText,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
+import {FOUR_L_STYLE,fourLProductImages,fourLPhotoCaption,fourLCardText,fourLFindProducts,fourLDedupeItems,fourLVariantTitle,fourLProductCard,fourLCheckoutText,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
 import {buildHealthReport,healthOverall,healthRecurringIssues,healthCriticalAlerts,healthSummaryLine} from './health-report.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -30113,21 +30113,83 @@ async function engineFourLGreetingMenu(env, c, clientId, state, turn){
 // catalogue + team buttons.
 async function engineFourLMenuItems(env, clientId){
   const [cats, prods]=await Promise.all([ecomListCategories(env, clientId).catch(()=>[]), ecomListActiveProducts(env, clientId).catch(()=>[])]);
-  const items=ecomAvailableCatalogueItems(cats, prods);
+  const items=fourLDedupeItems(ecomAvailableCatalogueItems(cats, prods));
   return items.length?items:[{title:'View Our Catalog 📸', value:'BABY_VIEW_CATALOG'}, {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'}];
+}
+// 4L: several products match (colour variants sharing a name) → each one's photo with its price,
+// then a list to pick one (value = SKU, which resolves to exactly that product next turn).
+async function engineFourLVariantChooser(env, c, clientId, convId, phone, replyLang, routing, products, {mediaType='text', ctx=null}={}){
+  const list=products.slice(0,10);
+  for(const p of list.slice(0,4)) await engineFourLSendPhoto(env, c, clientId, convId, phone, p, fourLPhotoCaption(p, fourLVariantTitle(p)));
+  const text=await engineLocalizeReply(env, c, 'Which one would you like? Tap to see full details and the checkout link 👇', replyLang);
+  routing.reply=text;
+  routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text,
+    fourLDedupeItems(list.map(p=>({title:fourLVariantTitle(p), value:String(p.sku||p.name)}))));
+  return text;
+}
+// 4L product photo, as its own message. Tries every photo the product has; WebP/AVIF (which
+// WhatsApp refuses) is converted to JPEG through Cloudflare, and when the upload to Chatwoot fails
+// the photo goes straight to WhatsApp by link. Returns the URL that was sent, or '' (and reports why).
+const FOUR_L_IMG_TYPES=new Set(['image/jpeg','image/jpg','image/png']);
+async function engineFourLFetchImage(url){
+  const headers={'User-Agent':'Mozilla/5.0 (compatible; LeadvyneBot/1.0)', Accept:'image/jpeg,image/png,image/*;q=0.8'};
+  let r=await fetch(url, {headers}).catch(()=>null);
+  if(!r?.ok) return {error:`HTTP ${r?.status||'network'}`};
+  let ct=String(r.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
+  if(!FOUR_L_IMG_TYPES.has(ct) && !/\.(?:jpe?g|png)(?:$|\?)/i.test(url)){
+    const conv=await fetch(url, {headers, cf:{image:{format:'jpeg', quality:85, fit:'scale-down', width:1600}}}).catch(()=>null);
+    const cct=String(conv?.headers?.get('content-type')||'').split(';')[0].trim().toLowerCase();
+    if(conv?.ok && FOUR_L_IMG_TYPES.has(cct)){ r=conv; ct=cct; }
+    else return {error:`unsupported image type ${ct||'unknown'}`};
+  }
+  const blob=await r.blob();
+  if(!blob.size) return {error:'empty image'};
+  if(blob.size>5*1024*1024) return {error:`image too large (${Math.round(blob.size/1024)} KB)`};
+  return {blob, ct:FOUR_L_IMG_TYPES.has(ct)?ct:'image/jpeg'};
+}
+async function engineFourLSendPhoto(env, c, clientId, convId, phone, product, caption=''){
+  if(c.bot_reply_disabled==='Yes' || !convId) return '';
+  const urls=fourLProductImages(product).map(u=>engineResolveDirectImageUrl(u)).filter(Boolean);
+  const errors=[];
+  for(const url of urls){
+    try{
+      const img=await engineFourLFetchImage(url);
+      if(img.error){ errors.push(`${url}: ${img.error}`); continue; }
+      if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) break;
+      const fd=new FormData();
+      fd.append('content', String(caption||'').slice(0,1000)); fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', img.blob, img.ct==='image/png'?'product.png':'product.jpg');
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) return url;
+      errors.push(`${url}: Chatwoot HTTP ${r.status}`);
+    }catch(e){ errors.push(`${url}: ${e.message}`); }
+  }
+  // Fallback: WhatsApp fetches the photo itself.
+  const to=String(phone||'').replace(/\D/g,'');
+  const linkUrl=urls.find(u=>/\.(?:jpe?g|png)(?:$|\?)/i.test(u))||urls[0];
+  if(linkUrl && c.wa_phone_id && c.wa_token && to){
+    const r=await fetch(`https://graph.facebook.com/v24.0/${c.wa_phone_id}/messages`, {method:'POST',
+      headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', to, type:'image', image:{link:linkUrl, caption:String(caption||'').slice(0,1000)}})}).catch(()=>null);
+    if(r?.ok) return linkUrl;
+    errors.push(`WhatsApp link send HTTP ${r?.status||'network'}`);
+  }
+  await reportOpsError(env, '4L product photo not sent', new Error(urls.length?errors.join(' | ').slice(0,900):`product "${product?.name||''}" has no photo`), {clientId, convId}).catch(()=>{});
+  return '';
 }
 // 4L product reply: the answer to their question (if any), the product photo with its card and
 // checkout link, then buttons. An order tap with a checkout link sends the link to pay.
 async function engineFourLProductTurn(env, c, clientId, convId, phone, name, state, replyLang, isNewLead, routing, userText, product, {answerFirst=false, isOrder=false, checkoutLink='', sendMedia=false, mediaType='text', ctx=null}={}){
-  const img=String(product.image_url||'').trim();
+  const img=fourLProductImages(product)[0]||'';
   const buttons=[
     {title:'View Our Catalog 📸', value:'BABY_VIEW_CATALOG'},
     {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'},
   ];
   if(isOrder && checkoutLink){
     const text=await engineLocalizeReply(env, c, fourLCheckoutText(product, checkoutLink), replyLang);
-    if(img) routing.media={url:engineResolveDirectImageUrl(img), type:'image'};
-    await engineDeliverReply(env, c, clientId, convId, text, {mediaType, langCode:replyLang, imageUrl:img||null, ctx});
+    const shown=await engineFourLSendPhoto(env, c, clientId, convId, phone, product, fourLPhotoCaption(product));
+    if(shown) routing.media={url:engineResolveDirectImageUrl(shown), type:'image'};
+    await engineDeliverReply(env, c, clientId, convId, text, {mediaType, langCode:replyLang, ctx});
     const next=await engineLocalizeReply(env, c, 'Anything else I can help you with? 😊', replyLang);
     routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, next, buttons);
     routing.reply=`${text}\n\n${next}`;
@@ -30136,9 +30198,11 @@ async function engineFourLProductTurn(env, c, clientId, convId, phone, name, sta
   }
   const answer=answerFirst?await engineEcomProductAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText, product):'';
   if(answer) await engineDeliverReply(env, c, clientId, convId, answer, {mediaType, langCode:replyLang, ctx});
-  const card=fourLProductCard(ecomBabyCareProductCard(product), checkoutLink);
-  if(img) routing.media={url:engineResolveDirectImageUrl(img), type:'image'};
-  await engineDeliverReply(env, c, clientId, convId, card, {mediaType, langCode:replyLang, imageUrl:img||null, ctx});
+  // Photo first as its own message (a long card can't ride as a WhatsApp caption), then the card.
+  const card=fourLCardText(product, checkoutLink);
+  const shown=await engineFourLSendPhoto(env, c, clientId, convId, phone, product, fourLPhotoCaption(product));
+  if(shown) routing.media={url:engineResolveDirectImageUrl(shown), type:'image'};
+  await engineDeliverReply(env, c, clientId, convId, card, {mediaType, langCode:replyLang, ctx});
   if(sendMedia) await engineMaybeSendProductMedia(env, c, clientId, convId, product).catch(()=>{});
   const followUp=await engineLocalizeReply(env, c, checkoutLink
     ? 'Tap the link above to check out, or ask me about size, colour or anything else 😊'
@@ -32987,7 +33051,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         detection.signal=true; detection.mode='order'; detection.sku=state.lead['Last Product Sku']; detection.productName=undefined;
       }
       const activeProducts=await ecomListActiveProducts(env, clientId);
-      const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
+      // 4L: a typed / cut-off product name resolves too; several same-name variants → a chooser.
+      const _fourLHits=isFourLEcom&&!/^[A-Z_]+$/.test(userText.trim())?fourLFindProducts(userText, activeProducts):[];
+      const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText)||(_fourLHits.length===1?_fourLHits[0]:null);
+      if(isFourLEcom && !exactSelectedProduct && _fourLHits.length>1 && !orderHandledInline){
+        sentText=await engineFourLVariantChooser(env,c,clientId,convId,phone,replyLang,routing,_fourLHits,{mediaType,ctx});
+        orderHandledInline=true;
+      }
       const broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
       // Category buttons are populated from this same Products data, so recognize their returned
       // value before trusting an LLM interpretation. Without this override, a tap on "Mattress"
@@ -33107,8 +33177,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           }
         }else{
           const productChoices=babyAgeProducts(broadMatches.length?broadMatches:activeProducts);
-          const items=ecomAvailableCatalogueItems(categories,productChoices);
-          if(items.length){
+          const items=isFourLEcom?fourLDedupeItems(broadMatches.length?ecomProductChoiceItems(productChoices):ecomAvailableCatalogueItems(categories,productChoices)):ecomAvailableCatalogueItems(categories,productChoices);
+          if(items.length && isFourLEcom){
+            // 4L: one short line and the tappable list — never the same names written out as text.
+            sentText=await engineLocalizeReply(env, c, broadMatches.length?'Here\'s what we found 👇 Tap one to see photos, sizes and price.':'Tap a category or product to see photos, sizes and price 👇', replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
+            orderHandledInline=true;
+          }else if(items.length){
             const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
             const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
             const categoryLines=[],productLines=[];
