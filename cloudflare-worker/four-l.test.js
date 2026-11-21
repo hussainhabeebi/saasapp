@@ -80,3 +80,23 @@ test('product card and checkout text carry the checkout link', async () => {
   assert.equal(fourLProductCard('*Suit*', ''), '*Suit*');
   assert.match(fourLCheckoutText({ name: 'Suit' }, 'https://x.y/z'), /\*Suit\*[\s\S]*https:\/\/x\.y\/z/);
 });
+
+test('4L card: no baby emoji, one checkout link; photos in order', async () => {
+  const { fourLCardText, fourLProductImages, fourLPhotoCaption } = await import('./four-l.js');
+  const p = { name: 'Embroidered Straight-Cut Suit Set', description: 'Elegant suit.', price: 150, currency: 'QAR', size: 'M, L', color: 'Ivory white',
+    product_link: 'https://4lfashion.com.qa/products/1', image_url: '//cdn.x/a.webp', image_url_2: 'https://cdn.x/b.jpg', image_url_3: 'https://cdn.x/b.jpg' };
+  const card = fourLCardText(p, 'https://4lfashion.com.qa/products/1');
+  assert.doesNotMatch(card, /🍼/);
+  assert.equal(card.match(/https:\/\/4lfashion/g).length, 1);
+  assert.match(card, /QAR 150/);
+  assert.deepEqual(fourLProductImages(p), ['https://cdn.x/a.webp', 'https://cdn.x/b.jpg']);
+  assert.equal(fourLPhotoCaption(p), '*Embroidered Straight-Cut Suit Set*\n💰 QAR 150');
+});
+
+test('4L finds same-name variants and dedupes menu rows', async () => {
+  const { fourLFindProducts, fourLDedupeItems } = await import('./four-l.js');
+  const products = [{ name: 'Elegant Embroidered Straight-Cut Suit Set', sku: 'A', color: 'Ivory' }, { name: 'Elegant Embroidered Straight-Cut Suit Set', sku: 'B', color: 'Aqua Green' }, { name: 'Embroidered Straight-Cut Suit Set', sku: 'C' }];
+  assert.deepEqual(fourLFindProducts('Elegant Embroidered Straight-Cut Suit Set', products).map(p => p.sku), ['A', 'B']);
+  assert.deepEqual(fourLFindProducts('Embroidered Straight-Cut Suit Set', products).map(p => p.sku), ['C']);
+  assert.deepEqual(fourLDedupeItems([{ title: 'Kurta & sets' }, { title: 'Kurta & Sets' }, { title: 'Kurta and sets' }, { title: 'Salwar suits' }]).map(i => i.title), ['Kurta & sets', 'Salwar suits']);
+});

@@ -164,3 +164,84 @@ export function fourLCheckoutText(product={}, link=''){
   const name=String(product.name||'this').trim();
   return `Great choice! 🛍️ *${name}*\n\n🛒 Complete your order here:\n${String(link||'').trim()}\n\nChoose your size and colour on the page. Reply here if you need any help 😊`;
 }
+
+// Products the customer means by this message: exact name / SKU first (several when colour
+// variants share a name), else a cut-off name ("…Suit Se"), else the best word match (≥60% of the
+// product name's words). [] when nothing is close.
+export function fourLFindProducts(text, products=[]){
+  const tn=norm(text);
+  if(tn.length<3) return [];
+  const list=(products||[]).filter(p=>p && (p.name||p.sku));
+  const exact=list.filter(p=>[p.name, p.short_label, p.sku].some(v=>v && norm(v)===tn));
+  if(exact.length) return exact;
+  if(tn.length>=8){
+    const prefix=list.filter(p=>norm(p.name).startsWith(tn));
+    if(prefix.length) return prefix;
+  }
+  const words=new Set(nameTokens(tn));
+  let best=0, hits=[];
+  for(const p of list){
+    const toks=nameTokens(p.name);
+    if(toks.length<2) continue;
+    const n=toks.filter(w=>words.has(w)).length;
+    const score=n/toks.length;
+    if(n<2 || score<0.6) continue;
+    if(score>best){ best=score; hits=[p]; } else if(score===best) hits.push(p);
+  }
+  return hits;
+}
+// One choice per row, no repeats: categories that only differ in case / spacing / "&" collapse.
+export function fourLDedupeItems(items=[]){
+  const seen=new Set(), out=[];
+  for(const it of items||[]){
+    const key=norm(String(it?.title||it?.value||'').replace(/&/g,' and '));
+    if(!key || seen.has(key)) continue;
+    seen.add(key); out.push(it);
+  }
+  return out;
+}
+// Variant row label: name + what tells it apart (colour / size / price).
+export function fourLVariantTitle(p={}){
+  const extra=[p.color, p.size, p.variant].map(x=>String(x||'').trim()).filter(Boolean).join(' · ');
+  return extra?`${p.name} (${extra})`:String(p.name||p.sku||'');
+}
+
+// Every photo URL the product has, in order (image_url, image_url_2 … image_url_5), no repeats.
+export function fourLProductImages(p={}){
+  const out=[];
+  for(const k of ['image_url','image_url_2','image_url_3','image_url_4','image_url_5']){
+    let u=String(p?.[k]||'').trim();
+    if(!u) continue;
+    if(u.startsWith('//')) u='https:'+u;
+    if(!/^https?:\/\//i.test(u)) continue;
+    if(!out.includes(u)) out.push(u);
+  }
+  return out;
+}
+function money(p){
+  if(p?.price==null || p.price==='') return '';
+  return `${String(p.currency||'').trim()} ${p.price}`.trim();
+}
+export function fourLPhotoCaption(p={}, title=''){
+  const price=money(p);
+  return `*${String(title||p.name||'').trim()}*${price?`\n💰 ${price}`:''}`;
+}
+// The 4L product card: name, description, price, sizes, colour and ONE checkout link.
+export function fourLCardText(p={}, link=''){
+  const lines=[`🛍️ *${String(p.name||'').trim()}*`];
+  const desc=String(p.description||'').trim();
+  if(desc){
+    const chunks=desc.split(/\n+/).map(s=>s.trim().replace(/^[-•*]\s*/,'')).filter(Boolean);
+    lines.push(chunks.length>1?chunks.map(s=>`• ${s}`).join('\n'):chunks[0]);
+  }
+  const d=[];
+  const price=money(p);
+  if(price) d.push(`💰 *Price:* ${price}`);
+  if(p.size) d.push(`📏 *Size:* ${String(p.size).trim()}`);
+  if(p.color) d.push(`🎨 *Colour:* ${String(p.color).trim()}`);
+  if(p.fabric_type) d.push(`🧵 *Fabric:* ${String(p.fabric_type).trim()}`);
+  if(d.length) lines.push(d.join('\n'));
+  const l=String(link||p.shopify_product_url||p.product_link||'').trim();
+  if(l) lines.push(`🛒 *Order online:*\n${l}`);
+  return lines.join('\n\n');
+}
