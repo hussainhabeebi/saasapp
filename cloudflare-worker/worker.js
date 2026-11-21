@@ -9,7 +9,7 @@ import {wsHandleRoute,wsRunDue} from './website-sync.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
 import {H3_NAV,H3_OTHER_LOCATION,h3IsStyle,h3LocationStepOn,h3LocKey,h3Locations,h3UseLocationStep,h3PropertiesIn,h3RoomsOf,h3PropertyDesc,h3RoomDesc,h3RoomCaption,h3LocationTitle,h3PageRows,h3RoomRowDesc,h3PriceText,h3PropertyFromPrice,h3MentionsName,h3Decide,h3Resolve,h3AiCandidates,h3PickCandidate,h3StripPrices} from './hospitality-h3.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
-import {FOUR_L_STYLE,fourLProductImages,fourLPhotoCaption,fourLCardText,fourLFindProducts,fourLDedupeItems,fourLVariantTitle,fourLProductCard,fourLCheckoutText,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
+import {FOUR_L_STYLE,fourLProductsNamedIn,fourLProductImages,fourLPhotoCaption,fourLCardText,fourLFindProducts,fourLDedupeItems,fourLVariantTitle,fourLProductCard,fourLCheckoutText,fourLIsStyle,ecomStyleIsBabyCare,fourLDecide,fourLHandoffText,fourLExtraKeywords,fourLAgentLabel} from './four-l.js';
 import {buildHealthReport,healthOverall,healthRecurringIssues,healthCriticalAlerts,healthSummaryLine} from './health-report.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
@@ -30136,7 +30136,7 @@ async function engineFourLMenuItems(env, clientId){
 // then a list to pick one (value = SKU, which resolves to exactly that product next turn).
 async function engineFourLVariantChooser(env, c, clientId, convId, phone, replyLang, routing, products, {mediaType='text', ctx=null}={}){
   const list=products.slice(0,10);
-  for(const p of list.slice(0,4)) await engineFourLSendPhoto(env, c, clientId, convId, phone, p, fourLPhotoCaption(p, fourLVariantTitle(p)));
+  await engineFourLSendPhotos(env, c, clientId, convId, phone, list.slice(0,4), p=>fourLPhotoCaption(p, fourLVariantTitle(p)));
   const text=await engineLocalizeReply(env, c, 'Which one catches your eye? 💖 Tap to see photos, sizes & the shop link 👇', replyLang);
   routing.reply=text;
   routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text,
@@ -30147,8 +30147,19 @@ async function engineFourLVariantChooser(env, c, clientId, convId, phone, replyL
 // WhatsApp refuses) is converted to JPEG through Cloudflare, and when the upload to Chatwoot fails
 // the photo goes straight to WhatsApp by link. Returns the URL that was sent, or '' (and reports why).
 const FOUR_L_IMG_TYPES=new Set(['image/jpeg','image/jpg','image/png']);
+// Last resort when the shop's own server won't hand the photo to us (hotlink / bot protection,
+// WebP / AVIF, huge files): wsrv.nl, a public image proxy, fetches it and returns a JPEG.
+export function fourLImageProxyUrl(url){
+  return `https://wsrv.nl/?url=${encodeURIComponent(url)}&output=jpg&q=85&w=1600&we`;
+}
 async function engineFourLFetchImage(url){
-  const headers={'User-Agent':'Mozilla/5.0 (compatible; LeadvyneBot/1.0)', Accept:'image/jpeg,image/png,image/*;q=0.8'};
+  const direct=await engineFourLFetchImageOnce(url);
+  if(!direct.error) return direct;
+  const viaProxy=await engineFourLFetchImageOnce(fourLImageProxyUrl(url));
+  return viaProxy.error?{error:`${direct.error}; via image proxy: ${viaProxy.error}`}:viaProxy;
+}
+async function engineFourLFetchImageOnce(url){
+  const headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36', Accept:'image/jpeg,image/png,image/*;q=0.8'};
   let r=await fetch(url, {headers}).catch(()=>null);
   if(!r?.ok) return {error:`HTTP ${r?.status||'network'}`};
   let ct=String(r.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
@@ -30190,8 +30201,24 @@ async function engineFourLSendPhoto(env, c, clientId, convId, phone, product, ca
     if(r?.ok) return linkUrl;
     errors.push(`WhatsApp link send HTTP ${r?.status||'network'}`);
   }
-  await reportOpsError(env, '4L product photo not sent', new Error(urls.length?errors.join(' | ').slice(0,900):`product "${product?.name||''}" has no photo`), {clientId, convId}).catch(()=>{});
+  const why=urls.length?errors.join(' | '):'product has no photo URL';
+  // Settings → Logs shows it to the shop, with the reason.
+  await logEngineSkip(env, clientId, phone, convId, 'photo-not-sent', `${String(product?.name||'').slice(0,60)}: ${why}`);
+  await reportOpsError(env, '4L product photo not sent', new Error(`${product?.name||''}: ${why}`.slice(0,900)), {clientId, convId}).catch(()=>{});
   return '';
+}
+// Several products' photos, one message each (name + price as caption). Returns the first URL sent.
+async function engineFourLSendPhotos(env, c, clientId, convId, phone, products, captionOf=p=>fourLPhotoCaption(p)){
+  let first='';
+  const seen=new Set();
+  for(const p of products||[]){
+    const key=String(p?.Id||p?.nocodb_id||p?.sku||p?.name||'');
+    if(!key || seen.has(key)) continue;
+    seen.add(key);
+    const sent=await engineFourLSendPhoto(env, c, clientId, convId, phone, p, captionOf(p)).catch(()=>'');
+    if(sent && !first) first=sent;
+  }
+  return first;
 }
 // 4L product reply: the answer to their question (if any), the product photo with its card and
 // checkout link, then buttons. An order tap with a checkout link sends the link to pay.
@@ -33195,7 +33222,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const productChoices=babyAgeProducts(broadMatches.length?broadMatches:activeProducts);
           const items=isFourLEcom?fourLDedupeItems(broadMatches.length?ecomProductChoiceItems(productChoices):ecomAvailableCatalogueItems(categories,productChoices)):ecomAvailableCatalogueItems(categories,productChoices);
           if(items.length && isFourLEcom){
-            // 4L: one short line and the tappable list — never the same names written out as text.
+            // 4L: the matching products' photos, then one short line and the tappable list.
+            if(broadMatches.length){
+              const shown=await engineFourLSendPhotos(env, c, clientId, convId, phone, productChoices.slice(0,5));
+              if(shown) routing.media={url:engineResolveDirectImageUrl(shown), type:'image'};
+            }
             sentText=await engineLocalizeReply(env, c, broadMatches.length?'Here\'s what we found for you 💖 Tap one to see photos, sizes & price 👇':'Explore our collection 🌸 Tap a category or style to see photos, sizes & price 👇', replyLang);
             routing.reply=sentText;
             routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
@@ -34145,6 +34176,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
       if(_stuck?.menu) faqQuickReplies=_stuck.menu;
       if(_stuck?.handover) faqQuickReplies=null;
+      // 4L: products the answer names → their photos go first (photos are what sells).
+      if(isFourLEcom && routing.route==='ecom_faq' && !routing.media && !_stuck?.handover){
+        const named=fourLProductsNamedIn(sentText, await ecomListActiveProducts(env, clientId).catch(()=>[])).slice(0,4);
+        const shown=await engineFourLSendPhotos(env, c, clientId, convId, phone, named);
+        if(shown) routing.media={url:engineResolveDirectImageUrl(shown), type:'image'};
+      }
       const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies, ctx});
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
       if(_stuck?.handover) await engineRqHandover(env, c, clientId, convId, state, routing, userText, replyLang, ctx, _stuck.reason);

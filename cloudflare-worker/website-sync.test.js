@@ -257,3 +257,14 @@ test('connect → full sync → webhooks: creates, adopts, updates, deletes', as
   await wsSync(env, deps, await env.DB.prepare('SELECT * FROM ecom_website_sync WHERE client_id=?').bind(7).first());
   assert.equal(products.length, 1);
 });
+
+test('website photos with relative or protocol-relative links are kept (absolute)', async () => {
+  const { wsProductFields, wsMediaUrl } = await import('./website-sync.js');
+  assert.equal(wsMediaUrl('//cdn.shop.com/a.jpg'), 'https://cdn.shop.com/a.jpg');
+  assert.equal(wsMediaUrl('/uploads/a.jpg', 'https://4lfashion.com.qa/'), 'https://4lfashion.com.qa/uploads/a.jpg');
+  assert.equal(wsMediaUrl('uploads/a.jpg', ''), '');
+  const f = wsProductFields({ id: 'p1', name: 'Floral Embroidery Kurti', url: 'https://4lfashion.com.qa/products/p1',
+    images: ['/uploads/k1.jpg', { src: '/uploads/k2.webp' }] }, { baseUrl: 'https://api.4lfashion.com.qa/v1' });
+  assert.equal(f.image_url, 'https://4lfashion.com.qa/uploads/k1.jpg');
+  assert.equal(f.image_url_2, 'https://4lfashion.com.qa/uploads/k2.webp');
+});
