@@ -38,6 +38,7 @@
 //   meetingStates(env,cid,leadId?)→{leadId:{state,start_at,end_at,outcome}} (meetings module, mtgLeadState),
 //   meetingsOn(c, env)→bool (the account schedules meetings from Chats: Meeting Scheduled stage + templates) }
 
+import {rqCleanName} from './reply-quality.js';
 import {FP_DEFAULTS, fpAccountHour, fpParseLater, fpScriptLang, fpLeadLanguage, fpLangName, fpTemplateLanguages, fpObjectionFor, FP_OBJECTION_GUIDE,
   fpNbaScore, fpMatchProducts, fpQuoteItem, fpQuoteTotals, fpQuoteNumber, fpQuoteFileName, fpFetchQuoteAssets, fpBuildQuotePdf} from './followup-pro.js';
 
@@ -67,9 +68,56 @@ export const FV3_DEFAULTS={
   meeting_followups:true,     // leads at "Meeting Scheduled": nothing before the meeting, then the after-meeting templates (day 1/3)
   advance_stage_on_reply:true, // a reply to a follow-up moves the lead one pipeline stage up (New → Contacted → Qualified …)
   stage_ladder:true,          // each pipeline stage gets its own nudges + day-1/3/7 templates, so the next cycle is worded for the new stage
+  // Wording & targeting guards (Couplo fix plan, Nov 2026) — every one off until switched on.
+  placeholder_guard:false,    // never send "[Client Name]" / "{name}" / "Hi ," — the name is dropped instead
+  wording_guard:false,        // block words that don't fit the business (shops: proposal, project, meeting…)
+  blocked_words:[],           // extra words to block (blank = the default list for the industry)
+  discussed_rule:false,       // "what we discussed" only after the customer sent at least 2 real messages
+  stop_not_interested:false,  // Not Interested / supplier / wholesale / spam / personal stages end the sequence
+  send_jitter_minutes:0,      // spread sends over up to N minutes so leads don't all get a message at once
+  only_stages:[],             // if set, only leads in these stages get follow-ups
   // Pro add-ons (followup-pro.js) — every one off until the account switches it on.
   ...FP_DEFAULTS,
 };
+
+// Shop-style vertical words that read wrong to a parent buying a baby set (agency wording).
+export const FV3_SHOP_BLOCKED_WORDS=['proposal','project','design ideas','meeting','called','വിളിച്ചതാണ്'];
+const SHOP_INDUSTRIES=new Set(['ecommerce','fashion','retail','baby_care']);
+export function fv3BlockedWords(cfg, industry){
+  const own=(cfg?.blocked_words||[]).map(w=>String(w).trim()).filter(Boolean);
+  if(own.length) return own;
+  return SHOP_INDUSTRIES.has(String(industry||'').toLowerCase())?FV3_SHOP_BLOCKED_WORDS:[];
+}
+export const FV3_NOT_INTERESTED_RE=/not[\s_-]*interested|supplier|wholesale|vendor|spam|personal|staff|junk/i;
+// Deterministic per-lead offset, so one lead's slot doesn't move between 15-minute sweeps.
+export function fv3JitterMs(leadId, minutes){
+  const m=Math.max(0, Math.min(240, Number(minutes)||0));
+  if(!m) return 0;
+  let h=2166136261; for(const ch of String(leadId||'')){ h^=ch.charCodeAt(0); h=Math.imul(h, 16777619); }
+  return ((h>>>0)%(m+1))*60000;
+}
+// Final check on a session nudge's text (after name fill, AI wording and translation).
+// Returns {text} (possibly cleaned) or {block:'reason'}.
+const DISCUSSED_RE=/\b(?:everything|all|what|the things|things|the details|the design ideas)\s+(?:that\s+)?we\s+(?:discussed|talked about|spoke about|chatted about)\b|\bour\s+(?:last\s+|previous\s+|earlier\s+)?(?:conversation|discussion|chat)\b/gi;
+export function fv3GuardText(text, {cfg={}, industry='', realMsgCount=null}={}){
+  let t=String(text||'');
+  if(cfg.placeholder_guard){
+    // Name placeholders are dropped ("Hey [Client Name]!" → "Hey!"); any other unfilled one blocks the send.
+    t=t.replace(/[ \t]*(?:\[\s*(?:client|customer|lead|first)?\s*_?name\s*\]|\{\{?\s*(?:client_?|customer_?|first_?)?name\s*\}?\})/gi, '');
+    t=t.replace(/\b(Hi|Hey|Hello|Dear|Thanks|Thank you)\s+(?=[,!.?])/gi, '$1').replace(/(ഹായ്|ഹലോ)\s+(?=[,!])/g, '$1').replace(/^\s*[,!]\s*/, '');
+    if(/\[[^\]\n]{1,40}\]|\{\{?[^}\n]{1,40}\}?\}/.test(t)) return {block:'Wording guard: unfilled placeholder '+(t.match(/\[[^\]\n]{1,40}\]|\{\{?[^}\n]{1,40}\}?\}/)||[''])[0]};
+  }
+  if(cfg.discussed_rule && realMsgCount!==null && realMsgCount<2) t=t.replace(DISCUSSED_RE, 'your enquiry');
+  if(cfg.wording_guard){
+    const low=t.toLowerCase();
+    const hit=fv3BlockedWords(cfg, industry).find(w=>{
+      const lw=String(w).toLowerCase();
+      return /^[a-z0-9 ]+$/.test(lw) ? new RegExp(`\\b${lw.replace(/\s+/g,'\\s+')}s?\\b`, 'i').test(t) : low.includes(lw);
+    });
+    if(hit) return {block:`Wording guard: "${hit}" doesn't fit this business`};
+  }
+  return {text:t.replace(/[ \t]{2,}/g, ' ').trim()};
+}
 
 // Mirrors worker.js PIPELINE_TERMINAL_STAGES — a closed lead never gets another follow-up.
 export const FV3_WON_STAGES=new Set(['won','converted','Converted']);
@@ -306,6 +354,10 @@ export function fv3Config(raw){
     pro_quote_pdf:b('pro_quote_pdf'), pro_auto_language:b('pro_auto_language'),
     pro_quote_valid_days:clampInt(o.pro_quote_valid_days, 1, 90, d.pro_quote_valid_days),
     pro_quote_note:String(o.pro_quote_note||'').slice(0, 500),
+    placeholder_guard:b('placeholder_guard'), wording_guard:b('wording_guard'), discussed_rule:b('discussed_rule'), stop_not_interested:b('stop_not_interested'),
+    blocked_words:Array.isArray(o.blocked_words)?o.blocked_words.map(w=>String(w).trim()).filter(Boolean).slice(0, 30):[],
+    send_jitter_minutes:clampInt(o.send_jitter_minutes, 0, 240, d.send_jitter_minutes),
+    only_stages:Array.isArray(o.only_stages)?o.only_stages.map(x=>String(x).trim()).filter(Boolean).slice(0, 20):[],
   };
 }
 
@@ -462,6 +514,10 @@ export function fv3Decide(input){
       return out('meeting', 'meeting_booked', 'A meeting is scheduled with this lead — the after-meeting follow-ups start once it has happened (meeting reminders still go out).');
   } else if(hasMeeting) return out('meeting', 'meeting_booked', 'A meeting is booked or agreed with this lead — follow-ups are on hold until its outcome is logged (meeting reminders still go out).');
   if(FV3_CLOSED_STAGES.has(stage) || input.terminalStages?.has?.(stage)) return out('stopped', 'closed', 'Lead is closed — no more follow-ups.');
+  if(cfg.stop_not_interested && (FV3_NOT_INTERESTED_RE.test(stage) || FV3_NOT_INTERESTED_RE.test(String(lead?.Status||lead?.Disposition||''))))
+    return out('stopped', 'not_interested', `Lead is marked "${stage||lead?.Status||lead?.Disposition}" — no more follow-ups.`);
+  if(cfg.only_stages?.length && !track && !cfg.only_stages.some(x=>x.toLowerCase()===stage.toLowerCase()))
+    return out('not_enrolled', 'stage_not_followed', `Follow-ups only go to leads at: ${cfg.only_stages.join(', ')}.`);
   const created=ms(lead?.CreatedAt)||ms(lead?.Date);
   // A proposal sent by the team enrols the lead, whenever it came in — it is a deliberate ask for follow-ups.
   if(track && !cfg[track.cfgKey]) return out('stopped', track.reason+'_off', meetingTrack
@@ -486,7 +542,8 @@ export function fv3Decide(input){
   if(cfg.max_unanswered && sorted.length>=cfg.max_unanswered && !sorted.some(s=>s.replied_at) && !(lastSent && lastCust>lastSent))
     return out('stopped', 'no_engagement', `No reply to ${sorted.length} follow-ups — pausing outreach to this lead until they write back.`);
 
-  const gapFloor=(t)=>lastSent?Math.max(t, lastSent+cfg.min_gap_hours*H):t;
+  const jitter=fv3JitterMs(lead?.Id, cfg.send_jitter_minutes);
+  const gapFloor=(t)=>(lastSent?Math.max(t, lastSent+cfg.min_gap_hours*H):t)+jitter;
   // Pro objections: "talk to me next week" (fv3OnInbound → snooze_until) holds the sequence until then.
   const snoozeAt=cfg.pro_objections?ms(state?.snooze_until):null;
   const snooze=snoozeAt && lastCust && snoozeAt>lastCust ? snoozeAt : null;
@@ -592,6 +649,8 @@ export const FV3_REASON_INFO={
   won:{label:'Lead is won', ok:true}, booked:{label:'Lead booked', ok:true}, exit_stage:{label:'Reached an exit stage', ok:true},
   closed:{label:'Lead is closed / lost', ok:true}, opted_out:{label:'Opted out', ok:true},
   no_engagement:{label:'Never replied to any follow-up', fix:'Outreach is paused for this lead until they message you. Raise "Stop after N unanswered follow-ups" in Settings to allow more.', setting:'max_unanswered'},
+  not_interested:{label:'Marked not interested / supplier / personal', ok:true},
+  stage_not_followed:{label:'Stage is not in "Only follow up these stages"', fix:'Add the stage in Settings below, or clear the list to follow up every stage.'},
   lead_cap:{label:'Already got the maximum follow-ups for 30 days', fix:'Raise "Max follow-ups per lead in 30 days" in Settings if you want more.'},
   no_message:{label:'Never messaged you', fix:'Follow-ups start after the customer\'s first message.'},
   account_paused:{label:'Follow-ups are paused', fix:'Press ▶ Resume.'},
@@ -630,6 +689,7 @@ export function fv3ErrorAction(code, message=''){
   if(c===131026 || c===131021) return {kind:'skip'};                  // undeliverable / not on WhatsApp
   if(c===190 || c===10 || c===200 || c===131031 || c===132000 || c===132001 || c===132015 || c===132016 || /not configured|not connected/i.test(m)) return {kind:'client_error', hours:6};
   if(/no conversation yet|no phone number/i.test(m)) return {kind:'skip'};
+  if(/wording guard/i.test(m)) return {kind:'skip'};
   return {kind:'retry'};
 }
 export function fv3FailureHint(code, message=''){
@@ -643,6 +703,7 @@ export function fv3FailureHint(code, message=''){
   if(c===131047) return {hint:'The 24-hour WhatsApp window closed before the message went out.', fix:'Nothing to do — the template steps take over.'};
   if(/not configured|not connected/i.test(m)) return {hint:'WhatsApp / Chatwoot connection missing.', fix:'Connect it in Settings → Channels.'};
   if(/no conversation yet/i.test(m)) return {hint:'Lead has no chat conversation yet.', fix:'Nothing to do.'};
+  if(/wording guard/i.test(m)) return {hint:'Not sent: '+m.replace(/^.*?wording guard:\s*/i, ''), fix:'Edit the nudge wording in the Follow-up Engine (or turn the guard off in Follow-up V3 settings). The step is skipped for this lead.'};
   return {hint:'Send failed.', fix:'V3 retries automatically; if it keeps failing, check Settings → Channels.'};
 }
 
@@ -1163,6 +1224,12 @@ async function followupQuote(env, deps, c, lead, cfg){
   return fv3BuildLeadQuote(env, deps, c, lead, items, {validDays:cfg.pro_quote_valid_days, note:cfg.pro_quote_note});
 }
 
+// Customer messages with some substance (not "ok" / an emoji / a button tap) — for the "what we discussed" rule.
+async function realCustomerMessageCount(env, leadId){
+  const r=await env.DB.prepare(`SELECT content FROM lead_messages WHERE lead_id=? AND role='user' ORDER BY ts DESC LIMIT 20`).bind(Number(leadId)).all().catch(()=>null);
+  if(!r) return null;
+  return (r.results||[]).filter(x=>{ const t=String(x.content||'').trim(); return t.length>=4 && /[\p{L}\p{N}]{3}/u.test(t) && !/^(ok+|okay|thanks?|thank you|hi+|hello|yes|no)\W*$/i.test(t); }).length;
+}
 async function logFailure(env, cid, leadId, step, e){
   const code=Number(e?.code)||Number(String(e?.message||'').match(/\b(1\d{5}|190|100)\b/)?.[0])||null;
   const msg=String(e?.message||e||'').slice(0, 500);
@@ -1299,6 +1366,12 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now(), 
           }
         }
         if(lang){ opts.lang=lang; if(!opts.overrideText) opts.translate=txt=>translateTo(env, deps, c, txt, lang, state?.last_text||''); }
+        // Wording guards: checked on the final text (after name fill, AI wording and translation).
+        if(pro.placeholder_guard || pro.wording_guard || pro.discussed_rule){
+          if(pro.placeholder_guard) opts.cleanName=rqCleanName(lead.Name);
+          const realMsgCount=pro.discussed_rule?await realCustomerMessageCount(env, lead.Id):null;
+          opts.guard=txt=>fv3GuardText(txt, {cfg:pro, industry:c.industry||settings.industry, realMsgCount});
+        }
       }
       let claimed=false;
       const jobCycle=step===REENGAGE_STEP?d.next.due_at:d.cycle;

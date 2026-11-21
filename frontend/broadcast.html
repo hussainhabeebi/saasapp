@@ -4037,6 +4037,16 @@ function fv3Render(){
     chk('auto_templates','Create templates for me','Submit and plug in the day 1 / 3 / 7 and re-engage templates'),
     chk('ai_variant_b','AI-written B version','A second wording for nudges 1-2; the better one gets sent more'),
     chk('weekly_digest','Monday email summary','To the account owner\'s email'),
+    // Wording & targeting guards (cloudflare-worker/followup-v3.js fv3GuardText) — off until switched on.
+    `<div style="grid-column:1/-1;margin-top:6px"><h4 style="margin:0">🛡️ Wording &amp; targeting guards <span style="font-size:11px;font-weight:500;color:var(--muted)">— optional, off until you switch them on</span></h4>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">Shop recommended: 24 h between follow-ups, max 4 per lead in 30 days, re-engage off, reply in the lead's language on, objections on, AI B version off, proposal / meeting follow-ups off, stop at ordered / supplier / wholesale, and every guard below on. <a href="#" onclick="fv3ApplyShopPreset();return false">Fill in the shop recommended settings</a> (review, then Save).</div></div>`,
+    chk('placeholder_guard','Block unfilled placeholders','Never sends "[Client Name]", "{name}" or "Hi ," — an emoji-only or missing name is dropped ("Hi 😊"); any other unfilled placeholder skips the message'),
+    chk('wording_guard','Block words that don\'t fit your business','Shops: proposal, project, design ideas, meeting, called (വിളിച്ചതാണ്). A nudge using one is skipped for that lead and shown under failures'),
+    `<div class="form-field"><label>Words to block</label><input id="fv3c_blocked_words" value="${escAttr((cfg.blocked_words||[]).join(', '))}" placeholder="blank = default list for your industry"></div>`,
+    chk('discussed_rule','"What we discussed" only after a real chat','Until the customer has sent at least 2 real messages, "everything we discussed" becomes "your enquiry"'),
+    chk('stop_not_interested','Stop at Not Interested / supplier / personal','Leads whose stage or status says not interested, supplier, wholesale, vendor, spam, personal or staff get no more follow-ups'),
+    num('send_jitter_minutes','Spread sends over (minutes)',0,240,'0 = off. Each lead gets its own slot within this many minutes, so all chats don\'t get a message at the same moment'),
+    `<div class="form-field"><label>Only follow up these stages</label><input id="fv3c_only_stages" value="${escAttr((cfg.only_stages||[]).join(', '))}" placeholder="blank = every stage, e.g. contacted, interested, cart"><div style="font-size:11px;color:var(--muted);margin-top:3px">Stage ids, comma-separated</div></div>`,
     // Pro add-ons (cloudflare-worker/followup-pro.js) — every one is off until switched on here.
     `<div style="grid-column:1/-1;margin-top:6px"><h4 style="margin:0">✨ Pro add-ons <span style="font-size:11px;font-weight:500;color:var(--muted)">— optional, off until you switch them on</span></h4></div>`,
     chk('pro_smart_send','Smart send time+','New leads with no history yet get the hour your customers reply most; nudge 2 also waits for that hour when it still fits the 24-hour window'),
@@ -4069,10 +4079,26 @@ async function fv3EnableSetting(key, btn){
   try{ const d=await fv3Api('/settings', {config:{[key]:true}}); fv3State={...fv3State, ...d}; btn.textContent='On ✓'; fv3Render(); }
   catch(e){ btn.disabled=false; btn.textContent='Turn on'; alert(e.message); }
 }
+// Couplo fix plan, Fix 5: the shop recommended follow-up settings. Fills the form only — the
+// merchant reviews it and presses Save. "Only follow up these stages" is left as it is because
+// stage ids differ per pipeline.
+function fv3ApplyShopPreset(){
+  const setNum=(k,v)=>{ const el=$id('fv3c_'+k); if(el) el.value=v; };
+  const setChk=(k,v)=>{ const el=$id('fv3c_'+k); if(el) el.checked=v; };
+  setNum('min_gap_hours',24); setNum('lead_cap_30d',4); setNum('send_jitter_minutes',45);
+  setChk('reengage_enabled',false); setChk('pro_auto_language',true); setChk('objection_branching',true); setChk('pro_objections',true);
+  setChk('ai_variant_b',false); setChk('proposal_followups',false); setChk('meeting_followups',false);
+  ['placeholder_guard','wording_guard','discussed_rule','stop_not_interested'].forEach(k=>setChk(k,true));
+  const ex=$id('fv3c_exit_stages');
+  if(ex){ const cur=ex.value.split(',').map(x=>x.trim()).filter(Boolean); ['ordered','supplier','wholesale'].forEach(x=>{ if(!cur.some(y=>y.toLowerCase()===x)) cur.push(x); }); ex.value=cur.join(', '); }
+  $id('fv3SaveMsg').textContent='Shop settings filled in — review, then press Save.';
+}
 async function fv3SaveConfig(){
   const cfg={};
-  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours','staff_reply_hours','pro_quote_valid_days'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
-  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','proposal_followups','meeting_followups','advance_stage_on_reply','stage_ladder','auto_templates','ai_variant_b','weekly_digest','pro_smart_send','pro_nba_home','pro_objections','pro_quote_pdf','pro_auto_language'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours','staff_reply_hours','pro_quote_valid_days','send_jitter_minutes'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
+  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','proposal_followups','meeting_followups','advance_stage_on_reply','stage_ladder','auto_templates','ai_variant_b','weekly_digest','pro_smart_send','pro_nba_home','pro_objections','pro_quote_pdf','pro_auto_language','placeholder_guard','wording_guard','discussed_rule','stop_not_interested'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  cfg.blocked_words=$id('fv3c_blocked_words').value.split(',').map(x=>x.trim()).filter(Boolean);
+  cfg.only_stages=$id('fv3c_only_stages').value.split(',').map(x=>x.trim()).filter(Boolean);
   cfg.pro_quote_note=$id('fv3c_pro_quote_note').value.trim();
   cfg.stage_sequences={};
   document.querySelectorAll('[data-fv3-stage]').forEach(el=>{

@@ -1,4 +1,5 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients,hpRazorpayLink} from './hospitality-pro.js';
+import {rqConfig,rqDecideLanguage,rqIsSoftOptOut,rqOptOutReply,rqIsPhotoAsk,rqPhotoAskAsEnglish,rqKnownState,rqPromptBlock,rqUsedUnknownReply,rqIsOpenerText,rqBotRepliedWithin,rqIsRecentDuplicate,rqFallbackReply,rqFallbackButtons,rqWelcomeBack,rqIsGreetingOnly,rqNormText,RQ_BURST_WAIT_MS,RQ_DEDUPE_WINDOW_MS,RQ_OPENER_WINDOW_MS} from './reply-quality.js';
 import {hsHandleTurn,hsHandleRoute,hsRunForAllClients,hsIcalExportRoute,hsBalancePaid} from './hospitality-suite.js';
 import {hiHandleRoute,hiRunDue} from './hospitality-import.js';
 import {RV1_FORM_SCREEN,RV1_FORM_VERSION,rv1FormFlowJson,rv1FormInviteText,rv1FormTextFallback,rv1ThanksText,rv1ParseTripDetails,rv1CleanTripDetails,rv1DetailsInText,rv1IsDetailsReply,rv1TripQual,rv1TripNotes,rv1IsStyle,rv1Active,rv1IntroText,rv1Decide,rv1AiCandidates,rv1StripPrices,rv1AiContext} from './hospitality-resorts-v1.js';
@@ -6308,7 +6309,8 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
     // AI-generated mode (ai_mode=1): generate a personalised follow-up using the lead's name,
     // interested product and business prompt instead of the static template. Falls back to the
     // static message if the AI call produces nothing so the follow-up still goes out.
-    let staticText=String(opts.overrideText||content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    // Follow-up V3 placeholder guard passes a cleaned name ('' when the name is emoji/digits only).
+    let staticText=String(opts.overrideText||content.message||'').replace(/\{name\}/gi, opts.cleanName!==undefined?opts.cleanName:(lead.Name||'there'));
     if(opts.fill) staticText=staticText.replace(/\{product\}/gi, opts.fill.product||'your enquiry').replace(/\{business\}/gi, opts.fill.business||'us');
     // Gemini generate and scarcity line are independent — run both in parallel.
     const [aiGenerated, scarcityLine]=await Promise.all([
@@ -6327,6 +6329,12 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
     if(aiGenerated) staticText=aiGenerated;
     // Follow-up V3 Pro auto-language (followup-v3.js translateTo) — only when V3 passes it.
     if(opts.translate){ const translated=await opts.translate(staticText).catch(()=>null); if(translated) staticText=translated; }
+    // Follow-up V3 wording guards (followup-v3.js fv3GuardText): clean the text, or skip this step.
+    if(opts.guard){
+      const g=opts.guard(staticText);
+      if(g?.block){ const err=new Error(g.block); err.definiteFailure=true; throw err; }
+      if(g?.text) staticText=g.text;
+    }
     sentText=staticText+(scarcityLine||'');
 
     // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
@@ -22224,9 +22232,12 @@ export function engineHandoverCannedTexts(botConfig){
 export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory}=cls;
   const lowText=userText.toLowerCase().trim();
-  const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
+  // Reply Quality → soft opt-out: "don't keep messaging me" (any language, voice notes included once
+  // transcribed) opts the lead out like STOP does, with a short apology instead of "unsubscribed".
+  const softOptOut=!ENGINE_OPT_OUT_WORDS.includes(lowText) && rqConfig(c).soft_optout && rqIsSoftOptOut(userText);
+  const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText) || softOptOut;
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
-  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:true, isResub:false};
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:softOptOut?rqOptOutReply(customerLanguage||c.language||'en'):'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:true, isResub:false, softOptOut};
   if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:true};
 
   const botConfig=engineParseJsonField(c.bot_config, {});
@@ -26576,6 +26587,7 @@ BUTTONS — mandatory after EVERY reply:
     if(mw.length) sys+=`\n\nMANGLISH WORDS RULE: The following English words have no natural Malayalam equivalent and are better understood by customers in their original English/Manglish form. Do NOT translate them into Malayalam script — write them exactly as they are: ${mw.join(', ')}.`;
   }
   sys+=engineReplyStyleRules(c);
+  sys+=engineReplyQualityPromptBlock(c, state, lang);
   return sys;
 }
 
@@ -26588,6 +26600,17 @@ export const ENGINE_REPLY_STYLE_RULES={
   no_fluff:'NO FLUFF: No long paragraphs, extra explanations, sales talk or unnecessary descriptions.',
   direct_answers:'DIRECT ANSWERS: Start with the answer itself — no greeting, preamble or restating the question.',
 };
+// Settings → Bot Behavior → 🛠️ Reply Quality (reply-quality.js): "Known so far" state, the language
+// rule, "you CAN send photos" and the shop fact sheet. Empty unless the account switched one on.
+export function engineReplyQualityPromptBlock(c, state, lang){
+  const rq=rqConfig(c);
+  if(!rq.any) return '';
+  const bc=engineParseJsonField(c?.bot_config,{});
+  const babycare=c?.industry==='ecommerce'&&bc.ecom_communication_style==='baby_care';
+  const known=rq.known_state?rqKnownState({history:state?.activeHistory||[], userText:state?.rqUserText||'', lead:state?.lead||null,
+    babyProfile:state?.babyProfile||null, lang, stage:state?.stage||''}):null;
+  return rqPromptBlock(rq, {known, lang, babycare});
+}
 export function engineReplyStyleRules(c){
   const botCfg=engineParseJsonField(c?.bot_config,{});
   const rules=Object.keys(ENGINE_REPLY_STYLE_RULES).filter(k=>botCfg[k]===true).map(k=>ENGINE_REPLY_STYLE_RULES[k]);
@@ -27024,6 +27047,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   if(lang && lang!=='en') sys+='\n\nPROPER NOUNS RULE: Always write person names, place names, and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
   sys+=engineBusinessNameMlRule(c, lang);
   sys+=engineReplyStyleRules(c);
+  sys+=engineReplyQualityPromptBlock(c, state, lang);
   return sys;
 }
 
@@ -29086,6 +29110,89 @@ function engineExtractLinkPriceCaption(replyText){
 // instead of eight near-duplicate branches. Voice-note turns get a normal text reply here;
 // their spoken reply is a single summary sent after the chat goes idle (see
 // runVoiceSummariesForAllClients), so a slow self-hosted voice model never delays a live reply.
+// ── Reply Quality (Settings → Bot Behavior → 🛠️ Reply Quality, reply-quality.js) ──────────────────
+// D1 side of the toggles: a short log of what the bot sent per conversation (60-second duplicate
+// drop, "opener at most once per 24 h") and the soft opt-out marker. Tables are created lazily and
+// only touched for accounts that switched a toggle on.
+let _rqTablesReady=false;
+async function engineRqEnsureTables(env){
+  if(_rqTablesReady||!env?.DB) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rq_sent_log (client_id INTEGER NOT NULL, conv_id TEXT NOT NULL, norm TEXT NOT NULL, at INTEGER NOT NULL)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_rq_sent_log_conv ON rq_sent_log (client_id, conv_id, at)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rq_soft_optout (client_id INTEGER NOT NULL, phone TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (client_id, phone))`).run();
+  _rqTablesReady=true;
+}
+async function engineRqRecentSends(env, clientId, convId, sinceMs){
+  if(!convId) return [];
+  await engineRqEnsureTables(env);
+  const r=await env.DB.prepare(`SELECT norm, at FROM rq_sent_log WHERE client_id=? AND conv_id=? AND at>=? ORDER BY at DESC LIMIT 40`)
+    .bind(Number(clientId), String(convId), sinceMs).all().catch(()=>null);
+  return (r?.results||[]).map(x=>({text:x.norm, at:Number(x.at)}));
+}
+// Has the bot replied in this conversation in the last 24 hours?
+async function engineRqBotRepliedRecently(env, clientId, state){
+  if(rqBotRepliedWithin(state?.activeHistory||state?.history||[])) return true;
+  const rows=await engineRqRecentSends(env, clientId, state?.convId, Date.now()-RQ_OPENER_WINDOW_MS).catch(()=>[]);
+  return rows.length>0;
+}
+// The "unsure" buttons: Photos / Prices / Talk to our team. Values are plain asks the bot already understands.
+function engineRqFallbackItems(lang){
+  const titles=rqFallbackButtons(lang);
+  return [{title:titles[0], value:'Send photos'}, {title:titles[1], value:'Price list please'}, {title:titles[2], value:'I want to talk to your team'}];
+}
+async function engineRqMarkSoftOptOut(env, clientId, phone){
+  try{
+    await engineRqEnsureTables(env);
+    await env.DB.prepare(`INSERT OR REPLACE INTO rq_soft_optout (client_id, phone, at) VALUES (?,?,?)`).bind(Number(clientId), String(phone||''), new Date().toISOString()).run();
+  }catch(e){ await reportOpsError(env, 'engineRqMarkSoftOptOut', e, {clientId}); }
+}
+// True when this opt-out was a soft one: it is cleared and the lead's OptOut is set back to No.
+async function engineRqClearSoftOptOut(env, clientId, phone, state){
+  try{
+    if(!env?.DB) return false;
+    await engineRqEnsureTables(env);
+    const row=await env.DB.prepare(`SELECT phone FROM rq_soft_optout WHERE client_id=? AND phone=?`).bind(Number(clientId), String(phone||'')).first();
+    if(!row) return false;
+    await env.DB.prepare(`DELETE FROM rq_soft_optout WHERE client_id=? AND phone=?`).bind(Number(clientId), String(phone||'')).run();
+    if(state?.leadId) await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:state.leadId, OptOut:'No'}}).catch(()=>null);
+    return true;
+  }catch(e){ await reportOpsError(env, 'engineRqClearSoftOptOut', e, {clientId}); return false; }
+}
+// Runs on every outgoing bot reply for accounts with a Reply Quality toggle on:
+//   - 60-second duplicate drop (rq_dedupe)
+//   - opener used again within 24 h → one short question + Photos / Prices / Team buttons (rq_opener_gate)
+//   - the fact-sheet "I'll ask the team" line → chat labelled for staff (rq_fact_sheet)
+// Returns {drop:true} or the (possibly replaced) text and buttons. Never throws.
+export async function engineRqGuardOutgoing(env, c, clientId, convId, text, {langCode, quickReplies}={}){
+  const rq=rqConfig(c);
+  const out={text, quickReplies, replaced:false};
+  if(!rq.any || !convId || !env?.DB) return out;
+  try{
+    const now=Date.now();
+    const recent=await engineRqRecentSends(env, clientId, convId, now-RQ_OPENER_WINDOW_MS);
+    const norm=rqNormText(text);
+    if(rq.dedupe && rqIsRecentDuplicate(norm, recent, now, RQ_DEDUPE_WINDOW_MS)){
+      await logEngineSkip(env, clientId, null, convId, 'rq-duplicate', 'Reply Quality: same text sent less than 60 seconds ago — not sent again');
+      return {drop:true};
+    }
+    if(rq.opener_gate && recent.length){
+      const flow=engineParseJsonField(c?.flow_json, {});
+      const introText=String(flow?.intro?.text||'');
+      if(rqIsOpenerText(text, {signatures:rq.opener_signatures, introText})){
+        const lang=langCode||c.language||'en';
+        out.text=rqFallbackReply(lang); out.quickReplies=engineRqFallbackItems(lang); out.replaced=true;
+      }
+    }
+    if(rq.fact_sheet && rqUsedUnknownReply(rq, langCode||c.language||'en', out.text) && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/labels`, {
+        method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'}, body:JSON.stringify({labels:['bot-needs-info']})}).catch(()=>null);
+    }
+    await env.DB.prepare(`INSERT INTO rq_sent_log (client_id, conv_id, norm, at) VALUES (?,?,?,?)`).bind(Number(clientId), String(convId), rqNormText(out.text).slice(0, 2000), now).run();
+    if(Math.random()<0.02) await env.DB.prepare(`DELETE FROM rq_sent_log WHERE at<?`).bind(now-2*RQ_OPENER_WINDOW_MS).run().catch(()=>null);
+  }catch(e){ await reportOpsError(env, 'engineRqGuardOutgoing', e, {clientId, convId}); }
+  return out;
+}
+
 async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, quickReplies, ctx}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
@@ -29104,11 +29211,18 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   const trimmed=engineStripPromptLeak(raw);
   if(trimmed!==raw) await reportOpsError(env, 'engineDeliverReply — outgoing reply recited the system prompt; leaked part removed', new Error(raw.slice(trimmed.length, trimmed.length+300)), {clientId, convId});
   if(!trimmed) return;
+  let finalText=trimmed;
+  if(rqConfig(c).any){
+    const g=await engineRqGuardOutgoing(env, c, clientId, convId, trimmed, {langCode, quickReplies});
+    if(g.drop) return false;
+    finalText=g.text;
+    if(g.replaced){ quickReplies=g.quickReplies; imageUrl=null; }
+  }
   // Voice notes are transcribed and answered in text like any other message. The spoken reply is
   // one end-of-session summary instead (engineTrackVoiceSummarySession / runVoiceSummariesForAllClients).
-  if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
-  if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
-  return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+  if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, finalText);
+  if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, finalText, quickReplies);
+  return engineSendChatwootReply(env, c, clientId, convId, finalText);
 }
 
 async function engineSendHandoverLabel(c, convId){
@@ -30746,6 +30860,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const handoverSilent=await engineHandoverSilenceTurn(env, c, clientId, body, state, parsed, text, startMs, ctx);
     if(handoverSilent) return handoverSilent;
     if(state.personalContact){ await logEngineSkip(env, clientId, phone, convId, 'personal-contact'); return json({ok:true, skipped:'personal-contact'}); }
+    // A soft opt-out ("don't keep messaging me", Reply Quality) only stops OUR messages: when the
+    // customer writes again on their own, the chat reopens. A STOP opt-out stays silent as before.
+    if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start' && await engineRqClearSoftOptOut(env, clientId, phone, state)) state.leadOptOut='No';
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
 
     // After-sales support: won/converted leads never enter the AI pipeline.
@@ -30800,7 +30917,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
     // Owner/DealCurrency assignment for a genuinely brand-new lead.
     const isNewLead=!state.leadId;
-    const isRevisit=!isNewLead&&engineIsRevisitAfterSilence(state,4*60*60*1000);
+    const _rq=rqConfig(c);
+    const isRevisit=!isNewLead&&engineIsRevisitAfterSilence(state,_rq.opener_gate?RQ_OPENER_WINDOW_MS:4*60*60*1000);
     // Referral/affiliate tracking — only checked for a brand-new lead's very first message (an
     // existing lead re-typing an old code by accident shouldn't re-attribute them). Strips the
     // code from `text` before it reaches classification/the AI reply, so it never shows up in
@@ -31071,7 +31189,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // A new/returning lead whose opener is a real ask ("price & photos of the name printed set")
     // gets that answered first — see engineIsSpecificFirstQuestion; the intro rides after it.
     const _specificFirstAsk=mediaType==='text'&&engineIsSpecificFirstQuestion(userText);
-    const configuredGreetingTurn=!rv1IsStyle(c)&&(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
+    // Reply Quality → opener once per 24 h: a returning "Hi" inside 24 h of our last reply gets a short
+    // welcome back with buttons, never the full opener again (reply-quality.js).
+    const _rqOpenerBlocked=_rq.opener_gate&&!isNewLead&&await engineRqBotRepliedRecently(env,clientId,state);
+    if(_rqOpenerBlocked&&mediaType==='text'&&rqIsGreetingOnly(userText)){
+      const _wbLang=rqDecideLanguage({text:userText,history:state.activeHistory,detected:null,fallback:c.language||'en'}).lang;
+      const _wbTurn={text:rqWelcomeBack(_wbLang,state.name||state.lead?.Name),route:'faq',next:state.stage||'new',preserveCrmStage:true,lang:_wbLang,
+        buttons:engineRqFallbackItems(_wbLang),mediaUrl:''};
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_wbTurn,startMs,mediaType,ctx);
+      return json({ok:true,route:'rq_welcome_back',sent:c.bot_reply_disabled!=='Yes'});
+    }
+    const configuredGreetingTurn=!_rqOpenerBlocked&&!rv1IsStyle(c)&&(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -31113,7 +31241,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
     // Shopify-style stores open with their own guided menu (engineShopifyFlowTurn below) instead.
     const _shopifyFlow=engineShopifyFlowOn(c, botConfig);
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow&&!rv1IsStyle(c)
+    const greetingTurn=!_rqOpenerBlocked&&(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk&&!_shopifyFlow&&!rv1IsStyle(c)
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -31153,6 +31281,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _ecomFastPath=_isActiveEcomStage
       && ((_ecomStyle!=='baby_care' && !_shopifyFlow) || _isEcomButtonValue)
       && !ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
+      && !(_rq.soft_optout && rqIsSoftOptOut(userText))
       && !(userText.toLowerCase().trim()==='start' && state.leadOptOut==='Yes');
     const _classificationDisabled=botConfig.classification_enabled===false;
     const cls=introAction
@@ -31166,7 +31295,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     const sessionLang=engineSessionLanguage(state.activeHistory, userText, cls.customerLanguage);
     if(sessionLang) cls.customerLanguage=sessionLang;
+    // Reply Quality → language rule: "Tamil"/"in Malayalam" switches, Manglish is Malayalam, and
+    // "ok"/"K"/"sorry" keep the language the chat is already in (reply-quality.js rqDecideLanguage).
+    if(_rq.language_rule && mediaType==='text') cls.customerLanguage=rqDecideLanguage({text:userText, history:state.activeHistory, detected:cls.customerLanguage, fallback:c.language||'en'}).lang;
+    state.rqUserText=userText;
+    // Reply Quality → photo-first: Malayalam / Manglish photo asks count as photo requests too.
+    const _rqIsPhoto=t=>ecomIsPhotoRequest(t)||(_rq.photo_first&&rqIsPhotoAsk(t));
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
+    if(routing.softOptOut) await engineRqMarkSoftOptOut(env, clientId, phone);
     botTraceTurn(c,{route:routing.route,intent:routing.intent||cls?.intent||''});
     botTrace(c,'routed',{route:routing.route,intent:routing.intent||cls?.intent,stage:state.stage,next:routing.next,language:cls?.customerLanguage});
     if(introAction) routing.historyUserText=parsed.text;
@@ -32342,7 +32478,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const shopC=await waShopLoadClient(env, c).catch(()=>c);
       const shopLine=shopC[WA_SHOP_CONFIG_FIELD]?await waShopMaybeSendCatalog(env, WA_SHOP_DEPS, shopC, {phone, convId, inboxId:state.inboxId, text:userText,
         categories:[...new Set((await ecomListActiveProducts(env, clientId).catch(()=>[])||[]).map(p=>p.category).filter(Boolean))]}).catch(e=>{ reportOpsError(env, 'waShopMaybeSendCatalog', e, {clientId, convId}); return null; }):null;
-      const gallery=shopLine?{text:shopLine, quickReplies:null}:await engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userText, state, replyLang).catch(e=>{ reportOpsError(env, 'engineMaybeSendEcomGallery', e, {clientId, convId}); return null; });
+      const gallery=shopLine?{text:shopLine, quickReplies:null}:await engineMaybeSendEcomGallery(env, c, clientId, convId, phone, (_rq.photo_first&&!ecomIsPhotoRequest(userText)&&rqIsPhotoAsk(userText))?rqPhotoAskAsEnglish(userText):userText, state, replyLang).catch(e=>{ reportOpsError(env, 'engineMaybeSendEcomGallery', e, {clientId, convId}); return null; });
       if(gallery){
         sentText=gallery.text; routing.reply=gallery.text; routing.next=state.stage;
         routing.quickReplies=gallery.quickReplies; if(gallery.media) routing.media=gallery.media;
@@ -32358,7 +32494,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       // A bare "Pictures" carries no product detail, so the classifier can return no signal at all —
       // treat it as an enquiry about the product last discussed (Last Product Sku fallback below).
-      if(ecomIsPhotoRequest(userText) && !detection.signal && state.lead?.['Last Product Sku']){
+      if(_rqIsPhoto(userText) && !detection.signal && state.lead?.['Last Product Sku']){
         detection.signal=true; detection.mode='enquiry';
       }
       // "Order this 🛒" under a product card → an order for the product just shown.
@@ -32537,7 +32673,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const isShopify=!!(product?.shopify_product_url||'').trim();
         let sendProductImage=false, sendOnlyPrimaryImage=false, sendRandomImages=false, shopifyTier=0, forceResendLink=false;
         if(product){
-          const wantsImage=ecomIsPhotoRequest(userText);
+          const wantsImage=_rqIsPhoto(userText);
           const wantsLink=ECOM_RESEND_LINK_RE.test(userText||'');
           if(wantsImage){
             sendOnlyPrimaryImage=true;
@@ -32571,11 +32707,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           ||/^(?:what|how|when|where|why|which|is|are|can|could|do|does|will|would|tell|explain|describe|price|cost|rate|available|delivery|cod)\b/i.test(userText.trim());
         // A photo request for a product with a stored image goes to the card branch below (card +
         // real photo) — the FAQ LLM can't attach media and would reply "I can't send pictures".
-        const _babyPhotoAsk=isBabyCareEcom && !!product && ecomIsPhotoRequest(userText) && !!(product.image_url||'').trim();
+        const _babyPhotoAsk=isBabyCareEcom && !!product && _rqIsPhoto(userText) && !!(product.image_url||'').trim();
         // A question about a product named in this message → answer it first, then the product
         // card + photo (engineEcomProductAnswer). A bare selection/tap, a photo ask, or a sent image
         // (vision description) just gets the card.
-        const _answerFirst=!!product && !resolvedFromHistory && !exactSelectedProduct && mediaType!=='image' && !ecomIsPhotoRequest(userText)
+        const _answerFirst=!!product && !resolvedFromHistory && !exactSelectedProduct && mediaType!=='image' && !_rqIsPhoto(userText)
           && (_babyProductQuestion || ecomIsProductQuestion(userText));
         // Order intent with no product/store link to send (or link sending switched off) → take the
         // order in the chat, conversationally. Fashion/Electronics/Medical keep their own order
@@ -32958,7 +33094,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // a branch that attaches none — Baby Care product questions, follow-ups answered by the FAQ
         // LLM — still gets the product's photo, sent ahead of that answer.
         if(ecomPhotosUnrestricted(c) && product && !routing.media && (product.image_url||'').trim()
-          && (!resolvedFromHistory || ecomIsPhotoRequest(userText))){
+          && (!resolvedFromHistory || _rqIsPhoto(userText))){
           await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, `*${product.name}*`);
           routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
         }
@@ -45550,7 +45686,9 @@ async function handleEngineWebhookBuffered(request,env,secret,ctx=null){
     const id=env.CLIENT_UPDATES.idFromName(String(c.Id));
     return await env.CLIENT_UPDATES.get(id).fetch('https://internal/aggregate',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({secret,body,conversationId:String(parsed.convId||parsed.phone),receivedAt:Date.now()})
+      body:JSON.stringify({secret,body,conversationId:String(parsed.convId||parsed.phone),receivedAt:Date.now(),
+        // Reply Quality → burst wait: ~9 s so "How much" / "Plz sent dress pic" get one reply.
+        aggregationMs:rqConfig(c).burst_wait?RQ_BURST_WAIT_MS:ENGINE_MESSAGE_AGGREGATION_MS})
     });
   }catch(e){
     await reportOpsError(env,'message aggregation failed open',e,{clientId:c.Id,convId:parsed.convId});
@@ -45576,7 +45714,8 @@ export class ClientUpdatesHub{
       const current=buffers[key]||{firstAt:now,items:[]};
       current.items.push({body:item.body,secret:item.secret,receivedAt:now});
       current.items=current.items.slice(-20);
-      current.dueAt=Math.min(now+ENGINE_MESSAGE_AGGREGATION_MS,Number(current.firstAt)+ENGINE_MESSAGE_AGGREGATION_MAX_MS);
+      const waitMs=Math.min(Math.max(Number(item.aggregationMs)||ENGINE_MESSAGE_AGGREGATION_MS,1000),12000);
+      current.dueAt=Math.min(now+waitMs,Number(current.firstAt)+Math.max(ENGINE_MESSAGE_AGGREGATION_MAX_MS,waitMs+6000));
       buffers[key]=current;
       await this.state.storage.put({messageBuffers:buffers,aggregateSeen:seen});
       const nextDue=Math.min(...Object.values(buffers).map(x=>Number(x.dueAt)||now));
