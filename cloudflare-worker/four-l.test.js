@@ -108,3 +108,12 @@ test('variant choice shows name and colour only, never the size list', async () 
   assert.equal(fourLVariantTitle({ name: 'Floral Embroidery Kurti', variant: 'Blue / 3XL, Blue / 4XL' }), 'Floral Embroidery Kurti – Blue');
   assert.equal(fourLVariantTitle({ name: 'Plain Kurti' }), 'Plain Kurti');
 });
+
+test('AI catalogue context puts the asked-for product first, even deep in a big catalogue', async () => {
+  const { ecomRankProductsForQuery } = await import('./worker.js');
+  const products = Array.from({ length: 150 }, (_, i) => ({ name: `Plain Suit ${i}`, category: 'Salwar suits' }));
+  products.push({ name: 'Floral Embroidery Kurti', color: 'Blue', category: 'Kurtis' });
+  const top = ecomRankProductsForQuery(products, 'Floral Embroidery').slice(0, 30);
+  assert.equal(top[0].name, 'Floral Embroidery Kurti');
+  assert.equal(ecomRankProductsForQuery(products, '')[0].name, 'Plain Suit 0');
+});
