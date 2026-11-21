@@ -1377,6 +1377,34 @@ catalog, and registers any of the webhooks above the store is missing.
 **Routes** (client_id-keyed like the rest of `/ecom/*`): `GET /ecom/shopify/status`,
 `GET /ecom/shopify/orders`, `GET /ecom/shopify/stock`, `POST /ecom/shopify/resync`.
 
+### 🌐 Website Sync (`cloudflare-worker/website-sync.js`, Ecom → 🌐 Website Sync)
+Connects a merchant's own e-commerce website (a custom REST API such as 4L Fashion's) so its
+products, orders and categories become ordinary Ecom Products / Orders / Categories.
+
+- **Setup (merchant):** Ecom → 🌐 Website Sync → paste the API base URL (e.g.
+  `https://4lfashion.com.qa/api/v1`) and the API key the website created (sent as
+  `Authorization: Bearer …` or `X-API-Key`), optionally the webhook signing secret → **Connect & sync**.
+  Then paste the shown **Webhook URL** into the website's connection form, tick every event and leave
+  its Extra Header blank. Needs the dashboard sign-in (routes are `requireSession`-gated).
+- **API expected:** `GET /ping`, `GET /products` (+ `/products/{id}`), `GET /orders?updated_since=…`
+  (+ `/orders/{id}`), `GET /inventory`, paged with `limit`/`page`; paths can be changed under Advanced.
+  Mapping is tolerant of common field names (name/title, price/sale_price, variants with size/colour/stock…).
+- **Matching existing items:** products by website id → SKU → exact name (Shopify-linked rows are
+  skipped); orders by website id → order number; categories by name. New links are stored in
+  `website_product_id` / `website_order_id` (auto-created NocoDB columns).
+- **Deletes:** `product.deleted` / `order.deleted` webhooks delete the Ecom row (and the product's D1
+  mirror row + bot memory). A full sync deletes linked products the website no longer returns, and
+  categories the sync itself created. Hand-made items are never deleted. A full sync that reads an
+  empty catalogue, or stops at the page cap, deletes nothing. Switch off "Auto-delete removed items"
+  to keep them.
+- **Webhooks:** `POST /ecom/website/hook/<token>`, body `{id, event, created_at, data}`. When a secret
+  is saved, `X-…-Signature: sha256=HMAC(secret, timestamp + "." + body)` with a fresh `X-…-Timestamp`
+  is required. Event ids are de-duplicated for 7 days; a failed event returns 500 so the website retries.
+- **Catch-up:** the 15-minute cron (`wsRunDue`) syncs each store whose interval is up: orders since the
+  last `updated_at` seen (90 days on the first sync), and the full catalogue.
+- **Storage:** D1 tables `ecom_website_sync` (one row per client; key and secret encrypted like
+  Hospitality → API Import) and `ecom_website_sync_events`, created on first use — no migration step.
+
 ### Shopify-style guided shopping chat (`cloudflare-worker/shopify-flow.js`)
 For Ecom clients on **Settings → Bot Behavior → Ecom Communication Style → Shopify / general
 store**, the WhatsApp bot runs a button-led shopping flow. It's on by default for that style;
