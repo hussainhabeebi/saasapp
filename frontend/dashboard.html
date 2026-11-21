@@ -4476,6 +4476,78 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="rqCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🛠️ Reply Quality</div>
+            <div class="s-note">Fixes for repeated openers, double replies, wrong language, “can’t send photos” and guessed facts. Every switch is off until you turn it on, and each works on its own. <a href="#" onclick="rqApplyRecommended();return false">Turn on the recommended set</a></div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">⏱️ Wait for the customer to finish</label>
+              <div class="s-note">Waits about 9 seconds after a message, so a burst like “How much” / “Plz sent dress pic” gets one reply instead of three.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_burst_wait"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🚫 Never send the same reply twice</label>
+              <div class="s-note">Drops a reply whose text matches a bot message sent to the same chat in the last 60 seconds.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_dedupe"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">👋 Opener once per 24 hours</label>
+              <div class="s-note">The welcome message goes out at most once a day per chat. If the bot is about to repeat it, it asks one short question with <b>Photos / Prices / Talk to our team</b> buttons instead. A “Hi” within 24 hours gets a short “welcome back”.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_opener_gate"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🧠 Remember what the customer said</label>
+              <div class="s-note">Adds a “Known so far” block (age, product, language, stage, occasion) to every AI reply: never re-ask the baby’s age, answer the last message first, and never restart the sales pitch when unsure. Baby-care shops also get the age guide (0-6 months → baby sets, 6 months-10 years → T-shirts and cord sets).</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_known_state"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🌐 Language rule</label>
+              <div class="s-note">Replies in the customer’s language. “Tamil” or “in Malayalam” switches language; Manglish (“Papasoot type ndo”) gets Malayalam; “ok”, “K”, “sorry” keep the current language. The bot never says it can only reply in English.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_language_rule"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">📸 Bot knows it can send photos</label>
+              <div class="s-note">Tells the AI that the system sends photos, so it never replies “I can’t send photos here”.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_media_aware"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🖼️ Photos for Malayalam / Manglish asks</label>
+              <div class="s-note">“Photo ayakkamo”, “ഫോട്ടോ അയക്കാമോ”, “design kaanikku” and the “സെറ്റുകൾ കാണാം” button send photos (the product being discussed, else the category, else the collection), like English photo asks already do.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_photo_first"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🙏 Respect “don’t message me”</label>
+              <div class="s-note">“Don’t keep messaging me”, “msg ayakkanda”, “മെസ്സേജ് അയക്കേണ്ട” opt the lead out of follow-ups with one short apology. If the customer writes again later, the chat reopens automatically.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_soft_optout"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">📋 Shop fact sheet</label>
+              <div class="s-note">The bot answers only from the facts below. For anything missing it says your “not sure” line and labels the chat <code>bot-needs-info</code> for your team. Never guesses.</div>
+              <div style="max-width:300px;margin-top:8px"><select class="form-input" id="cfg_rq_fact_sheet"><option value="No">Off</option><option value="Yes">On</option></select></div>
+            </div>
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">Opener text to protect (one per line)</label>
+              <div class="s-note">A short, unique piece of each welcome message you use, e.g. <code>Premium baby set ₹899</code>. Used by “Opener once per 24 hours”. Your flow’s Introduction message is always included.</div>
+              <textarea class="form-input" id="cfgRqOpenerSignatures" rows="3" style="margin-top:6px;max-width:620px" placeholder="Premium baby set ₹899&#10;Couplo-യിലേക്ക് സ്വാഗതം"></textarea>
+            </div>
+            <div style="margin-top:14px">
+              <label class="form-label">Shop facts (only confirmed facts)</label>
+              <div class="s-note">Prices come from your product catalog. Write here: colours, name printing per product, age ranges, making time, delivery times, payment / advance, COD yes/no, offers with end date, what goes to the team (bulk, suppliers).</div>
+              <textarea class="form-input" id="cfgRqFactSheet" rows="10" style="margin-top:6px;max-width:720px;font-family:var(--mono);font-size:12px" placeholder="COLOURS: Base sets white only. Never ask the customer to choose a colour.&#10;NAME PRINTING: available on Premium sets and T-shirts. Not on Full Romper.&#10;AGE: 0-6 months → baby sets. 6 months-10 years → T-shirts, cord sets.&#10;MAKING TIME: 3-4 days after the order is confirmed.&#10;DELIVERY: free across India. Kerala 3-6 days, Tamil Nadu 3-5 days, other states 3-6 days. Total time = making time + delivery.&#10;PAYMENT: 50% advance to confirm. Balance after you approve the design photo. COD: no.&#10;OFFER: no current offer.&#10;BULK / SUPPLIERS / WHOLESALE: do not answer; tag for the team."></textarea>
+            </div>
+            <div style="margin-top:10px">
+              <label class="form-label">“Not sure” line (optional)</label>
+              <div class="s-note">What the bot says when a fact is missing. Leave blank for the default in the customer’s language (Malayalam: “ടീമിനോട് ചോദിച്ച് ഉടനെ പറയാം 😊”).</div>
+              <input class="form-input" id="cfgRqUnknownReply" maxlength="300" style="margin-top:6px;max-width:520px" placeholder="Let me check with our team and get back to you shortly 😊">
+            </div>
+            <div class="s-note" style="margin-top:12px">Also check <b>Store settings → Zero price hallucinations</b> (any price not in the catalog is replaced with “our team will confirm”) and <b>Product search — what to share → Product + Category</b>. Follow-up fixes are in <b>Follow-ups → Follow-up V3 settings</b>.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
+              <button class="save-btn" id="saveReplyQuality">Save</button>
+              <span class="save-msg" id="saveReplyQualityMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:14px" id="pfFollowupButtonsCard" style="display:none">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🔘 Prompt-First Follow-up Buttons</div>
@@ -15506,6 +15578,10 @@ function populateBotBehaviorPage(){
   $id('cfgV2NudgeText').value=botConfig.v2_nudge_text||'';
   $id('cfgV2FollowupGuard').value=botConfig.v2_followup_guard===true?'Yes':'No';
   REPLY_STYLE_FIELDS.forEach(([id,key])=>{ $id(id).value=botConfig[key]===true?'Yes':'No'; });
+  RQ_TOGGLE_KEYS.forEach(key=>{ $id('cfg_'+key).value=botConfig[key]===true?'Yes':'No'; });
+  $id('cfgRqOpenerSignatures').value=botConfig.rq_opener_signatures||'';
+  $id('cfgRqFactSheet').value=botConfig.rq_fact_sheet_text||'';
+  $id('cfgRqUnknownReply').value=botConfig.rq_unknown_reply||'';
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -15565,6 +15641,25 @@ $id('saveObjectionHandlingEnabled').addEventListener('click',async()=>{
   const off=$id('cfgObjectionHandlingEnabled').value==='No';
   if(off) botConfig.objection_handling_enabled=false; else delete botConfig.objection_handling_enabled;
   await saveField('saveObjectionHandlingEnabled','saveObjectionHandlingEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+// Settings → Bot Behavior → 🛠️ Reply Quality (cloudflare-worker/reply-quality.js). Each key is a
+// bot_config boolean, deleted when off so an account that never touches this keeps its old behaviour.
+const RQ_TOGGLE_KEYS=['rq_burst_wait','rq_dedupe','rq_opener_gate','rq_known_state','rq_language_rule','rq_media_aware','rq_photo_first','rq_soft_optout','rq_fact_sheet'];
+function rqApplyRecommended(){
+  RQ_TOGGLE_KEYS.forEach(key=>{ if(key!=='rq_fact_sheet'||$id('cfgRqFactSheet').value.trim()) $id('cfg_'+key).value='Yes'; });
+  $id('saveReplyQualityMsg').textContent=$id('cfgRqFactSheet').value.trim()?'Recommended set selected — press Save':'Recommended set selected (fill the shop facts to use the fact sheet) — press Save';
+}
+$id('saveReplyQuality').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  RQ_TOGGLE_KEYS.forEach(key=>{ if($id('cfg_'+key).value==='Yes') botConfig[key]=true; else delete botConfig[key]; });
+  const sig=$id('cfgRqOpenerSignatures').value.split('\n').map(x=>x.trim()).filter(Boolean).slice(0,10).join('\n');
+  const facts=$id('cfgRqFactSheet').value.trim().slice(0,6000);
+  const unknown=$id('cfgRqUnknownReply').value.trim().slice(0,300);
+  if(botConfig.rq_fact_sheet && !facts){ $id('saveReplyQualityMsg').textContent='Add the shop facts before turning on the fact sheet'; return; }
+  if(sig) botConfig.rq_opener_signatures=sig; else delete botConfig.rq_opener_signatures;
+  if(facts) botConfig.rq_fact_sheet_text=facts; else delete botConfig.rq_fact_sheet_text;
+  if(unknown) botConfig.rq_unknown_reply=unknown; else delete botConfig.rq_unknown_reply;
+  await saveField('saveReplyQuality','saveReplyQualityMsg',{bot_config:JSON.stringify(botConfig)});
 });
 const REPLY_STYLE_FIELDS=[['cfgConciseCommunication','concise_communication'],['cfgCoreFocus','core_focus'],['cfgNoFluff','no_fluff'],['cfgDirectAnswers','direct_answers']];
 $id('saveReplyStyle').addEventListener('click',async()=>{
