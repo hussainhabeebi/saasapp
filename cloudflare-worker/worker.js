@@ -15292,7 +15292,7 @@ export function ecomIsProductQuestion(text){
 // had to answer "ithu Tshirt mathram aanu". '' on any failure (card still goes out).
 async function engineEcomProductAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText, product){
   try{
-    const ctxBlock=await engineBuildEcomContext(env, c, clientId, phone);
+    const ctxBlock=await engineBuildEcomContext(env, c, clientId, phone, `${product?.name||''} ${userText||''}`);
     const price=ecomFormatProductPrice(product.price, product.currency);
     const sys=engineBuildFaqSystemPrompt(c, state, ctxBlock, 'ecommerce', replyLang, isNewLead, routing.intent)
       +`\n\nPRODUCT QUESTION: The customer is asking about this exact product:\nName: ${product.name}${price?`\nPrice: ${price}`:''}\nDescription: ${String(product.description||'').slice(0,1200)}\nAnswer their question directly in 1-3 short, friendly sentences, using ONLY this product's data and the business prompt. If the answer isn't stated there, say our team will confirm it — never guess. The product photo and details are sent right after your answer, so don't repeat the whole description and don't output OPTIONS.`;
@@ -15308,7 +15308,7 @@ async function engineEcomProductAnswer(env, c, clientId, phone, state, replyLang
 // falls back to the plain picker intro).
 async function engineEcomCategoryAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText){
   try{
-    const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
+    const categoryContext=await engineBuildEcomContext(env, c, clientId, phone, userText);
     const sys=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead, routing.intent)
       +'\n\nCATEGORY ENQUIRY: Reply to what the customer actually said, like a helpful shop assistant — answer their question or respond to what they told you (e.g. their baby\'s age → which sets suit them). Keep it short. Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified product picker will follow your answer, so do not list every product and do not output OPTIONS.';
     const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 300, state.botMsgs?.[state.botMsgs.length-1], undefined, enginePriceGuardOpts(c, sys, userText, replyLang));
@@ -15972,11 +15972,7 @@ async function ecomResolveProduct(env, clientId, sku, productName){
   const normalizeName=v=>String(v||'').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
   const guess=normalizeName(productName);
   if(!guess) return null;
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return null;
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
-  const pd=await pr.json().catch(()=>({}));
-  const products=pd?.list||[];
+  const products=await ecomListActiveProducts(env, clientId);
   return products.find(p=>normalizeName(p.name)===guess)||null;
 }
 
@@ -16012,11 +16008,7 @@ function isLocationDirectionsQuery(text){
 async function ecomDetectMentionedProduct(env, clientId, replyText){
   const text=(replyText||'').toLowerCase();
   if(!text) return null;
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return null;
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
-  const pd=await pr.json().catch(()=>({}));
-  const products=pd?.list||[];
+  const products=await ecomListActiveProducts(env, clientId);
   const matches=products.filter(p=>{
     const name=(p.name||'').trim().toLowerCase();
     return name.length>2 && text.includes(name);
@@ -16402,6 +16394,11 @@ async function ecomListCategories(env, clientId){
   return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
+// Every lookup reads the whole active catalogue (website-synced stores have hundreds of products).
+// It was 100: a product past the first 100 was "not in the catalogue" — and since the D1 mirror
+// (by id) and NocoDB (its own order) returned different hundreds, the same product was found on
+// one message and missing on the next (4L Fashion, Nov 2026: "Floral Embroidery Kurti").
+const ECOM_MAX_PRODUCTS=1000;
 async function ecomListActiveProducts(env, clientId){
   // 1. KV — warm within 90 s of last fetch or product write
   const cached=await kvGetEcomProducts(env, clientId);
@@ -16411,7 +16408,7 @@ async function ecomListActiveProducts(env, clientId){
   if(env.DB){
     try{
       const {results}=await env.DB.prepare(
-        `SELECT * FROM ecom_products_mirror WHERE client_id=? AND (status IS NULL OR status!='inactive') ORDER BY id LIMIT 100`
+        `SELECT * FROM ecom_products_mirror WHERE client_id=? AND (status IS NULL OR status!='inactive') ORDER BY id LIMIT ${ECOM_MAX_PRODUCTS}`
       ).bind(Number(clientId)).all();
       if(results&&results.length) products=results;
     }catch(e){}
@@ -16420,9 +16417,14 @@ async function ecomListActiveProducts(env, clientId){
   if(!products){
     const productsTable=await ecomResolveTable(env, clientId, 'products');
     if(!productsTable) return [];
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
-    const pd=await pr.json().catch(()=>({}));
-    products=pd?.list||[];
+    products=[];
+    for(let offset=0; offset<ECOM_MAX_PRODUCTS; offset+=100){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&offset=${offset}`);
+      const pd=await pr.json().catch(()=>({}));
+      const page=pd?.list||[];
+      products.push(...page);
+      if(page.length<100 || pd?.pageInfo?.isLastPage) break;
+    }
   }
   await kvSetEcomProducts(env, clientId, products);
   return products;
@@ -16977,13 +16979,8 @@ export function ecomFashionProductChoiceItems(products){
   return items.slice(0,10);
 }
 async function ecomFindBroadProductMatches(env, clientId, message){
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return [];
-  // Fetch full rows instead of requesting an explicit optional-field list: older client tables may
-  // not yet have every style/media column, and one missing NocoDB column must not break matching.
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
-  const pd=await pr.json().catch(()=>({}));
-  return ecomBroadProductMatches(pd?.list||[],message);
+  // The whole active catalogue (ecomListActiveProducts), not just the first 100 rows.
+  return ecomBroadProductMatches(await ecomListActiveProducts(env, clientId), message);
 }
 
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
@@ -22475,14 +22472,33 @@ export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:false, humanReason, loopDetected};
 }
 
+// Products ordered by how well they match the query (name words weigh most, then category / colour /
+// description); ties keep catalogue order. No query → catalogue order.
+export function ecomRankProductsForQuery(products, query){
+  const list=products||[];
+  const words=[...new Set(String(query||'').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,' ').split(' ').filter(w=>w.length>=3))];
+  if(!words.length) return list;
+  const toks=v=>new Set(String(v||'').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,' ').split(' ').filter(Boolean));
+  const scored=list.map((p,i)=>{
+    const name=toks(p?.name), other=toks(`${p?.category||''} ${p?.color||''} ${p?.sku||''} ${String(p?.description||'').slice(0,300)}`);
+    let score=0;
+    for(const w of words){ if(name.has(w)) score+=3; else if([...name].some(n=>n.length>=4&&(n.startsWith(w)||w.startsWith(n)))) score+=2; else if(other.has(w)) score+=1; }
+    return {p, i, score};
+  });
+  scored.sort((a,b)=>b.score-a.score||a.i-b.i);
+  return scored.map(x=>x.p);
+}
+
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
 // live product catalog + this phone's recent order status, built off the same ecom tables
 // ecom.html and /ecom/* already read.
-async function engineBuildEcomContext(env, c, clientId, phone){
+async function engineBuildEcomContext(env, c, clientId, phone, query=''){
   const lines=[];
   {
-    // Reuses the cached product list (KV → D1 → NocoDB), sliced to the first 30 for context size.
-    const products=(await ecomListActiveProducts(env, clientId)).slice(0,30);
+    // Reuses the cached product list (KV → D1 → NocoDB). 30 rows for context size — the ones that
+    // match what the customer is asking about first (ecomRankProductsForQuery), so a product deep in
+    // a big catalogue is still in front of the AI when they ask for it.
+    const products=ecomRankProductsForQuery(await ecomListActiveProducts(env, clientId), query).slice(0,30);
     if(products.length){
       lines.push('## Product Catalog (partial — ask if something specific isn\'t listed)');
       products.forEach(p=>{
@@ -33916,7 +33932,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
     } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
       let contextBlock=null;
-      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone, [userText, ...(state.activeHistory||[]).slice(-4).map(m=>m?.content||'')].join(' '));
       else if(routing.route==='travel_faq' || (routing.route==='faq' && ltLiveAgencyEnabled(c))) contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
